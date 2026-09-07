@@ -241,7 +241,8 @@ server.tool(
   { key: z.string(), scope: z.string().default('global') },
   async (args) => {
     const v = mem().recall(args.key, args.scope)
-    return jtext(v === undefined ? { found: false } : { found: true, value: v })
+    // Flat shape: value is the stored string, not a nested row object.
+    return jtext(v == null ? { found: false } : { found: true, key: v.key, value: v.value, scope: v.scope })
   }
 )
 
