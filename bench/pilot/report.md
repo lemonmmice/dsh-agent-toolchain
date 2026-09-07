@@ -107,7 +107,36 @@ Headline metric (N = 1 per mode — pilot only, no statistical claims):
 
 ## 7. Agent self-assessment (critic session)
 
-*Filled in after the critic session completes — see §8 for attribution rules.*
+A separate session of the same CLI (62 turns) was given the MCP config, the
+toolchain source and a live checkout, and told to self-test every tool and
+write a harsh review. Raw review is local-only; the findings below were each
+**re-verified by the author** before adoption (the critic's own first-pass
+"leaked machine path" claim was wrong and it retracted it after `od -c`).
+
+### Confirmed and fixed (all four re-produced before patching)
+
+| # | Finding | Author verification | Fix (commit) |
+|---|---|---|---|
+| 1 | `build_run` returned `ok:false` with `errors:[]` — top-level MSB errors (MSB1009/MSB4126) and positionless NuGet errors (NU1301) were dropped; summary count disagreed with the structured list. Defaults (x86 / `WholeSolution.sln` / VS MSBuild) fail on stock SDK repos. | Reproduced: `errorCount:0` while the build failed; log held `MSBUILD : error MSB1009` | `ERR_TOP`/`ERR_PLAIN` regexes; summary falls back to parsed counts; new `engine=dotnet` (`dotnet build`, restore-by-default, Any CPU, `NuGetAudit=false`) — verified green on the stock repo (3.7 s) |
+| 2 | `verify_report kind=gate` certified `pass` on a run where **zero tests matched** the filter (`dotnet test` exits 0 there) | Reproduced: verdict `pass`, `mismatchCount 0` on a no-match filter | `checkGate` now fails exit-0 vacuous runs (CN/EN patterns + 0/0 counts); 3 new unit tests |
+| 3 | `memory_index` wiped 23 pre-existing chunks when indexing a second root (eviction keyed on "inside current root"), and the index path had no secret screening while embedding egresses to `api.minimax.chat` | Reproduced in code + the critic session demonstrably damaged the local store | Chunk keys carry absolute paths; eviction judges disk existence (multi-root safe); index path runs the fail-closed sensitive filter (`sensitiveSkipped`); egress disclosed in `memory_status` + README + tool descriptions |
+| 4 | `ui_drive` error output was mojibake (GBK decoded as UTF-8) and the garbage was auto-recorded into the corpus | Confirmed in code (`driver.mjs` decoded per-chunk as UTF-8) | Shared `lib/decode.mjs` (UTF-8→GBK) now used by builder + driver; `ui_status` distinguishes `unconfigured` |
+
+### Accepted, deferred (not fixed yet)
+
+- Fit-and-finish: `memory_recall` nested shape, gate `detail` too thin on
+  failure, `perf.mjs` powershell path lacks an env override, cross-platform
+  honesty (the build/ui/perf half is Windows-only) — tracked for later.
+- The pilot cost finding (§4) — needs more tasks before acting.
+
+### Verdict line (the critic's own words, machine-triggered)
+
+> "Split, but net NO for the whole toolchain as-is… YES, cautiously, to the
+> evidence spine (verify_report + failure corpus + capture store); NO to
+> build_run and memory_index in their current state."
+
+As of this commit, the two "NO" tools have been reworked per the review and
+re-verified; re-adjudication is the next pilot run's job.
 
 ## 8. Attribution rules
 

@@ -19,6 +19,33 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   gitignored) for privacy and answer secrecy; `scripts/check.mjs` gains a
   git-tracked gate that hard-fails if they ever get committed. See
   [bench/README.md](./bench/README.md).
+- **`build_run` dotnet engine + honest error parsing** — `engine=dotnet`
+  (`DSH_BUILD_ENGINE`) builds SDK-style repos with `dotnet build`
+  (restore-by-default, Any CPU, `NuGetAudit=false`); the parser now captures
+  positionless errors (`MSBUILD : error MSB1009`, `Foo.csproj : error
+  NU1301`) so `ok:false` never comes back with an empty structured list, and
+  the summary line falls back to the parsed counts. `lib/build-parse.test.mjs`
+  wired into CI.
+- **Shared GBK-aware output decoder** — `lib/decode.mjs` (UTF-8 first, GBK
+  fallback) now backs both the build runner and the ui-drive driver, so
+  PowerShell/MSBuild errors on CN-locale Windows are no longer mojibake; the
+  corpus no longer stores undecodable garbage. `ui_status` reports an explicit
+  `unconfigured` state.
+
+### Changed
+
+- **`verify_report kind=gate` rejects vacuous passes** — exit 0 alone no
+  longer adjudicates `pass` when the output shows zero tests executed
+  (a filter matching nothing exits 0); that run now fails with
+  "exit 0 but no tests executed". 3 new unit tests.
+- **`memory_index` multi-root safety + egress disclosure** — chunk keys carry
+  absolute paths and eviction judges disk existence only (indexing project B
+  no longer wipes project A); the fail-closed sensitive filter now also runs
+  on the index path (offending files are skipped before embedding, counted as
+  `sensitiveSkipped`); `memory_status`, the MCP tool descriptions and the
+  README disclose that embedding uses the remote `api.minimax.chat` endpoint
+  when a MiniMax key is configured (unset the key for local-only bigram mode).
+
 - **Failure corpus v0** — `lib/failure-corpus.mjs` (framework-free record /
   query / stats, fixed 7-class taxonomy, 20 MB rotation) + MCP tools
   `failure_record` / `failure_query` / `failure_stats` + idempotent seed

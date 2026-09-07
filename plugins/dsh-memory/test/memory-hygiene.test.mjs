@@ -61,6 +61,28 @@ unlinkSync(f1)
 const r4 = await mem.indexWorkspace(ws)
 ok(r4.deleted >= 1 && mem.status().chunks === 0, 'deleted file chunks evicted')
 
+// ---- index path is fail-closed too: sensitive files are skipped, not embedded
+const ws2 = mkdtempSync(join(tmpdir(), 'dshws2-'))
+const secretFile = join(ws2, 'leak.md')
+writeFileSync(secretFile, '普通内容 ' + 'ghp_' + 'C'.repeat(24) + ' 结尾')
+const r5 = await mem.indexWorkspace(ws2)
+ok(r5.sensitiveSkipped >= 1, 'sensitive file reported as skipped')
+ok(mem.status().chunks === 0, 'sensitive file produced no chunks (nothing embedded)')
+
+// ---- cross-root safety: indexing root B must not evict root A
+const wsA = mkdtempSync(join(tmpdir(), 'dshwsA-'))
+const wsB = mkdtempSync(join(tmpdir(), 'dshwsB-'))
+writeFileSync(join(wsA, 'alpha.md'), '这是 A 仓库的内容 alpha 关键字')
+writeFileSync(join(wsB, 'beta.md'), '这是 B 仓库的内容 beta 关键字')
+await mem.indexWorkspace(wsA)
+const afterA = mem.status().chunks
+ok(afterA >= 1, 'root A indexed')
+await mem.indexWorkspace(wsB)
+const afterB = mem.status().chunks
+ok(afterB >= afterA + 1, 'indexing root B kept root A chunks (no cross-root wipe)')
+const hitA = await mem.search('alpha 关键字')
+ok(hitA.some((h) => String(h.meta.file).includes('alpha.md')), 'root A still searchable after indexing root B')
+
 // ---- remember() blocks sensitive values (fail-closed)
 throws(() => mem.remember('k', 'token ghp_' + 'B'.repeat(24)), 'remember blocks sensitive value')
 mem.remember('k2', 'safe value')

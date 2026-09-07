@@ -6,6 +6,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
+import { decodeBuffer } from '../../../lib/decode.mjs'
 
 const VS_MSBUILD = 'C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe'
 const VSWITCH = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe'
@@ -14,6 +15,7 @@ export function makeBuilder(cfg) {
   const c = {
     clientRoot: process.env.DSH_BUILD_CLIENT_ROOT || '',
     msbuild: VS_MSBUILD,
+    engine: process.env.DSH_BUILD_ENGINE || 'msbuild',
     logsDir: join(homedir(), '.dsh-agent-toolchain', 'build-logs'),
     incrementalTimeoutMs: 8 * 60 * 1000,
     rebuildTimeoutMs: 15 * 60 * 1000,
@@ -21,20 +23,7 @@ export function makeBuilder(cfg) {
   }
 
   // ------------------------------------------------------------ 编码
-
-  /** MSBuild 输出可能是 UTF-8 或 GBK（随系统代码页），双解码。 */
-  function decodeBuffer(buf) {
-    const utf8 = new TextDecoder('utf-8', { fatal: true })
-    try {
-      return { text: utf8.decode(buf), enc: 'utf-8' }
-    } catch {
-      try {
-        return { text: new TextDecoder('gbk').decode(buf), enc: 'gbk' }
-      } catch {
-        return { text: buf.toString('utf8'), enc: 'fallback' }
-      }
-    }
-  }
+  // 双解码收敛到 lib/decode.mjs（builder / driver / perf 共用）
 
   // ------------------------------------------------------------ MSBuild 定位
 
@@ -68,6 +57,12 @@ export function makeBuilder(cfg) {
   // ------------------------------------------------------------ 错误解析
 
   const ERR_LINE = /^(.*?)\((\d+),(\d+)\):\s*(error|warning)\s+([A-Z]{1,5}\d+):\s*(.*)$/
+  // Top-level MSBuild errors carry no (line,col): "MSBUILD : error MSB1009: …"
+  // or "MSBUILD : 错误 MSB1009: …". Dropping them produced ok:false with
+  // errors:[] — the structured list disagreed with the summary line.
+  const ERR_TOP = /^MSBUILD\s*:\s*(?:error|错误)\s+([A-Z]{1,5}\d+):\s*(.*)$/
+  // dotnet/NuGet form without position: "Foo.csproj : error NU1301: …".
+  const ERR_PLAIN = /^(.*?)\s*:\s*(?:error|错误)\s+([A-Z]{1,5}\d+):\s*(.*)$/
 
   /** 环境性错误（文件锁/目标文件占用等），不是代码错误。 */
   function isEnvError(e) {
@@ -80,10 +75,21 @@ export function makeBuilder(cfg) {
     const warnings = []
     for (const line of text.split(/\r?\n/)) {
       const m = line.match(ERR_LINE)
-      if (!m) continue
-      const entry = { file: m[1].trim(), line: Number(m[2]), col: Number(m[3]), code: m[5], message: m[6].trim() }
-      if (m[4] === 'error') errors.push(entry)
-      else warnings.push(entry)
+      if (m) {
+        const entry = { file: m[1].trim(), line: Number(m[2]), col: Number(m[3]), code: m[5], message: m[6].trim() }
+        if (m[4] === 'error') errors.push(entry)
+        else warnings.push(entry)
+        continue
+      }
+      const t = line.match(ERR_TOP)
+      if (t) {
+        errors.push({ file: '(top-level)', line: 0, col: 0, code: t[1], message: t[2].trim() })
+        continue
+      }
+      const p = line.match(ERR_PLAIN)
+      if (p) {
+        errors.push({ file: p[1].trim() || '(top-level)', line: 0, col: 0, code: p[2], message: p[3].trim() })
+      }
     }
     return { errors, warnings }
   }
@@ -97,11 +103,24 @@ export function makeBuilder(cfg) {
   async function build(opts = {}) {
     const target = opts.target === 'Rebuild' ? 'Rebuild' : 'Build'
     const configuration = opts.configuration || 'Debug'
-    const platform = opts.platform || 'x86'
+    const engine = opts.engine || c.engine || 'msbuild'
+    const isDotnet = engine === 'dotnet'
+    // msbuild engine keeps the legacy default (client solutions are x86);
+    // dotnet engine builds SDK-style projects with Any CPU and no platform arg.
+    const platform = opts.platform || (isDotnet ? 'Any CPU' : 'x86')
     const project = opts.project || ''
-    const msbuild = findMsbuild()
-    if (!msbuild) return { ok: false, error: '未找到 MSBuild（可用 DSH_BUILD_MSBUILD 指定）' }
     if (!existsSync(c.clientRoot)) return { ok: false, error: 'Client 根目录不存在：' + c.clientRoot }
+
+    const msbuild = isDotnet ? 'dotnet' : findMsbuild()
+    if (!msbuild) return { ok: false, error: '未找到 MSBuild（可用 DSH_BUILD_MSBUILD 指定）' }
+    if (isDotnet) {
+      // Verify the dotnet executable is resolvable via PATH.
+      try {
+        execFileSync('dotnet', ['--version'], { encoding: 'utf8', windowsHide: true })
+      } catch {
+        return { ok: false, error: 'dotnet 引擎需要 PATH 上有 dotnet SDK（或设置 DOTNET_ROOT）' }
+      }
+    }
 
     // 前置检查：客户端运行会锁 Product\Bin 的 dll（MSB3021/3027 文件锁风暴）
     const client = clientProcess()
@@ -118,8 +137,15 @@ export function makeBuilder(cfg) {
       await new Promise((r) => setTimeout(r, 1500))
     }
 
-    const solutionOrProject = project || 'WholeSolution.sln'
-    const args = [solutionOrProject, '/t:' + target, '/p:Configuration=' + configuration, '/p:Platform=' + platform, '/m', '/v:m', '/nologo', '/nodeReuse:false', '/clp:Summary']
+    const solutionOrProject = project || (isDotnet ? '' : 'WholeSolution.sln')
+    // dotnet engine: dotnet build <project> -c <cfg> --nologo -v minimal
+    // (restores by default, Any CPU, no /p:Platform). msbuild engine keeps
+    // the legacy switch set; note /p:Platform values with spaces (e.g.
+    // "Any CPU") break the MSBuild CLI tokenizer, which is another reason
+    // stock repos should use the dotnet engine.
+    const args = isDotnet
+      ? ['build', ...(project ? [project] : []), '--configuration', configuration, '--nologo', '--verbosity', 'minimal', ...(target === 'Rebuild' ? ['--no-incremental'] : []), '/nodeReuse:false', '/clp:Summary', '-p:NuGetAudit=false']
+      : [solutionOrProject, '/t:' + target, '/p:Configuration=' + configuration, '/p:Platform=' + platform, '/m', '/v:m', '/nologo', '/nodeReuse:false', '/clp:Summary']
     const timeoutMs = target === 'Rebuild' ? c.rebuildTimeoutMs : c.incrementalTimeoutMs
     const startedAt = Date.now()
     // Evidence-pack spine: an optional runId names the log and the per-run record.
@@ -176,8 +202,9 @@ export function makeBuilder(cfg) {
       exitCode: run.code,
       timedOut: !!run.timedOut,
       spawnError: run.spawnError || null,
+      engine,
       target,
-      project: project || 'WholeSolution.sln',
+      project: project || (isDotnet ? '(default)' : 'WholeSolution.sln'),
       configuration,
       platform,
       durationMs,
@@ -193,7 +220,7 @@ export function makeBuilder(cfg) {
       clientWasKilled: !!(client.running && opts.killClient),
       logPath,
       encoding: enc,
-      summaryLine: extractSummary(text),
+      summaryLine: extractSummary(text) ?? `${errors.length} error(s), ${warnings.length} warning(s) (parsed)`,
     }
     persistLast(result)
     if (runId) {
@@ -211,8 +238,6 @@ export function makeBuilder(cfg) {
     if (zhErr || zhWarn) return (zhErr ? zhErr[1] : '0') + ' error(s), ' + (zhWarn ? zhWarn[1] : '0') + ' warning(s)'
     return null
   }
-
-  // ------------------------------------------------------------ 运行记录
 
   function lastPath() { return join(c.logsDir, 'last.json') }
 
