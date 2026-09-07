@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
+import { decodeBuffer } from '../../../lib/decode.mjs'
 
 const PS = process.env.DSH_UI_POWERSHELL || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
@@ -35,28 +36,30 @@ export function makeDriver(cfg) {
         resolve({ code: -1, stdout: '', stderr: 'spawn 失败: ' + e, timedOut: false, spawnError: String(e) })
         return
       }
-      let out = ''
-      let err = ''
+      const outChunks = []
+      const errChunks = []
       let settled = false
       const timer = setTimeout(() => {
         if (settled) return
         settled = true
         try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }) } catch { /* ignore */ }
-        resolve({ code: null, stdout: out, stderr: err + '\n[TIMEOUT ' + timeoutMs + 'ms，已强杀进程树]', timedOut: true })
+        resolve({ code: null, stdout: decodeBuffer(Buffer.concat(outChunks)).text, stderr: decodeBuffer(Buffer.concat(errChunks)).text + '\n[TIMEOUT ' + timeoutMs + 'ms，已强杀进程树]', timedOut: true })
       }, timeoutMs)
-      child.stdout.on('data', (d) => { out += d.toString('utf8') })
-      child.stderr.on('data', (d) => { err += d.toString('utf8') })
+      // PowerShell 输出在中文系统上是 GBK：按字节累积，最后经 UTF-8→GBK
+      // 双解码（lib/decode.mjs），不再逐片 toString('utf8')（产生乱码）。
+      child.stdout.on('data', (d) => { outChunks.push(Buffer.from(d)) })
+      child.stderr.on('data', (d) => { errChunks.push(Buffer.from(d)) })
       child.on('error', (e) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        resolve({ code: -1, stdout: '', stderr: err + '\n' + e, timedOut: false, spawnError: String(e) })
+        resolve({ code: -1, stdout: '', stderr: decodeBuffer(Buffer.concat(errChunks)).text + '\n' + e, timedOut: false, spawnError: String(e) })
       })
       child.on('exit', (code) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        resolve({ code, stdout: out, stderr: err, timedOut: false })
+        resolve({ code, stdout: decodeBuffer(Buffer.concat(outChunks)).text, stderr: decodeBuffer(Buffer.concat(errChunks)).text, timedOut: false })
       })
     })
   }
@@ -86,6 +89,10 @@ export function makeDriver(cfg) {
 
   /** ui_status：进程 + 主窗口状态（ps1 status 动作）。 */
   async function status() {
+    if (!c.procName) {
+      // 未配置目标进程：明确区分「未配置」与「未运行」，避免三个状态塌缩成一个 running:false。
+      return { running: false, unconfigured: true, error: '未配置目标进程（设置 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE）' }
+    }
     const r = await runPs1(driveScript(), ['-Action', 'status'], 30000)
     const text = r.stdout
     if (r.timedOut) return { running: false, error: 'status 超时' }

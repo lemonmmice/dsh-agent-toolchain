@@ -84,13 +84,15 @@ function autoRecord(failureClass, tool, message, extra = {}) {
 
 server.tool(
   'build_run',
-  'Run an MSBuild build (incremental Build or full Rebuild) and return structured errors. ' +
-    'Use after changing code to verify it compiles. Requires DSH_BUILD_CLIENT_ROOT (solution dir) or the clientRoot argument.',
+  'Run a build (incremental Build or full Rebuild) and return structured errors. ' +
+    'Use after changing code to verify it compiles. Requires DSH_BUILD_CLIENT_ROOT (solution dir) or the clientRoot argument. ' +
+    'engine=dotnet builds SDK-style projects with `dotnet build` (restores by default, Any CPU) — prefer it for modern .NET repos; engine=msbuild (default) uses MSBuild.exe with x86 defaults for the legacy client solution.',
   {
     target: z.enum(['Build', 'Rebuild']).default('Build').describe('Build (incremental, fast) or Rebuild (full)'),
-    project: z.string().optional().describe('Optional csproj path relative to the solution root; empty = WholeSolution.sln'),
+    project: z.string().optional().describe('Optional csproj/sln path relative to the solution root; empty = WholeSolution.sln (msbuild) or the cwd default (dotnet)'),
     configuration: z.string().default('Debug'),
-    platform: z.string().default('x86'),
+    platform: z.string().optional().describe('msbuild engine: default x86; dotnet engine: ignored (Any CPU)'),
+    engine: z.enum(['msbuild', 'dotnet']).optional().describe('Build engine; env DSH_BUILD_ENGINE sets the default'),
     clientRoot: z.string().optional().describe('Solution root dir (env DSH_BUILD_CLIENT_ROOT)'),
     killClient: z.boolean().optional().describe('Kill the running client process before building (breaks the user UI — confirm first)'),
     runId: z.string().optional().describe('Optional run id: the build log and the per-run record (run-<runId>.json) are named with it — the evidence-pack spine'),
@@ -99,6 +101,7 @@ server.tool(
     const b = makeBuilder({
       clientRoot: args.clientRoot || process.env.DSH_BUILD_CLIENT_ROOT || '',
       msbuild: process.env.DSH_BUILD_MSBUILD || '',
+      engine: args.engine || process.env.DSH_BUILD_ENGINE || 'msbuild',
       logsDir: process.env.DSH_BUILD_LOGS_DIR || '',
     })
     const r = await b.build({
@@ -109,9 +112,9 @@ server.tool(
       killClient: args.killClient,
       runId: args.runId,
     })
-    if (r.codeErrorCount > 0) {
-      const first = (r.errors && r.errors[0]) || {}
-      autoRecord('verification-failure', 'build_run', `build failed with ${r.codeErrorCount} code error(s); first: ${first.code ?? ''} ${String(first.message ?? '').slice(0, 160)}`, { context: { target: r.target ?? 'Build', code: first.code ?? '', ...(args.runId ? { runId: args.runId } : {}) } })
+    if (r.errorCount > 0) {
+      const first = (r.errors && r.errors[0]) || (r.envErrors && r.envErrors[0]) || {}
+      autoRecord('verification-failure', 'build_run', `build failed with ${r.errorCount} error(s); first: ${first.code ?? ''} ${String(first.message ?? '').slice(0, 160)}`, { context: { target: r.target ?? 'Build', engine: r.engine ?? '', code: first.code ?? '', ...(args.runId ? { runId: args.runId } : {}) } })
     }
     return jtext(r)
   }
@@ -196,14 +199,17 @@ server.tool(
 
 server.tool(
   'memory_index',
-  'Index a local directory into the long-term memory vector store (incremental: skips unchanged files by mtime; skips bin/obj/node_modules).',
+  'Index a local directory into the long-term memory vector store (incremental: skips unchanged files by mtime; skips bin/obj/node_modules). ' +
+    'PRIVACY: when a MiniMax API key is configured, file chunks are embedded via the REMOTE api.minimax.chat endpoint — indexed content leaves this machine. ' +
+    'Fail-closed: files containing tokens/secrets are skipped before embedding and counted as sensitiveSkipped. Multiple roots coexist; indexing one directory never deletes another directory\'s chunks.',
   { path: z.string().describe('Absolute directory to index') },
   async (args) => jtext(await mem().indexWorkspace(args.path))
 )
 
 server.tool(
   'memory_search',
-  'Semantic search over indexed documents/code. Returns relevant snippets with source files.',
+  'Semantic search over indexed documents/code. Returns relevant snippets with source files. ' +
+    'PRIVACY: queries are embedded via the configured backend — remote (api.minimax.chat) when a MiniMax API key is set, local bigram otherwise.',
   { query: z.string(), k: z.number().default(5).describe('Results count, max 10') },
   async (args) => {
     const k = Math.min(Math.max(Math.round(args.k || 5), 1), 10)
