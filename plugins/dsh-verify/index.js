@@ -45,7 +45,7 @@ const tools = () => [
     parameters: {
       runId: { type: 'string', required: true, description: '本次任务唯一 id（如 task-2-toolchain-1）' },
       task: { type: 'string', required: true, description: '一行任务名' },
-      claims: { type: 'array', required: true, description: '完成声明列表：每条 {statement, kind?(build/api/file/manual，默认 manual), runId?, path?, filter?, expect?, status?, evidence?}' },
+      claims: { type: 'array', required: true, description: '完成声明列表：每条 {statement, kind?(build/api/file/git/gate/manual，默认 manual), runId?, path?, filter?, expect?, repo?, check?, ref?, gitConfig?, cmd?, cwd?, status?, evidence?}' },
       context: { type: 'object', description: '运行上下文（repo/model/mode）' },
     },
     output: {

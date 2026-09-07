@@ -11,10 +11,16 @@ from that evidence — it does not record the agent's self-rating.
 | `build` | reads `run-<runId>.json` (or `last.json`) in the build-logs dir | record `ok:true` | record exists, `ok:false` | no record for that run |
 | `api` | queries the shared capture store with `filter` (+ `runId`) | ≥ `expect.min` (default 1) matches, all 2xx when `all2xx:true` | store has records but none meet the criteria | store is empty (capture was not active) |
 | `file` | checks path existence | exists | missing | no path given |
+| `git` | machine-checks git facts against the **authoritative source** (`clean` via status --porcelain; `pushed` via `git ls-remote` — never the local tracking refs, which URL-token pushes leave stale) | clean tree / local == remote sha | dirty tree / unpushed commits | git or remote unreachable |
+| `gate` | runs a verification command | exit 0 | non-zero exit | command could not run |
 | `manual` | agent-supplied status | supplied `pass` | supplied `fail` | anything else |
 
 `manual` is the explicit opt-out for what the system cannot check (visual
-judgment, human handoff). Everything else is machine-adjudicated.
+judgment, human handoff). Everything else is machine-adjudicated — and every
+time a machine-checkable fact is filed as `manual`, that's the self-rating
+backdoor re-opening. Rule: **if a machine kind exists for it, never mark it
+manual.** New kinds are added whenever a manual claim turns out to have been
+machine-checkable (git and gate were born exactly this way).
 
 ## runId spine
 

@@ -50,6 +50,11 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   own, guarded dynamic import) and its guidance makes "summary = claims +
   verdict" a mandatory workflow. The trigger surface is the summary action
   itself, not a remembered habit.
+- **`kind=git` / `kind=gate` adjudicators** — the manual backdoor shrinks:
+  git facts are checked against the authoritative source (`ls-remote`, never
+  the local tracking refs that URL-token pushes leave stale — the phantom
+  "ahead 5" incident); verification commands are checked by exit code. Born
+  from the first external-adjudication incident, recorded in the corpus.
 
 ## [0.1.0] — 2026-09-07
 
