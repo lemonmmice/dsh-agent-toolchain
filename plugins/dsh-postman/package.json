@@ -1,0 +1,30 @@
+{
+  "name": "@dsh-agent-toolchain/dsh-postman",
+  "description": "Postman-style HTTP client for the dsh web GUI: a sidebar entry plus a panel to compose method / url / headers / body and send. The request runs on the host (server-side, so no browser CORS), and status / headers / body / timing come back with pretty-printed JSON and a request history. Also exposes an http_request agent tool. No dsh source changes.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.4",
+    "@grpc/proto-loader": "^0.8.1"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./lib/*": "./lib/*",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "url": "https://github.com/lemonmmice/dsh-agent-toolchain",
+    "type": "git"
+  }
+}

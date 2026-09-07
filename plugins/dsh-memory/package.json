@@ -1,0 +1,8 @@
+{
+  "name": "dsh-memory",
+  "description": "DSH 长期记忆增强插件：文档索引 + 语义检索 + 跨会话 KV 记忆（agent 工具）",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT"
+}

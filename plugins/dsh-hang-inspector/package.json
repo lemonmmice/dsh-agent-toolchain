@@ -1,0 +1,23 @@
+{
+  "name": "@dsh-agent-toolchain/dsh-hang-inspector",
+  "description": "Hang-evidence viewer for the DSH Web GUI: browse the ui-drive hang-loop evidence packs (frozen screenshot, summary timeline, process info, net-trace tail, probe and procdump logs, dump file info) inside the harness.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./lib/*": "./lib/*",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

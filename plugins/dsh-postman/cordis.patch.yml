@@ -1,0 +1,9 @@
+# dsh-postman bundle patch: inserts the dual-face plugin row into the web
+# profile roster. The node half (exports ".") runs in the host process
+# (server-side HTTP sender, JSONL history, /api/dsh-postman route family,
+# http_request agent tool, system-prompt announcement); the `dsh.client`
+# declaration in package.json makes the browser half (exports "./client",
+# served at /plugins/<id>/client.js) load in the web GUI.
+- insert:
+    - id: postman
+      name: '@dsh-agent-toolchain/dsh-postman'
