@@ -140,9 +140,7 @@ export function makeBuilder(cfg) {
     const solutionOrProject = project || (isDotnet ? '' : 'WholeSolution.sln')
     // dotnet engine: dotnet build <project> -c <cfg> --nologo -v minimal
     // (restores by default, Any CPU, no /p:Platform). msbuild engine keeps
-    // the legacy switch set; note /p:Platform values with spaces (e.g.
-    // "Any CPU") break the MSBuild CLI tokenizer, which is another reason
-    // stock repos should use the dotnet engine.
+    // the legacy switch set.
     const args = isDotnet
       ? ['build', ...(project ? [project] : []), '--configuration', configuration, '--nologo', '--verbosity', 'minimal', ...(target === 'Rebuild' ? ['--no-incremental'] : []), '/nodeReuse:false', '/clp:Summary', '-p:NuGetAudit=false']
       : [solutionOrProject, '/t:' + target, '/p:Configuration=' + configuration, '/p:Platform=' + platform, '/m', '/v:m', '/nologo', '/nodeReuse:false', '/clp:Summary']

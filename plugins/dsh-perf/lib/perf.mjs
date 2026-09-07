@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 
-const PS = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+const PS = process.env.DSH_PERF_POWERSHELL || process.env.DSH_UI_POWERSHELL || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const TOOLCHAIN_ROOT = join(homedir(), '.dsh-agent-toolchain')
 const PROCDUMP = process.env.DSH_PERF_PROCDUMP || join(TOOLCHAIN_ROOT, 'tools', 'procdump.exe')
 const DUMPSTACK = process.env.DSH_PERF_DUMPSTACK || join(TOOLCHAIN_ROOT, 'tools', 'dumpstack', 'publish-x86', 'DumpStack.exe')
