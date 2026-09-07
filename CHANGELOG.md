@@ -23,6 +23,22 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   blocks are rejected before hitting disk). See
   [plugins/dsh-memory/README.md](./plugins/dsh-memory/README.md).
 - `plugins/dsh-memory/test/memory-hygiene.test.mjs` unit test wired into CI.
+- **Self-recording failure corpus** — `build_run` code errors, `ui_flow`
+  assertion failures, `ui_drive` step failures, and `http_request` connection
+  failures now append records automatically (tag `auto`). The corpus is
+  system-observed; manual `failure_record` is reserved for what the system
+  can't see (e.g. human handoffs).
+- **API-capture moat exposed to MCP** —
+  `plugins/dsh-api-visualizer/lib/capture-store.mjs` (framework-free
+  reader/writer of the panel's day-shard store) + MCP tools `capture_query` /
+  `capture_append`: caller attribution (ViewModel→API→call-chain) is now
+  available to any MCP client.
+- **Verification report v0** — `lib/verify/report.mjs` + MCP tool
+  `verify_report`: one `runId` ties claims to evidence with a verdict
+  (pass / incomplete / fail); evidence-contradicted claims auto-record as
+  `agent-misjudge`. First physical carrier of "evidence over claims".
+- `plugins/dsh-api-visualizer/test/capture-store.test.mjs` and
+  `lib/verify/report.test.mjs` unit tests wired into CI.
 
 ## [0.1.0] — 2026-09-07
 

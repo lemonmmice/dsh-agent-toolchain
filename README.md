@@ -42,7 +42,7 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
 - **Honest measurement**: perf metrics come from real windows-message round trips; cost/price tables mark "unknown" instead of inventing numbers.
 - **Loopback-only control APIs**: all Web routes bind to 127.0.0.1; no external callbacks.
 - **Zero-drift config**: every environment-specific value (client exe name/window title, evidence dirs, tool paths, source roots) is an environment variable with a sane default — no hard-coded machines, no embedded credentials.
-- **The failure corpus is the moat**: every human handoff / verification failure appends a local JSONL record (fixed 7-class taxonomy) — the data flywheel that decides what gets built next. See [docs/failure-corpus.md](./docs/failure-corpus.md).
+- **The failure corpus is the moat**: failure paths record themselves — build errors, ui_flow assertion failures, ui_drive/http failures, and verify_report claim-vs-evidence mismatches all append automatically (fixed 7-class taxonomy). Manual recording is only for what the system can't see, like human handoffs. See [docs/failure-corpus.md](./docs/failure-corpus.md).
 
 ## Requirements
 
@@ -67,16 +67,17 @@ Then restart the harness and set the environment variables the plugin needs (see
 plugins/
   dsh-build/                  # MSBuild as an agent tool
   dsh-ui-drive/               # UIA client driver + vision ground-truth
-  dsh-api-visualizer/         # traffic capture panel + proxy engine
+  dsh-api-visualizer/         # traffic capture panel + proxy engine + shared capture store
   dsh-postman/                # host-side HTTP client
   dsh-perf/                   # stutter probe + dump analysis
   dsh-hang-inspector/         # hang loop + dump-stack analysis
   dsh-memory/                 # vector/KV long-term memory
   dsh-win-terminal-inspector/ # win32 ConPTY inspection
 mcp/
-  server.mjs                  # MCP stdio server: build/ui-drive/http/memory tools
+  server.mjs                  # MCP stdio server: build/ui-drive/http/memory/capture/failure/verify tools
 lib/
   failure-corpus.mjs          # local failure corpus: record/query/stats
+  verify/report.mjs           # claims-vs-evidence verdict; auto-feeds agent-misjudge
 scripts/
   check.mjs                   # CI sanity gate (syntax + private-ref scan)
   seed-failure-corpus.mjs     # idempotent seed of example failure records

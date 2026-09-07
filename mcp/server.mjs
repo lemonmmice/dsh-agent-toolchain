@@ -22,6 +22,8 @@ import { makeDriver } from '../plugins/dsh-ui-drive/lib/driver.mjs'
 import { sendRequest } from '../plugins/dsh-postman/lib/http.mjs'
 import { DshMemory } from '../plugins/dsh-memory/lib/memory.mjs'
 import { makeFailureCorpus, FAILURE_CLASSES } from '../lib/failure-corpus.mjs'
+import { queryPage, appendRecords } from '../plugins/dsh-api-visualizer/lib/capture-store.mjs'
+import { makeVerificationReport } from '../lib/verify/report.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -61,6 +63,23 @@ function fc() {
   return corpus
 }
 
+/**
+ * System-recorded failure: the tool already knows the failure happened, so it
+ * appends the record itself — the agent does not have to volunteer (and it
+ * usually won't). The corpus must never break the tool it observes.
+ */
+function autoRecord(failureClass, tool, message, extra = {}) {
+  try {
+    fc().record({
+      task: tool,
+      failureClass,
+      description: String(message).slice(0, 300),
+      tags: ['auto', tool],
+      context: { runtime: 'mcp', tool, ...(extra.context ?? {}) },
+    })
+  } catch { /* ignore */ }
+}
+
 // ---------------------------------------------------------------- build
 
 server.tool(
@@ -88,6 +107,10 @@ server.tool(
       platform: args.platform,
       killClient: args.killClient,
     })
+    if (r.codeErrorCount > 0) {
+      const first = (r.errors && r.errors[0]) || {}
+      autoRecord('verification-failure', 'build_run', `build failed with ${r.codeErrorCount} code error(s); first: ${first.code ?? ''} ${String(first.message ?? '').slice(0, 160)}`, { context: { target: r.target ?? 'Build', code: first.code ?? '' } })
+    }
     return jtext(r)
   }
 )
@@ -136,6 +159,7 @@ server.tool(
       waitMs: args.waitMs,
       allowSideEffects: args.allowSideEffects,
     })
+    if (!r.ok) autoRecord('tool-error', 'ui_drive', `ui_drive ${args.action} failed: ${String(r.error ?? 'unknown error').slice(0, 200)}`)
     return jtext(r)
   }
 )
@@ -161,6 +185,7 @@ server.tool(
       body: args.body,
       timeoutMs: args.timeoutMs,
     })
+    if (r.ok === false) autoRecord('tool-error', 'http_request', `request could not be made: ${String(r.error ?? '').slice(0, 200)}`, { context: { url: String(args.url).slice(0, 120) } })
     return jtext(r)
   }
 )
@@ -263,6 +288,72 @@ server.tool(
   'Failure corpus stats: total, last 7/30 days, per-class counts, corpus dir.',
   {},
   async () => jtext(fc().stats())
+)
+
+// ---------------------------------------------------------------- api capture
+
+server.tool(
+  'capture_query',
+  'Query the local API-capture store (the same day-shard JSONL the dsh-api-visualizer capture panel writes): ' +
+    'method/url/status/duration plus caller attribution (which ViewModel/API fired each request). ' +
+    'Use to analyze captured client traffic: slow calls, errors, one host, or requests fired by one ViewModel.',
+  {
+    limit: z.number().optional().describe('Max records (default 50, max 500)'),
+    offset: z.number().optional(),
+    q: z.string().optional().describe('Substring match against url/note'),
+    method: z.string().optional().describe('HTTP method filter (GET/POST/...)'),
+    source: z.string().optional().describe('Capture source: realtime / proxy / agent / etw'),
+    status: z.string().optional().describe('Exact code or 2xx/3xx/4xx/5xx'),
+    host: z.string().optional().describe('Comma-separated hostnames'),
+    minDurationMs: z.number().optional().describe('Only records at least this slow (ms)'),
+    minBytes: z.number().optional(),
+    maxBytes: z.number().optional(),
+    fromTs: z.number().optional().describe('Earliest record ts (epoch ms)'),
+    toTs: z.number().optional(),
+    sessionId: z.string().optional(),
+    traceId: z.string().optional(),
+    errors: z.boolean().optional().describe('Only HTTP 4xx/5xx records'),
+    noNoise: z.boolean().optional().describe('Hide static-resource/heartbeat noise'),
+    bodyQ: z.string().optional().describe('Substring inside request/response bodies/headers'),
+    caller: z.string().optional().describe('Caller attribution substring (viewModel / apiMethod / stack frame)'),
+    includeBody: z.boolean().optional().describe('Include bodies (off by default)'),
+  },
+  async (args) => jtext(queryPage(args))
+)
+
+server.tool(
+  'capture_append',
+  'Append captured API-call records into the local API-capture store (the same store the capture panel reads; appears live in the GUI).',
+  {
+    records: z.array(z.object({ method: z.string(), url: z.string() }).passthrough()).describe('Records: method+url required; status/durationMs/reqBody/resBody/note/caller optional. Bodies ≤ 2MB.'),
+  },
+  async (args) => jtext(appendRecords(args.records))
+)
+
+// ---------------------------------------------------------------- verification report
+
+server.tool(
+  'verify_report',
+  'Assemble the verification report for one runId: claims vs evidence, one verdict (pass / incomplete / fail). ' +
+    'A claim whose evidence contradicts it (status=fail) is auto-recorded in the failure corpus as agent-misjudge. ' +
+    'This is the physical carrier of "evidence over claims" — call it before declaring a task done.',
+  {
+    runId: z.string().describe('Unique run id (e.g. task-2-toolchain-1)'),
+    task: z.string().describe('One-line task name'),
+    claims: z.array(z.object({
+      statement: z.string().describe('The claim being made'),
+      status: z.enum(['pass', 'fail', 'unverified']).describe('pass / fail / unverified'),
+      evidence: z.string().optional().describe('Which evidence backs this claim (tool output id, screenshot, log path)'),
+    })).describe('List of claims, each with a status'),
+    context: z.record(z.string(), z.string()).optional().describe('Runtime context (repo / model / mode)'),
+  },
+  async (args) => {
+    try {
+      return jtext(makeVerificationReport(args))
+    } catch (e) {
+      return text('verify_report rejected: ' + e.message)
+    }
+  }
 )
 
 // ---------------------------------------------------------------- boot

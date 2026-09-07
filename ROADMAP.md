@@ -23,6 +23,9 @@
 - Release discipline — CHANGELOG, v0.1.0 tag + GitHub Release, compatibility matrix
 - Failure corpus v0 — lib + MCP record/query/stats, fixed taxonomy, seed script; data collection started
 - dsh-memory hygiene — mtime-incremental indexing, stale-chunk eviction, fail-closed sensitive-string filter
+- Self-recording failure corpus — build/ui/http failure paths auto-record; manual recording reserved for human-handoff
+- Capture moat exposed — MCP capture_query/capture_append (caller attribution) for any MCP client
+- Verification report v0 — lib/verify + verify_report MCP tool; verdict auto-feeds the corpus
 
 ## Now — next 1–2 weeks
 
@@ -33,9 +36,10 @@
 
 ## Year 1 — the verifiable closed loop
 
-4. **Unified verification run** — `runId` ties together diff, build log, UI
-   screenshots, API records, perf data → `verification-report.json/html`.
-   Shipped as `lib/verify` + MCP tool first, DSH shell after.
+4. **Unified verification run (full pipeline)** — the v0 report container
+   (lib/verify + verify_report) graduates into automatic assembly: `runId`
+   ties together diff, build log, UI screenshots, API records, perf data →
+   `verification-report.json/html`. DSH shell after.
 5. **Scenarios as code** — YAML scenario: launch → navigate → act → assert
    UI/API/perf → cleanup. Record / replay / parametrize; failure-site evidence
    kept. Builds on ui_flow's existing steps.json format.

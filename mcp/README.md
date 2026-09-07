@@ -17,6 +17,8 @@ every agent, not just DeepSeek Harness.
 | `http_request` | dsh-postman/lib/http.mjs | Host-side HTTP (no CORS), non-2xx is a normal result |
 | `memory_index` / `memory_search` / `memory_save` / `memory_recall` / `memory_status` | dsh-memory/lib/memory.mjs | Vector search + cross-session KV |
 | `failure_record` / `failure_query` / `failure_stats` | lib/failure-corpus.mjs | Local-only JSONL failure corpus: record handoffs/failures, query, stats |
+| `capture_query` / `capture_append` | dsh-api-visualizer/lib/capture-store.mjs | Query/append the API-capture store — includes caller attribution (ViewModel→API→call-chain) |
+| `verify_report` | lib/verify/report.mjs | Claims vs evidence → one verdict; failed claims auto-recorded as agent-misjudge |
 
 ## Configure (Claude Code)
 
@@ -39,6 +41,8 @@ Same `DSH_*` variables as the plugins:
 | `DSH_MEMORY_DIR` | memory tools | data dir (default `~/.dsh/memory`) |
 | `MINIMAX_CN_API_KEY` | memory_search | MiniMax embeddings (falls back to local bigram search) |
 | `DSH_FAILURE_CORPUS_DIR` | failure tools | corpus dir (default `~/.dsh-agent-toolchain/failure-corpus`) |
+| `DSH_API_CAPTURE_STORE` | capture tools | capture store dir (default `~/.dsh/api-capture`, shared with the panel) |
+| `DSH_VERIFY_DIR` | verify_report | report dir (default `~/.dsh-agent-toolchain/verify-reports`) |
 
 ## Run standalone
 

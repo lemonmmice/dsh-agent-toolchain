@@ -38,6 +38,27 @@ function bld() {
   return builder
 }
 
+/**
+ * System-recorded failure: build failures append to the failure corpus
+ * automatically (the system observes, not the agent). The dynamic import is
+ * guarded so a standalone-copied plugin degrades to a no-op instead of
+ * breaking; inside the monorepo it records for real.
+ */
+let corpusPromise
+function autoRecord(failureClass, task, description, extra = {}) {
+  if (corpusPromise === undefined) {
+    corpusPromise = import('../../lib/failure-corpus.mjs')
+      .then((m) => m.makeFailureCorpus({}))
+      .catch(() => null)
+  }
+  corpusPromise.then((c) => {
+    if (!c) return
+    try {
+      c.record({ task, failureClass, description, tags: ['auto', task], context: { runtime: 'dsh', ...(extra.context ?? {}) } })
+    } catch { /* the corpus must never break the tool */ }
+  })
+}
+
 const OBJECT = { type: 'object', additionalProperties: true }
 
 const tools = () => [
@@ -54,7 +75,12 @@ const tools = () => [
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderBuild(v) }] },
     timeoutMs: 16 * 60 * 1000,
     async execute(args) {
-      return await bld().build(args)
+      const r = await bld().build(args)
+      if (r.codeErrorCount > 0) {
+        const first = (r.errors && r.errors[0]) || {}
+        autoRecord('verification-failure', 'build_run', 'build failed with ' + r.codeErrorCount + ' code error(s); first: ' + (first.code || '') + ' ' + String(first.message || '').slice(0, 160), { context: { target: r.target || 'Build' } })
+      }
+      return r
     },
   }),
   defineTool({

@@ -55,6 +55,27 @@ function vsn() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * System-recorded failure: ui_flow assertion failures append to the failure
+ * corpus automatically (the system observes, not the agent). Guarded dynamic
+ * import: a standalone-copied plugin degrades to a no-op; inside the monorepo
+ * it records for real.
+ */
+let corpusPromise
+function autoRecord(failureClass, task, description, extra = {}) {
+  if (corpusPromise === undefined) {
+    corpusPromise = import('../../lib/failure-corpus.mjs')
+      .then((m) => m.makeFailureCorpus({}))
+      .catch(() => null)
+  }
+  corpusPromise.then((c) => {
+    if (!c) return
+    try {
+      c.record({ task, failureClass, description, tags: ['auto', task], context: { runtime: 'dsh', ...(extra.context ?? {}) } })
+    } catch { /* the corpus must never break the tool */ }
+  })
+}
+
 /** 截图 + 视觉描述（视觉即返）：失败不阻断，返回 null；黑屏/空白自动等渲染重试。 */
 async function shotWithVision({ workspace = '', label = 'state', waitBeforeMs = 0, maxRetries = 2 } = {}) {
   if (waitBeforeMs > 0) await sleep(waitBeforeMs)
@@ -168,7 +189,11 @@ const tools = () => [
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: '自验流程结束：' + v.passed + ' 通过 / ' + v.failed + ' 失败，证据：' + v.evidenceDir }] },
     timeoutMs: 600000,
     async execute(args) {
-      return await drv().flow(args)
+      const v = await drv().flow(args)
+      if (v.failed > 0) {
+        autoRecord('verification-failure', 'ui_flow', 'ui_flow assertion failure: ' + v.failed + '/' + v.totalSteps + ' steps failed (evidence: ' + (v.stepsJson || v.evidenceDir || '?') + ')', { context: { tag: args.tag || 'flow' } })
+      }
+      return v
     },
   }),
 ]
