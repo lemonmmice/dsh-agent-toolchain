@@ -6,7 +6,8 @@
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
-    "check": "node scripts/check.mjs"
+    "check": "node scripts/check.mjs",
+    "bench": "node bench/harness/bench.mjs"
   },
   "repository": {
     "url": "https://github.com/lemonmmice/dsh-agent-toolchain.git",

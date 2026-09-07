@@ -32,10 +32,24 @@ function walk(dir) {
   return out
 }
 
+// Local-only paths (task packages, run artifacts, agent env overrides) that
+// must never be committed. Their content is skipped by the text scans below;
+// section 4 below hard-fails if anything under them is tracked by git.
+const LOCAL_ONLY = [
+  join(root, 'bench', 'tasks'),
+  join(root, 'bench', 'local.env'),
+  join(root, 'bench-runs'),
+]
+
+function isLocalOnly(p) {
+  return LOCAL_ONLY.some((d) => p === d || p.startsWith(d + '\\'))
+}
+
 let failures = 0
 
 // 1. syntax-check every .js/.mjs
 for (const f of walk(root)) {
+  if (isLocalOnly(f)) continue
   const ext = extname(f)
   if (ext !== '.js' && ext !== '.mjs') continue
   const r = spawnSync(process.execPath, ['--check', f], { encoding: 'utf8' })
@@ -51,7 +65,7 @@ for (const f of walk(root)) {
 //     mention the forbidden patterns as examples of what NOT to include)
 const SKIP_SCAN = new Set([join(root, 'scripts', 'check.mjs'), join(root, 'CONTRIBUTING.md')])
 for (const f of walk(root)) {
-  if (SKIP_SCAN.has(f)) continue
+  if (SKIP_SCAN.has(f) || isLocalOnly(f)) continue
   const ext = extname(f)
   if (!['.js', '.mjs', '.ps1', '.md', '.json', '.yaml', '.yml', '.cs'].includes(ext)) continue
   const text = readFileSync(f, 'utf8')
@@ -70,10 +84,24 @@ for (const f of walk(root)) {
 
 // 3. no nested .git or node_modules
 for (const f of walk(root)) {
+  if (isLocalOnly(f)) continue
   if (f.includes('\\.git\\') || f.includes('\\node_modules\\')) {
     failures++
     console.error('NESTED EXCLUDE DIR leaked:', relative(root, f))
   }
+}
+
+// 4. local-only benchmark paths must not be tracked by git (privacy gate).
+try {
+  const tracked = spawnSync('git', ['ls-files', '--', 'bench/tasks', 'bench/local.env', 'bench-runs'], { encoding: 'utf8' })
+  if (tracked.status === 0 && tracked.stdout.trim()) {
+    for (const line of tracked.stdout.trim().split(/\r?\n/)) {
+      failures++
+      console.error('LOCAL-ONLY FILE TRACKED BY GIT (remove it before committing):', line)
+    }
+  }
+} catch {
+  /* git not available */
 }
 
 if (failures > 0) {
