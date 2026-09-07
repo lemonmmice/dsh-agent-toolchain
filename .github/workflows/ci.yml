@@ -18,3 +18,9 @@ jobs:
       - name: dsh-win-terminal-inspector unit test
         run: node plugins/dsh-win-terminal-inspector/test/inspector.test.mjs
         shell: bash
+      - name: MCP server install + smoke
+        run: |
+          cd mcp
+          npm install
+          node smoke.mjs
+        shell: bash

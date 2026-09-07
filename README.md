@@ -34,6 +34,7 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
 
 ## Highlights
 
+- **One toolchain, every agent**: the same tools power the DeepSeek Harness plugins **and** any MCP client — see [mcp/](./mcp/README.md). Claude Code, Cursor, Cline can drive the client, run builds, capture APIs and search memory with the exact same `lib/` code.
 - **Safety-first UI automation**: `click`/`setvalue`/`key` require an explicit `allowSideEffects=true`; read-only operations (`find`/`read`/`shot`/`expect`) are always safe. Trading entries are never clicked.
 - **Honest measurement**: perf metrics come from real windows-message round trips; cost/price tables mark "unknown" instead of inventing numbers.
 - **Loopback-only control APIs**: all Web routes bind to 127.0.0.1; no external callbacks.
@@ -68,6 +69,8 @@ plugins/
   dsh-hang-inspector/         # hang loop + dump-stack analysis
   dsh-memory/                 # vector/KV long-term memory
   dsh-win-terminal-inspector/ # win32 ConPTY inspection
+mcp/
+  server.mjs                  # MCP stdio server: build/ui-drive/http/memory tools
 docs/
   architecture.md             # how the pieces compose
 ```
