@@ -79,6 +79,11 @@ anonymized results are published in `bench/pilot/`.
 - `costUsd` — as reported by the CLI for the configured model
 - `verified` (bool), `verifyExitCode`, `verifyReason`
 - `patchedTests` (bool) — did the agent touch the hidden test paths
+- `mcpToolsVisible` (bool, toolchain only) — a 1-turn machine probe ran after
+  the agent and confirmed the MCP tools were listed among the agent's tools;
+  a toolchain run with `mcpToolsVisible: false` is marked `modeValid: false`
+  and must be excluded from comparisons (guards against CLI flags silently
+  dropping MCP servers — which `--bare` does, empirically)
 - `patchFiles` — files the agent changed
 
 Cost per verified task = sum of `costUsd` over verified runs of a mode ÷ number

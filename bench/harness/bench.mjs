@@ -133,6 +133,47 @@ function spawnCapture(cmd, args, opts) {
   })
 }
 
+/**
+ * Run the agent CLI once in print mode. The prompt is written to promptFile
+ * and delivered via cmd's stdin redirection (Node's spawn input does not
+ * reach the CLI through the cmd.exe / .cmd chain on Windows; quoting a
+ * multi-line prompt as a command argument is unsafe). Paths with spaces in
+ * cliArgs or promptFile are not supported — a documented limitation.
+ */
+async function runAgentCli(cliArgs, promptText, promptFile, cwd, env) {
+  writeFileSync(promptFile, promptText, 'utf8')
+  // No embedded quotes here: Node wraps this single arg (it contains spaces)
+  // in quotes when building the CreateProcess command line, and cmd /s
+  // strips exactly that one outer pair.
+  const cmdline = `${AGENT_CLI} ${cliArgs.join(' ')} < ${promptFile}`
+  return await spawnCapture('cmd.exe', ['/d', '/s', '/c', cmdline], {
+    cwd,
+    env,
+  })
+}
+
+/** Parse the CLI's result JSON out of its stdout. */
+function parseResultJson(out) {
+  for (const line of String(out || '').split(/\r?\n/).reverse()) {
+    const t = line.trim()
+    if (!t.startsWith('{')) continue
+    try {
+      return JSON.parse(t)
+    } catch {
+      /* keep scanning */
+    }
+  }
+  const m = String(out || '').indexOf('{"type":"result"')
+  if (m >= 0) {
+    try {
+      return JSON.parse(String(out).slice(m, String(out).lastIndexOf('}') + 1))
+    } catch {
+      /* ignore */
+    }
+  }
+  return null
+}
+
 // ------------------------------------------------------------------ task
 
 function loadTask(id) {
@@ -281,7 +322,6 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
 
   const cliArgs = [
     '-p',
-    '--bare',
     '--output-format',
     'json',
     '--max-turns',
@@ -290,6 +330,10 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     '--add-dir',
     repoDir,
   ]
+  // NOTE: --bare is deliberately NOT used. Empirically, --bare drops MCP
+  // servers entirely (probed: with --bare only built-in tools were listed;
+  // without it all mcp__* tools appear). Both modes must differ only in
+  // whether --mcp-config is passed, so both run without --bare.
   if (args.model) cliArgs.push('--model', args.model)
   if (mcpConfigPath) cliArgs.push('--mcp-config', mcpConfigPath)
 
@@ -306,62 +350,36 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     }
   }, agentTimeoutMs)
 
-  const agent = await new Promise((resolvePromise) => {
-    // Prompt delivery: write it to a file and let cmd redirect it to the
-    // CLI's stdin (`< file`). Node's spawn input option does not reach the
-    // CLI through the cmd.exe / .cmd chain on Windows, and quoting a
-    // multi-line prompt as a command argument is unsafe.
-    const promptFile = join(runDir, 'prompt.txt')
-    writeFileSync(promptFile, task.prompt, 'utf8')
-    // No embedded quotes here: Node wraps this single arg (it contains
-    // spaces) in quotes when building the CreateProcess command line, and
-    // cmd /s strips exactly that one outer pair. Paths with spaces are not
-    // supported — a documented limitation.
-    const cmdline = `${AGENT_CLI} ${cliArgs.join(' ')} < ${promptFile}`
-    const child = spawn('cmd.exe', ['/d', '/s', '/c', cmdline], {
-      cwd: repoDir,
-      env: agentEnv,
-      windowsHide: true,
-    })
-    const chunks = []
-    const errChunks = []
-    child.stdout.on('data', (d) => chunks.push(Buffer.from(d)))
-    child.stderr.on('data', (d) => errChunks.push(Buffer.from(d)))
-    child.on('error', (e) => resolvePromise({ error: String(e), code: -1, out: '', err: '' }))
-    child.on('exit', (code, signal) =>
-      resolvePromise({
-        code,
-        signal,
-        out: Buffer.concat(chunks).toString('utf8'),
-        err: Buffer.concat(errChunks).toString('utf8'),
-      }),
-    )
-  })
+  const agent = await runAgentCli(cliArgs, task.prompt, join(runDir, 'prompt.txt'), repoDir, agentEnv)
   timer.done = true
   clearTimeout(killer)
   const durationMs = Date.now() - startedAt
 
   writeFileSync(logPath, `===== stdout =====\n${agent.out}\n\n===== stderr =====\n${agent.err}`, 'utf8')
 
-  let parsed = null
-  for (const line of agent.out.split(/\r?\n/).reverse()) {
-    const t = line.trim()
-    if (!t.startsWith('{')) continue
-    try {
-      parsed = JSON.parse(t)
-      break
-    } catch {
-      /* keep scanning */
-    }
-  }
-  if (!parsed) {
-    const m = agent.out.indexOf('{"type":"result"')
-    if (m >= 0) {
-      try {
-        parsed = JSON.parse(agent.out.slice(m, agent.out.lastIndexOf('}') + 1))
-      } catch {
-        /* ignore */
-      }
+  const parsed = parseResultJson(agent.out)
+
+  // Machine-check that the toolchain MCP was actually visible to the agent.
+  // (A one-turn probe that lists its tools; guards against CLI-flag
+  // regressions like --bare silently dropping MCP servers.)
+  let mcpToolsVisible = null
+  if (mcpConfigPath) {
+    const probe = await runAgentCli(
+      ['-p', '--output-format', 'json', '--max-turns', '1', '--mcp-config', mcpConfigPath],
+      'List every tool available to you, including MCP tools. Output only a comma-separated list of tool names.',
+      join(runDir, 'probe.prompt.txt'),
+      runDir,
+      agentEnv,
+    )
+    const probeParsed = parseResultJson(probe.out)
+    mcpToolsVisible = !!(
+      probeParsed &&
+      typeof probeParsed.result === 'string' &&
+      probeParsed.result.includes('mcp__dsh-agent-toolchain__build_run')
+    )
+    writeFileSync(join(runDir, 'probe.log'), `visible=${mcpToolsVisible}\n\n${probe.out}\n\n${probe.err}`, 'utf8')
+    if (!mcpToolsVisible) {
+      console.warn(`[run ${runId}] MCP tools NOT visible to the agent - this run is INVALID as a toolchain datapoint`)
     }
   }
 
@@ -441,6 +459,8 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     task: task.cfg.id,
     tier: task.cfg.tier || '',
     mode: args.mode,
+    modeValid: args.mode === 'baseline' ? true : mcpToolsVisible === true,
+    mcpToolsVisible,
     model: model || args.model || '',
     turns: parsed?.num_turns ?? null,
     stopReason: parsed?.stop_reason ?? null,
@@ -467,7 +487,7 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
   writeFileSync(join(runDir, 'run.json'), JSON.stringify(rec, null, 2), 'utf8')
 
   console.log(
-    `[run ${runId}] verified=${verified} turns=${rec.turns ?? '?'} cost=$${Number(rec.costUsd || 0).toFixed(4)}` +
+    `[run ${runId}] valid=${rec.modeValid} verified=${verified} turns=${rec.turns ?? '?'} cost=$${Number(rec.costUsd || 0).toFixed(4)}` +
       (rec.verifyReason ? ` reason=${rec.verifyReason.slice(0, 120)}` : ''),
   )
   return rec
