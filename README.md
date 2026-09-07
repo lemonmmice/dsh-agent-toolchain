@@ -1,8 +1,10 @@
 # dsh-agent-toolchain
 
-**Agent-visible engineering quality loop for desktop client development.**
+**The engineering runtime that makes coding agents *verifiably accountable* for their own changes.**
 
-A suite of plugins for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI that let a coding agent do more than write code — it can *see* the running desktop client, *measure* it, *capture* what it sends over the network, and *verify* the code it just changed. Each plugin is a small, composable building block; together they close the loop between "agent wrote a change" and "the change actually works".
+A suite of plugins and an MCP server for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI that let a coding agent do more than write code — it can *see* the running desktop client, *measure* it, *capture* what it sends over the network, and *verify* the code it just changed. Each plugin is a small, composable building block; together they close the loop between "agent wrote a change" and "the change actually works" — and produce the evidence to prove it.
+
+> Roadmap: [ROADMAP.md](./ROADMAP.md)
 
 ## The problem
 
