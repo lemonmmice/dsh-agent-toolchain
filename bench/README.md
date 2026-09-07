@@ -95,8 +95,9 @@ of verified runs of that mode.
   publication-grade benchmark. No statistical claims are made.
 - The agent CLI's default model is used unless `--model` pins one; both modes
   must use the same model for a fair comparison.
-- Web access is not blocked (only discouraged by the prompt and by removing git
-  remotes); an agent that looks the answer up online can inflate its score.
+- Web access is blocked at the tool level (`--allowedTools` excludes
+  WebSearch/WebFetch), on top of the prompt's instruction and removing git
+  remotes; MCP tools remain available in toolchain mode.
 - The toolchain MCP server is exposed as-is, including tools that are
   irrelevant to the task at hand; discovering which tools help is part of the
   measured behavior.

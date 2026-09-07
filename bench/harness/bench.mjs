@@ -329,6 +329,11 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     '--dangerously-skip-permissions',
     '--add-dir',
     repoDir,
+    // Hard-block web access at the tool level (WebSearch/WebFetch excluded):
+    // the answer must come from the code, not from looking up the fix online.
+    // MCP tools are unaffected by --allowedTools.
+    '--allowedTools',
+    'Bash,Read,Edit,Write,Grep,Glob,PowerShell',
   ]
   // NOTE: --bare is deliberately NOT used. Empirically, --bare drops MCP
   // servers entirely (probed: with --bare only built-in tools were listed;
@@ -365,8 +370,8 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
   let mcpToolsVisible = null
   if (mcpConfigPath) {
     const probe = await runAgentCli(
-      ['-p', '--output-format', 'json', '--max-turns', '1', '--mcp-config', mcpConfigPath],
-      'List every tool available to you, including MCP tools. Output only a comma-separated list of tool names.',
+      ['-p', '--output-format', 'json', '--max-turns', '2', '--mcp-config', mcpConfigPath],
+      'Do NOT call any tools. Answer only with a comma-separated list of the tool names available to you, including MCP tools.',
       join(runDir, 'probe.prompt.txt'),
       runDir,
       agentEnv,
