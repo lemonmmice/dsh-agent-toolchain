@@ -31,8 +31,11 @@
 
 ## Now — next 1–2 weeks
 
-1. **Tier 1-② benchmark pilot** — public WPF sample app + 5 tasks: with vs
-   without the toolchain (pass@1, iterations-to-green, human handoffs, cost).
+1. **Tier 1-② benchmark pilot** — in progress: harness landed
+   (`bench/harness/bench.mjs`, baseline vs toolchain MCP on a real T2 bugfix
+   from a public MIT WPF repo; task identity local-only, public repo ships
+   methodology + anonymized numbers). Next: pilot runs, report, then scale to
+   5 tasks.
 2. **Teaching artifacts** — demo GIF/asciinema, the "20-line first DSH plugin"
    tutorial, blog series.
 
