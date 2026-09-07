@@ -17,8 +17,8 @@ every agent, not just DeepSeek Harness.
 | `http_request` | dsh-postman/lib/http.mjs | Host-side HTTP (no CORS), non-2xx is a normal result |
 | `memory_index` / `memory_search` / `memory_save` / `memory_recall` / `memory_status` | dsh-memory/lib/memory.mjs | Vector search + cross-session KV |
 | `failure_record` / `failure_query` / `failure_stats` | lib/failure-corpus.mjs | Local-only JSONL failure corpus: record handoffs/failures, query, stats |
-| `capture_query` / `capture_append` | dsh-api-visualizer/lib/capture-store.mjs | Query/append the API-capture store — includes caller attribution (ViewModel→API→call-chain) |
-| `verify_report` | lib/verify/report.mjs | Claims vs evidence → one verdict; failed claims auto-recorded as agent-misjudge |
+| `capture_query` / `capture_append` | lib/capture-store.mjs | Query/append the API-capture store — caller attribution (ViewModel→API→call-chain) + runId spine |
+| `verify_report` | lib/verify/report.mjs | Claims adjudicated from evidence (build/api/file checks, manual opt-out) → verdict; contradictions auto-record as agent-misjudge |
 
 ## Configure (Claude Code)
 

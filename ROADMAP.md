@@ -25,7 +25,8 @@
 - dsh-memory hygiene — mtime-incremental indexing, stale-chunk eviction, fail-closed sensitive-string filter
 - Self-recording failure corpus — build/ui/http failure paths auto-record; manual recording reserved for human-handoff
 - Capture moat exposed — MCP capture_query/capture_append (caller attribution) for any MCP client
-- Verification report v0 — lib/verify + verify_report MCP tool; verdict auto-feeds the corpus
+- Evidence-adjudicated verification report — claims checked against build records / capture store / files (machine verdicts, not self-rating); contradicted claims auto-record agent-misjudge
+- runId spine — build logs + per-run records named by runId; capture records carry runId; verify/corpus keyed by runId
 
 ## Now — next 1–2 weeks
 
@@ -33,6 +34,14 @@
    without the toolchain (pass@1, iterations-to-green, human handoffs, cost).
 2. **Teaching artifacts** — demo GIF/asciinema, the "20-line first DSH plugin"
    tutorial, blog series.
+
+## Deliberate non-goals (decision log)
+
+- **perf / hang-inspector are NOT in the MCP server yet.** Reason: dump attach
+  needs a permission model and heavy payloads (hundreds of MB per dump);
+  expose them after the capability policy lands (Year-1 #6). api-visualizer
+  IS exposed — lightweight store reads, highest leverage first. This is a
+  choice, not an omission.
 
 ## Year 1 — the verifiable closed loop
 

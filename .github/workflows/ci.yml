@@ -22,7 +22,7 @@ jobs:
         run: node plugins/dsh-memory/test/memory-hygiene.test.mjs
         shell: bash
       - name: API capture store unit test
-        run: node plugins/dsh-api-visualizer/test/capture-store.test.mjs
+        run: node lib/capture-store.test.mjs
         shell: bash
       - name: Verification report unit test
         run: node lib/verify/report.test.mjs

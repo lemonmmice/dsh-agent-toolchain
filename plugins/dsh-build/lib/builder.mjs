@@ -122,6 +122,8 @@ export function makeBuilder(cfg) {
     const args = [solutionOrProject, '/t:' + target, '/p:Configuration=' + configuration, '/p:Platform=' + platform, '/m', '/v:m', '/nologo', '/nodeReuse:false', '/clp:Summary']
     const timeoutMs = target === 'Rebuild' ? c.rebuildTimeoutMs : c.incrementalTimeoutMs
     const startedAt = Date.now()
+    // Evidence-pack spine: an optional runId names the log and the per-run record.
+    const runId = String(opts.runId ?? '').replace(/[^\w.-]+/g, '_').slice(0, 60)
 
     const run = await new Promise((resolve) => {
       let child
@@ -165,7 +167,8 @@ export function makeBuilder(cfg) {
     const ts = new Date()
     const p = (n) => String(n).padStart(2, '0')
     const stamp = ts.getFullYear() + p(ts.getMonth() + 1) + p(ts.getDate()) + '-' + p(ts.getHours()) + p(ts.getMinutes()) + p(ts.getSeconds())
-    const logPath = join(c.logsDir, 'build-' + stamp + '-' + target.toLowerCase() + '.log')
+    const logName = runId ? `build-${runId}-${stamp}-${target.toLowerCase()}.log` : `build-${stamp}-${target.toLowerCase()}.log`
+    const logPath = join(c.logsDir, logName)
     writeFileSync(logPath, text, 'utf8')
 
     const result = {
@@ -178,6 +181,7 @@ export function makeBuilder(cfg) {
       configuration,
       platform,
       durationMs,
+      runId: runId || null,
       errorCount: errors.length,
       codeErrorCount: codeErrors.length,
       envErrorCount: envErrors.length,
@@ -192,6 +196,10 @@ export function makeBuilder(cfg) {
       summaryLine: extractSummary(text),
     }
     persistLast(result)
+    if (runId) {
+      // Per-run record: the evidence pack's build leg, looked up by verify_report kind=build.
+      try { writeFileSync(join(c.logsDir, 'run-' + runId + '.json'), JSON.stringify({ at: new Date().toISOString(), ...result }, null, 2), 'utf8') } catch { /* ignore */ }
+    }
     return result
   }
 

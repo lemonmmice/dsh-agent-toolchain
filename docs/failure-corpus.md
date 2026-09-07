@@ -59,7 +59,7 @@ have to volunteer (and usually won't):
 | ui_flow assertion failures | `ui_flow` (DSH) | `verification-failure` |
 | ui_drive step failed | `ui_drive` (MCP) | `tool-error` |
 | request could not be made | `http_request` (MCP) | `tool-error` |
-| claim vs evidence mismatch | `verify_report` (MCP) | `agent-misjudge` |
+| claim contradicted by evidence (adjudicated from build / api / file checks) | `verify_report` (MCP) | `agent-misjudge` |
 
 Auto records carry the tags `auto` + the tool name. Manual `failure_record` is
 reserved for what the system cannot see: `human-handoff`, and context the
