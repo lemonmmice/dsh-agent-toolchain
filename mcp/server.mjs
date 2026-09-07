@@ -22,7 +22,7 @@ import { makeDriver } from '../plugins/dsh-ui-drive/lib/driver.mjs'
 import { sendRequest } from '../plugins/dsh-postman/lib/http.mjs'
 import { DshMemory } from '../plugins/dsh-memory/lib/memory.mjs'
 import { makeFailureCorpus, FAILURE_CLASSES } from '../lib/failure-corpus.mjs'
-import { queryPage, appendRecords } from '../plugins/dsh-api-visualizer/lib/capture-store.mjs'
+import { queryPage, appendRecords } from '../lib/capture-store.mjs'
 import { makeVerificationReport } from '../lib/verify/report.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -93,6 +93,7 @@ server.tool(
     platform: z.string().default('x86'),
     clientRoot: z.string().optional().describe('Solution root dir (env DSH_BUILD_CLIENT_ROOT)'),
     killClient: z.boolean().optional().describe('Kill the running client process before building (breaks the user UI — confirm first)'),
+    runId: z.string().optional().describe('Optional run id: the build log and the per-run record (run-<runId>.json) are named with it — the evidence-pack spine'),
   },
   async (args) => {
     const b = makeBuilder({
@@ -106,10 +107,11 @@ server.tool(
       configuration: args.configuration,
       platform: args.platform,
       killClient: args.killClient,
+      runId: args.runId,
     })
     if (r.codeErrorCount > 0) {
       const first = (r.errors && r.errors[0]) || {}
-      autoRecord('verification-failure', 'build_run', `build failed with ${r.codeErrorCount} code error(s); first: ${first.code ?? ''} ${String(first.message ?? '').slice(0, 160)}`, { context: { target: r.target ?? 'Build', code: first.code ?? '' } })
+      autoRecord('verification-failure', 'build_run', `build failed with ${r.codeErrorCount} code error(s); first: ${first.code ?? ''} ${String(first.message ?? '').slice(0, 160)}`, { context: { target: r.target ?? 'Build', code: first.code ?? '', ...(args.runId ? { runId: args.runId } : {}) } })
     }
     return jtext(r)
   }
@@ -312,6 +314,7 @@ server.tool(
     toTs: z.number().optional(),
     sessionId: z.string().optional(),
     traceId: z.string().optional(),
+    runId: z.string().optional().describe('Filter by the run id carried on records (evidence-pack spine)'),
     errors: z.boolean().optional().describe('Only HTTP 4xx/5xx records'),
     noNoise: z.boolean().optional().describe('Hide static-resource/heartbeat noise'),
     bodyQ: z.string().optional().describe('Substring inside request/response bodies/headers'),
@@ -326,25 +329,33 @@ server.tool(
   'Append captured API-call records into the local API-capture store (the same store the capture panel reads; appears live in the GUI).',
   {
     records: z.array(z.object({ method: z.string(), url: z.string() }).passthrough()).describe('Records: method+url required; status/durationMs/reqBody/resBody/note/caller optional. Bodies ≤ 2MB.'),
+    runId: z.string().optional().describe('Attach this run id to every appended record (evidence-pack spine)'),
   },
-  async (args) => jtext(appendRecords(args.records))
+  async (args) => jtext(appendRecords(args.records, { runId: args.runId }))
 )
 
 // ---------------------------------------------------------------- verification report
 
 server.tool(
   'verify_report',
-  'Assemble the verification report for one runId: claims vs evidence, one verdict (pass / incomplete / fail). ' +
-    'A claim whose evidence contradicts it (status=fail) is auto-recorded in the failure corpus as agent-misjudge. ' +
+  'Assemble the verification report for one runId and adjudicate each claim FROM EVIDENCE, not self-rating: ' +
+    'kind=build reads the per-run build record (run-<runId>.json), kind=api queries the capture store (filter + expect.min/all2xx), ' +
+    'kind=file checks path existence, kind=manual is an explicit agent-supplied status. ' +
+    'Verdict: pass / incomplete / fail. Evidence-contradicted claims auto-record as agent-misjudge in the failure corpus. ' +
     'This is the physical carrier of "evidence over claims" — call it before declaring a task done.',
   {
     runId: z.string().describe('Unique run id (e.g. task-2-toolchain-1)'),
     task: z.string().describe('One-line task name'),
     claims: z.array(z.object({
       statement: z.string().describe('The claim being made'),
-      status: z.enum(['pass', 'fail', 'unverified']).describe('pass / fail / unverified'),
-      evidence: z.string().optional().describe('Which evidence backs this claim (tool output id, screenshot, log path)'),
-    })).describe('List of claims, each with a status'),
+      kind: z.enum(['build', 'api', 'file', 'manual']).optional().describe('Adjudication rule; defaults to manual'),
+      runId: z.string().optional().describe('For kind=build/api: which run the evidence belongs to'),
+      path: z.string().optional().describe('For kind=file: path to check'),
+      filter: z.record(z.string(), z.any()).optional().describe('For kind=api: capture-store filter (q/method/host/status/...)'),
+      expect: z.object({ min: z.number().optional(), all2xx: z.boolean().optional() }).optional().describe('For kind=api: pass criteria (default min=1)'),
+      status: z.enum(['pass', 'fail', 'unverified']).optional().describe('For kind=manual: supplied status'),
+      evidence: z.string().optional().describe('For kind=manual: backing evidence'),
+    })).describe('Claims adjudicated from evidence'),
     context: z.record(z.string(), z.string()).optional().describe('Runtime context (repo / model / mode)'),
   },
   async (args) => {

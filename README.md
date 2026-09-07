@@ -67,7 +67,7 @@ Then restart the harness and set the environment variables the plugin needs (see
 plugins/
   dsh-build/                  # MSBuild as an agent tool
   dsh-ui-drive/               # UIA client driver + vision ground-truth
-  dsh-api-visualizer/         # traffic capture panel + proxy engine + shared capture store
+  dsh-api-visualizer/         # traffic capture panel + proxy engine
   dsh-postman/                # host-side HTTP client
   dsh-perf/                   # stutter probe + dump analysis
   dsh-hang-inspector/         # hang loop + dump-stack analysis
@@ -77,6 +77,7 @@ mcp/
   server.mjs                  # MCP stdio server: build/ui-drive/http/memory/capture/failure/verify tools
 lib/
   failure-corpus.mjs          # local failure corpus: record/query/stats
+  capture-store.mjs           # shared API-capture store (panel + MCP + verify)
   verify/report.mjs           # claims-vs-evidence verdict; auto-feeds agent-misjudge
 scripts/
   check.mjs                   # CI sanity gate (syntax + private-ref scan)
