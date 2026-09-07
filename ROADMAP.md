@@ -20,15 +20,12 @@
 - 8-plugin toolchain monorepo — sanitized, public, Apache-2.0, CI green
 - MCP server — the same tools for any MCP client (Claude Code / Cursor / Cline)
 - dsh-router-benchmark public — 21 tasks × 3 modes (routed 100% / pro 90% / flash 86%)
+- Release discipline — CHANGELOG, v0.1.0 tag + GitHub Release, compatibility matrix
+- Failure corpus v0 — lib + MCP record/query/stats, fixed taxonomy, seed script; data collection started
 
 ## Now — next 1–2 weeks
 
-1. **Release discipline** — `CHANGELOG.md`, `v0.1.0` tag, harness compatibility
-   matrix (DSH version × plugin version).
-2. **Failure corpus v0** — every human handoff / verification failure appends a
-   JSONL record (task, run context, failure class, resolution). Minimal
-   classifier + panel later; start collecting data immediately.
-3. **dsh-memory hygiene** — stale-chunk eviction when a source file's mtime
+1. **dsh-memory hygiene** — stale-chunk eviction when a source file's mtime
    changes; sensitive-string filter (tokens/keys) on save.
 
 ## Year 1 — the verifiable closed loop

@@ -15,6 +15,9 @@ jobs:
           node-version: 22
       - name: Repo sanity gate (syntax + no private refs)
         run: node scripts/check.mjs
+      - name: Failure corpus unit test
+        run: node lib/failure-corpus.test.mjs
+        shell: bash
       - name: dsh-win-terminal-inspector unit test
         run: node plugins/dsh-win-terminal-inspector/test/inspector.test.mjs
         shell: bash
