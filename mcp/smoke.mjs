@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const child = spawn(process.execPath, [join(here, 'server.mjs')], { stdio: ['pipe', 'pipe', 'pipe'] })
 
-const EXPECTED = ['build_run', 'ui_status', 'ui_drive', 'http_request', 'memory_index', 'memory_search', 'memory_save', 'memory_recall', 'memory_status']
+const EXPECTED = ['build_run', 'ui_status', 'ui_drive', 'http_request', 'memory_index', 'memory_search', 'memory_save', 'memory_recall', 'memory_status', 'failure_record', 'failure_query', 'failure_stats']
 
 function rpc(id, method, params = {}) {
   return JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'

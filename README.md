@@ -19,6 +19,7 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
                                       → capture APIs (dsh-api-visualizer, dsh-postman)
                                       → inspect perf (dsh-perf) / hang (dsh-hang-inspector)
                                       → remember lessons (dsh-memory)
+  fail / handoff → failure_record → failure corpus (the data flywheel)
 ```
 
 ## Plugins
@@ -41,6 +42,7 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
 - **Honest measurement**: perf metrics come from real windows-message round trips; cost/price tables mark "unknown" instead of inventing numbers.
 - **Loopback-only control APIs**: all Web routes bind to 127.0.0.1; no external callbacks.
 - **Zero-drift config**: every environment-specific value (client exe name/window title, evidence dirs, tool paths, source roots) is an environment variable with a sane default — no hard-coded machines, no embedded credentials.
+- **The failure corpus is the moat**: every human handoff / verification failure appends a local JSONL record (fixed 7-class taxonomy) — the data flywheel that decides what gets built next. See [docs/failure-corpus.md](./docs/failure-corpus.md).
 
 ## Requirements
 
@@ -73,8 +75,14 @@ plugins/
   dsh-win-terminal-inspector/ # win32 ConPTY inspection
 mcp/
   server.mjs                  # MCP stdio server: build/ui-drive/http/memory tools
+lib/
+  failure-corpus.mjs          # local failure corpus: record/query/stats
+scripts/
+  check.mjs                   # CI sanity gate (syntax + private-ref scan)
+  seed-failure-corpus.mjs     # idempotent seed of example failure records
 docs/
   architecture.md             # how the pieces compose
+  failure-corpus.md           # failure taxonomy + record schema
 ```
 
 ## Contributing

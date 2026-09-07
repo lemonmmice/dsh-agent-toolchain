@@ -2,12 +2,14 @@
  * dsh-agent-toolchain MCP server — stdio transport.
  *
  * Exposes the engineering-quality tools of the toolchain (build / ui-drive /
- * http_request / memory) to any MCP client: Claude Code, Cursor, Cline, ...
+ * http_request / memory / failure corpus) to any MCP client:
+ * Claude Code, Cursor, Cline, ...
  *
  * Env config follows the toolchain convention (DSH_* variables), e.g.:
  *   DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE  (ui tools)
  *   DSH_BUILD_CLIENT_ROOT / DSH_BUILD_MSBUILD / DSH_BUILD_LOGS_DIR (build)
  *   DSH_MEMORY_DIR (memory data dir, default ~/.dsh/memory)
+ *   DSH_FAILURE_CORPUS_DIR (failure corpus, default ~/.dsh-agent-toolchain/failure-corpus)
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -19,6 +21,7 @@ import { makeBuilder } from '../plugins/dsh-build/lib/builder.mjs'
 import { makeDriver } from '../plugins/dsh-ui-drive/lib/driver.mjs'
 import { sendRequest } from '../plugins/dsh-postman/lib/http.mjs'
 import { DshMemory } from '../plugins/dsh-memory/lib/memory.mjs'
+import { makeFailureCorpus, FAILURE_CLASSES } from '../lib/failure-corpus.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -50,6 +53,12 @@ let memory = null
 function mem() {
   if (!memory) memory = new DshMemory({})
   return memory
+}
+
+let corpus = null
+function fc() {
+  if (!corpus) corpus = makeFailureCorpus({})
+  return corpus
 }
 
 // ---------------------------------------------------------------- build
@@ -201,6 +210,52 @@ server.tool(
   'Memory store status: chunk count, KV entries, data dir, embedding backend.',
   {},
   async () => jtext(mem().status())
+)
+
+// ---------------------------------------------------------------- failure corpus
+
+server.tool(
+  'failure_record',
+  'Record one failure / human-handoff event into the local failure corpus (JSONL, local-only, never uploaded). ' +
+    'Call this every time a task fails, verification disagrees with a claim, a tool malfunctions, or a human had to take over. Facts, not blame.',
+  {
+    task: z.string().describe('One-line task name'),
+    failureClass: z.enum(FAILURE_CLASSES).describe('Failure class from the fixed taxonomy: ' + FAILURE_CLASSES.join(' | ')),
+    description: z.string().describe('What went wrong'),
+    resolution: z.string().optional().describe('How it was unblocked'),
+    context: z.record(z.string(), z.string()).optional().describe('Runtime context (runtime / tool / model / repo)'),
+    tags: z.array(z.string()).optional().describe('Free-form tags for later mining'),
+    costMs: z.number().optional().describe('Approximate time wasted in ms'),
+  },
+  async (args) => {
+    try {
+      return jtext(fc().record(args))
+    } catch (e) {
+      return text('failure_record rejected: ' + e.message)
+    }
+  }
+)
+
+server.tool(
+  'failure_query',
+  'Query the local failure corpus: substring q (task/description/resolution), failureClass, tag, time range. Returns newest-first records.',
+  {
+    q: z.string().optional(),
+    failureClass: z.enum(FAILURE_CLASSES).optional(),
+    tag: z.string().optional(),
+    fromTs: z.number().optional().describe('Earliest ts (epoch ms)'),
+    toTs: z.number().optional().describe('Latest ts (epoch ms)'),
+    limit: z.number().optional().describe('Max records, default 50, max 500'),
+    offset: z.number().optional(),
+  },
+  async (args) => jtext(fc().query(args))
+)
+
+server.tool(
+  'failure_stats',
+  'Failure corpus stats: total, last 7/30 days, per-class counts, corpus dir.',
+  {},
+  async () => jtext(fc().stats())
 )
 
 // ---------------------------------------------------------------- boot

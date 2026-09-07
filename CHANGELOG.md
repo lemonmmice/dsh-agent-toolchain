@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
+## [Unreleased]
+
+### Added
+
+- **Failure corpus v0** — `lib/failure-corpus.mjs` (framework-free record /
+  query / stats, fixed 7-class taxonomy, 20 MB rotation) + MCP tools
+  `failure_record` / `failure_query` / `failure_stats` + idempotent seed
+  script. Every human handoff, verification failure, or agent misjudgment now
+  lands in one local JSONL line — the data flywheel behind the roadmap. See
+  [docs/failure-corpus.md](./docs/failure-corpus.md).
+- `lib/failure-corpus.test.mjs` unit test wired into CI.
+
+### Planned
+
+- dsh-memory stale-chunk eviction + sensitive-string filter.
+
 ## [0.1.0] — 2026-09-07
 
 First public release: the engineering-quality loop monorepo.
@@ -38,7 +54,3 @@ First public release: the engineering-quality loop monorepo.
 - No hard-coded machine paths, credentials, or identifiers in the repository;
   the CI gate enforces this going forward.
 
-## [Unreleased]
-
-- Failure corpus v0 (JSONL record of human handoffs / verification failures).
-- dsh-memory stale-chunk eviction + sensitive-string filter.
