@@ -81,6 +81,11 @@ docs/
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
+## Releases
+
+- [CHANGELOG.md](./CHANGELOG.md) — SemVer history (Keep a Changelog format)
+- [docs/compatibility.md](./docs/compatibility.md) — harness/plugin/MCP compatibility matrix
+
 ## License
 
 Apache-2.0 (per-plugin LICENSE files mirror this).
