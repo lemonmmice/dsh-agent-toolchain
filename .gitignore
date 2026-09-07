@@ -2,3 +2,8 @@ node_modules/
 *.log
 results/results-*.json
 .DS_Store
+# Benchmark: task packages, run artifacts and local agent-env overrides are
+# local-only (privacy + answer secrecy). See bench/README.md.
+bench/tasks/
+bench-runs/
+bench/local.env
