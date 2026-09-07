@@ -18,6 +18,7 @@ const GUIDANCE =
   'memory_search(query, k) 做语义检索（MiniMax embo-01 向量；未配置 key 时自动降级为本地 bigram 关键词检索）；' +
   'memory_save / memory_recall / memory_forget 管理跨会话 KV 记忆（按 scope 隔离，如项目名）；memory_status 查看索引状态。' +
   '数据全部存储在本地 ~/.dsh/memory/，不外传。' +
+  '卫生保证：索引按 mtime 增量（未变更文件跳过，文件更新自动淘汰旧分块，已删除文件的旧分块自动清理）；memory_save 会拒绝含 token/密钥等敏感字符串的内容（fail-closed）。' +
   '用户提到「记住这个约定 / 查一下项目里怎么做的 / 帮我记住」等需要跨会话记忆的场景时，优先使用这些工具。'
 
 let memory = null
@@ -42,7 +43,7 @@ const tools = () => [
           files: { type: 'integer' }, chunks: { type: 'integer' }, embed: { type: 'string' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `索引完成：${value.files} 个文件 / ${value.chunks} 个分块（${value.embed}）` }],
+      render: (_args, value) => [{ type: 'text', text: `索引完成：${value.files} 个文件 / ${value.chunks} 个分块（新增 ${value.indexed ?? '-'}，跳过 ${value.skipped ?? '-'}，清理 ${value.deleted ?? '-'}）` }],
     },
     async execute(args) {
       const r = await mem().indexWorkspace(args.path)
@@ -84,11 +85,15 @@ const tools = () => [
       value: { type: 'string', required: true, description: '记忆内容' },
       scope: { type: 'string', description: '作用域（如项目名），默认 global' },
     },
-    output: { schema: { type: 'object', additionalProperties: true, properties: { saved: { type: 'boolean' }, key: { type: 'string' } } },
-      render: (_args, value) => [{ type: 'text', text: `已记住：${value.key}` }] },
+    output: { schema: { type: 'object', additionalProperties: true, properties: { saved: { type: 'boolean' }, key: { type: 'string' }, error: { type: 'string' } } },
+      render: (_args, value) => [{ type: 'text', text: value.saved ? (`已记住：${value.key}`) : (`保存被拒绝：${value.error}`) }] },
     async execute(args) {
-      mem().remember(args.key, args.value, args.scope || 'global')
-      return { saved: true, key: args.key }
+      try {
+        mem().remember(args.key, args.value, args.scope || 'global')
+        return { saved: true, key: args.key }
+      } catch (e) {
+        return { saved: false, key: args.key, error: e.message }
+      }
     },
   }),
   defineTool({

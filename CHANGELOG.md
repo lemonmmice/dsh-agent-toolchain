@@ -17,10 +17,12 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   lands in one local JSONL line — the data flywheel behind the roadmap. See
   [docs/failure-corpus.md](./docs/failure-corpus.md).
 - `lib/failure-corpus.test.mjs` unit test wired into CI.
-
-### Planned
-
-- dsh-memory stale-chunk eviction + sensitive-string filter.
+- **dsh-memory hygiene** — real mtime-incremental indexing (unchanged files are
+  skipped), stale-chunk eviction on file update or deletion, and a fail-closed
+  sensitive-string filter on `memory_save` (tokens / API keys / private-key
+  blocks are rejected before hitting disk). See
+  [plugins/dsh-memory/README.md](./plugins/dsh-memory/README.md).
+- `plugins/dsh-memory/test/memory-hygiene.test.mjs` unit test wired into CI.
 
 ## [0.1.0] — 2026-09-07
 

@@ -37,6 +37,21 @@ export class VectorStore {
 
   clear() { this._write([]); }
 
+  ids() {
+    return this._read().map(r => r.id);
+  }
+
+  countPrefix(prefix) {
+    return this._read().filter(r => r.id.startsWith(prefix)).length;
+  }
+
+  removePrefix(prefix) {
+    const rows = this._read();
+    const keep = rows.filter(r => !r.id.startsWith(prefix));
+    if (keep.length !== rows.length) this._write(keep);
+    return rows.length - keep.length;
+  }
+
   search(queryVector, k = 5) {
     return this._read()
       .map(r => ({ ...r, score: similarity(queryVector, r.vector) }))

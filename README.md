@@ -32,7 +32,7 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
 | [dsh-postman](./plugins/dsh-postman/README.md) | Postman-style HTTP client inside the harness: compose/send requests from the host (no browser CORS), history store, WebSocket client, `http_request` agent tool. |
 | [dsh-perf](./plugins/dsh-perf/README.md) | UI stutter measurement (SendMessageTimeout latency, P50/P95/P99, stutter events), full-dump capture + ClrMD analysis (UI thread stack, lock hot spots), managed-heap type stats (leak screening). |
 | [dsh-hang-inspector](./plugins/dsh-hang-inspector/README.md) | One-click hang diagnosis: monitor main-window responsiveness, auto-collect evidence packs (frozen screenshot, timeline, process info, net-trace tail, dump), analyze the managed thread stack and map the hang thread to project source. |
-| [dsh-memory](./plugins/dsh-memory/README.md) | Long-term memory for the harness: semantic search over indexed workspace docs, cross-session key-value conventions. Stops the agent from re-learning the same project rules every session. |
+| [dsh-memory](./plugins/dsh-memory/README.md) | Long-term memory for the harness: semantic search over indexed workspace docs, cross-session key-value conventions. Stops the agent from re-learning the same project rules every session — and keeps itself clean: mtime-incremental indexing, stale-chunk eviction, token/secret filter on save. |
 | [dsh-win-terminal-inspector](./plugins/dsh-win-terminal-inspector/README.md) | Windows terminal (ConPTY) inspection for persistent bash shells — the piece that stops the harness from throwing "terminal inspection unsupported on win32". |
 
 ## Highlights

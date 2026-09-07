@@ -22,11 +22,14 @@
 - dsh-router-benchmark public — 21 tasks × 3 modes (routed 100% / pro 90% / flash 86%)
 - Release discipline — CHANGELOG, v0.1.0 tag + GitHub Release, compatibility matrix
 - Failure corpus v0 — lib + MCP record/query/stats, fixed taxonomy, seed script; data collection started
+- dsh-memory hygiene — mtime-incremental indexing, stale-chunk eviction, fail-closed sensitive-string filter
 
 ## Now — next 1–2 weeks
 
-1. **dsh-memory hygiene** — stale-chunk eviction when a source file's mtime
-   changes; sensitive-string filter (tokens/keys) on save.
+1. **Tier 1-② benchmark pilot** — public WPF sample app + 5 tasks: with vs
+   without the toolchain (pass@1, iterations-to-green, human handoffs, cost).
+2. **Teaching artifacts** — demo GIF/asciinema, the "20-line first DSH plugin"
+   tutorial, blog series.
 
 ## Year 1 — the verifiable closed loop
 

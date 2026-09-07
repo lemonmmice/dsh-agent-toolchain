@@ -18,6 +18,9 @@ jobs:
       - name: Failure corpus unit test
         run: node lib/failure-corpus.test.mjs
         shell: bash
+      - name: dsh-memory hygiene unit test
+        run: node plugins/dsh-memory/test/memory-hygiene.test.mjs
+        shell: bash
       - name: dsh-win-terminal-inspector unit test
         run: node plugins/dsh-win-terminal-inspector/test/inspector.test.mjs
         shell: bash
