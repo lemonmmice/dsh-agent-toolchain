@@ -10,6 +10,15 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **Benchmark pilot harness** — `bench/harness/bench.mjs` runs one real coding
+  task against an external agent CLI in two modes (`baseline` = built-in tools
+  only, `toolchain` = built-in tools plus the dsh-agent-toolchain MCP server),
+  then verifies the agent's patch in a clean checkout against the task's
+  hidden verification patch. Metrics: turns / tokens / cost / verified →
+  cost-per-verified-task. Task packages stay local-only (`bench/tasks/`,
+  gitignored) for privacy and answer secrecy; `scripts/check.mjs` gains a
+  git-tracked gate that hard-fails if they ever get committed. See
+  [bench/README.md](./bench/README.md).
 - **Failure corpus v0** — `lib/failure-corpus.mjs` (framework-free record /
   query / stats, fixed 7-class taxonomy, 20 MB rotation) + MCP tools
   `failure_record` / `failure_query` / `failure_stats` + idempotent seed
