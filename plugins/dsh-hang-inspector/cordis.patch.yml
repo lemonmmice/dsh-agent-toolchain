@@ -1,0 +1,8 @@
+# dsh-hang-inspector bundle patch: inserts the dual-face plugin row into the
+# web profile roster. The node half (exports ".") runs in the host process
+# (read-only evidence-pack routes under /api/dsh-hang-inspector, loopback-only);
+# the `dsh.client` declaration in package.json makes the browser half
+# (exports "./client", served at /plugins/<id>/client.js) load in the web GUI.
+- insert:
+    - id: hang-inspector
+      name: '@dsh-agent-toolchain/dsh-hang-inspector'

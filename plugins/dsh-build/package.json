@@ -1,0 +1,8 @@
+{
+  "name": "dsh-build",
+  "description": "DSH 编译验证闭环插件：MSBuild 增量/全量构建 + 结构化错误解析（agent 工具）",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT"
+}

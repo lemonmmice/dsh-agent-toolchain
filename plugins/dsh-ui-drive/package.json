@@ -1,0 +1,8 @@
+{
+  "name": "dsh-ui-drive",
+  "description": "DSH UI 自验驱动插件：UIA 驱动客户端 + 截图 + 视觉复核闭环（agent 工具 + 证据路由）",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT"
+}

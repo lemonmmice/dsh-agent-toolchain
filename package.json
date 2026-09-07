@@ -1,0 +1,15 @@
+{
+  "name": "dsh-agent-toolchain",
+  "description": "Agent-visible engineering quality loop for desktop client development — a suite of DeepSeek Harness web-GUI plugins (build / ui-drive / api-visualizer / postman / perf / hang-inspector / memory / terminal inspector).",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "check": "node scripts/check.mjs"
+  },
+  "repository": {
+    "url": "https://github.com/lemonmmice/dsh-agent-toolchain.git",
+    "type": "git"
+  }
+}
