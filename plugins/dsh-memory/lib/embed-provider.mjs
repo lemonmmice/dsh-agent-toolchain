@@ -32,9 +32,9 @@ function bigramVector(text) {
 }
 
 export class EmbedProvider {
-  constructor({ cacheDir = null } = {}) {
+  constructor({ cacheDir = null, apiKey = undefined } = {}) {
     this.mode = "minimax";
-    this.apiKey = process.env.MINIMAX_CN_API_KEY || readCreds().MINIMAX_CN_API_KEY || null;
+    this.apiKey = apiKey !== undefined ? apiKey : (process.env.MINIMAX_CN_API_KEY || readCreds().MINIMAX_CN_API_KEY || null);
     this.baseURL = "https://api.minimax.chat/v1";
     this.model = "embo-01";
     if (!this.apiKey) this.mode = "bigram";
@@ -76,8 +76,11 @@ export class EmbedProvider {
 export function similarity(a, b) {
   if (a && a.kind === "bigram" && b && b.kind === "bigram") {
     let dot = 0;
-    for (const [g, v] of a.sparse) {
-      const w = b.sparse.get(g);
+    // sparse 在内存中是 Map，但经 JSONL 持久化读回后是普通对象——两种都要能吃
+    const am = a.sparse instanceof Map ? a.sparse : new Map(Object.entries(a.sparse || {}));
+    const bm = b.sparse instanceof Map ? b.sparse : new Map(Object.entries(b.sparse || {}));
+    for (const [g, v] of am) {
+      const w = bm.get(g);
       if (w) dot += v * w;
     }
     return dot / (a.norm * b.norm);

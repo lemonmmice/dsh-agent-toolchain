@@ -190,9 +190,16 @@ server.tool(
 
 server.tool(
   'memory_save',
-  'Save a cross-session key-value memory (per scope, e.g. a project name). Same key+scope overwrites.',
+  'Save a cross-session key-value memory (per scope, e.g. a project name). Same key+scope overwrites. ' +
+    'Fail-closed: values containing tokens/API keys/secrets are rejected.',
   { key: z.string(), value: z.string(), scope: z.string().default('global') },
-  async (args) => jtext(mem().remember(args.key, args.value, args.scope))
+  async (args) => {
+    try {
+      return jtext(mem().remember(args.key, args.value, args.scope))
+    } catch (e) {
+      return text('memory_save rejected: ' + e.message)
+    }
+  }
 )
 
 server.tool(

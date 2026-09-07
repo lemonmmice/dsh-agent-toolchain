@@ -5,6 +5,7 @@ import { splitIntoChunks } from "./chunker.mjs";
 import { VectorStore } from "./store.mjs";
 import { KvMemory } from "./kv.mjs";
 import { EmbedProvider } from "./embed-provider.mjs";
+import { findSensitive } from "./sensitive.mjs";
 
 const SKIP = new Set([".git", "node_modules", "bin", "obj", ".vs", "dist", ".venv", "packages", ".memory"]);
 
@@ -14,18 +15,20 @@ export function defaultDataDir() {
 }
 
 export class DshMemory {
-  constructor({ dataDir = null, project = "default" } = {}) {
+  constructor({ dataDir = null, project = "default", embedProvider = null } = {}) {
     this.dataDir = dataDir || defaultDataDir();
     this.project = project;
-    this.embed = new EmbedProvider({ cacheDir: path.join(this.dataDir, ".cache") });
+    this.embed = embedProvider || new EmbedProvider({ cacheDir: path.join(this.dataDir, ".cache") });
     this.store = new VectorStore(path.join(this.dataDir, "vectors"), project);
     this.kv = new KvMemory(path.join(this.dataDir, "kv"));
   }
 
-  async indexFile(filePath, relPath) {
+  async indexFile(filePath, relPath, { evict = true } = {}) {
     const st = fs.statSync(filePath);
     const meta = { file: relPath, mtime: st.mtimeMs, size: st.size };
-    const key = "file:" + relPath + ":" + st.mtimeMs;
+    const prefix = "file:" + relPath + ":";
+    if (evict) this.store.removePrefix(prefix); // 陈旧分块淘汰：文件更新后不留旧块
+    const key = prefix + st.mtimeMs;
     const chunks = splitIntoChunks(fs.readFileSync(filePath, "utf-8"));
     for (const c of chunks) {
       const vector = await this.embed.embed(c.text);
@@ -48,12 +51,26 @@ export class DshMemory {
         else if (/\.(md|txt|json|yaml|yml|cs|ts|js|mjs|py|xaml|xml|html|vue|sql)$/i.test(e.name)) files.push(p);
       }
     }
-    let total = 0;
+    let total = 0, indexed = 0, skipped = 0;
+    const relPaths = new Set();
     for (const f of files) {
-      try { total += await this.indexFile(f, path.relative(rootDir, f)); }
+      const rel = path.relative(rootDir, f);
+      relPaths.add(rel);
+      const st = fs.statSync(f);
+      if (this.store.countPrefix("file:" + rel + ":" + st.mtimeMs) > 0) { skipped++; continue; } // mtime 未变 → 增量跳过
+      try { total += await this.indexFile(f, rel); indexed++; }
       catch { /* skip unreadable */ }
     }
-    return { files: files.length, chunks: total };
+    // 清理已从磁盘删除的文件的陈旧分块
+    let deleted = 0;
+    for (const id of this.store.ids()) {
+      const i = id.lastIndexOf(":");
+      if (i <= 0) continue;
+      const p = id.slice(0, i);
+      if (!p.startsWith("file:")) continue;
+      if (!relPaths.has(p.slice("file:".length))) deleted += this.store.removePrefix(p + ":");
+    }
+    return { files: files.length, chunks: total, indexed, skipped, deleted };
   }
 
   async search(query, k = 5) {
@@ -61,7 +78,13 @@ export class DshMemory {
     return this.store.search(qv, k);
   }
 
-  remember(key, value, scope = "global") { return this.kv.save(key, value, scope); }
+  remember(key, value, scope = "global") {
+    const hits = findSensitive(String(value));
+    if (hits.length) {
+      throw new Error("value contains sensitive content (" + hits.map(h => h.name).join(", ") + ") — rewrite without tokens/keys and retry");
+    }
+    return this.kv.save(key, value, scope);
+  }
   recall(key, scope = "global") { return this.kv.get(key, scope); }
   memories(scope) { return this.kv.all(scope); }
   forget(key, scope = "global") { return this.kv.forget(key, scope); }
