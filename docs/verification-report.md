@@ -37,5 +37,9 @@ the mismatch, not the agent.
 
 ## Usage
 
-MCP: `verify_report { runId, task, claims: [{ statement, kind, ... }] }`.
-Programmatic: `makeVerificationReport(...)` from `lib/verify/report.mjs`.
+- **DSH**: `verify_report` tool (dsh-verify plugin) — the guidance makes the
+  closing summary itself the trigger: finish work → write claims → adjudicate
+  → report summary + verdict. Skipping it is a claim without verification.
+- **MCP**: `verify_report { runId, task, claims: [{ statement, kind, ... }] }`
+  (any MCP client).
+- Programmatic: `makeVerificationReport(...)` from `lib/verify/report.mjs`.

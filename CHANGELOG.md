@@ -45,6 +45,11 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   [docs/verification-report.md](./docs/verification-report.md).
 - `lib/capture-store.test.mjs` and
   `lib/verify/report.test.mjs` unit tests wired into CI.
+- **dsh-verify shell** — the closing-summary becomes a claims list: a thin
+  DSH plugin registers the same `verify_report` engine (zero logic of its
+  own, guarded dynamic import) and its guidance makes "summary = claims +
+  verdict" a mandatory workflow. The trigger surface is the summary action
+  itself, not a remembered habit.
 
 ## [0.1.0] — 2026-09-07
 

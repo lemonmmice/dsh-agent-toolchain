@@ -27,6 +27,7 @@
 - Capture moat exposed — MCP capture_query/capture_append (caller attribution) for any MCP client
 - Evidence-adjudicated verification report — claims checked against build records / capture store / files (machine verdicts, not self-rating); contradicted claims auto-record agent-misjudge
 - runId spine — build logs + per-run records named by runId; capture records carry runId; verify/corpus keyed by runId
+- dsh-verify shell — the DSH closing-adjudication surface: closing summary becomes a claims list, same engine as MCP
 
 ## Now — next 1–2 weeks
 
@@ -46,9 +47,9 @@
 ## Year 1 — the verifiable closed loop
 
 4. **Unified verification run (full pipeline)** — the v0 report container
-   (lib/verify + verify_report) graduates into automatic assembly: `runId`
-   ties together diff, build log, UI screenshots, API records, perf data →
-   `verification-report.json/html`. DSH shell after.
+   (lib/verify + verify_report, MCP + DSH shells shipped) graduates into
+   automatic assembly: `runId` ties together diff, build log, UI screenshots,
+   API records, perf data → `verification-report.json/html`.
 5. **Scenarios as code** — YAML scenario: launch → navigate → act → assert
    UI/API/perf → cleanup. Record / replay / parametrize; failure-site evidence
    kept. Builds on ui_flow's existing steps.json format.

@@ -1,0 +1,8 @@
+{
+  "name": "dsh-verify",
+  "description": "DSH 收尾裁决面插件：任务收尾 claims 清单交给机器裁决（build/api/file/manual），被证据反驳的 claim 自动记入失败样本库",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "license": "Apache-2.0"
+}
