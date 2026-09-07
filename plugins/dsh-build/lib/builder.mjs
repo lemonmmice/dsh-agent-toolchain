@@ -216,6 +216,14 @@ export function makeBuilder(cfg) {
       warnings: warnings.slice(0, 20),
       truncated: errors.length > 40 || warnings.length > 20,
       clientWasKilled: !!(client.running && opts.killClient),
+      // A failed build with zero code errors is a blocked-by-environment
+      // situation (missing targeting packs, restore failures, locked
+      // outputs). Surface it loudly instead of leaving the agent with
+      // ok:false and "no errors to fix".
+      blockedByEnvironment: run.code !== 0 && codeErrors.length === 0 && envErrors.length > 0,
+      ...(run.code !== 0 && codeErrors.length === 0 && envErrors.length > 0
+        ? { error: '构建失败但没有代码错误（环境性问题）：' + envErrors.slice(0, 3).map((e) => e.code + ': ' + String(e.message).slice(0, 100)).join(' | ') }
+        : {}),
       logPath,
       encoding: enc,
       summaryLine: extractSummary(text) ?? `${errors.length} error(s), ${warnings.length} warning(s) (parsed)`,

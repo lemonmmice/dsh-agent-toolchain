@@ -2,6 +2,20 @@
 
 The same engineering-quality tools the DSH plugins expose — now available to **any MCP client** (Claude Code, Cursor, Cline, custom agents) over stdio.
 
+## Platform scope (honest)
+
+The MCP transport and the evidence spine are cross-platform, but the tool set is not:
+
+| Tools | Scope |
+| --- | --- |
+| `verify_report`, `failure_*`, `capture_*`, `http_request`, `memory_*` | cross-platform (Node stdlib / HTTP only) |
+| `build_run` | cross-platform with `engine=dotnet` (SDK-style repos); the default `engine=msbuild` is Windows/VS only |
+| `ui_status` / `ui_drive` | **Windows only** — they drive a Windows desktop client via PowerShell + UIA |
+| perf / hang-inspector | not exposed over MCP yet (see ROADMAP); Windows-only in their DSH form |
+
+On macOS/Linux the UI-driving half is inert and `ui_status` reports
+`unconfigured`; the evidence spine and the dotnet build engine keep working.
+
 ## Why
 
 The toolchain's `lib/` modules are framework-free by design. This thin MCP server
