@@ -47,11 +47,30 @@ the data minable. Propose and document a new class before using it.
 | `doc-gap` | docs / API mismatch caused the failure |
 | `design-flaw` | an architecture decision required rework |
 
+## System-recorded failures (the default)
+
+Manual reporting is the fallback, not the norm. The tools themselves know when
+a failure happened, so they record it — the system observes, the agent doesn't
+have to volunteer (and usually won't):
+
+| Signal | Tool | Auto-recorded class |
+| --- | --- | --- |
+| build code errors > 0 | `build_run` (MCP + DSH) | `verification-failure` |
+| ui_flow assertion failures | `ui_flow` (DSH) | `verification-failure` |
+| ui_drive step failed | `ui_drive` (MCP) | `tool-error` |
+| request could not be made | `http_request` (MCP) | `tool-error` |
+| claim vs evidence mismatch | `verify_report` (MCP) | `agent-misjudge` |
+
+Auto records carry the tags `auto` + the tool name. Manual `failure_record` is
+reserved for what the system cannot see: `human-handoff`, and context the
+tools don't know.
+
 ## Usage
 
 MCP (Claude Code / Cursor / Cline, via the `dsh-agent-toolchain` server):
 
-- `failure_record` — append one record
+- `failure_record` — append one record manually (mainly `human-handoff` —
+  most classes are auto-recorded, see above)
 - `failure_query` — filter by `q` / `failureClass` / `tag` / time range
 - `failure_stats` — totals + per-class counts
 
