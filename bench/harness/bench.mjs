@@ -340,7 +340,11 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
   // without it all mcp__* tools appear). Both modes must differ only in
   // whether --mcp-config is passed, so both run without --bare.
   if (args.model) cliArgs.push('--model', args.model)
-  if (mcpConfigPath) cliArgs.push('--mcp-config', mcpConfigPath)
+  if (mcpConfigPath) {
+    cliArgs.push('--mcp-config', mcpConfigPath)
+    // MCP server connection evidence lands on stderr (captured in agent.log).
+    cliArgs.push('--mcp-debug')
+  }
 
   const startedAt = Date.now()
   const timer = { done: false }
@@ -369,20 +373,30 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
   // regressions like --bare silently dropping MCP servers.)
   let mcpToolsVisible = null
   if (mcpConfigPath) {
-    const probe = await runAgentCli(
-      ['-p', '--output-format', 'json', '--max-turns', '2', '--mcp-config', mcpConfigPath],
-      'Do NOT call any tools. Answer only with a comma-separated list of the tool names available to you, including MCP tools.',
-      join(runDir, 'probe.prompt.txt'),
-      runDir,
-      agentEnv,
-    )
-    const probeParsed = parseResultJson(probe.out)
-    mcpToolsVisible = !!(
-      probeParsed &&
-      typeof probeParsed.result === 'string' &&
-      probeParsed.result.includes('mcp__dsh-agent-toolchain__build_run')
-    )
-    writeFileSync(join(runDir, 'probe.log'), `visible=${mcpToolsVisible}\n\n${probe.out}\n\n${probe.err}`, 'utf8')
+    // The CLI's MCP connections are occasionally flaky; retry the probe up to
+    // 3 times before declaring the run invalid (false negatives observed).
+    let probeParsed = null
+    let probeOut = ''
+    let probeErr = ''
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const probe = await runAgentCli(
+        ['-p', '--output-format', 'json', '--max-turns', '2', '--mcp-config', mcpConfigPath, '--mcp-debug'],
+        'Do NOT call any tools. Answer only with a comma-separated list of the tool names available to you, including MCP tools.',
+        join(runDir, 'probe.prompt.txt'),
+        runDir,
+        agentEnv,
+      )
+      probeOut = probe.out
+      probeErr = probe.err
+      probeParsed = parseResultJson(probe.out)
+      mcpToolsVisible = !!(
+        probeParsed &&
+        typeof probeParsed.result === 'string' &&
+        probeParsed.result.includes('mcp__dsh-agent-toolchain__build_run')
+      )
+      if (mcpToolsVisible) break
+    }
+    writeFileSync(join(runDir, 'probe.log'), `visible=${mcpToolsVisible}\n\n${probeOut}\n\n${probeErr}`, 'utf8')
     if (!mcpToolsVisible) {
       console.warn(`[run ${runId}] MCP tools NOT visible to the agent - this run is INVALID as a toolchain datapoint`)
     }

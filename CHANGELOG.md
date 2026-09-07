@@ -34,6 +34,31 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Changed
 
+- **Pilot 2 (3 tasks)** — neutral prompts (no prescribed shell commands),
+  WebSearch/WebFetch hard-blocked, hardened MCP-visibility probe (3 retries +
+  `--mcp-debug` evidence). Result, now replicated across 3 tasks: every run
+  verified, and the toolchain MCP was connected-visible but **never called**
+  (0 `mcp__*` tool uses); cost-per-verified-task baseline $1.40 vs toolchain
+  $1.44. Conclusion recorded in [bench/pilot/report.md](./bench/pilot/report.md):
+  task shapes must match the tool — the toolchain's home turf is desktop-client
+  work, not SDK-library bugfixes.
+- **gate failure detail** — `verify_report kind=gate` keeps the last 6 lines /
+  400 chars on failure (was 2 lines / 120), enough to see the failing
+  assertion.
+- **build blocked-by-environment** — a failed build with zero code errors but
+  environmental errors (targeting packs, restore, locks) now returns
+  `blockedByEnvironment: true` plus an explicit `error` line instead of a bare
+  `ok:false` with empty `errors[]`.
+- **Honest platform scope** — [mcp/README.md](./mcp/README.md) and the root
+  README now state which tools are Windows-only (UI driving, VS MSBuild
+  engine) and which are cross-platform (evidence spine, `dotnet` engine).
+- **`memory_recall` flat shape (MCP)** — returns `{found, key, value, scope}`;
+  the DSH-side tool already did.
+- **`perf` PowerShell env override** — `DSH_PERF_POWERSHELL` (falling back to
+  `DSH_UI_POWERSHELL`) replaces the hard-coded path.
+- **dsh-verify registered in the DSH profile** (local deploy) — closing
+  adjudication goes live in DSH sessions on next host restart.
+
 - **`verify_report kind=gate` rejects vacuous passes** — exit 0 alone no
   longer adjudicates `pass` when the output shows zero tests executed
   (a filter matching nothing exits 0); that run now fails with

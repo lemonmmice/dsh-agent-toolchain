@@ -138,9 +138,57 @@ write a harsh review. Raw review is local-only; the findings below were each
 As of this commit, the two "NO" tools have been reworked per the review and
 re-verified; re-adjudication is the next pilot run's job.
 
-## 8. Attribution rules
+## 9. Pilot 2 — neutral prompts, 3 tasks, web access hard-blocked
 
-- Numbers in §3 come from `bench-runs/results.jsonl` (machine-recorded).
+Changes vs pilot 1: task prompts no longer prescribe any shell command ("verify
+with the repository's own build and test tooling"); WebSearch/WebFetch are
+excluded at the tool level; two more tasks packaged from real merged fixes in
+the same public repository (each validated: base + hidden tests fail, gold
+fix makes them pass); the MCP-visibility probe was hardened (no-tool-calls
+instruction, 2-turn budget, 3 retries, `--mcp-debug` stderr evidence).
+
+| task (tier) | baseline | toolchain (MCP visible) | MCP tool calls |
+|---|---|---|---|
+| T2-1 (hotkey event semantics) | 35 turns / $1.70 / ✅ | 39 turns / $1.71 / ✅ | **0** |
+| T2-2 (dialog owner lifetime) | 22 turns / $1.72 / ✅ | 29 turns / $1.58 / ✅ | **0** |
+| T2-3 (transition event spam) | 12 turns / $0.79 / ✅ | 20 turns / $1.03 / ✅ | **0** |
+| **total / avg** | 69 turns / **$4.21** / 3-0 | 88 turns / **$4.32** / 3-0 | **0 of all tool calls** |
+
+Cost per verified task: baseline **$1.40** vs toolchain **$1.44** (+3%).
+Tool-call census from the session transcripts of the three toolchain runs:
+`Bash ×31, Read ×20, Glob ×15, Edit ×8, Grep ×11, PowerShell ×5, Write ×3` —
+every `mcp__dsh-agent-toolchain__*` tool unused across all three runs.
+
+**Conclusion (now replicated):** the toolchain MCP was connected, verified
+visible, and prompt-neutralized — and agents still chose a plain shell loop
+for every task. Two readings, both actionable:
+
+1. *Wrong task shape.* These tasks are single-file SDK-library bugfixes; the
+   toolchain's unique value (desktop-client build layout, UI drive, API
+   capture, adjudicated closing) is dead weight on them. The benchmark should
+   next use a task where the shell cannot do what the toolchain does — its
+   home turf: a desktop-client change (x86 MSBuild layout, capture moat,
+   UI-driven verification).
+2. *No pull yet.* The tools that DO generalize (build loop, verify_report)
+   were not worth switching to in the agent's judgment: `build_run`'s output
+   has to beat raw `dotnet test` text at least once, visibly, before any agent
+   prefers it.
+
+Both readings agree on the same next step: task shapes must match the tool,
+not the other way around.
+
+## 10. Harness validity notes
+
+- One toolchain run in pilot 2 was invalidated by a flaky MCP connection
+  (probe showed the server unconnected); re-run connected and verified. The
+  probe now retries 3× and the agent stderr carries `--mcp-debug` connection
+  evidence, so "MCP was connected" is machine-attested per run.
+- Web tools were hard-blocked in pilot 2 (`--allowedTools`); pilot 1 numbers
+  predate that block, which is why the two pilots are reported separately.
+
+## 11. Attribution rules
+
+- Numbers in §3/§9 come from `bench-runs/results.jsonl` (machine-recorded).
 - §7 is an external agent's opinion, machine-triggered and verbatim-distilled;
   it is not the author's claim. Facts inside it were re-checked where cheap
   (tool returns are reproducible by re-running).
