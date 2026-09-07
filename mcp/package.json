@@ -1,0 +1,22 @@
+{
+  "name": "@dsh-agent-toolchain/mcp",
+  "description": "MCP server exposing the dsh-agent-toolchain engineering tools (build / ui-drive / http_request / memory) to any MCP client — Claude Code, Cursor, Cline, or any agent with MCP support.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "server.mjs",
+  "bin": {
+    "dsh-agent-toolchain": "server.mjs"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "url": "https://github.com/lemonmmice/dsh-agent-toolchain.git",
+    "type": "git",
+    "directory": "mcp"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}
