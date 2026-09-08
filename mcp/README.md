@@ -10,9 +10,9 @@ The MCP transport and the evidence spine are cross-platform, but the tool set is
 | --- | --- |
 | `verify_report`, `failure_*`, `capture_*`, `http_request`, `memory_*` | cross-platform (Node stdlib / HTTP only) |
 | `build_run` | cross-platform with `engine=dotnet` (SDK-style repos); the default `engine=msbuild` is Windows/VS only |
-| `ui_status` / `ui_drive` / `ui_flow` | **Windows only** — they drive a Windows desktop client via PowerShell + UIA |
+| `ui_status` / `ui_windows` / `ui_state` / `ui_drive` / `ui_flow` | **Windows only** — they drive a Windows desktop client via PowerShell + UIA |
 | `perf_probe` / `perf_report` | **Windows only** — window-message latency sampling of the same client |
-| hang-inspector | not exposed over MCP yet (see ROADMAP); dump-driven, needs a live hang session |
+| `hang_status` / `hang_run` / `hang_stop` / `hang_packs` / `hang_pack` / `hang_analyze` / `hang_delete` | **Windows only** — hang-monitor control, evidence packs, ClrMD dump analysis |
 
 On macOS/Linux the UI-driving half is inert and `ui_status` reports
 `unconfigured`; the evidence spine and the dotnet build engine keep working.

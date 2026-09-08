@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import { makeBuilder } from '../plugins/dsh-build/lib/builder.mjs'
 import { makeDriver } from '../plugins/dsh-ui-drive/lib/driver.mjs'
 import { makePerf } from '../plugins/dsh-perf/lib/perf.mjs'
+import { makeHangInspector } from '../plugins/dsh-hang-inspector/lib/hang.mjs'
 import { sendRequest } from '../plugins/dsh-postman/lib/http.mjs'
 import { DshMemory } from '../plugins/dsh-memory/lib/memory.mjs'
 import { makeFailureCorpus, FAILURE_CLASSES } from '../lib/failure-corpus.mjs'
@@ -89,6 +90,12 @@ let corpus = null
 function fc() {
   if (!corpus) corpus = makeFailureCorpus({})
   return corpus
+}
+
+let hang = null
+function hng() {
+  if (!hang) hang = makeHangInspector({})
+  return hang
 }
 
 /**
@@ -163,24 +170,62 @@ server.tool(
   async () => jtext(await drv().status())
 )
 
-const uiAction = z.enum(['find', 'click', 'setvalue', 'key', 'read', 'shot'])
+const uiAction = z.enum(['find', 'read', 'state', 'windows', 'shot', 'waitfor', 'click', 'setvalue', 'key', 'type', 'drag'])
+
+server.tool(
+  'ui_state',
+  'UI snapshot (read-only, one step to see "what is on screen right now"): current main window + focused element + ' +
+    'the interactive control list (buttons/edits/tabs/checkboxes/list items with #index, aid, enabled and the real input value). ' +
+    'Prefer this over repeated read (which returns hundreds of text lines). match filters by control name regex; max caps the list (default 40).',
+  {
+    match: z.string().optional().describe('Regex filter on control names (e.g. 登录|验证码)'),
+    max: z.number().optional().describe('Max controls returned, default 40'),
+  },
+  async (args) => jtext(await drv().drive({ action: 'state', match: args.match || '', max: args.max || 40 }))
+)
+
+server.tool(
+  'ui_windows',
+  'List every top-level window of the target client process (type / title / handle / position / offscreen). ' +
+    'Read-only. The login window, a captcha popup or a modal dialog is often NOT the "main window" — check this first ' +
+    'when driving a dynamic UI (login, page switch, popup), then decide where to act.',
+  {},
+  async () => jtext(await drv().drive({ action: 'windows' }))
+)
 
 server.tool(
   'ui_drive',
-  'Drive the running desktop client via Windows UIA: find / read / shot are read-only; ' +
-    'click / setvalue / key are real side effects and REQUIRE allowSideEffects=true. ' +
-    'shot with describe=true returns a vision description of the screen.',
+  'Drive the running desktop client via Windows UIA (real-time, stateful). Actions: find (locate a control) / ' +
+    'read (visible controls, with the real input value and a #index reusable as `index`) / windows (all top-level windows) / ' +
+    'shot (PNG; describe=true returns a vision description) / waitfor (wait until a condition holds: state=appear|gone|enabled|disabled) / ' +
+    'click / setvalue (ValuePattern) / key (clipboard paste for CJK) / type (SendKeys sequence: {ENTER} {TAB} {ESC} {DOWN} ^a …) / ' +
+    'drag (mouse drag, e.g. a slider captcha). ' +
+    'For dynamic UIs: pass waitFor={ms,interval,state,match,index} on click/setvalue/key/type/find/expect to wait for the condition ' +
+    'BEFORE acting (no more guessing sleeps); use index for the Nth same-named control and inAid/inName to scope the search to a container. ' +
+    'find / read / windows / shot / waitfor are read-only; click / setvalue / key / type / drag are real side effects and REQUIRE allowSideEffects=true.',
   {
     action: uiAction,
     name: z.string().optional().describe('Control Name'),
     aid: z.string().optional().describe('AutomationId'),
-    value: z.string().optional().describe('Value for setvalue/key'),
-    ascii: z.boolean().optional().describe('key mode: send ASCII directly instead of clipboard paste'),
-    match: z.string().optional().describe('read mode: regex filter'),
+    value: z.string().optional().describe('Value for setvalue/key/type (type accepts SendKeys syntax, e.g. 1234{ENTER})'),
+    ascii: z.boolean().optional().describe('key: send ASCII directly instead of clipboard paste; type: treat {}^%~() as literal'),
+    match: z.string().optional().describe('read: regex filter; on find/click: regex the control name matches (with index)'),
+    index: z.number().optional().describe('Which match to use (0-based; reuse the #index from read)'),
+    inAid: z.string().optional().describe('Scope the search to the subtree of this AutomationId container'),
+    inName: z.string().optional().describe('Scope the search to the subtree of this Name container'),
+    waitFor: z.record(z.string(), z.any()).optional().describe('Wait before acting: {ms?:5000, interval?:150, state?:"appear"|"gone"|"enabled"|"disabled", match?, index?}'),
+    state: z.string().optional().describe('waitfor: appear (default) | gone | enabled | disabled'),
+    keys: z.string().optional().describe('type: key sequence (same as value, clearer intent)'),
+    fromX: z.number().optional().describe('drag: start X (client-area coords)'),
+    fromY: z.number().optional().describe('drag: start Y'),
+    toX: z.number().optional().describe('drag: end X'),
+    toY: z.number().optional().describe('drag: end Y'),
+    steps: z.number().optional().describe('drag: interpolation steps (default 12)'),
+    holdMs: z.number().optional().describe('drag: pause before press/release (default 120)'),
     label: z.string().optional().describe('Screenshot file label (shot mode)'),
     describe: z.boolean().optional().describe('shot mode: also return a vision description of the screen'),
     waitMs: z.number().optional(),
-    allowSideEffects: z.boolean().optional().describe('REQUIRED true for click/setvalue/key'),
+    allowSideEffects: z.boolean().optional().describe('REQUIRED true for click/setvalue/key/type/drag'),
   },
   async (args) => {
     if (['click', 'setvalue', 'key'].includes(args.action) && !args.allowSideEffects) {
@@ -205,31 +250,43 @@ server.tool(
 
 server.tool(
   'ui_flow',
-  'Run a whole UI verification sequence and collect evidence (find/read/shot/wait/expect are read-only; ' +
-    'click/setvalue/key need allowSideEffects=true). The sequence runs inside ONE PowerShell process ' +
-    '(no per-step process start), so a 10-step flow takes ~1-2s instead of ~10s. ' +
-    'Every step output + screenshot is written to the evidence dir (steps.json); the returned transcript has passed/failed counts.',
+  'Run a whole UI verification sequence and collect evidence (find/read/windows/shot/wait/waitfor/expect are read-only; ' +
+    'click/setvalue/key/type/drag need allowSideEffects=true). Steps: {action, name?, aid?, value?, keys?, ascii?, match?, index?, inAid?, inName?, waitFor?, state?, fromX?/fromY?/toX?/toY?, waitMs?, label?, expectEnabled?, expectMatch?}. ' +
+    'waitFor on any action waits for a condition first (state=appear|gone|enabled|disabled); expect/waitfor count toward passed/failed. ' +
+    'The sequence runs inside ONE PowerShell process (no per-step process start), so a 10-step flow takes ~1-2s. ' +
+    'Every step output + screenshot is written to the evidence dir (steps.json); the returned transcript has passed/failed counts. ' +
+    'For flows that must look at the screen between steps (login, captcha, branch on UI state), use ui_drive step by step instead.',
   {
     steps: z.array(z.object({
-      action: z.enum(['find', 'click', 'setvalue', 'key', 'read', 'shot', 'wait', 'expect']),
+      action: z.enum(['find', 'click', 'setvalue', 'key', 'type', 'drag', 'read', 'state', 'windows', 'shot', 'wait', 'waitfor', 'expect']),
       name: z.string().optional(),
       aid: z.string().optional(),
       value: z.string().optional(),
+      keys: z.string().optional(),
       ascii: z.boolean().optional(),
       match: z.string().optional(),
-      waitMs: z.number().optional().describe('Post-action settle time; find/read/shot/expect default to 0'),
+      index: z.number().optional(),
+      inAid: z.string().optional(),
+      inName: z.string().optional(),
+      waitFor: z.record(z.string(), z.any()).optional(),
+      state: z.string().optional(),
+      fromX: z.number().optional(),
+      fromY: z.number().optional(),
+      toX: z.number().optional(),
+      toY: z.number().optional(),
+      waitMs: z.number().optional().describe('Post-action settle time; find/read/shot/expect/windows default to 0'),
       label: z.string().optional(),
       expectEnabled: z.boolean().optional().describe('expect: assert enabled state'),
       expectMatch: z.string().optional().describe('expect: regex the control detail must match'),
     })).describe('Step sequence'),
     tag: z.string().optional().describe('Evidence dir label (default flow)'),
     failFast: z.boolean().optional().describe('Stop at the first failed assertion'),
-    allowSideEffects: z.boolean().optional().describe('REQUIRED true when the sequence contains click/setvalue/key'),
+    allowSideEffects: z.boolean().optional().describe('REQUIRED true when the sequence contains click/setvalue/key/type/drag'),
   },
   async (args) => {
-    const hasSideEffects = (args.steps || []).some((s) => ['click', 'setvalue', 'key'].includes(s.action))
+    const hasSideEffects = (args.steps || []).some((s) => ['click', 'setvalue', 'key', 'type', 'drag'].includes(s.action))
     if (hasSideEffects && !args.allowSideEffects) {
-      return text('Blocked: the sequence contains a real side effect (click/setvalue/key). Re-call with allowSideEffects=true after confirming with the user.')
+      return text('Blocked: the sequence contains a real side effect (click/setvalue/key/type/drag). Re-call with allowSideEffects=true after confirming with the user.')
     }
     const r = await drv().flow({
       steps: args.steps,
@@ -238,6 +295,83 @@ server.tool(
       allowSideEffects: args.allowSideEffects === true,
     })
     if (r.failed > 0) autoRecord('verification-failure', 'ui_flow', `ui_flow assertion failure: ${r.failed}/${r.totalSteps} steps failed (evidence: ${r.stepsJson || r.evidenceDir || '?'})`)
+    return jtext(r)
+  }
+)
+
+// ---------------------------------------------------------------- ui observe / act (semantic split)
+
+server.tool(
+  'ui_observe',
+  'Read-only UI observation (recommended entry point; no allowSideEffects needed). Actions: find / read (controls + real input values) / ' +
+    'state (snapshot: window + focus + interactive controls) / windows / waitfor / expectwindow / expecttext / waitany / shot. ' +
+    'The dynamic-UI loop is: ui_observe -> decide -> ui_act -> ui_observe. ' +
+    'waitany is how you adjudicate a login: bet on "main window appeared", "error text appeared" and "login window still there" at once ' +
+    'and get back which one hit (with stableCount confirmation to avoid transient states).',
+  {
+    action: z.enum(['find', 'read', 'state', 'windows', 'waitfor', 'expectwindow', 'expecttext', 'waitany', 'shot']),
+    name: z.string().optional(),
+    aid: z.string().optional(),
+    match: z.string().optional(),
+    textRe: z.string().optional().describe('expecttext / waitany(text): text regex (e.g. ErrorInfo)'),
+    titleRe: z.string().optional().describe('expectwindow / waitany(window): window title regex'),
+    gone: z.boolean().optional().describe('expectwindow: true = wait until the window disappears'),
+    ms: z.number().optional().describe('Timeout ms (default 5000; waitany 15000)'),
+    interval: z.number().optional(),
+    state: z.string().optional().describe('waitfor condition: appear|gone|enabled|disabled'),
+    waitFor: z.record(z.string(), z.any()).optional(),
+    conds: z.array(z.record(z.string(), z.any())).optional().describe('waitany conditions: [{kind:"window"|"text"|"appear"|"gone"|"enabled"|"disabled", titleRe?, textRe?, name?, aid?, label?}]'),
+    stableCount: z.number().optional().describe('waitany: consecutive confirmations before a hit counts (default 2)'),
+    index: z.number().optional(),
+    inAid: z.string().optional(),
+    winTitle: z.string().optional().describe('Scope the search to the window whose title matches'),
+    max: z.number().optional(),
+    label: z.string().optional(),
+    describe: z.boolean().optional().describe('shot: also return a vision description'),
+  },
+  async (args) => {
+    const r = await drv().drive({ ...args, action: args.action })
+    return jtext(r)
+  }
+)
+
+server.tool(
+  'ui_act',
+  'Real UI action (side effects; allowSideEffects=true required): click / setvalue (use this for key-filtered fields such as a phone box) / ' +
+    'key / type ({ENTER} {TAB} sequences) / drag (slider captcha). ' +
+    'Input is read back and verified — a value that did not land is ok:false, never a silent success. Password/captcha fields are never echoed. ' +
+    'Trading controls (buy/sell/order/pay) are hard-denied in the driver: allowSideEffects cannot unlock them. ' +
+    'observe=true attaches a UI snapshot after the action. Credentials: pass ${cred:name}; the driver expands DSH_CRED_name from its own environment, ' +
+    'so the secret never enters the model context or the evidence files.',
+  {
+    action: z.enum(['click', 'setvalue', 'key', 'type', 'drag']),
+    name: z.string().optional(),
+    aid: z.string().optional(),
+    value: z.string().optional().describe('setvalue/key/type content; supports ${cred:name}'),
+    keys: z.string().optional(),
+    ascii: z.boolean().optional(),
+    match: z.string().optional(),
+    index: z.number().optional(),
+    inAid: z.string().optional(),
+    winTitle: z.string().optional(),
+    waitFor: z.record(z.string(), z.any()).optional(),
+    expectValue: z.string().optional().describe('type: expected value for the read-back check'),
+    secret: z.boolean().optional().describe('Mask the value in output/evidence'),
+    fromX: z.number().optional(),
+    fromY: z.number().optional(),
+    toX: z.number().optional(),
+    toY: z.number().optional(),
+    observe: z.boolean().optional(),
+    observeMatch: z.string().optional(),
+    waitMs: z.number().optional(),
+    allowSideEffects: z.boolean().optional().describe('REQUIRED true'),
+  },
+  async (args) => {
+    if (args.allowSideEffects !== true) {
+      return text('Blocked: ui_act performs real side effects. Re-call with allowSideEffects=true after confirming with the user.')
+    }
+    const r = await drv().drive(args)
+    if (!r.ok) autoRecord('tool-error', 'ui_act', `ui_act ${args.action} failed: ${String(r.error ?? 'unknown').slice(0, 200)}`)
     return jtext(r)
   }
 )
@@ -270,6 +404,103 @@ server.tool(
   'Read the most recent perf_probe report (P50/P95/P99 + stall events).',
   {},
   async () => jtext(prf().report())
+)
+
+// ---------------------------------------------------------------- hang inspector
+//
+// The panel's one-click hang workflow, on the MCP surface: start the hang-loop
+// monitor (it never clicks anything itself — the human drives the client),
+// then read the evidence packs it collected and run the ClrMD stack analysis.
+
+server.tool(
+  'hang_status',
+  'Hang-inspector status (read-only): whether the hang monitor is running, its pid/exit code, and the last 150 log lines. ' +
+    'Evidence packs live in DSH_HANG_EVIDENCE_DIR (default ~/.dsh-agent-toolchain/hang-evidence); list them with hang_packs.',
+  {},
+  async () => jtext(hng().runStatus())
+)
+
+server.tool(
+  'hang_run',
+  'Start the hang monitor (hang-loop.ps1): it watches the target client main-window responsiveness WITHOUT clicking anything — ' +
+    'the user reproduces the freeze and the monitor collects an evidence pack on detection (frozen screenshot, timeline, process info, ' +
+    'net-trace tail, probe/procdump logs, full dump). Returns immediately; poll hang_status / hang_packs. ' +
+    'Set maxSeconds>0 to auto-stop (0 = run until hang_stop or the script exits).',
+  { maxSeconds: z.number().optional().describe('Auto-stop after N seconds (0 = unlimited, max 86400)') },
+  async (args) => jtext(hng().startRun({ maxSeconds: args.maxSeconds ?? 0 }))
+)
+
+server.tool(
+  'hang_stop',
+  'Stop the hang monitor (kills its process tree). Evidence packs already collected are kept.',
+  {},
+  async () => jtext(hng().stopRun())
+)
+
+server.tool(
+  'hang_packs',
+  'List collected hang evidence packs, newest first: id, timestamp, file list, dump size, screenshot presence, ' +
+    'analysis status, and the first line of summary.txt / process-info.txt. Use hang_pack for the full text evidence.',
+  {},
+  async () => {
+    const items = hng().listPacks()
+    return jtext({ total: items.length, evidenceDir: hng().packsDir(), items })
+  }
+)
+
+server.tool(
+  'hang_pack',
+  'Read one evidence pack in full (read-only): every text evidence file (summary / process-info / net-trace tail / probe + procdump logs, ' +
+    'each capped at 512KB), the file list, and the cached analysis.json. The frozen screenshot is a PNG on disk inside the pack dir ' +
+    '(frozen-screen.png) — pass that path to an image-reading tool to look at it.',
+  { id: z.string().describe('Pack id from hang_packs') },
+  async (args) => {
+    const detail = hng().packDetail(args.id)
+    if (detail === null) return text('pack not found: ' + args.id)
+    return jtext(detail)
+  }
+)
+
+server.tool(
+  'hang_analyze',
+  'Run the ClrMD (DumpStack) analysis on a pack frozen.dmp: managed thread stacks, the suspect/UI thread, a diagnosis line, ' +
+    'and the suspect method mapped to project source (DSH_HANG_SRC_ROOT) with line numbers. ' +
+    'wait=true blocks until the analysis finishes (up to waitMs) and returns the report — the usual choice for an agent; ' +
+    'wait=false returns immediately and the panel/poller reads the cached analysis.',
+  {
+    id: z.string().describe('Pack id from hang_packs (must contain frozen.dmp)'),
+    wait: z.boolean().optional().describe('Wait for the analysis to finish (default true)'),
+    waitMs: z.number().optional().describe('Max wait in ms when wait=true (default 300000)'),
+  },
+  async (args) => {
+    const r = await hng().analyze(args.id, { wait: args.wait !== false, waitMs: args.waitMs ?? 300000 })
+    if (r.ok === false && r.status === 'error') {
+      autoRecord('tool-error', 'hang_analyze', `hang analysis failed: ${String(r.error ?? 'unknown').slice(0, 200)}`)
+    }
+    return jtext(r)
+  }
+)
+
+server.tool(
+  'hang_delete',
+  'Delete hang evidence packs (LOCAL, irreversible — dumps are hundreds of MB). confirm=true is required. ' +
+    'Give id to delete one pack, or all=true to clear every pack.',
+  {
+    id: z.string().optional().describe('Pack id to delete'),
+    all: z.boolean().optional().describe('Delete every pack in the evidence dir'),
+    confirm: z.boolean().describe('Must be true — deletion is irreversible'),
+  },
+  async (args) => {
+    if (args.confirm !== true) {
+      return text('Blocked: hang_delete is irreversible. Re-call with confirm=true after confirming with the user.')
+    }
+    if (args.all === true) return jtext({ deleted: hng().removeAllPacks(), all: true })
+    if (typeof args.id === 'string' && args.id !== '') {
+      const ok = hng().removePack(args.id)
+      return jtext(ok ? { deleted: args.id } : { ok: false, error: 'pack not found: ' + args.id })
+    }
+    return text('Nothing to do: pass id=<pack> or all=true.')
+  }
 )
 
 // ---------------------------------------------------------------- http
