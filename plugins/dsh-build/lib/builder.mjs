@@ -325,9 +325,20 @@ export function makeBuilder(cfg) {
       ...(run.code !== 0 && codeErrors.length === 0 && envErrors.length > 0
         ? { error: '构建失败但没有代码错误（环境性问题）：' + envErrors.slice(0, 3).map((e) => e.code + ': ' + String(e.message).slice(0, 100)).join(' | ') }
         : {}),
+      // A non-zero exit with NOTHING parsed is the dangerous shape: the agent
+      // reads "0 error(s)" and concludes the build passed. Surface it as an
+      // explicit failure and hand over the log tail so the cause is visible.
+      ...(run.code !== 0 && errors.length === 0 && envErrors.length === 0
+        ? {
+            error: '构建以非零退出码结束但未解析到任何错误（可能是 SDK/工具链/环境问题，不是代码错误）；日志尾部：' + text.split(/\r?\n/).filter((l) => l.trim()).slice(-4).join(' / ').slice(0, 400),
+            summaryLineOverride: 'BUILD FAILED (exit ' + run.code + '), no parsed errors — see log tail',
+          }
+        : {}),
       logPath,
       encoding: enc,
-      summaryLine: extractSummary(text) ?? `${errors.length} error(s), ${warnings.length} warning(s) (parsed)`,
+      summaryLine: (run.code !== 0 && errors.length === 0 && envErrors.length === 0)
+        ? ('BUILD FAILED (exit ' + run.code + '), no parsed errors — see log tail')
+        : (extractSummary(text) ?? `${errors.length} error(s), ${warnings.length} warning(s) (parsed)`),
     }
     persistLast(result)
     if (runId) {
