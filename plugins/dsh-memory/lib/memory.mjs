@@ -10,6 +10,7 @@ import { findSensitive } from "./sensitive.mjs";
 const SKIP = new Set([".git", "node_modules", "bin", "obj", ".vs", "dist", ".venv", "packages", ".memory"]);
 
 export function defaultDataDir() {
+  if (process.env.DSH_MEMORY_DIR) return process.env.DSH_MEMORY_DIR
   const home = process.env.DSH_HOME || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, ".dsh") : "");
   return path.join(home, "memory");
 }
@@ -74,6 +75,8 @@ export class DshMemory {
     }
     // 清理已从磁盘删除的文件的陈旧分块。判定只看"磁盘上文件是否还存在"，
     // 与当前索引的根无关——索引 B 仓库不再清掉 A 仓库的块。
+    // 兼容护栏：旧版（升级前）的键存的是相对路径，isAbsolute 为 false——
+    // 这类旧键一律不动（孤儿块无害），绝不误删。
     let deleted = 0;
     for (const id of this.store.ids()) {
       const i = id.lastIndexOf(":");
@@ -81,6 +84,7 @@ export class DshMemory {
       const p = id.slice(0, i);
       if (!p.startsWith("file:")) continue;
       const abs = p.slice("file:".length);
+      if (!path.isAbsolute(abs)) continue;
       if (!fs.existsSync(abs)) deleted += this.store.removePrefix(p + ":");
     }
     return { files: files.length, chunks: total, indexed, skipped, sensitiveSkipped, deleted };

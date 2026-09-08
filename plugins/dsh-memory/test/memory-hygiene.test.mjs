@@ -4,7 +4,7 @@
 import { mkdtempSync, writeFileSync, rmSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { DshMemory } from '../lib/memory.mjs'
+import { DshMemory, defaultDataDir } from '../lib/memory.mjs'
 import { EmbedProvider } from '../lib/embed-provider.mjs'
 import { findSensitive, isSensitive } from '../lib/sensitive.mjs'
 
@@ -82,6 +82,18 @@ const afterB = mem.status().chunks
 ok(afterB >= afterA + 1, 'indexing root B kept root A chunks (no cross-root wipe)')
 const hitA = await mem.search('alpha 关键字')
 ok(hitA.some((h) => String(h.meta.file).includes('alpha.md')), 'root A still searchable after indexing root B')
+
+// ---- legacy relative-path keys (pre-upgrade format) must survive eviction
+mem.store.upsert('file:legacy.md:111#0', { sparse: { leg: 1 }, norm: 1, kind: 'bigram' }, { file: 'legacy.md', text: 'legacy chunk' })
+const beforeLegacy = mem.status().chunks
+await mem.indexWorkspace(wsA)
+ok(mem.status().chunks >= beforeLegacy, 'legacy relative-path chunk not wiped by eviction sweep')
+mem.store.removePrefix('file:legacy.md:')
+
+// ---- DSH_MEMORY_DIR is honored
+process.env.DSH_MEMORY_DIR = join(tmpdir(), 'dshmem-envtest')
+ok(defaultDataDir() === process.env.DSH_MEMORY_DIR, 'DSH_MEMORY_DIR overrides the default data dir')
+delete process.env.DSH_MEMORY_DIR
 
 // ---- remember() blocks sensitive values (fail-closed)
 throws(() => mem.remember('k', 'token ghp_' + 'B'.repeat(24)), 'remember blocks sensitive value')
