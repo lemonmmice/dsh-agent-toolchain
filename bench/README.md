@@ -79,7 +79,28 @@ npm run bench -- --task <task-id> --mode baseline --runs 2
 # pin the model, cap turns, use a local clone mirror, agent-env overrides
 npm run bench -- --task <task-id> --mode toolchain --model <name> --max-turns 40 `
   --reference <path-to-local-mirror> --local-env bench/local.env
+
+# cross-model: run the same task with the Codex CLI (model pinned)
+npm run bench -- --task <task-id> --mode toolchain --agent codex `
+  --model gpt-6-astra --reference <path-to-local-mirror>
 ```
+
+`--agent` selects the agent CLI: `claude` (default) or `codex`. Per-agent
+differences the report must disclose:
+
+- **codex has no `--max-turns`** (timeout is the only bound) and no USD cost
+  report — token usage is recorded instead, `costUsd` is `null`.
+- **turn granularity differs across CLIs** (one codex turn can contain many
+  tool calls; one claude turn is one assistant message) — compare
+  within-agent (baseline vs toolchain) or use tokens, never raw cross-agent
+  turn counts.
+- codex MCP servers are configured via `$CODEX_HOME/bench.config.toml`
+  (the harness overwrites it per toolchain run, layered with `-p bench`);
+  codex's bundled MCP servers (e.g. `node_repl`) are present in both codex
+  arms. codex surfaces MCP tools under bare names (no `mcp__` prefix).
+- The codex process env has proxy variables removed by the harness (it must
+  reach its model endpoint directly); the harness-side git/dotnet steps keep
+  the `--local-env` proxy.
 
 Each run writes `bench-runs/<run-id>/` (agent log, `agent.patch`, verify log,
 `run.json`) and appends one line to `bench-runs/results.jsonl`. Aggregated,
