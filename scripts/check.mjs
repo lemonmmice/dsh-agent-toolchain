@@ -28,6 +28,10 @@ const LOCAL_ONLY = [
   join(root, 'bench', 'tasks'),
   join(root, 'bench', 'local.env'),
   join(root, 'bench-runs'),
+  // Tool evidence directories hold real client screenshots/UI text (and may
+  // legitimately contain product names) — local artifacts, never scanned and
+  // never committed.
+  join(root, '.dsh-agent-toolchain'),
 ]
 
 function isLocalOnly(p) {
