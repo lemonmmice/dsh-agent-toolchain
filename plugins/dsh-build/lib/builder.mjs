@@ -73,22 +73,40 @@ export function makeBuilder(cfg) {
   function parseErrors(text) {
     const errors = []
     const warnings = []
+    // MSBuild prints each error twice (inline + the trailing summary block);
+    // dedupe on (file,line,col,code) so errorCount matches the summary line
+    // instead of being 2x the truth.
+    const seenErr = new Set()
+    const seenWarn = new Set()
+    const dedupeKey = (e) => `${e.file}|${e.line}|${e.col}|${e.code}`
+    const pushErr = (entry) => {
+      const k = dedupeKey(entry)
+      if (seenErr.has(k)) return
+      seenErr.add(k)
+      errors.push(entry)
+    }
+    const pushWarn = (entry) => {
+      const k = dedupeKey(entry)
+      if (seenWarn.has(k)) return
+      seenWarn.add(k)
+      warnings.push(entry)
+    }
     for (const line of text.split(/\r?\n/)) {
       const m = line.match(ERR_LINE)
       if (m) {
         const entry = { file: m[1].trim(), line: Number(m[2]), col: Number(m[3]), code: m[5], message: m[6].trim() }
-        if (m[4] === 'error') errors.push(entry)
-        else warnings.push(entry)
+        if (m[4] === 'error') pushErr(entry)
+        else pushWarn(entry)
         continue
       }
       const t = line.match(ERR_TOP)
       if (t) {
-        errors.push({ file: '(top-level)', line: 0, col: 0, code: t[1], message: t[2].trim() })
+        pushErr({ file: '(top-level)', line: 0, col: 0, code: t[1], message: t[2].trim() })
         continue
       }
       const p = line.match(ERR_PLAIN)
       if (p) {
-        errors.push({ file: p[1].trim() || '(top-level)', line: 0, col: 0, code: p[2], message: p[3].trim() })
+        pushErr({ file: p[1].trim() || '(top-level)', line: 0, col: 0, code: p[2], message: p[3].trim() })
       }
     }
     return { errors, warnings }
