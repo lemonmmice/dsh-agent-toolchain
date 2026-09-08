@@ -191,8 +191,14 @@ function Is-SecretControl($el) {
   $aid = [string]$el.Current.AutomationId
   if ($name -match $SECRET_NAME_RE) { return $true }
   if ($aid -match $SECRET_NAME_RE) { return $true }
-  # WPF PasswordBox 的 UIA 控件类型是 Edit，但 IsPassword 为真
-  try { if ($el.Current.IsPassword -eq $true) { return $true } } catch { }
+  # WPF PasswordBox 的 UIA 控件类型是 Edit，但 IsPassword 为真。
+  # 只对 Edit/Document 查这个属性：IsPassword 是一次跨进程 UIA 调用，
+  # 对每个 Text/Button 都查会让 read 慢一个数量级（实测 770 元素 ~16s）。
+  $t = ''
+  try { $t = Get-ControlTypeName $el } catch { }
+  if ($t -in @('Edit', 'Document', 'ComboBox')) {
+    try { if ($el.Current.IsPassword -eq $true) { return $true } } catch { }
+  }
   return $false
 }
 
@@ -750,6 +756,13 @@ function Resolve-Target($main, $step, [int]$procId) {
 
 # 条件等待包装：$step.waitFor 存在时先等条件成立；未配置则退化为「找到即用」
 function Wait-Target($main, $step, $spec, [int]$procId) {
+  # 无 waitFor 时直接交给 Resolve-Target（它会自己解析窗口）——曾经这里先解析一次窗口、
+  # 再调 Resolve-Target 又解析一次，每个动作多付一整轮 UIA 扫描（实测 find 7s）。
+  if ($null -eq $spec) {
+    $t = Resolve-Target $main $step $procId
+    if (-not $t.ok) { return $t }
+    return @{ ok = $true; el = $t.el; count = $t.count; elapsedMs = 0 }
+  }
   $root = Resolve-Window $main $step $procId
   if ($null -eq $root) { return @{ ok = $false; error = '未找到目标窗口（winTitle/winHandle）' } }
   $scope = $null
@@ -760,10 +773,7 @@ function Wait-Target($main, $step, $spec, [int]$procId) {
     $scope = Find-Element $root $inAid $inName
     if (-not $scope) { return @{ ok = $false; error = ('未找到容器控件（' + $inAid + '/' + $inName + '）') } }
   }
-  if ($null -ne $spec) { return (Wait-ForCondition $root ([string]$step.aid) ([string]$step.name) $spec $scope) }
-  $t = Resolve-Target $main $step $procId
-  if (-not $t.ok) { return $t }
-  return @{ ok = $true; el = $t.el; count = $t.count; elapsedMs = 0 }
+  return (Wait-ForCondition $root ([string]$step.aid) ([string]$step.name) $spec $scope)
 }
 
 function Invoke-Step($main, $step, [int]$index, [int]$procId) {
@@ -1165,6 +1175,8 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $line = '#' + $lines.Count + ' [' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y)
           if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
           [void]$lines.Add($line)
+          # 已经够 300 行就停：继续遍历整棵树只为了截断，纯浪费（read 曾 22s）
+          if ($lines.Count -ge 320) { break }
         }
         $res.ok = $true; $res.count = $lines.Count
         # 单次 read 上限 300 行：主界面可达 900+ 条，全量返回会挤爆模型上下文
@@ -1252,10 +1264,14 @@ if ($Serve) {
           }
         }
         default {
-          # 脚本被改过（开发中热改）→ 让 Node 侧重启常驻进程，避免跑到旧代码
+          # 脚本被改过（开发中热改）→ 让 Node 侧重启常驻进程，避免跑到旧代码。
+          # 口径必须与 Node 的 statSync().mtimeMs 一致：Ticks(100ns)/10000 = 毫秒。
+          # 曾经直接用 Ticks 比 mtimeMs，单位不一致 → 每个请求都误判 STALE_SCRIPT，
+          # 常驻进程自杀、所有动作退化到 30s+ 的一次性进程路径（夜间循环被拖死）。
           if ($ScriptStamp) {
             try {
-              $cur = [string](Get-Item -LiteralPath $PSCommandPath).LastWriteTimeUtc.Ticks
+              # 用 DateTimeOffset 转 Unix 毫秒，与 Node 的 statSync().mtimeMs 同口径
+              $cur = [string]([DateTimeOffset]::new([System.IO.File]::GetLastWriteTimeUtc($PSCommandPath)).ToUnixTimeMilliseconds())
               if ($cur -ne $ScriptStamp) {
                 $resp.ok = $false
                 $resp.error = 'STALE_SCRIPT'
