@@ -7,3 +7,5 @@ results/results-*.json
 bench/tasks/
 bench-runs/
 bench/local.env
+# Tool evidence dirs (screenshots, UI text, build logs) are local-only.
+.dsh-agent-toolchain/
