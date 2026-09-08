@@ -321,14 +321,17 @@ export function makeDriver(cfg) {
 
   // ------------------------------------------------------------ 单步驱动
 
-  const READ_ONLY_ACTIONS = new Set(['find', 'read', 'shot', 'status', 'windows', 'waitfor', 'state', 'expectwindow', 'expecttext', 'waitany'])
+  // 纯输入型动作（移动鼠标/滚轮/拖拽/坐标点击）：不会提交或改数据，可逆，
+  // 因此不受 allowSideEffects 护栏限制（K线滑动、十字光标、列表滚动要用）。
+  const INPUT_ACTIONS = new Set(['move', 'wheel', 'drag', 'clickat', 'doubleclick'])
+  const READ_ONLY_ACTIONS = new Set(['find', 'read', 'shot', 'status', 'windows', 'waitfor', 'state', 'expectwindow', 'expecttext', 'waitany', 'move', 'wheel'])
 
   /**
    * 新动作（type/drag/windows/waitfor/state/expectwindow/expecttext/waitany）与带条件的
    * 等待（waitFor）只有批量引擎实现；一次性脚本路径不支持时走批量引擎单步执行——
    * 语义一致，代价是每步多付一次 PowerShell 启动（约 0.4s），可接受。
    */
-  const BATCH_ONLY_ACTIONS = new Set(['type', 'drag', 'windows', 'waitfor', 'state', 'expectwindow', 'expecttext', 'waitany'])
+  const BATCH_ONLY_ACTIONS = new Set(['type', 'drag', 'move', 'wheel', 'clickat', 'doubleclick', 'windows', 'waitfor', 'state', 'expectwindow', 'expecttext', 'waitany'])
 
   /** 动作名归一化：waitFor / WaitFor / WAITFOR 都是 waitfor（模型大小写写法不一致）。 */
   function normAction(a) {
@@ -357,6 +360,14 @@ export function makeDriver(cfg) {
       toY: args.toY,
       steps: args.steps,
       holdMs: args.holdMs,
+      x: args.x,
+      y: args.y,
+      double: args.double,
+      button: args.button,
+      focus: args.focus,
+      delta: args.delta,
+      count: args.count,
+      mods: args.mods,
       max: args.max,
       // 跨窗口 + 凭据 + 竞速等待
       winTitle: args.winTitle,
@@ -382,9 +393,9 @@ export function makeDriver(cfg) {
    * 副作用动作（click/setvalue/key）必须显式 allowSideEffects=true（安全护栏）。
    */
   async function drive(args) {
-    const { action: rawAction, name = '', aid = '', value = '', ascii = false, match = '', waitMs = c.defaultWaitMs, procId = 0, allowSideEffects = false, workspace = '', label = '', shotsDir = '', index, inAid = '', inName = '', waitFor = null, state = '', keys = '', fromX, fromY, toX, toY, steps = 12, holdMs = 120, max, winTitle = '', winHandle, secret = false, expectValue, titleRe = '', textRe = '', gone = false, ms, interval, conds, stableCount, observe = false, observeMatch = '', observeMax = 15 } = args
+    const { action: rawAction, name = '', aid = '', value = '', ascii = false, match = '', waitMs = c.defaultWaitMs, procId = 0, allowSideEffects = false, workspace = '', label = '', shotsDir = '', index, inAid = '', inName = '', waitFor = null, state = '', keys = '', fromX, fromY, toX, toY, steps = 12, holdMs = 120, max, winTitle = '', winHandle, secret = false, expectValue, titleRe = '', textRe = '', gone = false, ms, interval, conds, stableCount, observe = false, observeMatch = '', observeMax = 15, x, y, delta, count, mods = '', double = false, button = '', focus = false } = args
     const action = normAction(rawAction)
-    if (!READ_ONLY_ACTIONS.has(action)) {
+    if (!READ_ONLY_ACTIONS.has(action) && !INPUT_ACTIONS.has(action)) {
       if (!allowSideEffects) {
         return { ok: false, action, error: '动作 ' + action + ' 是真实副作用操作，必须显式传 allowSideEffects=true 才执行（安全护栏）' }
       }
@@ -424,7 +435,7 @@ export function makeDriver(cfg) {
           titleRe, textRe, gone, ms, interval, conds, stableCount,
         }
         if (action === 'shot') payload.out = shotPlan.path
-        const res = await warmSend(payload, action === 'shot' ? 60000 : c.defaultTimeoutMs)
+        const res = await warmSend(payload, action === 'shot' ? 60000 : (Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : c.defaultTimeoutMs))
         if (res && res.ok === false && res.timeout === true) {
           // 超时 ≠ 没执行：请求可能已经到达并被处理，只是响应没回来。
           // 副作用动作绝不能走回退路径重放（会点两次 / 输两次），必须如实
@@ -453,7 +464,7 @@ export function makeDriver(cfg) {
       const b = await batch({
         steps: [stepFields({
           action, name, aid, value, ascii, match, waitMs, index, inAid, inName, waitFor, state, keys,
-          fromX, fromY, toX, toY, steps, holdMs, max,
+          fromX, fromY, toX, toY, steps, holdMs, max, x, y, delta, count, mods,
           winTitle, winHandle, secret, expectValue, titleRe, textRe, gone, ms, interval, conds,
           out: shotPlan ? shotPlan.path : undefined,
         })],
@@ -476,7 +487,9 @@ export function makeDriver(cfg) {
     psArgs.push('-WaitMs', String(waitMs))
     if (action === 'shot') psArgs.push('-Out', shotPlan.path)
 
-    const r = await runPs1(driveScript(), psArgs, action === 'shot' ? 60000 : c.defaultTimeoutMs)
+    // 单步超时：默认 90s，可用 timeoutMs 收紧（右键菜单/read 这类容易挂住的动作用）
+    const stepTimeout = Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : c.defaultTimeoutMs
+    const r = await runPs1(driveScript(), psArgs, action === 'shot' ? 60000 : stepTimeout)
     const text = r.stdout
     const notFound = /NOT_FOUND/.test(text)
 
@@ -630,6 +643,14 @@ export function makeDriver(cfg) {
       if (s.toY !== undefined && s.toY !== null) o.toY = s.toY
       if (s.steps !== undefined && s.steps !== null) o.steps = s.steps
       if (s.holdMs !== undefined && s.holdMs !== null) o.holdMs = s.holdMs
+      if (s.x !== undefined && s.x !== null) o.x = s.x
+      if (s.y !== undefined && s.y !== null) o.y = s.y
+      if (s.double !== undefined) o.double = s.double
+      if (s.button !== undefined && s.button !== '') o.button = s.button
+      if (s.focus !== undefined) o.focus = s.focus
+      if (s.delta !== undefined && s.delta !== null) o.delta = s.delta
+      if (s.count !== undefined && s.count !== null) o.count = s.count
+      if (s.mods !== undefined && s.mods !== '') o.mods = s.mods
       if (s.max !== undefined && s.max !== null) o.max = s.max
       if (s.winTitle !== undefined && s.winTitle !== '') o.winTitle = s.winTitle
       if (s.winHandle !== undefined && s.winHandle !== null) o.winHandle = s.winHandle
