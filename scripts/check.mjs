@@ -104,8 +104,25 @@ try {
   /* git not available */
 }
 
+// 5. DSH tool-schema guard: an object-typed parameter without
+//    `additionalProperties` makes defineTool throw at boot and crash-loops
+//    the host (observed with dsh-verify's `context` param: the watchdog
+//    relaunched node every 3s). Static scan catches the single-line form;
+//    multi-line object values are not covered by this scan.
+for (const f of walk(join(root, 'plugins'))) {
+  const ext = extname(f)
+  if (ext !== '.js' && ext !== '.mjs') continue
+  const text = readFileSync(f, 'utf8')
+  for (const [i, line] of text.split(/\r?\n/).entries()) {
+    if (/^\s*\w+\s*:\s*\{\s*type:\s*['"]object['"]\s*,/.test(line) && !line.includes('additionalProperties')) {
+      failures++
+      console.error(`OBJECT PARAM MISSING additionalProperties at ${relative(root, f)}:${i + 1}: ${line.trim().slice(0, 100)}`)
+    }
+  }
+}
+
 if (failures > 0) {
   console.error(`\nCHECK FAILED: ${failures} problem(s)`)
   process.exit(1)
 }
-console.log('CHECK PASSED: syntax OK, no private references, no nested dirs')
+console.log('CHECK PASSED: syntax OK, no private references, no nested dirs, tool schemas complete')

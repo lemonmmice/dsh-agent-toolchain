@@ -57,6 +57,13 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Changed
 
+- **dsh-verify boot-crash fix** — `verify_report`'s `context` parameter was
+  `{ type: 'object' }` without `additionalProperties`, which makes
+  `defineTool` throw at boot and crash-loops the host (watchdog relaunch
+  every 3s; `Restart-DSH` cannot cure a boot-time crash). Now spreads the
+  `OBJECT` const. A new static guard in `scripts/check.mjs` hard-fails CI on
+  the same single-line pattern (`key: { type: 'object', … }` missing
+  `additionalProperties`), so the class cannot regress.
 - **Review round 2 must-fixes** — `build_run` no longer double-counts
   MSBuild's twice-printed errors (dedupe on file,line,col,code; errorCount now
   agrees with the summary line on both engines), and `memory_index` no longer
