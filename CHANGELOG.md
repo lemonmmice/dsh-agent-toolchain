@@ -10,6 +10,18 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **UI-driven benchmark tasks (home turf)** — the harness now supports tasks
+  whose hidden verification is a UIA probe: `verify.patch` adds a minimal WPF
+  host + probe script, `verifyCommand` builds/launches/asserts the rendered
+  UI, and `config.json` declares `agentEnv` (`DSH_UI_PROC_NAME`,
+  `DSH_UI_WINDOW_NAME`, …) that the harness injects into both the agent
+  process and the toolchain MCP server (so `ui_status` / `ui_drive` can see
+  the host app the agent launches). Documented in
+  [bench/README.md](./bench/README.md).
+- **gate vacuous-fail detail** — `verify_report kind=gate` now names WHICH
+  zero-test pattern matched (`no-test-matches (EN/CN)` / `0-of-0-tests` /
+  `0/0 summary`) and keeps the full 6-line / 400-char failure tail on the
+  vacuous branch instead of a bare 2-line stub — the verdict is auditable.
 - **msbuild engine generalization** — the msbuild engine no longer hardcodes
   the legacy client defaults. A repo containing `WholeSolution.sln` keeps the
   old behavior byte-for-byte (default target `WholeSolution.sln`, platform

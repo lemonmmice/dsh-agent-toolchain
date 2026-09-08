@@ -287,6 +287,10 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     if (/^(HTTP|HTTPS|ALL|NO)_PROXY$/i.test(k)) delete agentEnv[k]
   }
   Object.assign(agentEnv, localEnv)
+  // Task-declared environment (config.json `agentEnv`): the task declares
+  // what its toolchain needs — e.g. DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME
+  // for a UI-driven verification task. Documented in bench/README.md.
+  Object.assign(agentEnv, task.cfg.agentEnv ?? {})
   agentEnv.PATH = `${dotnetDir};${process.env.PATH || process.env.Path || ''}`
   agentEnv.DOTNET_ROOT = dotnetDir
   agentEnv.DOTNET_CLI_TELEMETRY_OPTOUT = '1'
@@ -309,6 +313,8 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
                 DSH_BUILD_CLIENT_ROOT: repoDir,
                 DSH_BUILD_LOGS_DIR: join(runDir, 'build-logs'),
                 DSH_API_CAPTURE_STORE: join(runDir, 'capture'),
+                DSH_UI_EVIDENCE_DIR: join(runDir, 'ui-evidence'),
+                ...(task.cfg.agentEnv ?? {}),
               },
             },
           },
