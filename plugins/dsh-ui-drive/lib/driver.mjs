@@ -30,6 +30,9 @@ export const DEFAULT_WAIT_MS = 250
  * 用同步 API 实现（makeDriver 是同步构造函数），等待期间阻塞主线程——对测试脚本足够。
  */
 const HELD_LOCKS = new Set()
+/** 进程退出/信号处理器只注册一次：长跑脚本每轮新建 driver 会累积 listener
+ *  （Node 默认上限 10，实测第 10 轮报 MaxListenersExceededWarning）。 */
+let LOCK_EXIT_HOOKED = false
 function acquireProcessLock(lockPath) {
   if (HELD_LOCKS.has(lockPath)) return
   const waitMs = Number(process.env.DSH_UI_LOCK_WAIT_MS || 300000)
@@ -47,10 +50,16 @@ function acquireProcessLock(lockPath) {
       }
       writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' })
       HELD_LOCKS.add(lockPath)
-      const release = () => { try { rmSync(lockPath, { force: true }) } catch { /* ignore */ } }
-      process.once('exit', release)
-      for (const sig of ['SIGINT', 'SIGTERM']) {
-        process.once(sig, () => { release(); process.exit(0) })
+      const release = () => {
+        for (const p of [...HELD_LOCKS]) { try { rmSync(p, { force: true }) } catch { /* ignore */ } }
+        HELD_LOCKS.clear()
+      }
+      if (!LOCK_EXIT_HOOKED) {
+        LOCK_EXIT_HOOKED = true
+        process.once('exit', release)
+        for (const sig of ['SIGINT', 'SIGTERM']) {
+          process.once(sig, () => { release(); process.exit(0) })
+        }
       }
       return
     } catch {
@@ -969,6 +978,12 @@ export function makeDriver(cfg) {  const c = {
     runPs1,
     tsDir,
     warmShutdown,
+    // 显式释放客户端互斥锁（长跑脚本轮间让锁用；进程退出时会自动释放）
+    releaseLock: () => {
+      if (!lockPath) return
+      try { rmSync(lockPath, { force: true }) } catch { /* ignore */ }
+      HELD_LOCKS.delete(lockPath)
+    },
     warmStatus,
     evidenceDir: () => c.evidenceDir,
     scriptsDir: () => c.scriptsDir,
