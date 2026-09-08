@@ -146,7 +146,7 @@ const tools = () => [
       value: { type: 'string', description: 'setvalue/key 的内容' },
       ascii: { type: 'boolean', description: 'key 模式用 ASCII 直发（纯代码/数字），否则走剪贴板（中文）' },
       match: { type: 'string', description: 'read 模式的正则过滤' },
-      waitMs: { type: 'number', description: '动作后等待毫秒，默认 1200' },
+      waitMs: { type: 'number', description: '动作后等待毫秒，默认 250' },
       procId: { type: 'number', description: '指定进程 PID（默认自动找）' },
       allowSideEffects: { type: 'boolean', description: 'click/setvalue/key 必须显式传 true 才执行' },
       workspace: { type: 'string', description: '会话工作目录：shot 时截图复制到 <workspace>/.dsh-ui-evidence 供视觉复核' },
