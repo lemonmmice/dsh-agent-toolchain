@@ -65,9 +65,9 @@ export function makeBuilder(cfg) {
     try {
       const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + proc + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
       const m = out.match(new RegExp('"' + proc + '\\.exe","(\\d+)"'))
-      if (m) return { running: true, pid: Number(m[1]) }
+      if (m) return { running: true, pid: Number(m[1]), name: proc }
     } catch { /* ignore */ }
-    return { running: false, pid: null }
+    return { running: false, pid: null, name: proc }
   }
 
   // ------------------------------------------------------------ 错误解析
@@ -226,19 +226,31 @@ export function makeBuilder(cfg) {
       }
     }
 
-    // 前置检查：客户端运行会锁 Product\Bin 的 dll（MSB3021/3027 文件锁风暴）
+    // 前置检查：客户端运行会锁它自己的输出目录（MSB3021/3027 文件锁风暴）。
+    // 但锁只发生在「构建目标就是客户端本体」时——把 guard 做成全局的会让任何
+    // 无关仓库的构建在客户端开着时全部失败（外部智能体复核指出的问题）。
+    // 判定：目标程序集名 == 客户端进程名（例如 NiuGuWang.csproj vs NiuGuWang.exe）。
     const client = clientProcess()
-    if (client.running && !opts.killClient) {
+    let clientRunningWarning = null
+    const targetAssembly = targetArg ? basename(targetArg).replace(/\.(cs|vb|fs)proj$/i, '').replace(/\.(sln|slnx)$/i, '') : ''
+    const clientName = client.name ? client.name.toLowerCase() : ''
+    const touchesClientOutput = clientName !== '' && targetAssembly !== '' && targetAssembly.toLowerCase() === clientName
+    if (client.running && !opts.killClient && touchesClientOutput) {
       return {
         ok: false,
-        error: '客户端正在运行（PID ' + client.pid + '），输出文件会被锁定导致 MSB3021/3027 错误。请先关闭客户端，或传 killClient=true 让我强制结束它（会打断用户正在使用的界面，需先确认）。',
+        error: '客户端正在运行（PID ' + client.pid + '），构建目标 ' + (targetDisplay || targetArg) + ' 就是客户端本体，输出文件会被锁定导致 MSB3021/3027 错误。请先关闭客户端，或传 killClient=true 让我强制结束它（会打断用户正在使用的界面，需先确认）。',
         clientRunning: true,
         clientPid: client.pid,
       }
     }
-    if (client.running && opts.killClient) {
+    if (client.running && opts.killClient && touchesClientOutput) {
       try { spawn('taskkill', ['/PID', String(client.pid), '/T', '/F'], { windowsHide: true }) } catch { /* ignore */ }
       await new Promise((r) => setTimeout(r, 1500))
+    }
+    if (client.running && !touchesClientOutput && !opts.killClient) {
+      // 无关目标：只提示，不阻断（客户端仍可能锁住共享依赖的 copy 目标，
+      // 真出问题会以 MSB3021 的形式出现在结构化错误里）
+      clientRunningWarning = '客户端正在运行（PID ' + client.pid + '），但构建目标 ' + (targetDisplay || targetArg) + ' 与客户端本体无关，已继续构建。'
     }
 
     // dotnet engine: dotnet build <target> -c <cfg> --nologo -v minimal
@@ -324,6 +336,7 @@ export function makeBuilder(cfg) {
       warnings: warnings.slice(0, 20),
       truncated: errors.length > 40 || warnings.length > 20,
       clientWasKilled: !!(client.running && opts.killClient),
+      ...(clientRunningWarning ? { clientRunningWarning } : {}),
       // A failed build with zero code errors is a blocked-by-environment
       // situation (missing targeting packs, restore failures, locked
       // outputs). Surface it loudly instead of leaving the agent with
