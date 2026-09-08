@@ -56,10 +56,38 @@ DSH（DeepSeek Harness）的 **UI 自验驱动插件**：通过 Windows UIA 程�
 
 重启 DSH 生效。
 
+## 实时性（2026-09 优化）
+
+UI 驱动最早的瓶颈是「每个动作新起一个 PowerShell 进程」：进程启动 + 脚本解析 +
+5 个 UIA 程序集加载 = 每步 ~900ms 固定成本，10 步的自验流程就要等 9 秒，
+控件点击根本谈不上「实时」。现在分三层消除这份成本：
+
+| 路径 | 做法 | 实测（本机，13 步流程 / 单动作） |
+| --- | --- | --- |
+| `ui_flow` 批量执行 | 整个步骤序列交给一个进程（`ui-drive-batch.ps1`），程序集只加载一次、主窗口只解析一次 | 13 步 **11.9s → 1.6s**（7.6x，~120ms/步） |
+| `ui_drive` 常驻进程 | 插件内维护一个 serve 模式 PowerShell（`-Serve`，stdin/stdout JSON 协议），启动成本只付一次 | 单动作 p50 **886ms → 30ms**（~30x） |
+| `ui_status` 快路径 | `-Status` 模式不加载 UIA，只用 Win32 取主窗口句柄/矩形 | ~1000ms → **~400ms** |
+
+其他配套改动：
+
+- 默认 `waitMs` 1200 → 250ms；`find`/`read`/`shot`/`expect` 步不再做无意义静默等待
+- `find` 改用 UIA 原生 `FindAll` + `AndCondition`，不再手写遍历整棵树的循环
+- 常驻进程空闲超时自动退出（`DSH_UI_SERVE_IDLE_MS`，默认 5 分钟），插件卸载时回收
+- `DSH_UI_SERVE=0` 可关闭常驻进程，退回一次性进程路径（排查用）
+
 ## 实现
 
-- \`index.js\` — host 插件入口：工具注册 + systemPrompt 公告 + 证据路由
-- \`lib/driver.mjs\` — PowerShell 进程封装（spawn/超时/杀进程树/输出解析）
-- \`lib/vision.mjs\` — 界面截图视觉描述（复用 describe-image 配置）
-- \`scripts/ui-drive.ps1\` — UIA 驱动（find/click/setvalue/key/read/shot/status）
-- \`scripts/ui-probe.ps1\` + \`probe/UiProbe.cs\` — 进程内只读视觉树探针（复用 Snoop 注入器）
+- `index.js` — host 插件入口：工具注册 + systemPrompt 公告 + 证据路由
+- `lib/driver.mjs` — PowerShell 进程封装（常驻进程协议、批量执行、超时、杀进程树、输出解析）
+- `lib/vision.mjs` — 界面截图视觉描述（复用 describe-image 配置）
+- `scripts/ui-drive.ps1` — UIA 单步驱动（find/click/setvalue/key/read/shot/status）
+- `scripts/ui-drive-batch.ps1` — 批量执行（`-StepsFile`）+ 常驻进程（`-Serve`）+ 快路径状态（`-Status`）
+- `scripts/ui-probe.ps1` + `probe/UiProbe.cs` — 进程内只读视觉树探针（复用 Snoop 注入器）
+- `test/flow-batch.test.mjs` — 批量引擎离线单测（护栏、降级、步骤文件规则）
+
+## 环境变量（补充）
+
+| 项目 | 说明 |
+| --- | --- |
+| `DSH_UI_SERVE` | `0` 关闭常驻进程（默认开启） |
+| `DSH_UI_SERVE_IDLE_MS` | 常驻进程空闲回收毫秒，默认 300000 |

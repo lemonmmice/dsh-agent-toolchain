@@ -27,6 +27,9 @@ jobs:
       - name: dsh-memory hygiene unit test
         run: node plugins/dsh-memory/test/memory-hygiene.test.mjs
         shell: bash
+      - name: dsh-ui-drive flow batch unit test
+        run: node plugins/dsh-ui-drive/test/flow-batch.test.mjs
+        shell: bash
       - name: API capture store unit test
         run: node lib/capture-store.test.mjs
         shell: bash

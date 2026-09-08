@@ -28,6 +28,7 @@ const GUIDANCE =
   'ui_drive(action=find|click|setvalue|key|read|shot) 单步操作——find/read/shot 只读，click/setvalue/key 是真实副作用操作，必须显式传 allowSideEffects=true 才执行；' +
   'ui_tree(maxDepth) 进程内视觉树 dump（真实类型+Name+AutomationId+DataContext 类型），只读深查；' +
   'ui_flow(steps, tag, failFast, allowSideEffects) 按步骤序列驱动并收集证据（find/click/setvalue/key/read/shot/wait/expect 断言），每步输出+截图写进证据目录 steps.json，返回 transcript。' +
+  '实时性：ui_drive 走常驻 PowerShell 进程（启动成本只付一次，实测单动作 p50 30ms）；ui_flow 整段序列进一个进程批量执行（13 步实测 1.6s，替代旧实现的 11.9s）。DSH_UI_SERVE=0 可退回一次性进程路径。' +
   '视觉即返（推荐）：ui_launch 启动完成会自动截图并用视觉模型描述当前界面（返回 uiState.description，一步知道在登录页还是主界面）；ui_drive action=shot 加 describe=true 同样直接返回界面描述——优先用这两个，不必再单独 describe_image。需要深度视觉复核时才用 describe_image 对该 png 细看（当前主模型不读图，必须走 describe_image）。' +
   '安全边界：点击=真实操作（保存/生成/跳转可能落库）；「保存/删除/清空/导出」类按钮点击前先把按钮名报给用户确认；「下单/交易」类入口一律不点；优先用 find/read/shot/expect 做只读验证；定位卡住三步就停止报告，不盲点轰炸。' +
   '证据目录默认 ~/.dsh-agent-toolchain/ui-evidence（DSH_UI_EVIDENCE_DIR 可覆盖），目标进程名/窗口名/客户端 exe 分别由 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE 指定。' +
@@ -179,14 +180,14 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_flow',
-    description: '按步骤序列驱动客户端并收集自验证据：steps 数组每步 {action: find|click|setvalue|key|read|shot|wait|expect, name?, aid?, value?, ascii?, match?, waitMs?, label?, expectEnabled?, expectMatch?}；expect 步断言控件存在/启用/名称匹配（expectMatch 正则），统计 passed/failed；每步输出+截图写入证据目录 steps.json，返回 transcript。默认只读（find/read/shot/wait/expect），含 click/setvalue/key 必须传 allowSideEffects=true。failFast=true 时断言失败即停。Triggers: UI 自验 / 自动验证流程 / 端到端验证 / ui flow.',
+    description: '按步骤序列驱动客户端并收集自验证据：steps 数组每步 {action: find|click|setvalue|key|read|shot|wait|expect, name?, aid?, value?, ascii?, match?, waitMs?, label?, expectEnabled?, expectMatch?}；expect 步断言控件存在/启用/名称匹配（expectMatch 正则），统计 passed/failed；每步输出+截图写入证据目录 steps.json，返回 transcript。默认只读（find/read/shot/wait/expect），含 click/setvalue/key 必须传 allowSideEffects=true。failFast=true 时断言失败即停。整段序列在一个常驻 PowerShell 进程里批量执行（步间无进程启动开销），waitMs 只在动作需要静默时传（默认 250ms，find/read/shot 不等待）。Triggers: UI 自验 / 自动验证流程 / 端到端验证 / ui flow.',
     parameters: {
       steps: { type: 'array', required: true, description: '步骤数组（每步一个对象，action 必填）' },
       tag: { type: 'string', description: '证据目录标签（如 verify-etf-dialog），默认 flow' },
       failFast: { type: 'boolean', description: '断言失败即停，默认 false' },
       allowSideEffects: { type: 'boolean', description: '含点击/输入步骤时必须显式传 true' },
     },
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: '自验流程结束：' + v.passed + ' 通过 / ' + v.failed + ' 失败，证据：' + v.evidenceDir }] },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: '自验流程结束：' + v.passed + ' 通过 / ' + v.failed + ' 失败（批量执行 ' + (v.elapsedMs != null ? v.elapsedMs + 'ms' : '?') + '），证据：' + v.evidenceDir }] },
     timeoutMs: 600000,
     async execute(args) {
       const v = await drv().flow(args)
@@ -252,6 +253,8 @@ function makeRoutes() {
             clientExe: drv().clientExe(),
             evidenceDir: drv().evidenceDir(),
             scriptsOk: existsSync(join(drv().scriptsDir(), 'ui-drive.ps1')) && existsSync(join(drv().scriptsDir(), 'ui-probe.ps1')),
+            batchOk: existsSync(join(drv().scriptsDir(), 'ui-drive-batch.ps1')),
+            warm: drv().warmStatus(),
           })
           return
         }
@@ -332,6 +335,8 @@ export function apply(ctx) {
         for (const d of disposers) d()
         disposeRoutes()
         disposeSection()
+        // 卸载时回收常驻 PowerShell 进程，避免插件重载后留下孤儿进程
+        try { driver && driver.warmShutdown() } catch { /* ignore */ }
       }
     },
     'dsh-ui-drive: tools+routes',
