@@ -330,7 +330,7 @@ history stays groupable. Baseline arm unchanged. Re-ran both build tasks:
 
 | task | baseline | toolchain (guidance) | MCP pulls | verdict |
 | --- | --- | --- | --- | --- |
-| synth-buildbreak (disclosed synthetic) | 18 t / $0.59 | 15 t / $0.67 | build_run x1, verify_report x1, ToolSearch x1 | **won** |
+| synth-buildbreak (disclosed synthetic) | 18 t / $0.59 | 15 t / $0.67 | build_run x1, verify_report x1, ToolSearch x1 | won at N=1 (retracted in 15.4) |
 | maxby-build (real) | 7 t / $0.40 | 14 t / $0.95 | build_run x1, verify_report x1, ToolSearch x1 | lost |
 
 With guidance, **both** agents ran the structured loop: `build_run`
@@ -354,11 +354,45 @@ unguided toolchain (15 t, 0 MCP) ran before the guidance fix.
 ### 15.3 Bottom line
 
 - Pull matrix closed across all tool families; the full loop
-  (build_run -> Rebuild -> verify_report pass) ran end-to-end twice.
-- "Structured errors win once over raw output": **yes, one disclosed
-  datapoint** (synth-buildbreak, 15 < 18 with the loop engaged) — not a
-  statistical claim, and the trivial-task counterexample is recorded
-  alongside it.
+  (build_run -> Rebuild -> verify_report pass) ran end-to-end six times
+  under guidance (15.4).
+- "Structured errors win once over raw output": **yes at N=1** (synth-buildbreak,
+  15 < 18 with the loop engaged) — but see 15.4: the statistical repeats
+  retract the win and keep the pull-rate finding.
 - Next steps: repeats for variance, a task with genuinely noisy build
   output (the shape where structure should win by more), and the deferred
   third-party (Codex) cross-model run.
+
+### 15.4 Statistical repeats of the guidance condition — the win does not survive
+
+Both build-centric tasks were repeated to n=3 per condition (baseline and
+guidance toolchain; all `verified=true`):
+
+| condition | n | turns | median | cost median |
+| --- | --- | --- | --- | --- |
+| synth baseline | 3 | 15, 16, 18 | 16 | $0.56 |
+| synth toolchain (guidance) | 3 | 15, 15, 19 | 15 | $0.71 |
+| maxby baseline | 3 | 7, 7, 11 | 7 | $0.44 |
+| maxby toolchain (guidance) | 3 | 14, 14, 17 | 14 | $0.98 |
+
+Two conclusions, both stronger than the N=1 story:
+
+1. **The pull is robust; the turn win is not.** Every guidance run (6/6)
+   pulled `build_run` and `verify_report`, versus 0/4 unguided runs — the
+   guidance injection is the real, reproducible effect. But the earlier
+   single-pair "15 < 18 win" sits inside baseline noise: synth medians are
+   16 vs 15, overlapping, and the toolchain costs more. The "structured
+   errors beat raw output" claim of 15.2/15.3 is therefore **retracted** as
+   unsupported at n=3 (lesson recorded in the failure corpus: a noisy agent
+   cannot be judged on one paired run).
+2. **Toolchain overhead is real on trivial tasks.** maxby-build median 14
+   vs 7 turns and roughly double the cost — the loop's verification
+   discipline does not amortize when the baseline fixes the bug in a few
+   edits without ever building.
+
+What the guidance condition earned honestly: 100% structured-loop
+engagement (`build_run` -> Rebuild -> `verify_report` adjudication) instead
+of ad-hoc Bash builds — observable behavior the baseline cannot show. A
+turn/cost advantage still needs a task whose build output is genuinely
+noisy (multi-project, dozens of errors) and >= 5 repeats per condition
+before any claim is made.
