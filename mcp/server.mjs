@@ -145,6 +145,10 @@ server.tool(
     if (r.errorCount > 0) {
       const first = (r.errors && r.errors[0]) || (r.envErrors && r.envErrors[0]) || {}
       autoRecord('verification-failure', 'build_run', `build failed with ${r.errorCount} error(s); first: ${first.code ?? ''} ${String(first.message ?? '').slice(0, 160)}`, { context: { target: r.target ?? 'Build', engine: r.engine ?? '', code: first.code ?? '', ...(args.runId ? { runId: args.runId } : {}) } })
+    } else if (r.ok === false) {
+      // Failures that carry no parsed error (client-lock guard, missing SDK,
+      // environment block) used to escape the corpus entirely.
+      autoRecord('verification-failure', 'build_run', `build did not run: ${String(r.error ?? 'unknown').slice(0, 200)}`, { context: { target: r.target ?? 'Build', engine: r.engine ?? '', clientRunning: r.clientRunning === true, ...(args.runId ? { runId: args.runId } : {}) } })
     }
     return jtext(r)
   }
