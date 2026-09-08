@@ -5,7 +5,10 @@
  * Runs one coding task against an external agent CLI in two modes:
  *   baseline   - the agent works on the repository with its built-in tools only.
  *   toolchain  - the agent additionally receives the dsh-agent-toolchain MCP
- *                server (build loop, capture store, memory, verify_report, ...).
+ *                server (build loop, capture store, memory, verify_report, ...)
+ *                plus the toolchain usage guidance a real dsh install injects
+ *                (bench/harness/toolchain-guidance.md, prepended to the task
+ *                prompt; recorded per-run as toolchainGuidance=true).
  *
  * The agent sees the repository at the task's base commit and a written prompt.
  * The task's hidden verification patch and the gold patch are NOT shown to the
@@ -35,6 +38,16 @@ const REPO_ROOT = resolve(HERE, '..', '..')
 // On Windows, spawning the bare 'claude' command through cmd's shell fails to
 // resolve the npm .cmd shim (tested); the explicit .cmd name is reliable.
 const AGENT_CLI = process.platform === 'win32' ? 'claude.cmd' : 'claude'
+
+// Toolchain-mode guidance: a real dsh install injects plugin systemPrompt
+// sections describing the toolchain tools (build loop hard rules,
+// verify_report closing check, ui_drive read-only/副作用 split, ...). The
+// harness mirrors that so the toolchain arm is faithful to the real product
+// instead of exposing bare MCP tools with no context — agents empirically
+// ignore unguided tools (0 MCP pulls on 3 build-centric runs). Delivered by
+// prepending to the task prompt because CLI args containing spaces are
+// unsupported through the cmd.exe chain (documented in runAgentCli).
+const TOOLCHAIN_GUIDANCE = readFileSync(join(HERE, 'toolchain-guidance.md'), 'utf8')
 
 // ------------------------------------------------------------------ args
 
@@ -373,7 +386,9 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     }
   }, agentTimeoutMs)
 
-  const agent = await runAgentCli(cliArgs, task.prompt, join(runDir, 'prompt.txt'), repoDir, agentEnv)
+  const agentPrompt =
+    args.mode === 'toolchain' ? TOOLCHAIN_GUIDANCE + '\n\n' + task.prompt : task.prompt
+  const agent = await runAgentCli(cliArgs, agentPrompt, join(runDir, 'prompt.txt'), repoDir, agentEnv)
   timer.done = true
   clearTimeout(killer)
   const durationMs = Date.now() - startedAt
@@ -511,6 +526,7 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     mode: args.mode,
     modeValid: args.mode === 'baseline' ? true : mcpToolsVisible === true,
     mcpToolsVisible,
+    toolchainGuidance: args.mode === 'toolchain',
     model: model || args.model || '',
     turns: parsed?.num_turns ?? null,
     stopReason: parsed?.stop_reason ?? null,
