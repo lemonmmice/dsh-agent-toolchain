@@ -26,7 +26,7 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
 
 | Plugin | What it does for the agent |
 | --- | --- |
-| [dsh-build](./plugins/dsh-build/README.md) | Run MSBuild as a tool: incremental build, structured error list (file/line/col/code), error re-parse. Turns "agent wrote code" into "agent wrote code that compiles". |
+| [dsh-build](./plugins/dsh-build/README.md) | Run MSBuild as a tool: incremental build, structured error list (file/line/col/code), error re-parse. Build defaults auto-resolve by repo layout (legacy client layouts keep their defaults byte-for-byte; stock repos get `.sln`/`.slnx` + platform auto-detection). Turns "agent wrote code" into "agent wrote code that compiles". |
 | [dsh-ui-drive](./plugins/dsh-ui-drive/README.md) | Drive a running Windows desktop client via UIA: find/click/type/read/screenshot, visual-tree dumps, multi-step flows with assertions, screenshot + vision description. Lets the agent navigate to a page and *see* the result. |
 | [dsh-api-visualizer](./plugins/dsh-api-visualizer/README.md) | Capture the client's HTTP traffic: live panel, JSONL store, caller attribution (ViewModel/API/call-chain), auto-responder rules, baseline/contract regression. Answers "which API did this page fire, and what came back?" |
 | [dsh-postman](./plugins/dsh-postman/README.md) | Postman-style HTTP client inside the harness: compose/send requests from the host (no browser CORS), history store, WebSocket client, `http_request` agent tool. |
@@ -38,7 +38,7 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
 
 ## Highlights
 
-- **One toolchain, every agent**: the same tools power the DeepSeek Harness plugins **and** any MCP client — see [mcp/](./mcp/README.md). Claude Code, Cursor, Cline can drive the client, run builds, capture APIs and search memory with the exact same `lib/` code. Platform scope is honest: the evidence spine (verify / failure corpus / capture / memory / http) and the `dotnet` build engine are cross-platform; UI-driving and the VS-MSBuild engine are Windows-only ([mcp/README.md](./mcp/README.md)).
+- **One toolchain, every agent**: the same tools power the DeepSeek Harness plugins **and** any MCP client — see [mcp/](./mcp/README.md). Claude Code, Cursor, Cline can drive the client, run builds, capture APIs and search memory with the exact same `lib/` code. Platform scope is honest: the evidence spine (verify / failure corpus / capture / memory / http), the `dotnet` build engine and the build-target resolution are cross-platform; UI-driving and the VS-MSBuild engine are Windows-only ([mcp/README.md](./mcp/README.md)).
 - **Safety-first UI automation**: `click`/`setvalue`/`key` require an explicit `allowSideEffects=true`; read-only operations (`find`/`read`/`shot`/`expect`) are always safe. Trading entries are never clicked.
 - **Honest measurement**: perf metrics come from real windows-message round trips; cost/price tables mark "unknown" instead of inventing numbers.
 - **Loopback-only control APIs**: all Web routes bind to 127.0.0.1; no external callbacks.
@@ -59,6 +59,26 @@ Each plugin is a drop-in host plugin. Copy the plugin directory into your DSH pr
     - id: ui-drive
       name: './plugins/dsh-ui-drive/index.js'
 ```
+
+**Shared `lib/`:** `dsh-build`, `dsh-ui-drive` and `dsh-verify` import the
+repo-root `lib/` modules (`decode`, `build-resolve`, `failure-corpus`,
+`capture-store`, `verify/report`). Their relative imports resolve against the
+**profile root**, so copy the files you need into the profile as
+`<profile>/lib/…` (mirroring the monorepo `lib/` tree):
+
+```
+<profile>/
+  plugins/dsh-build/...     # each plugin dir copied as-is
+  lib/
+    decode.mjs
+    build-resolve.mjs
+    failure-corpus.mjs
+    capture-store.mjs
+    verify/report.mjs
+```
+
+Missing shared modules make the plugin crash at load (static imports); the
+`failure-corpus`/`verify` dynamic imports degrade to no-ops instead.
 
 Then restart the harness and set the environment variables the plugin needs (see each plugin README).
 
