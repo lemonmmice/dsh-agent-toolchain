@@ -97,6 +97,12 @@ anonymized results are published in `bench/pilot/`.
   a toolchain run with `mcpToolsVisible: false` is marked `modeValid: false`
   and must be excluded from comparisons (guards against CLI flags silently
   dropping MCP servers — which `--bare` does, empirically)
+- `toolchainGuidance` (bool, toolchain only) — whether the run's prompt
+  included the toolchain usage guidance (`bench/harness/toolchain-guidance.md`,
+  prepended to the task prompt). It mirrors what a real dsh install injects
+  into the agent system prompt. Runs without the field predate the guidance
+  injection (harness fidelity fix, not a task change); mixed-condition rows
+  must be grouped by this field when aggregating.
 - `patchFiles` — files the agent changed
 
 Cost per verified task = sum of `costUsd` over verified runs of a mode ÷ number
@@ -114,5 +120,9 @@ of verified runs of that mode.
 - The toolchain MCP server is exposed as-is, including tools that are
   irrelevant to the task at hand; discovering which tools help is part of the
   measured behavior.
+- The toolchain arm receives the toolchain usage guidance a real install would
+  inject (build-loop hard rules, `verify_report` closing check); the baseline
+  arm receives none. Guidance without the tools would be an unfair baseline,
+  tools without guidance an unfaithful toolchain.
 - Costs are as reported by the agent CLI; they do not include the MCP server
   itself (local, free).

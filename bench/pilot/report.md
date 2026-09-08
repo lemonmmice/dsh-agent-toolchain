@@ -283,3 +283,82 @@ not a runtime invariant; CI test hard-codes the Git-Bash path; http_request
 SSRF-by-design; external repo claims not live-verified). The review round
 cost ≈ $5.10. A parallel third-party (Codex) review was started but deferred
 by the author's user ("bring it along in a later optimization pass").
+
+## 15. Home-turf suite (5 tasks): first MCP pull, then the guidance fix that made the build loop engage
+
+The 1-task pilot grew into a 5-task home-turf suite: four pure UI-probe
+tasks (`autosuggest-bind`, `toggleswitch-template`, `checkbox-padding`,
+`numeric-hex` — real upstream commits, hidden WPF host + UIA probe) plus one
+real compile-error task (`maxby-build` — a MaxBy break fixed by a later
+upstream commit, gated by the library's own multi-TFM build). All task
+packages are local-only (gitignored, never published); results below are
+anonymized aggregates.
+
+### 15.1 Real-bugfix tasks, original plan (toolchain arm = bare MCP, no guidance)
+
+| task | baseline | toolchain | toolchain MCP pulls | verdict |
+| --- | --- | --- | --- | --- |
+| autosuggest-bind | 11 t / $1.04 | 34 t / $2.06 | 0 | lost |
+| toggleswitch-template | 34 t / $2.50 | 24 t / $1.40 | 0 | **won** |
+| checkbox-padding | 22 t / $1.96 | 46 t / $4.03 | build_run x2, verify_report x1, ui_status x2, ToolSearch x1 | lost |
+| maxby-build | 7 t / $0.40 | 13 t / $0.63 | 0 | lost |
+| numeric-hex | 36 t / $2.16 | 41 t / $2.94 | ui_status x2, ToolSearch x1 | lost |
+
+All runs `verified=true`. Toolchain won 1/5 on turns. Two honest reads:
+`checkbox-padding` produced the **first-ever MCP pulls** (the UI tools, then
+`build_run`, then the `verify_report` closing check — the toolchain's full
+loop, at last), yet lost turns; `toggleswitch-template` won with **zero**
+MCP calls — a raw-agent win, not a toolchain win. The pull matrix closed its
+gaps (build_run / verify_report / ui_status / ToolSearch all pulled >= 1
+across the suite; capture / memory / http_request never pulled — the server
+is exposed as-is and those tools are irrelevant to these tasks, by design).
+
+### 15.2 The build-loop open question, answered by a harness fidelity fix
+
+`build_run` stayed unpulled on both build-centric tasks (0 calls, 3 runs) —
+the agent preferred 9 raw `dotnet build` Bash calls over the structured tool.
+Root cause: a **fidelity gap in the harness**, not in the tool. The
+toolchain arm attached the MCP server with no guidance, while a real dsh
+install injects plugin system-prompt sections describing the loop (build_run
+hard rules, verify_report as the closing check). Bare tools with no context
+get ignored; a real user never sees that condition.
+
+Fix: `bench/harness/toolchain-guidance.md` (a condensed mirror of the real
+plugin guidance) is now prepended to the task prompt in toolchain mode, and
+each result row records `toolchainGuidance: true/false` so mixed-condition
+history stays groupable. Baseline arm unchanged. Re-ran both build tasks:
+
+| task | baseline | toolchain (guidance) | MCP pulls | verdict |
+| --- | --- | --- | --- | --- |
+| synth-buildbreak (disclosed synthetic) | 18 t / $0.59 | 15 t / $0.67 | build_run x1, verify_report x1, ToolSearch x1 | **won** |
+| maxby-build (real) | 7 t / $0.40 | 14 t / $0.95 | build_run x1, verify_report x1, ToolSearch x1 | lost |
+
+With guidance, **both** agents ran the structured loop: `build_run`
+(discover structured errors -> fix -> Rebuild to 0 errors) then
+`verify_report`, whose machine check adjudicated the build claim from
+evidence (verdict pass) — and raw Bash builds dropped 9 -> 3. On the
+synthetic task the toolchain arm won 15 < 18 turns **with the loop
+engaged**: the first datapoint where structured build errors beat raw
+`dotnet` output, visibly. On `maxby-build` it still lost: the baseline
+solves it in 3 edits without ever building (the prompt names the error
+text, and 7-turn tasks are too cheap to amortize verification discipline).
+That asymmetry is itself the finding — the toolchain pays off on noisy,
+multi-error, build-gated failures, and costs overhead on trivial ones.
+
+Disclosure: `synth-buildbreak` is a planted-break task (three scattered
+semantic compile errors, local-only, prompt does not quote the errors). It
+is reported here as a controlled experiment for the structured-error claim
+and is **excluded** from real-bugfix aggregates. Its baseline (18 t) and
+unguided toolchain (15 t, 0 MCP) ran before the guidance fix.
+
+### 15.3 Bottom line
+
+- Pull matrix closed across all tool families; the full loop
+  (build_run -> Rebuild -> verify_report pass) ran end-to-end twice.
+- "Structured errors win once over raw output": **yes, one disclosed
+  datapoint** (synth-buildbreak, 15 < 18 with the loop engaged) — not a
+  statistical claim, and the trivial-task counterexample is recorded
+  alongside it.
+- Next steps: repeats for variance, a task with genuinely noisy build
+  output (the shape where structure should win by more), and the deferred
+  third-party (Codex) cross-model run.
