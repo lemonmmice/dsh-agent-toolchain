@@ -8,6 +8,42 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **dsh-ui-drive: UI driving is now real-time (3 layers)** — the old design
+  spawned a fresh PowerShell per action (process start + script parse + 5 UIA
+  assembly loads ≈ 900ms fixed cost per step), so a 10-step flow took ~9s and
+  "click a control and see it react" was impossible.
+  - `ui_flow` runs the whole step sequence inside ONE process
+    (`scripts/ui-drive-batch.ps1 -StepsFile`): assemblies loaded once, main
+    window resolved once, no per-step process cost. Measured on a 13-step
+    read-only flow: **11.9s → 1.6s (7.6x)**.
+  - `ui_drive` uses a persistent warm PowerShell in serve mode (`-Serve`,
+    line-delimited JSON over stdin/stdout, ASCII-escaped protocol): startup is
+    paid once, then each action costs only the UIA call. Measured p50:
+    **886ms → 30ms (~30x)**. The process self-recycles on idle
+    (`DSH_UI_SERVE_IDLE_MS`, default 5 min), is reclaimed on plugin unload, and
+    `DSH_UI_SERVE=0` falls back to the one-shot path.
+  - `ui_status` gets a UIA-free fast path (`-Status`): **~1000ms → ~400ms**.
+  - Default `waitMs` 1200 → 250ms; `find`/`read`/`shot`/`expect` steps no
+    longer pay a meaningless post-action sleep.
+  - `find` now uses UIA native `FindAll` + `AndCondition` instead of a manual
+    full-tree walk loop.
+  - New offline unit test `plugins/dsh-ui-drive/test/flow-batch.test.mjs`
+    (batch engine, guard rails, step-file whitelist, failure degradation) wired
+    into CI.
+  - Fixed: `driver.status()` never passed `-ProcName`/`-WindowName` to the
+    script, so `ui_status` reported "not running" for a running client and
+    `ui_launch` re-launched on top of it.
+
+### Fixed
+
+- **scripts/check.mjs: repo gate crashed with `RangeError: Maximum call stack
+  size exceeded`** — the walker recursed into `bench-runs/` (per-run repo
+  clones: 100k+ files, 19k+ dirs) before the local-only filter could skip it.
+  The walker is now iterative and prunes local-only trees at the directory
+  level; section 4 still guards them via `git ls-files`.
+
 ### Added
 
 - **UI-driven benchmark tasks (home turf)** — the harness now supports tasks

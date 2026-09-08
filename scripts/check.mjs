@@ -21,17 +21,6 @@ const FORBIDDEN = [
   'linxin666',
 ]
 
-function walk(dir) {
-  const out = []
-  for (const e of readdirSync(dir)) {
-    if (e === 'node_modules' || e === '.git') continue
-    const p = join(dir, e)
-    if (statSync(p).isDirectory()) out.push(...walk(p))
-    else out.push(p)
-  }
-  return out
-}
-
 // Local-only paths (task packages, run artifacts, agent env overrides) that
 // must never be committed. Their content is skipped by the text scans below;
 // section 4 below hard-fails if anything under them is tracked by git.
@@ -43,6 +32,33 @@ const LOCAL_ONLY = [
 
 function isLocalOnly(p) {
   return LOCAL_ONLY.some((d) => p === d || p.startsWith(d + '\\'))
+}
+
+// Local-only trees can be huge (bench-runs holds per-run repo clones: 100k+
+// files, 19k+ dirs). Recursing into them blew the call stack before the first
+// scan could even run, so prune them at the directory level — they are never
+// scanned anyway, and section 4 still checks them via `git ls-files`.
+function walk(dir) {
+  const out = []
+  const stack = [dir]
+  while (stack.length > 0) {
+    const cur = stack.pop()
+    let entries
+    try { entries = readdirSync(cur) } catch { continue }
+    for (const e of entries) {
+      if (e === 'node_modules' || e === '.git') continue
+      const p = join(cur, e)
+      let st
+      try { st = statSync(p) } catch { continue }
+      if (st.isDirectory()) {
+        if (isLocalOnly(p)) continue
+        stack.push(p)
+      } else {
+        out.push(p)
+      }
+    }
+  }
+  return out
 }
 
 let failures = 0
