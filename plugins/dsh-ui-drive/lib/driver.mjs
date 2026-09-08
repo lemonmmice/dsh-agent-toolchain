@@ -200,7 +200,9 @@ export function makeDriver(cfg) {
     // ScriptStamp：把脚本 mtime 传给常驻进程，脚本被改过时它自己退出，
     // Node 侧重启进程——否则开发期热改脚本后常驻进程会一直跑旧代码（踩过）。
     let stamp = ''
-    try { stamp = String(statSync(batchScript()).mtimeMs) } catch { stamp = '' }
+    // 必须取整且用 floor：mtimeMs 带小数（1788872266973.614），PowerShell 侧
+    // Ticks/10000 是向下取整，round 会进位导致每次请求都误判 STALE_SCRIPT。
+    try { stamp = String(Math.floor(statSync(batchScript()).mtimeMs)) } catch { stamp = '' }
     const child = spawn(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', batchScript(), '-Serve', '-ProcName', c.procName, '-WindowName', c.windowName, '-ScriptStamp', stamp], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
     warm.proc = child
     warm.buf = Buffer.alloc(0)
@@ -433,6 +435,8 @@ export function makeDriver(cfg) {
           // 跨窗口 + 凭据 + 竞速等待（漏传过一次：warm 路径下这些参数全部失效）
           winTitle, winHandle, secret, expectValue,
           titleRe, textRe, gone, ms, interval, conds, stableCount,
+          // 图表交互（同样漏传过：warm 路径下 move/wheel/clickat 收到 x=0,y=0）
+          x, y, delta, count, mods, double, button, focus,
         }
         if (action === 'shot') payload.out = shotPlan.path
         const res = await warmSend(payload, action === 'shot' ? 60000 : (Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : c.defaultTimeoutMs))
