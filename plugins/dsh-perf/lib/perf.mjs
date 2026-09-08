@@ -24,6 +24,13 @@ export function makePerf(cfg) {
     dacDir: DAC_DIR,
     ...cfg,
   }
+  // 空字符串不是「配置」：调用方习惯写 evidenceDir: process.env.X || ''，
+  // 展开后默认目录被清空，证据就落到 cwd 下的相对路径。
+  if (!c.evidenceDir) c.evidenceDir = join(homedir(), '.dsh-agent-toolchain', 'perf-evidence')
+  if (!c.procdump) c.procdump = PROCDUMP
+  if (!c.dumpstack) c.dumpstack = DUMPSTACK
+  if (!c.dacDir) c.dacDir = DAC_DIR
+  if (!c.srcRoot) c.srcRoot = process.env.DSH_PERF_SRC_ROOT || ''
 
   function runPs1(script, args, timeoutMs) {
     return new Promise((resolve) => {
@@ -116,7 +123,10 @@ export function makePerf(cfg) {
     const sec = Math.min(Math.max(Math.round(seconds || 60), 5), 3600)
     const th = Math.min(Math.max(Math.round(thresholdMs || 500), 50), 10000)
     const cap = ['log', 'shot', 'dump'].includes(capture) ? capture : 'log'
-    const r = await runPs1(join(c.scriptsDir, 'perf-probe.ps1'), ['-Seconds', String(sec), '-ThresholdMs', String(th), '-Capture', cap, '-IntervalMs', String(intervalMs || 300), '-OutDir', c.evidenceDir], (sec + 90) * 1000)
+    // 必须把目标进程/窗口传下去：不传时脚本收到空 ProcName，Get-Process -Name ''
+    // 直接抛参数验证错误，probe 永远拿不到报告（历史 bug）。
+    const psArgs = ['-Seconds', String(sec), '-ThresholdMs', String(th), '-Capture', cap, '-IntervalMs', String(intervalMs || 300), '-OutDir', c.evidenceDir, '-ProcName', c.procName, '-WindowName', c.windowName]
+    const r = await runPs1(join(c.scriptsDir, 'perf-probe.ps1'), psArgs, (sec + 90) * 1000)
     if (r.timedOut) return { ok: false, error: 'probe 超时', stdout: r.stdout.slice(-1000) }
     const dirM = r.stdout.match(/EVIDENCE_DIR=([^\r\n]+)/)
     const dir = dirM ? dirM[1].trim() : null
