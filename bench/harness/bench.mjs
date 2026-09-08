@@ -27,6 +27,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmS
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import { VACUOUS_TEST_PATTERNS } from '../../lib/verify/report.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..')
@@ -468,6 +469,23 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     verifyTail = String(r.out || '').trim().split(/\r?\n/).slice(-12).join('\n')
     verified = r.code === 0
     if (!verified) verifyReason = 'verify command exited ' + r.code
+    else {
+      // Runtime anti-green-wash (same discipline as verify_report's gate
+      // kind): an exit-0 verify whose output shows zero tests ran must not
+      // certify `verified` — the offline base-fails validation is a promise
+      // by the task author, this is an in-harness check.
+      const vac = VACUOUS_TEST_PATTERNS.find((p) => p.re.test(String(r.out ?? '')))
+      if (vac) {
+        verified = false
+        verifyReason = `verify output vacuous (${vac.label})`
+      }
+    }
+    // A patch that overlaps the hidden test paths is never a fair pass,
+    // even if the apply conflict machinery happened to let it through.
+    if (verified && patchedTests) {
+      verified = false
+      verifyReason = 'agent patch touched the hidden test paths'
+    }
   } catch (e) {
     verified = false
     if (!verifyReason) verifyReason = String(e.stderr || e.message || e)

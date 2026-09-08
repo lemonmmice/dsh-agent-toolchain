@@ -15,7 +15,7 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { dirname, isAbsolute, join, relative } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
@@ -1336,7 +1336,10 @@ function makeRoutes(capture, proxy) {
           const roots = srcRoots()
           const inside = roots.some((root) => {
             const rel = relative(root, target)
-            return rel !== '' && !rel.startsWith('..')
+            // path.relative returns the ABSOLUTE target when the drives
+            // differ — an absolute result is outside every root on this
+            // drive and must be rejected (cross-drive traversal).
+            return !isAbsolute(rel) && rel !== '' && !rel.startsWith('..')
           })
           if (!inside || !existsSync(target)) {
             writeJson(res, 400, { error: 'path outside source roots or missing' })
@@ -1353,7 +1356,7 @@ function makeRoutes(capture, proxy) {
           if (codeCandidates.length > 0) {
             // `start` detaches the GUI process; cmd exits 0 immediately once launched
             opened = await new Promise((resolve) => {
-              execFile('cmd.exe', ['/c', 'start', '', codeCandidates[0], '-g', `${target}:${line}`], { timeout: 10000, windowsHide: true }, (error) => {
+              execFile('cmd.exe', ['/c', 'start', '', codeCandidates[0], '-g', `"${target}:${line}"`], { timeout: 10000, windowsHide: true }, (error) => {
                 resolve(error === null ? 'vscode' : null)
               })
             })
@@ -1361,7 +1364,7 @@ function makeRoutes(capture, proxy) {
           if (opened === null) {
             // `start` returns immediately (exit 0) even though explorer opens async
             opened = await new Promise((resolve) => {
-              execFile('cmd.exe', ['/c', 'start', '', 'explorer', `/select,${target}`], { timeout: 10000, windowsHide: true }, (error) => {
+              execFile('cmd.exe', ['/c', 'start', '', 'explorer', `/select,"${target}"`], { timeout: 10000, windowsHide: true }, (error) => {
                 resolve(error === null ? 'explorer' : null)
               })
             })
