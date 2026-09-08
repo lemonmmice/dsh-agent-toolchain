@@ -38,6 +38,7 @@ $procdump = if ($env:DSH_PERF_PROCDUMP) { $env:DSH_PERF_PROCDUMP } else { $env:D
 
 # 1. 找进程与主窗口
 if ($ProcId -le 0) {
+  if (-not $ProcName) { Write-Output 'CLIENT_NOT_RUNNING'; Write-Error '未配置目标进程（DSH_UI_PROC_NAME / -ProcName）'; exit 2 }
   $p = Get-Process -Name $ProcName -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $p) { Write-Output 'CLIENT_NOT_RUNNING'; exit 2 }
   $ProcId = $p.Id
@@ -45,8 +46,12 @@ if ($ProcId -le 0) {
 $root = [System.Windows.Automation.AutomationElement]::RootElement
 $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $ProcId)
 $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
+# WindowName 为空 = 未配置：取第一个有标题的顶层窗口（主窗口），而不是直接失败
 $main = $null
-for ($i = 0; $i -lt $wins.Count; $i++) { if ($wins.Item($i).Current.Name -eq $WindowName) { $main = $wins.Item($i); break } }
+for ($i = 0; $i -lt $wins.Count; $i++) {
+  if ($WindowName -and $wins.Item($i).Current.Name -eq $WindowName) { $main = $wins.Item($i); break }
+  if (-not $WindowName -and $wins.Item($i).Current.Name) { $main = $wins.Item($i); break }
+}
 if (-not $main) { Write-Output 'WINDOW_NOT_FOUND'; exit 3 }
 $hWnd = [IntPtr]$main.Current.NativeWindowHandle
 Write-Output ('TARGET pid=' + $ProcId + ' hwnd=' + $hWnd)

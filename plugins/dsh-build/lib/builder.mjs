@@ -30,6 +30,13 @@ export function makeBuilder(cfg) {
     rebuildTimeoutMs: 15 * 60 * 1000,
     ...cfg,
   }
+  // 空字符串不是「配置」：调用方习惯写 logsDir: process.env.X || ''，
+  // 展开后会把默认目录清空，mkdirSync('') 直接 ENOENT（实测 MCP build_run）。
+  // 空值统一回落到默认，避免这类「传空即崩」的坑。
+  if (!c.logsDir) c.logsDir = join(homedir(), '.dsh-agent-toolchain', 'build-logs')
+  if (!c.msbuild) c.msbuild = VS_MSBUILD
+  if (!c.clientRoot) c.clientRoot = process.env.DSH_BUILD_CLIENT_ROOT || ''
+  if (!c.repoRoot) c.repoRoot = process.env.DSH_BUILD_REPO_ROOT || ''
 
   // ------------------------------------------------------------ 编码
   // 双解码收敛到 lib/decode.mjs（builder / driver / perf 共用）
