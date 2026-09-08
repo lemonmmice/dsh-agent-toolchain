@@ -24,8 +24,44 @@ const LIMIT_TREE = 14000
 /** 动作后的默认静默等待：UIA 动作本身是同步的，1200ms 纯属浪费。 */
 export const DEFAULT_WAIT_MS = 250
 
-export function makeDriver(cfg) {
-  const c = {
+/**
+ * 进程级互斥锁：文件已存在则等待（最多 DSH_UI_LOCK_WAIT_MS，默认 5 分钟），
+ * 超过 DSH_UI_LOCK_STALE_MS（默认 15 分钟）的锁视为陈旧并回收。
+ * 用同步 API 实现（makeDriver 是同步构造函数），等待期间阻塞主线程——对测试脚本足够。
+ */
+const HELD_LOCKS = new Set()
+function acquireProcessLock(lockPath) {
+  if (HELD_LOCKS.has(lockPath)) return
+  const waitMs = Number(process.env.DSH_UI_LOCK_WAIT_MS || 300000)
+  const staleMs = Number(process.env.DSH_UI_LOCK_STALE_MS || 900000)
+  const deadline = Date.now() + waitMs
+  for (;;) {
+    try {
+      if (existsSync(lockPath)) {
+        let stale = false
+        try {
+          const info = JSON.parse(readFileSync(lockPath, 'utf8'))
+          stale = Date.now() - (info.ts || 0) > staleMs
+        } catch { stale = true }
+        if (stale) { try { rmSync(lockPath, { force: true }) } catch { /* ignore */ } }
+      }
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' })
+      HELD_LOCKS.add(lockPath)
+      const release = () => { try { rmSync(lockPath, { force: true }) } catch { /* ignore */ } }
+      process.once('exit', release)
+      for (const sig of ['SIGINT', 'SIGTERM']) {
+        process.once(sig, () => { release(); process.exit(0) })
+      }
+      return
+    } catch {
+      if (Date.now() >= deadline) throw new Error('dsh-ui-drive: 等待客户端互斥锁超时（' + lockPath + '）')
+      const until = Date.now() + 1000
+      while (Date.now() < until) { /* 同步等待 1s */ }
+    }
+  }
+}
+
+export function makeDriver(cfg) {  const c = {
     procName: process.env.DSH_UI_PROC_NAME || '',
     windowName: process.env.DSH_UI_WINDOW_NAME || '',
     clientExe: process.env.DSH_UI_CLIENT_EXE || '',
@@ -38,6 +74,15 @@ export function makeDriver(cfg) {
   // 直接展开会让空值覆盖默认值，证据目录退化成 cwd 下的相对路径。
   if (!c.evidenceDir) c.evidenceDir = join(homedir(), '.dsh-agent-toolchain', 'ui-evidence')
   if (!c.scriptsDir) c.scriptsDir = join(import.meta.dirname, '..', 'scripts')
+
+  // ------------------------------------------------------------ 进程级互斥
+  //
+  // 同一客户端同一时刻只能被一个驱动进程操作：两个脚本并行驱动会让元素句柄失效
+  // （"目标元素的对应 UI 不再可用"）、把页面切到别的模块（实测踩过：一个脚本在详情页
+  // 验证十字光标，另一个脚本同时点了「指数」，截图全是分时图）。
+  // 锁文件路径由 DSH_UI_LOCK 指定；同进程内重复 makeDriver 复用同一把锁。
+  const lockPath = c.lockPath !== undefined ? c.lockPath : (process.env.DSH_UI_LOCK || '')
+  if (lockPath) acquireProcessLock(lockPath)
 
   // ------------------------------------------------------------ 进程执行
 
