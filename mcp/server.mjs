@@ -86,10 +86,10 @@ server.tool(
   'build_run',
   'Run a build (incremental Build or full Rebuild) and return structured errors. ' +
     'Use after changing code to verify it compiles. Requires DSH_BUILD_CLIENT_ROOT/DSH_BUILD_REPO_ROOT (solution dir) or the clientRoot/repoRoot argument. ' +
-    'engine=msbuild (default): a repo containing WholeSolution.sln keeps the legacy client defaults (WholeSolution.sln + platform x86); otherwise the engine auto-detects the .sln/.slnx (repo root, then one level deep) and the platform from the solution (Any CPU preferred) — ambiguity is an explicit error asking for project. engine=dotnet builds with `dotnet build` (restores by default) — prefer it for modern .NET repos.',
+    'Both engines auto-detect the default solution when project is empty: a repo containing WholeSolution.sln keeps the legacy client defaults (WholeSolution.sln + platform x86); otherwise the .sln/.slnx is detected (repo root, then one level deep) and the platform comes from the solution (Any CPU preferred) — ambiguity is an explicit error asking for project. engine=msbuild (default) uses VS MSBuild; engine=dotnet builds with `dotnet build` (restores by default) — prefer it for modern .NET repos. (dotnet only: a repo with no solution at all falls back to the cwd default.)',
   {
     target: z.enum(['Build', 'Rebuild']).default('Build').describe('Build (incremental, fast) or Rebuild (full)'),
-    project: z.string().optional().describe('Optional csproj/sln path relative to the repo root; empty = auto-detected default solution (msbuild) or the cwd default (dotnet)'),
+    project: z.string().optional().describe('Optional csproj/sln path relative to the repo root; empty = auto-detected default solution (both engines; dotnet falls back to the cwd default when the repo has no solution)'),
     configuration: z.string().default('Debug'),
     platform: z.string().optional().describe('msbuild engine: default auto (legacy x86 for the WholeSolution.sln layout, otherwise detected from the solution); dotnet engine: ignored'),
     engine: z.enum(['msbuild', 'dotnet']).optional().describe('Build engine; env DSH_BUILD_ENGINE sets the default'),

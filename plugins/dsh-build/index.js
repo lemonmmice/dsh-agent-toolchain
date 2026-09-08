@@ -21,7 +21,7 @@ const GUIDANCE =
   '本机已安装 dsh-build 插件（DSH 的编译验证闭环）：把 MSBuild 构建做成 agent 工具，AI 改完代码后用 build_run 增量编译、解析错误、修复、再编译，形成硬校验闭环。' +
   '工具：build_run(target=Build|Rebuild, project?, configuration?, platform?, engine?, repoRoot?) 运行构建（默认增量 Build 快检；最终结论必须用 Rebuild；project 可定向单工程/.sln，相对仓库根；engine=dotnet 走 dotnet build），返回结构化错误列表（file/line/col/code/message）与日志路径；' +
   'build_status 查最近一次构建结果；build_errors 从最近日志重解析错误。' +
-  'msbuild 引擎自动识别布局：仓库根存在 WholeSolution.sln 时沿用老默认（WholeSolution.sln + x86），否则自动探测 .sln/.slnx（根目录→一层子目录）并从解决方案文件读平台（Any CPU 优先）；歧义会报错并要求用 project 显式指定。' +
+  '两个引擎都自动识别布局：仓库根存在 WholeSolution.sln 时沿用老默认（WholeSolution.sln + x86），否则自动探测 .sln/.slnx（根目录→一层子目录）并从解决方案文件读平台（Any CPU 优先）；歧义会报错并要求用 project 显式指定。dotnet 引擎在仓库完全没有解决方案时回退 cwd 默认。' +
   '硬约束（必须遵守）：改完代码必须 build_run 增量验证；错误未清零不得声称编译通过；只有 Rebuild 成功才能说 "Solution Rebuild passed"；增量 Build 通过只能说 targeted/incremental build passed。' +
   '已知坑：主工程是 legacy csproj，新增 .cs 必须手工加 <Compile Include>，否则构建通过但文件根本没编译——错误数 0 不代表新文件进了编译。' +
   '构建日志目录 ~/.dsh-agent-toolchain/build-logs（DSH_BUILD_LOGS_DIR 可覆盖），仓库根由 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT 指定，MSBuild 路径由 DSH_BUILD_MSBUILD 指定（找不到时自动探测常见安装）。' +
