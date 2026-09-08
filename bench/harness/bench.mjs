@@ -336,6 +336,13 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     '--dangerously-skip-permissions',
     '--add-dir',
     repoDir,
+    // --strict-mcp-config: load ONLY the servers from --mcp-config (below),
+    // never the user's personal MCP servers (~/.claude.json). Without it the
+    // CLI launches user-configured servers at startup (observed: npx fetches
+    // for design-tool MCPs hanging through the proxy for 30+ min, freezing
+    // the agent with ~0 CPU) and the baseline mode would silently inherit
+    // tools it must not have.
+    '--strict-mcp-config',
     // Hard-block web access at the tool level (WebSearch/WebFetch excluded):
     // the answer must come from the code, not from looking up the fix online.
     // MCP tools are unaffected by --allowedTools.
@@ -387,7 +394,7 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     let probeErr = ''
     for (let attempt = 1; attempt <= 3; attempt++) {
       const probe = await runAgentCli(
-        ['-p', '--output-format', 'json', '--max-turns', '2', '--mcp-config', mcpConfigPath, '--mcp-debug'],
+        ['-p', '--output-format', 'json', '--max-turns', '2', '--strict-mcp-config', '--mcp-config', mcpConfigPath, '--mcp-debug'],
         'Do NOT call any tools. Answer only with a comma-separated list of the tool names available to you, including MCP tools.',
         join(runDir, 'probe.prompt.txt'),
         runDir,
