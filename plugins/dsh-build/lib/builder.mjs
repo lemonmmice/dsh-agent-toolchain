@@ -229,7 +229,7 @@ export function makeBuilder(cfg) {
     // 前置检查：客户端运行会锁它自己的输出目录（MSB3021/3027 文件锁风暴）。
     // 但锁只发生在「构建目标就是客户端本体」时——把 guard 做成全局的会让任何
     // 无关仓库的构建在客户端开着时全部失败（外部智能体复核指出的问题）。
-    // 判定：目标程序集名 == 客户端进程名（例如 NiuGuWang.csproj vs NiuGuWang.exe）。
+    // 判定：目标程序集名 == 客户端进程名（例如 MyClient.csproj vs MyClient.exe）。
     const client = clientProcess()
     let clientRunningWarning = null
     const targetAssembly = targetArg ? basename(targetArg).replace(/\.(cs|vb|fs)proj$/i, '').replace(/\.(sln|slnx)$/i, '') : ''
