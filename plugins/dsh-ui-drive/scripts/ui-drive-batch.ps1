@@ -78,6 +78,7 @@ public class UiDriveBatchWin32 {
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern short VkKeyScan(char ch);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   public struct RECT { public int Left, Top, Right, Bottom; }
 }
@@ -306,7 +307,120 @@ function Send-KeyAscii([string]$value) {
   }
 }
 
-# 鼠标拖拽（滑块验证码）：窗口客户区坐标 → 屏幕坐标，按住左键移动后释放
+# UIA 元素级双击：用 GetClickablePoint（物理像素）定位，绕开坐标口径问题。
+# 表格行双击必须走这条——实测按 BoundingRectangle 换算的坐标点击会偏。
+function Invoke-DoubleClickElement($el, $main) {
+  # GetClickablePoint() 返回 System.Windows.Point（UIAutomationTypes 里就有），
+  # 不要 New-Object System.Windows.Point —— 本进程没加载 PresentationCore，会编译失败。
+  $sx = $null; $sy = $null
+  try {
+    $pt = $el.GetClickablePoint()
+    $sx = [int]$pt.X; $sy = [int]$pt.Y
+  } catch {
+    $b = $el.Current.BoundingRectangle
+    if (Is-RectUsable $b) { $sx = [int]($b.X + $b.Width / 2); $sy = [int]($b.Y + $b.Height / 2) }
+  }
+  if ($null -eq $sx) { throw '元素没有可点击点（GetClickablePoint 失败）' }
+  try { $el.SetFocus() } catch { }
+  if ($null -ne $main) { try { [UiDriveBatchWin32]::SetForegroundWindow([IntPtr]$main.Current.NativeWindowHandle) | Out-Null } catch { } }
+  Start-Sleep -Milliseconds 80
+  [UiDriveBatchWin32]::SetCursorPos($sx, $sy) | Out-Null
+  Start-Sleep -Milliseconds 120
+  [UiDriveBatchWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 40
+  [UiDriveBatchWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 120
+  [UiDriveBatchWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 40
+  [UiDriveBatchWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  return ('doubleClick @' + $sx + ',' + $sy + ' (' + (Get-ControlTypeName $el) + ')')
+}
+
+# 坐标点击（窗口客户区）：表格行、图表点位等 UIA 元素不稳定的地方
+# $button: left(默认) | right（右键菜单）| middle
+function Invoke-ClickAt($main, [int]$x, [int]$y, [bool]$double, [string]$button) {
+  $r = Get-MainRect $main
+  $sx = $r.Left + $x; $sy = $r.Top + $y
+  [UiDriveBatchWin32]::SetCursorPos($sx, $sy) | Out-Null
+  Start-Sleep -Milliseconds 120
+  $down = 2; $up = 4
+  if ($button -eq 'right') { $down = 8; $up = 16 }
+  elseif ($button -eq 'middle') { $down = 32; $up = 64 }
+  [UiDriveBatchWin32]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 40
+  [UiDriveBatchWin32]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
+  if ($double) {
+    # 双击间隔要短（默认双击时间约 500ms，但 60ms 实测被识别成两次单击）
+    Start-Sleep -Milliseconds 120
+    [UiDriveBatchWin32]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 40
+    [UiDriveBatchWin32]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
+  }
+  return ('clickAt ' + $x + ',' + $y + ' ' + $(if ($button) { $button } else { 'left' }) + $(if ($double) { ' x2' } else { '' }))
+}
+
+# 鼠标拖拽（滑块验证码 / K线平移）：窗口客户区坐标 → 屏幕坐标，按住左键移动后释放
+# $keyMods：按住不放的修饰键（shift/ctrl/alt），K线拖动/十字光标常用
+function Get-ModVk([string]$name) {
+  switch ($name.Trim().ToLowerInvariant()) {
+    'shift' { return 0x10 }
+    'ctrl' { return 0x11 }
+    'control' { return 0x11 }
+    'alt' { return 0x12 }
+    default { return 0 }
+  }
+}
+
+function Get-MainRect($main) {
+  $r = New-Object UiDriveBatchWin32+RECT
+  if ($null -ne $main) {
+    [UiDriveBatchWin32]::GetWindowRect([IntPtr]$main.Current.NativeWindowHandle, [ref]$r) | Out-Null
+  }
+  return $r
+}
+
+# 鼠标移动到窗口客户区坐标（K线十字光标靠它）
+function Invoke-Move($main, [int]$x, [int]$y, [int]$holdMs) {
+  $r = Get-MainRect $main
+  $sx = $r.Left + $x; $sy = $r.Top + $y
+  [UiDriveBatchWin32]::SetCursorPos($sx, $sy) | Out-Null
+  if ($holdMs -gt 0) { Start-Sleep -Milliseconds $holdMs }
+  return ('move ' + $x + ',' + $y)
+}
+
+# 滚轮：$delta>0 上滚（放大/上翻），<0 下滚；K线缩放/滚动都靠它
+function Invoke-Wheel($main, [int]$x, [int]$y, [int]$delta, [int]$count, [int]$holdMs) {
+  $r = Get-MainRect $main
+  [UiDriveBatchWin32]::SetCursorPos($r.Left + $x, $r.Top + $y) | Out-Null
+  Start-Sleep -Milliseconds 80
+  if ($count -lt 1) { $count = 1 }
+  for ($i = 0; $i -lt $count; $i++) {
+    # mouse_event 的 dwData 是 DWORD：PowerShell 拒绝把负数转成 UInt32（-band 也不行），
+    # 必须显式加 2^32 得到无符号值（-120 → 4294967176）——实测 probe 确认过。
+    $wd = [int64]$delta
+    if ($wd -lt 0) { $wd = $wd + 4294967296 }
+    [UiDriveBatchWin32]::mouse_event(0x0800, 0, 0, [uint32]$wd, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds $holdMs
+  }
+  return ('wheel delta=' + $delta + ' x' + $count + ' @' + $x + ',' + $y)
+}
+
+# 按住修饰键 → 执行 → 释放（K线 Shift+拖动、Ctrl+滚轮等）
+function Invoke-WithMods([string]$mods, [scriptblock]$body) {
+  $vks = @()
+  if ($mods) {
+    foreach ($m in ($mods -split '[,+ ]+')) {
+      if (-not $m) { continue }
+      $vk = Get-ModVk $m
+      if ($vk -gt 0) { $vks += $vk; [UiDriveBatchWin32]::keybd_event([byte]$vk, 0, 0, [UIntPtr]::Zero) }
+    }
+    Start-Sleep -Milliseconds 60
+  }
+  try { return (& $body) } finally {
+    foreach ($vk in $vks) { [UiDriveBatchWin32]::keybd_event([byte]$vk, 0, 2, [UIntPtr]::Zero) }
+  }
+}
+
 function Invoke-Drag($main, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY, [int]$steps, [int]$holdMs) {
   $h = [IntPtr]$main.Current.NativeWindowHandle
   $r = New-Object UiDriveBatchWin32+RECT
@@ -315,7 +429,7 @@ function Invoke-Drag($main, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY, [int
   Start-Sleep -Milliseconds 100
   $x0 = $r.Left + $fromX; $y0 = $r.Top + $fromY
   $x1 = $r.Left + $toX; $y1 = $r.Top + $toY
-  [UiDriveBatchWin32]::SetCursorPos($x0, $y0)
+  [UiDriveBatchWin32]::SetCursorPos($x0, $y0) | Out-Null
   Start-Sleep -Milliseconds $holdMs
   [UiDriveBatchWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 120
@@ -323,7 +437,7 @@ function Invoke-Drag($main, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY, [int
   for ($i = 1; $i -le $steps; $i++) {
     $x = [int]($x0 + ($x1 - $x0) * $i / $steps)
     $y = [int]($y0 + ($y1 - $y0) * $i / $steps)
-    [UiDriveBatchWin32]::SetCursorPos($x, $y)
+    [UiDriveBatchWin32]::SetCursorPos($x, $y) | Out-Null
     Start-Sleep -Milliseconds 25
   }
   Start-Sleep -Milliseconds $holdMs
@@ -916,6 +1030,20 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         }
       }
       'key' {
+        # focus=true：不定位控件，直接把按键发给当前焦点（列表行选中后按 F5 这类）
+        $focusOnly = (($step.PSObject.Properties.Name -contains 'focus') -and $step.focus)
+        if ($focusOnly) {
+          $kv = [string]$step.value
+          if ($kv -match '^\{[A-Za-z0-9]+\}$' -or $kv -match '[\^%+~]') {
+            $null = [System.Windows.Forms.SendKeys]::SendWait($kv)
+          } elseif ($kv -match '^[\x20-\x7e]+$') {
+            Send-TextDirect $kv
+          } else {
+            $null = [System.Windows.Forms.SendKeys]::SendWait($kv)
+          }
+          Start-Sleep -Milliseconds $waitMs
+          $res.ok = $true; $res.output = ('KEYED ' + $kv + ' to focused element')
+        } else {
         $w = Wait-Target $main $step $waitSpec $procId
         if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
@@ -928,6 +1056,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           if ($verify) { $res.error = $verify } else {
             $res.ok = $true; $res.output = ('KEYED "' + (Mask-Value ([string]$step.value) $secret) + '" into ' + $el.Current.AutomationId)
           }
+        }
         }
       }
       'type' {
@@ -959,9 +1088,57 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         if (($step.PSObject.Properties.Name -contains 'toY') -and $null -ne $step.toY) { $ty = [int]$step.toY }
         if (($step.PSObject.Properties.Name -contains 'steps') -and $null -ne $step.steps) { $dst = [int]$step.steps }
         if (($step.PSObject.Properties.Name -contains 'holdMs') -and $null -ne $step.holdMs) { $hold = [int]$step.holdMs }
-        $out = Invoke-Drag $main $fx $fy $tx $ty $dst $hold
+        $mods = ''
+        if (($step.PSObject.Properties.Name -contains 'mods') -and $step.mods) { $mods = [string]$step.mods }
+        $out = Invoke-WithMods $mods { Invoke-Drag $main $fx $fy $tx $ty $dst $hold }
+        Start-Sleep -Milliseconds $waitMs
+        $res.ok = $true; $res.output = ([string]$out)
+      }
+      'move' {
+        # 鼠标移到窗口客户区坐标（K线十字光标：移动后截图看读数）
+        $mx = 0; $my = 0; $hold = 200
+        if (($step.PSObject.Properties.Name -contains 'x') -and $null -ne $step.x) { $mx = [int]$step.x }
+        if (($step.PSObject.Properties.Name -contains 'y') -and $null -ne $step.y) { $my = [int]$step.y }
+        if (($step.PSObject.Properties.Name -contains 'holdMs') -and $null -ne $step.holdMs) { $hold = [int]$step.holdMs }
+        $out = Invoke-Move $main $mx $my $hold
         Start-Sleep -Milliseconds $waitMs
         $res.ok = $true; $res.output = $out
+      }
+      'clickat' {
+        # 坐标点击（窗口客户区坐标）：表格行、图表点位这类 UIA 拿不到稳定元素的地方
+        $cx = 0; $cy = 0; $dbl = $false; $btn = 'left'
+        if (($step.PSObject.Properties.Name -contains 'x') -and $null -ne $step.x) { $cx = [int]$step.x }
+        if (($step.PSObject.Properties.Name -contains 'y') -and $null -ne $step.y) { $cy = [int]$step.y }
+        if (($step.PSObject.Properties.Name -contains 'double') -and $step.double) { $dbl = $true }
+        if (($step.PSObject.Properties.Name -contains 'button') -and $step.button) { $btn = [string]$step.button }
+        $out = Invoke-ClickAt $main $cx $cy $dbl $btn
+        Start-Sleep -Milliseconds $waitMs
+        $res.ok = $true; $res.output = $out
+      }
+      'doubleclick' {
+        # UIA 元素级双击（表格行进详情等）：用 GetClickablePoint，不靠坐标换算
+        $w = Wait-Target $main $step $waitSpec $procId
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
+        else {
+          $out = Invoke-DoubleClickElement $w.el $main
+          Start-Sleep -Milliseconds $waitMs
+          $res.ok = $true; $res.output = ([string]$out)
+        }
+      }
+      'wheel' {
+        # 滚轮（K线缩放/平移、列表滚动）；delta>0 上滚，count 为次数
+        $wx = 0; $wy = 0; $delta = -120; $count = 1; $hold = 120
+        if (($step.PSObject.Properties.Name -contains 'x') -and $null -ne $step.x) { $wx = [int]$step.x }
+        if (($step.PSObject.Properties.Name -contains 'y') -and $null -ne $step.y) { $wy = [int]$step.y }
+        if (($step.PSObject.Properties.Name -contains 'delta') -and $null -ne $step.delta) { $delta = [int]$step.delta }
+        if (($step.PSObject.Properties.Name -contains 'count') -and $null -ne $step.count) { $count = [int]$step.count }
+        if (($step.PSObject.Properties.Name -contains 'holdMs') -and $null -ne $step.holdMs) { $hold = [int]$step.holdMs }
+        $mods = ''
+        if (($step.PSObject.Properties.Name -contains 'mods') -and $step.mods) { $mods = [string]$step.mods }
+        $out = Invoke-WithMods $mods { Invoke-Wheel $main $wx $wy $delta $count $hold }
+        Start-Sleep -Milliseconds $waitMs
+        $res.ok = $true; $res.output = ([string]$out)
       }
       'read' {
         $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
