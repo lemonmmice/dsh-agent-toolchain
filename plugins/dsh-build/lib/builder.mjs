@@ -169,11 +169,13 @@ export function makeBuilder(cfg) {
       return { ok: false, error: '仓库根目录不存在：' + (repoRoot || '(未配置)') + '（传 repoRoot 或设置 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT）' }
     }
 
-    // Target: an explicit project/sln wins. Without one, the msbuild engine
-    // auto-detects the default solution (see lib/build-resolve.mjs):
+    // Target: an explicit project/sln wins. Without one, both engines
+    // auto-detect the default solution (see lib/build-resolve.mjs):
     // WholeSolution.sln keeps the legacy client layout, stock repos get
     // root-then-one-level-deep detection, ambiguity is an explicit error.
-    // The dotnet engine keeps its cwd default when no project is given.
+    // Only exception: the dotnet engine on a repo with no solution at all
+    // falls back to its cwd default (`dotnet build` in the repo root), which
+    // keeps single-root-project repos working as before.
     let targetArg = ''
     let targetDisplay = ''
     if (project) {
@@ -184,11 +186,14 @@ export function makeBuilder(cfg) {
       }
       targetArg = p
       targetDisplay = project
-    } else if (!isDotnet) {
+    } else {
       const found = findDefaultSolution(repoRoot)
-      if (found.kind !== 'found') return { ok: false, error: found.error + '（project 可定向 .sln/.csproj，repoRoot 指向仓库根）' }
-      targetArg = found.path
-      targetDisplay = found.display
+      if (found.kind === 'found') {
+        targetArg = found.path
+        targetDisplay = found.display
+      } else if (!isDotnet || found.kind === 'multiple') {
+        return { ok: false, error: found.error + '（project 可定向 .sln/.csproj，repoRoot 指向仓库根）' }
+      }
     }
 
     // Platform: explicit param > DSH_BUILD_PLATFORM > layout rules.
