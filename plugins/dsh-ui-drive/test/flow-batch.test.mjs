@@ -131,6 +131,36 @@ function newDriver() {
   d.warmShutdown()
 }
 
+// ---------------------------------------------------------------- 6. 副作用动作绝不因常驻进程异常而重放
+{
+  // 假 serve：起来后立刻退出 → 请求永远等不到响应，warm 判定进程死亡
+  // 注意：param() 必须是脚本第一行，否则 PowerShell 直接忽略（$Action/$Name 为 null）；
+  // 字符串拼接要用双引号，单引号里 $Name 不会展开。
+  const body = `param([string]$ProcName='',[string]$WindowName='',[int]$ProcId=0,[string]$StepsFile='',[string]$Out='',[int]$DefaultWaitMs=250,[switch]$Status,[switch]$Serve,[string]$Action='',[string]$Name='')
+if ($Serve) { exit 0 }
+if ($Out) { [System.IO.File]::WriteAllText($Out, '{"ok":true,"steps":[]}', (New-Object System.Text.UTF8Encoding($false))) }
+if ($Action -eq 'find') { Write-Output ("FOUND [Button] name=" + $Name + " enabled=True") } else { Write-Output 'RESULT_JSON={"ok":true,"steps":[]}' }
+`
+  writeFileSync(join(scriptsDir, 'ui-drive-batch.ps1'), body, 'utf8')
+  // 回退路径走的是 ui-drive.ps1（一次性脚本），fake 里也要能回一个 find 结果
+  const oneShot = `param([string]$ProcName='',[string]$WindowName='',[int]$ProcId=0,[string]$Action='',[string]$Name='',[string]$Aid='')
+if ($Action -eq 'find') { Write-Output ("FOUND [Button] name=" + $Name + " enabled=True") } else { Write-Output 'NOT_FOUND' }
+`
+  writeFileSync(join(scriptsDir, 'ui-drive.ps1'), oneShot, 'utf8')
+  writeFileSync(join(scriptsDir, 'ui-probe.ps1'), '# stub\n', 'utf8')
+  delete process.env.DSH_UI_SERVE
+  process.env.DSH_UI_SERVE_IDLE_MS = '60000'
+  const d = makeDriver({ scriptsDir, evidenceDir, procName: 'FakeProc' })
+  const r = await d.drive({ action: 'click', name: '保存', allowSideEffects: true })
+  check('常驻进程异常时副作用动作返回失败', r.ok === false, JSON.stringify(r))
+  check('副作用动作不重放（无 fallback 结果）', r.output === undefined, JSON.stringify(r))
+  const r2 = await d.drive({ action: 'find', name: 'A' })
+  check('只读动作在常驻进程不可用时仍能回退成功', r2.ok === true, JSON.stringify(r2))
+  d.warmShutdown()
+  process.env.DSH_UI_SERVE = '0'
+  delete process.env.DSH_UI_SERVE_IDLE_MS
+}
+
 rmSync(scriptsDir, { recursive: true, force: true })
 rmSync(evidenceDir, { recursive: true, force: true })
 delete process.env.FAKE_BATCH_PAYLOAD

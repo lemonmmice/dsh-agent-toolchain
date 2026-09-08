@@ -104,14 +104,15 @@ export function makeDriver(cfg) {
 
   /** ui_status：进程 + 主窗口状态（batch 脚本 -Status 快路径，不加载 UIA）。 */
   async function status() {
-    if (!c.procName && !c.clientExe) {
+    const procName = c.procName || (c.clientExe ? basename(c.clientExe).replace(/\.exe$/i, '') : '')
+    if (!procName && !c.clientExe) {
       // 未配置目标进程：明确区分「未配置」与「未运行」，避免三个状态塌缩成一个 running:false。
       return { running: false, unconfigured: true, error: '未配置目标进程（设置 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE）' }
     }
     const script = existsSync(batchScript()) ? batchScript() : driveScript()
     const args = existsSync(batchScript())
-      ? ['-Status', '-ProcName', c.procName, '-WindowName', c.windowName]
-      : commonArgs(0).concat(['-Action', 'status'])
+      ? ['-Status', '-ProcName', procName, '-WindowName', c.windowName]
+      : ['-ProcName', procName, '-WindowName', c.windowName, '-Action', 'status']
     const r = await runPs1(script, args, 30000)
     const text = r.stdout
     if (r.timedOut) return { running: false, error: 'status 超时' }
@@ -169,6 +170,8 @@ export function makeDriver(cfg) {
     startedAt: 0,
     ready: null,
     disabled: false,
+    idleTimer: null,
+    lastProtocolError: null,
   }
 
   function warmEnabled() {
@@ -181,6 +184,7 @@ export function makeDriver(cfg) {
     const p = warm.proc
     warm.proc = null
     warm.ready = null
+    if (warm.idleTimer) { clearInterval(warm.idleTimer); warm.idleTimer = null }
     for (const [, e] of warm.pending) e.reject(new Error('常驻进程已退出' + (reason ? '（' + reason + '）' : '')))
     warm.pending.clear()
     if (p) {
@@ -198,14 +202,22 @@ export function makeDriver(cfg) {
     warm.buf = Buffer.alloc(0)
     warm.startedAt = Date.now()
     warm.lastUsed = Date.now()
-    warm.ready = true
+    warm.lastProtocolError = null
 
     const onLine = (line) => {
       const s = line.trim()
       if (!s) return
-      if (!s.startsWith('RESP_JSON=')) return
+      if (!s.startsWith('RESP_JSON=')) {
+        // 非协议输出（PowerShell warning/异常文本）不能静默吞掉，否则只能表现为
+        // 「超时」，诊断无从下手。留最近一条，超时结果里带出去。
+        warm.lastProtocolError = s.slice(0, 300)
+        return
+      }
       let obj
-      try { obj = JSON.parse(s.slice('RESP_JSON='.length)) } catch { return }
+      try { obj = JSON.parse(s.slice('RESP_JSON='.length)) } catch (e) {
+        warm.lastProtocolError = 'RESP_JSON 解析失败: ' + String(e).slice(0, 160) + ' | ' + s.slice(0, 160)
+        return
+      }
       const e = warm.pending.get(obj.id)
       if (!e) return
       warm.pending.delete(obj.id)
@@ -222,6 +234,10 @@ export function makeDriver(cfg) {
         onLine(decodeBuffer(raw).text.replace(/\r$/, ''))
       }
     })
+    child.stderr.on('data', (d) => {
+      const t = decodeBuffer(Buffer.from(d)).text.trim()
+      if (t) warm.lastProtocolError = ('stderr: ' + t).slice(0, 300)
+    })
     child.on('error', () => { if (warm.proc === child) warmStop('spawn error') })
     child.on('exit', () => { if (warm.proc === child) warmStop('exit') })
 
@@ -233,11 +249,19 @@ export function makeDriver(cfg) {
         warmStop('idle timeout')
       }
     }, Math.min(60000, Math.max(5000, idleMs / 2)))
+    warm.idleTimer = timer
     if (timer.unref) timer.unref()
-    return Promise.resolve(true)
+    // ready 握手：确认 serve 脚本已经起来并在监听 stdin，避免「进程刚 spawn
+    // 就发请求」时首个动作白等一个超时（Codex 复核提出的 should-fix）。
+    return warmSend({ cmd: 'ping' }, 15000).then((r) => {
+      if (r && r.ok === true && r.pong === true) { warm.ready = true; return true }
+      warm.ready = false
+      warmStop('ready handshake failed')
+      return false
+    })
   }
 
-  /** 向常驻进程发一条请求；超时/异常降级为 false，由调用方回退到单进程路径。 */
+  /** 向常驻进程发一条请求；超时/异常降级为 null（只读动作可安全回退）。 */
   function warmSend(payload, timeoutMs = c.defaultTimeoutMs) {
     return new Promise((resolve) => {
       if (!warm.proc) { resolve(null); return }
@@ -245,8 +269,10 @@ export function makeDriver(cfg) {
       const timer = setTimeout(() => {
         if (warm.pending.has(id)) {
           warm.pending.delete(id)
+          const why = warm.lastProtocolError ? ('；最近协议输出：' + warm.lastProtocolError) : ''
           warmStop('request timeout')
-          resolve(null)
+          // 明确区分「超时」：调用方据此禁止副作用重放
+          resolve({ ok: false, timeout: true, error: '常驻进程请求超时 ' + timeoutMs + 'ms' + why })
         }
       }, timeoutMs)
       warm.pending.set(id, {
@@ -303,12 +329,26 @@ export function makeDriver(cfg) {
     // ---- 常驻进程快路径
     if (warmEnabled()) {
       await warmStart()
-      if (warm.proc) {
+      if (warm.proc && warm.ready === true) {
         const payload = { action, name, aid, value, ascii, match, waitMs, procId }
         if (action === 'shot') payload.out = shotPlan.path
         const res = await warmSend(payload, action === 'shot' ? 60000 : c.defaultTimeoutMs)
+        if (res && res.ok === false && res.timeout === true) {
+          // 超时 ≠ 没执行：请求可能已经到达并被处理，只是响应没回来。
+          // 副作用动作绝不能走回退路径重放（会点两次 / 输两次），必须如实
+          // 报告「执行状态未知」，让调用方先查控件状态再决定。
+          // （Codex/Astra 跨模型复核提出的 blocker。）
+          if (!READ_ONLY_ACTIONS.has(action)) {
+            return {
+              ok: false,
+              action,
+              unknown: true,
+              error: '常驻进程超时：' + action + ' 可能已执行但未收到结果，未做任何重试（避免重复副作用）。请用 read/find 复核控件状态后再决定。',
+            }
+          }
+        }
         if (res) return shapeResult(action, res, shotPlan, workspace)
-        // 常驻进程出问题：本次回退单进程路径
+        // 只读动作：常驻进程不可用时回退一次性脚本路径是安全的
       }
     }
 
