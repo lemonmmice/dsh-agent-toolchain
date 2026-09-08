@@ -69,6 +69,20 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Changed
 
+- **Pilot 3 — home-turf task (UI-driven verification)** — the first task whose
+  hidden check is a UIA probe (WPF host + live-window assertion). First MCP
+  tool usage across all pilots: the toolchain agent called `ui_status` ×2 and
+  `ui_drive` ×3 to verify the rendered control text — on a task where the bug
+  is only observable in a live window. baseline $1.51/31 turns vs toolchain
+  $2.84/41 turns (cap hit, still verified); `build_run` still unused. See
+  [bench/pilot/report.md](./bench/pilot/report.md) §13.
+- **Review round 4 fixes** — fresh adversarial review returned SATISFIED with
+  0 must-fix and 4 should-fix, all reproduced and fixed: `verify kind=api`
+  no longer passes `expect.min ≤ 0` with zero evidence; the vacuous-gate
+  catches the .NET "no test containers" / "Tests run: 0" / "OK (0 tests)"
+  wordings; the bench harness gained a runtime vacuous-output guard and
+  `patchedTests` now downgrades `verified`; `/source/open` rejects
+  cross-drive paths and quotes its `start` targets.
 - **dsh-verify boot-crash fix** — `verify_report`'s `context` parameter was
   `{ type: 'object' }` without `additionalProperties`, which makes
   `defineTool` throw at boot and crash-loops the host (watchdog relaunch
