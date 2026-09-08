@@ -7,9 +7,27 @@ AI 改完代码 → 增量编译 → 结构化错误回填 → 修复 → 再编
 
 | 工具 | 说明 |
 | --- | --- |
-| \`build_run\` | 运行构建：\`target=Build\`（增量快检，默认）/ \`Rebuild\`（全量结论）；\`engine=msbuild\`（默认，VS MSBuild，x86/WholeSolution 老客户端布局）/ \`engine=dotnet\`（\`dotnet build\`，自动 restore、Any CPU——现代 SDK 仓库请用它）；\`project\` 可定向单工程；\`killClient\` 先结束占用输出目录的客户端；返回结构化错误（file/line/col/code/message） |
+| \`build_run\` | 运行构建：\`target=Build\`（增量快检，默认）/ \`Rebuild\`（全量结论）；\`engine=msbuild\`（默认，VS MSBuild）/ \`engine=dotnet\`（\`dotnet build\`，自动 restore，现代 SDK 仓库推荐）；\`project\` 可定向单工程/.sln；\`killClient\` 先结束占用输出目录的客户端；返回结构化错误（file/line/col/code/message，环境错误与代码错误分开归类） |
 | \`build_status\` | 最近一次构建结果（目标/耗时/错误数/日志路径） |
 | \`build_errors\` | 从最近日志重解析错误/警告列表 |
+
+## msbuild 引擎的布局识别
+
+msbuild 引擎不再硬编码 \`WholeSolution.sln\`/x86 默认值，而是按仓库布局自动解析
+（逻辑在 \`lib/build-resolve.mjs\`，builder 与 MCP 共用）：
+
+- **老客户端布局**：仓库根存在 \`WholeSolution.sln\` → 沿用老默认
+  （默认目标 \`WholeSolution.sln\`、平台 \`x86\`），行为与以前完全一致；
+- **普通仓库**：无 \`project\` 时自动探测 \`.sln\`/\`.slnx\`
+  （根目录 → 一层子目录，跳过 bin/obj/.git/node_modules 等）；
+  平台从解决方案文件本身读取（\`Any CPU\` 优先，其次 \`Mixed Platforms\`、\`x86\`，
+  读不出则省略 \`/p:Platform\` 交给解决方案默认值）；
+- **歧义即报错**：根目录或一层子目录里有多个解决方案时直接报错列出候选，
+  要求用 \`project\` 显式指定——绝不猜测。
+
+另外 msbuild 引擎总是带 \`/restore\`：MSBuild.exe 不像 \`dotnet build\` 那样隐式
+restore，SDK 工程缺 restore 会以 NETSDK1004（找不到 assets 文件）失败；
+对老式 packages.config 工程它是 no-op。
 
 ## 硬约束（systemPrompt 公告，agent 必须遵守）
 
@@ -26,7 +44,8 @@ AI 改完代码 → 增量编译 → 结构化错误回填 → 修复 → 再编
 
 ## 实现
 
-- \`lib/builder.mjs\` — MSBuild/dotnet spawn（超时杀进程树）、UTF-8/GBK 双解码（收敛到 \`lib/decode.mjs\`）、错误行正则解析（含无行列号的顶层 \`MSBUILD : error MSBxxxx\`）、运行记录
+- \`lib/builder.mjs\` — MSBuild/dotnet spawn（超时杀进程树）、UTF-8/GBK 双解码（收敛到 \`lib/decode.mjs\`）、错误行正则解析（含无行列号的顶层 \`MSBUILD : error MSBxxxx\`、嵌入式 \`file : error : MSBxxxx:\`、NETSDKxxxx 六字母码前缀）、环境/代码错误分类（SDK 解析、NuGet 源不可达、文件锁归环境类）、运行记录
+- \`lib/build-resolve.mjs\` — 默认解决方案/平台解析（老布局兼容 + 自动探测，见上节），builder 与 MCP 共用
 - \`index.js\` — 工具注册 + systemPrompt 公告 + 回环路由（status/errors/log）
 - 错误行格式：\`path(line,col): error CS1234: message\`（MSBuild \`/v:m\`）；顶层错误（MSB1009/MSB4126 等无行列号）以 \`file:(top-level)\` 进入结构化列表——\`ok:false\` 时 \`errors:[]\` 为空是 bug，不再是
 
@@ -34,7 +53,9 @@ AI 改完代码 → 增量编译 → 结构化错误回填 → 修复 → 再编
 
 | 项目 | 说明 |
 | --- | --- |
-| \`DSH_BUILD_CLIENT_ROOT\` | 解决方案根目录（必配） |
+| \`DSH_BUILD_CLIENT_ROOT\` | 仓库根目录（旧名，与 \`DSH_BUILD_REPO_ROOT\` 二选一） |
+| \`DSH_BUILD_REPO_ROOT\` | 仓库根目录（通用名，优先） |
+| \`DSH_BUILD_PLATFORM\` | 覆盖自动解析的平台（如 \`x86\` / \`Any CPU\`） |
 | \`DSH_BUILD_MSBUILD\` | MSBuild.exe 路径（默认 VS 自带，缺失时 vswhere 定位） |
 | \`DSH_BUILD_ENGINE\` | 构建引擎 \`msbuild\`（默认）/ \`dotnet\`（SDK 仓库推荐） |
 | \`DSH_BUILD_CLIENT_PROC\` | 输出目录会被锁定的客户端进程名（可选，缺省用 \`DSH_UI_PROC_NAME\`） |

@@ -19,11 +19,12 @@ const API = '/api/dsh-build'
 
 const GUIDANCE =
   '本机已安装 dsh-build 插件（DSH 的编译验证闭环）：把 MSBuild 构建做成 agent 工具，AI 改完代码后用 build_run 增量编译、解析错误、修复、再编译，形成硬校验闭环。' +
-  '工具：build_run(target=Build|Rebuild, project?, configuration?, platform?) 运行构建（默认增量 Build 快检；最终结论必须用 Rebuild；project 可定向单工程，传相对 Client 根的 csproj 路径），返回结构化错误列表（file/line/col/code/message）与日志路径；' +
+  '工具：build_run(target=Build|Rebuild, project?, configuration?, platform?, engine?, repoRoot?) 运行构建（默认增量 Build 快检；最终结论必须用 Rebuild；project 可定向单工程/.sln，相对仓库根；engine=dotnet 走 dotnet build），返回结构化错误列表（file/line/col/code/message）与日志路径；' +
   'build_status 查最近一次构建结果；build_errors 从最近日志重解析错误。' +
+  'msbuild 引擎自动识别布局：仓库根存在 WholeSolution.sln 时沿用老默认（WholeSolution.sln + x86），否则自动探测 .sln/.slnx（根目录→一层子目录）并从解决方案文件读平台（Any CPU 优先）；歧义会报错并要求用 project 显式指定。' +
   '硬约束（必须遵守）：改完代码必须 build_run 增量验证；错误未清零不得声称编译通过；只有 Rebuild 成功才能说 "Solution Rebuild passed"；增量 Build 通过只能说 targeted/incremental build passed。' +
   '已知坑：主工程是 legacy csproj，新增 .cs 必须手工加 <Compile Include>，否则构建通过但文件根本没编译——错误数 0 不代表新文件进了编译。' +
-  '构建日志目录 ~/.dsh-agent-toolchain/build-logs（DSH_BUILD_LOGS_DIR 可覆盖），Client 根由 DSH_BUILD_CLIENT_ROOT 指定，MSBuild 路径由 DSH_BUILD_MSBUILD 指定（找不到时自动探测常见安装）。' +
+  '构建日志目录 ~/.dsh-agent-toolchain/build-logs（DSH_BUILD_LOGS_DIR 可覆盖），仓库根由 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT 指定，MSBuild 路径由 DSH_BUILD_MSBUILD 指定（找不到时自动探测常见安装）。' +
   '用户提到「编译验证 / 增量编译 / 帮我编译 / 构建闭环」时即指本插件，请据此协作。'
 
 let builder = null
@@ -31,6 +32,7 @@ function bld() {
   if (!builder) {
     builder = makeBuilder({
       clientRoot: process.env.DSH_BUILD_CLIENT_ROOT || '',
+      repoRoot: process.env.DSH_BUILD_REPO_ROOT || '',
       msbuild: process.env.DSH_BUILD_MSBUILD || '',
       logsDir: process.env.DSH_BUILD_LOGS_DIR || join(homedir(), '.dsh-agent-toolchain', 'build-logs'),
     })
@@ -64,12 +66,14 @@ const OBJECT = { type: 'object', additionalProperties: true }
 const tools = () => [
   defineTool({
     name: 'build_run',
-    description: '运行 MSBuild 构建并结构化解析错误。默认增量 Build（快检，秒级~2分钟）；最终结论用 Rebuild（全量，5-10分钟）；project 可定向单工程（传相对 Client 根的 csproj 路径）。返回错误列表（file/line/col/code/message）+ 日志路径。Triggers: 编译验证 / 增量编译 / 帮我编译 / 构建验证 / build.',
+    description: '运行 MSBuild 构建并结构化解析错误。默认增量 Build（快检，秒级~2分钟）；最终结论用 Rebuild（全量，5-10分钟）；project 可定向单工程/.sln（相对仓库根），空=自动探测默认解决方案。返回错误列表（file/line/col/code/message）+ 日志路径。Triggers: 编译验证 / 增量编译 / 帮我编译 / 构建验证 / build.',
     parameters: {
       target: { type: 'string', description: 'Build（增量，默认）或 Rebuild（全量）' },
-      project: { type: 'string', description: '可选：定向工程 csproj（相对 Client 根），空=WholeSolution.sln' },
+      project: { type: 'string', description: '可选：定向工程/.sln（相对仓库根）；空=自动探测默认解决方案（WholeSolution.sln 优先）' },
       configuration: { type: 'string', description: '默认 Debug' },
-      platform: { type: 'string', description: '默认 x86' },
+      platform: { type: 'string', description: '可选：默认按布局自动解析（老布局 x86 / 从 .sln 探测，Any CPU 优先）' },
+      engine: { type: 'string', description: '可选：msbuild（默认，VS MSBuild）或 dotnet（dotnet build，现代 SDK 仓库推荐）' },
+      repoRoot: { type: 'string', description: '可选：仓库根目录（默认 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT）' },
       killClient: { type: 'boolean', description: '客户端在运行时强制结束它再构建（会打断用户界面，需先确认）' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderBuild(v) }] },

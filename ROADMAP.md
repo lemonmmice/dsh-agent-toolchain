@@ -28,6 +28,7 @@
 - Evidence-adjudicated verification report — claims checked against build records / capture store / files (machine verdicts, not self-rating); contradicted claims auto-record agent-misjudge
 - runId spine — build logs + per-run records named by runId; capture records carry runId; verify/corpus keyed by runId
 - dsh-verify shell — the DSH closing-adjudication surface: closing summary becomes a claims list, same engine as MCP
+- msbuild engine generalization — legacy WholeSolution.sln+x86 layout auto-preserved, stock repos get .sln/.slnx + platform auto-detection (Any CPU preferred), ambiguity = explicit error; msbuild always restores; SDK-resolution chains (MSB4236/MSB4276/NETSDK1004) classified as environment, not code
 
 ## Now — next 1–2 weeks
 

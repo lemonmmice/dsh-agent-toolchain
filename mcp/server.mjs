@@ -7,7 +7,7 @@
  *
  * Env config follows the toolchain convention (DSH_* variables), e.g.:
  *   DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE  (ui tools)
- *   DSH_BUILD_CLIENT_ROOT / DSH_BUILD_MSBUILD / DSH_BUILD_LOGS_DIR (build)
+ *   DSH_BUILD_CLIENT_ROOT / DSH_BUILD_REPO_ROOT / DSH_BUILD_MSBUILD / DSH_BUILD_LOGS_DIR / DSH_BUILD_PLATFORM (build)
  *   DSH_MEMORY_DIR (memory data dir, default ~/.dsh/memory)
  *   DSH_FAILURE_CORPUS_DIR (failure corpus, default ~/.dsh-agent-toolchain/failure-corpus)
  */
@@ -85,21 +85,23 @@ function autoRecord(failureClass, tool, message, extra = {}) {
 server.tool(
   'build_run',
   'Run a build (incremental Build or full Rebuild) and return structured errors. ' +
-    'Use after changing code to verify it compiles. Requires DSH_BUILD_CLIENT_ROOT (solution dir) or the clientRoot argument. ' +
-    'engine=dotnet builds SDK-style projects with `dotnet build` (restores by default, Any CPU) — prefer it for modern .NET repos; engine=msbuild (default) uses MSBuild.exe with x86 defaults for the legacy client solution.',
+    'Use after changing code to verify it compiles. Requires DSH_BUILD_CLIENT_ROOT/DSH_BUILD_REPO_ROOT (solution dir) or the clientRoot/repoRoot argument. ' +
+    'engine=msbuild (default): a repo containing WholeSolution.sln keeps the legacy client defaults (WholeSolution.sln + platform x86); otherwise the engine auto-detects the .sln/.slnx (repo root, then one level deep) and the platform from the solution (Any CPU preferred) — ambiguity is an explicit error asking for project. engine=dotnet builds with `dotnet build` (restores by default) — prefer it for modern .NET repos.',
   {
     target: z.enum(['Build', 'Rebuild']).default('Build').describe('Build (incremental, fast) or Rebuild (full)'),
-    project: z.string().optional().describe('Optional csproj/sln path relative to the solution root; empty = WholeSolution.sln (msbuild) or the cwd default (dotnet)'),
+    project: z.string().optional().describe('Optional csproj/sln path relative to the repo root; empty = auto-detected default solution (msbuild) or the cwd default (dotnet)'),
     configuration: z.string().default('Debug'),
-    platform: z.string().optional().describe('msbuild engine: default x86; dotnet engine: ignored (Any CPU)'),
+    platform: z.string().optional().describe('msbuild engine: default auto (legacy x86 for the WholeSolution.sln layout, otherwise detected from the solution); dotnet engine: ignored'),
     engine: z.enum(['msbuild', 'dotnet']).optional().describe('Build engine; env DSH_BUILD_ENGINE sets the default'),
     clientRoot: z.string().optional().describe('Solution root dir (env DSH_BUILD_CLIENT_ROOT)'),
+    repoRoot: z.string().optional().describe('Repository root dir (env DSH_BUILD_REPO_ROOT)'),
     killClient: z.boolean().optional().describe('Kill the running client process before building (breaks the user UI — confirm first)'),
     runId: z.string().optional().describe('Optional run id: the build log and the per-run record (run-<runId>.json) are named with it — the evidence-pack spine'),
   },
   async (args) => {
     const b = makeBuilder({
       clientRoot: args.clientRoot || process.env.DSH_BUILD_CLIENT_ROOT || '',
+      repoRoot: args.repoRoot || process.env.DSH_BUILD_REPO_ROOT || '',
       msbuild: process.env.DSH_BUILD_MSBUILD || '',
       engine: args.engine || process.env.DSH_BUILD_ENGINE || 'msbuild',
       logsDir: process.env.DSH_BUILD_LOGS_DIR || '',
