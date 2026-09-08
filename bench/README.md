@@ -18,7 +18,8 @@ SWE-bench style:
 
 ```
 bench/tasks/<id>/
-  config.json     repo URL, base commit, gold commit, verify command, budgets
+  config.json     repo URL, base commit, gold commit, verify command, budgets,
+                  optional agentEnv (env vars the task's toolchain needs)
   prompt.md       the written bug report the agent sees
   verify.patch    the test-only part of the real fix commit (HIDDEN from the agent)
   gold.patch      the real fix, for reference (HIDDEN from the agent)
@@ -28,6 +29,18 @@ bench/tasks/<id>/
 `git diff <base> <gold> -- <test paths>` and `-- <source paths>`. Before a task
 is used, its baseline is validated twice: `base + verify.patch` must fail the
 verify command, and `base + verify.patch + gold.patch` must pass it.
+
+### UI-driven tasks (the toolchain's home turf)
+
+A task whose bug is only observable in a running desktop window packages its
+hidden verification differently: `verify.patch` adds a minimal WPF host project
+plus a UIA probe script, and `verifyCommand` builds the host, launches it and
+asserts the rendered UI state (e.g. the text a control displays). The task's
+`config.json` then declares `agentEnv` (`DSH_UI_PROC_NAME`, `DSH_UI_WINDOW_NAME`,
+…) which the harness injects into both the agent process and the toolchain MCP
+server, so `ui_status` / `ui_drive` can see the host app the agent launches.
+The same two baseline validations apply: base must fail the probe, base+gold
+must pass it.
 
 ## Privacy and answer secrecy
 
