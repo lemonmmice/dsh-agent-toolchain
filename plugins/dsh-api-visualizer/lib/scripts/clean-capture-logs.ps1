@@ -1,4 +1,4 @@
-# clean-capture-logs.ps1 — log cleanup helper for dsh-api-visualizer.
+﻿# clean-capture-logs.ps1 — log cleanup helper for dsh-api-visualizer.
 # Called by the plugin's POST /logs/clear route; also usable standalone.
 #
 # Deletes the client System.Net trace log (Windows file locking protects an

@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # pc-client-ui-drive 通用 UIA 驱动助手（PowerShell 5.1 兼容）
 # 用途：程序化操作目标桌面客户端——找控件/点击/输入/读状态/截图。
 # 用法（cwd 无关，绝对路径调用）：
@@ -53,10 +53,16 @@ function Get-MainWindow([int]$procId) {
   $root = [System.Windows.Automation.AutomationElement]::RootElement
   $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $procId)
   $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
+  # WindowName empty = not configured: take the first NAMED top-level window
+  # (the main window), else the first window, instead of failing.
+  $first = $null
   for ($i = 0; $i -lt $wins.Count; $i++) {
-    if ($wins.Item($i).Current.Name -eq $WindowName) { return $wins.Item($i) }
+    $w = $wins.Item($i)
+    if (-not $first) { $first = $w }
+    if ($WindowName -and $w.Current.Name -eq $WindowName) { return $w }
+    if (-not $WindowName -and $w.Current.Name) { return $w }
   }
-  return $null
+  return $first
 }
 
 function Find-Element($main, [string]$aid, [string]$name) {
@@ -101,7 +107,11 @@ function Set-ElementValue($el, [string]$value) {
 
 # status：只报告进程/窗口状态，不要求窗口存在、不置前台
 if ($Action -eq 'status') {
-  $sp = Get-Process -Name $ProcName -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($ProcId -gt 0) {
+    $sp = Get-Process -Id $ProcId -ErrorAction SilentlyContinue
+  } else {
+    $sp = Get-Process -Name $ProcName -ErrorAction SilentlyContinue | Select-Object -First 1
+  }
   if (-not $sp) { Write-Output 'NOT_RUNNING'; exit 2 }
   $sw = Get-MainWindow $sp.Id
   if (-not $sw) { Write-Output ('RUNNING pid=' + $sp.Id + ' window=NONE'); exit 0 }

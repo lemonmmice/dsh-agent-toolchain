@@ -121,8 +121,23 @@ for (const f of walk(join(root, 'plugins'))) {
   }
 }
 
+// 6. PowerShell 5.1 encoding guard: a UTF-8 .ps1 WITHOUT a BOM is decoded as
+//    the system ANSI codepage on CN-locale Windows (GBK), which mangles the
+//    Chinese comments so badly that string quotes get swallowed and the
+//    whole script fails to parse (observed: every ui_drive action died with
+//    "Unexpected token"). Every tracked .ps1 must start with EF BB BF.
+for (const f of walk(root)) {
+  if (isLocalOnly(f)) continue
+  if (extname(f) !== '.ps1') continue
+  const buf = readFileSync(f)
+  if (!(buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf)) {
+    failures++
+    console.error('PS1 MISSING UTF-8 BOM (PowerShell 5.1 GBK parse break):', relative(root, f))
+  }
+}
+
 if (failures > 0) {
   console.error(`\nCHECK FAILED: ${failures} problem(s)`)
   process.exit(1)
 }
-console.log('CHECK PASSED: syntax OK, no private references, no nested dirs, tool schemas complete')
+console.log('CHECK PASSED: syntax OK, no private references, no nested dirs, tool schemas complete, ps1 encodings safe')

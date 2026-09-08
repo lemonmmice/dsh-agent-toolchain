@@ -1,4 +1,4 @@
-# install.ps1 — install the dsh-agent-toolchain panel plugins into a dsh web profile.
+﻿# install.ps1 — install the dsh-agent-toolchain panel plugins into a dsh web profile.
 # Installs dsh-api-visualizer (API capture) and dsh-postman (API debug) from this
 # monorepo, registers them in the profile's cordis.patch.yml (idempotent), and
 # prints the restart hint.
