@@ -35,9 +35,8 @@ import { VACUOUS_TEST_PATTERNS } from '../../lib/verify/report.mjs'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..')
 
-// On Windows, spawning the bare 'claude' command through cmd's shell fails to
-// resolve the npm .cmd shim (tested); the explicit .cmd name is reliable.
-const AGENT_CLI = process.platform === 'win32' ? 'claude.cmd' : 'claude'
+// On Windows, spawning the bare 'claude'/'codex' commands through cmd's shell
+// fails to resolve the npm .cmd shim (tested); the explicit .cmd name works.
 
 // Toolchain-mode guidance: a real dsh install injects plugin systemPrompt
 // sections describing the toolchain tools (build loop hard rules,
@@ -49,6 +48,162 @@ const AGENT_CLI = process.platform === 'win32' ? 'claude.cmd' : 'claude'
 // unsupported through the cmd.exe chain (documented in runAgentCli).
 const TOOLCHAIN_GUIDANCE = readFileSync(join(HERE, 'toolchain-guidance.md'), 'utf8')
 
+// ------------------------------------------------------------------ agents
+
+/**
+ * Parse a Codex CLI `exec --json` stream. Codex emits JSONL events:
+ *   thread.started {thread_id} | turn.started / turn.completed {usage} |
+ *   item.completed {item:{type: agent_message|command_execution|mcp_tool_call|error|...}}
+ * It does not report USD cost or a stop_reason; token usage is summed over
+ * turn.completed events. item errors are warnings (e.g. "model metadata not
+ * found") and are ignored — the process exit code decides isError.
+ */
+function parseCodexResult(out) {
+  let turns = 0
+  let threadId = null
+  let lastMsg = ''
+  const usage = { input: 0, output: 0, cached: 0 }
+  for (const line of String(out || '').split(/\r?\n/)) {
+    const t = line.trim()
+    if (!t.startsWith('{')) continue
+    let ev
+    try {
+      ev = JSON.parse(t)
+    } catch {
+      continue
+    }
+    if (ev.type === 'thread.started') threadId = ev.thread_id || threadId
+    else if (ev.type === 'turn.completed') {
+      turns++
+      const u = ev.usage || {}
+      usage.input += u.input_tokens || 0
+      usage.output += u.output_tokens || 0
+      usage.cached += u.cached_input_tokens || 0
+    } else if (ev.type === 'item.completed') {
+      const it = ev.item || {}
+      if (it.type === 'agent_message' && it.text) lastMsg = it.text
+    }
+  }
+  return { turns, threadId, lastMsg, usage }
+}
+
+/**
+ * Per-agent-CLI adapters. Each agent implements how to build the CLI args,
+ * parse the output, machine-check MCP tool visibility, and (optionally)
+ * transform the spawn environment. The two arms of a comparison always use
+ * the SAME agent; cross-model runs pick a different agent but keep the same
+ * task/mode/harness logic.
+ */
+const AGENTS = {
+  claude: {
+    cli: process.platform === 'win32' ? 'claude.cmd' : 'claude',
+    processName: 'claude.exe',
+    makeAgentArgs({ maxTurns, model, mcpConfigPath, repoDir }) {
+      const a = [
+        '-p',
+        '--output-format',
+        'json',
+        '--max-turns',
+        String(maxTurns),
+        '--dangerously-skip-permissions',
+        '--add-dir',
+        repoDir,
+        // --strict-mcp-config: load ONLY the servers from --mcp-config, never
+        // the user's personal MCP servers (~/.claude.json) — observed npx
+        // design-tool servers hanging the CLI through the proxy.
+        '--strict-mcp-config',
+        // Hard-block web access at the tool level (WebSearch/WebFetch
+        // excluded): the answer must come from the code. MCP tools are
+        // unaffected by --allowedTools.
+        '--allowedTools',
+        'Bash,Read,Edit,Write,Grep,Glob,PowerShell',
+      ]
+      // NOTE: --bare is deliberately NOT used. Empirically, --bare drops MCP
+      // servers entirely (probed); both modes must differ only in whether
+      // --mcp-config is passed, so both run without --bare.
+      if (model) a.push('--model', model)
+      if (mcpConfigPath) a.push('--mcp-config', mcpConfigPath, '--mcp-debug')
+      return a
+    },
+    makeProbeArgs({ mcpConfigPath }) {
+      return ['-p', '--output-format', 'json', '--max-turns', '2', '--strict-mcp-config', '--mcp-config', mcpConfigPath, '--mcp-debug']
+    },
+    parse(out) {
+      const p = parseResultJson(out)
+      return {
+        turns: p?.num_turns ?? null,
+        stopReason: p?.stop_reason ?? null,
+        isError: !!p?.is_error,
+        costUsd: p?.total_cost_usd ?? null,
+        usageInputTokens: p?.usage?.input_tokens ?? null,
+        usageOutputTokens: p?.usage?.output_tokens ?? null,
+        usageCacheReadTokens: p?.usage?.cache_read_input_tokens ?? null,
+        usageCacheCreateTokens: p?.usage?.cache_creation_input_tokens ?? null,
+        model: p?.modelUsage ? Object.keys(p.modelUsage)[0] : p?.model || '',
+        result: p?.result ?? '',
+        sessionId: p?.session_id ?? null,
+      }
+    },
+    probeCheck(text) {
+      return String(text || '').includes('mcp__dsh-agent-toolchain__build_run')
+    },
+    // claude keeps the harness env (proxy included, per local.env).
+    transformEnv(env) {
+      return env
+    },
+  },
+  codex: {
+    cli: 'codex.cmd',
+    processName: 'codex.exe',
+    makeAgentArgs({ model, mcpProfile, repoDir }) {
+      const a = ['exec', '--json', '--skip-git-repo-check']
+      // Codex has no --max-turns; the run is bounded by the harness timeout.
+      // Approvals: exec mode auto-approves tools; this flag additionally
+      // removes sandboxing so the agent's shell can run dotnet/git freely
+      // (mirrors claude's --dangerously-skip-permissions; both repos are
+      // local throwaway clones).
+      a.push('--dangerously-bypass-approvals-and-sandbox')
+      if (model) a.push('-m', model)
+      if (mcpProfile) a.push('-p', mcpProfile)
+      a.push('-C', repoDir)
+      return a
+    },
+    makeProbeArgs({ mcpProfile, repoDir }) {
+      return ['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '-p', mcpProfile, '-C', repoDir]
+    },
+    parse(out) {
+      const p = parseCodexResult(out)
+      return {
+        turns: p.turns,
+        stopReason: 'end',
+        isError: false, // decided by process exit code in runOnce
+        costUsd: null, // codex does not report cost; tokens are recorded
+        usageInputTokens: p.usage.input,
+        usageOutputTokens: p.usage.output,
+        usageCacheReadTokens: p.usage.cached,
+        usageCacheCreateTokens: null,
+        model: '', // recorded as args.model in runOnce
+        result: p.lastMsg,
+        sessionId: p.threadId ? `codex:${p.threadId}` : null,
+      }
+    },
+    // Codex surfaces MCP tools under their bare names (no mcp__ prefix).
+    probeCheck(text) {
+      return /\bbuild_run\b/.test(String(text || ''))
+    },
+    // Codex must reach its model endpoint directly (relay); proxy variables
+    // would route it through the local proxy and hang. The agent's shell
+    // inherits the same env, so dotnet/nuget inside codex also go direct
+    // (warm package cache makes restore offline in practice).
+    transformEnv(env) {
+      for (const k of Object.keys(env)) {
+        if (/^(HTTP|HTTPS|ALL|NO)_PROXY$/i.test(k)) delete env[k]
+      }
+      return env
+    },
+  },
+}
+
 // ------------------------------------------------------------------ args
 
 function parseArgs(argv) {
@@ -58,6 +213,7 @@ function parseArgs(argv) {
     const v = () => argv[++i]
     if (k === '--task') a.task = v()
     else if (k === '--mode') a.mode = v()
+    else if (k === '--agent') a.agent = v()
     else if (k === '--workspace-root') a.workspaceRoot = v()
     else if (k === '--runs') a.runs = Number(v())
     else if (k === '--max-turns') a.maxTurns = Number(v())
@@ -72,8 +228,10 @@ function parseArgs(argv) {
   if (a.help) {    console.log(`Usage: node bench/harness/bench.mjs --task <id> --mode baseline|toolchain [options]
   --workspace-root DIR   default bench-runs/ (gitignored)
   --runs N               repeat the same mode N times (default 1)
-  --max-turns N          agent turn budget (default: task config, 40)
+  --max-turns N          agent turn budget (default: task config, 40);
+                         ignored by codex (no turn cap - timeout only)
   --model NAME           pin the agent model (default: the CLI's default)
+  --agent NAME           agent CLI: claude (default) | codex
   --reference DIR        local mirror to speed up clones (optional)
   --local-env FILE       KEY=VALUE lines merged into the AGENT environment
                          (local proxy/no-proxy config; never committed)
@@ -154,12 +312,12 @@ function spawnCapture(cmd, args, opts) {
  * multi-line prompt as a command argument is unsafe). Paths with spaces in
  * cliArgs or promptFile are not supported — a documented limitation.
  */
-async function runAgentCli(cliArgs, promptText, promptFile, cwd, env) {
+async function runAgentCli(cli, cliArgs, promptText, promptFile, cwd, env) {
   writeFileSync(promptFile, promptText, 'utf8')
   // No embedded quotes here: Node wraps this single arg (it contains spaces)
   // in quotes when building the CreateProcess command line, and cmd /s
   // strips exactly that one outer pair.
-  const cmdline = `${AGENT_CLI} ${cliArgs.join(' ')} < ${promptFile}`
+  const cmdline = `${cli} ${cliArgs.join(' ')} < ${promptFile}`
   return await spawnCapture('cmd.exe', ['/d', '/s', '/c', cmdline], {
     cwd,
     env,
@@ -215,6 +373,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (!args.task || !args.mode) throw new Error('--task and --mode are required')
   if (!['baseline', 'toolchain'].includes(args.mode)) throw new Error('--mode must be baseline|toolchain')
+  args.agent = args.agent || 'claude'
+  if (!AGENTS[args.agent]) throw new Error('--agent must be one of: ' + Object.keys(AGENTS).join(', '))
   const task = loadTask(args.task)
   const workspaceRoot = resolve(args.workspaceRoot || join(REPO_ROOT, 'bench-runs'))
   const maxTurns = args.maxTurns || task.cfg.maxTurns || 40
@@ -257,8 +417,9 @@ async function main() {
         `verified=${s.verified}`,
         `turns=${s.turns}`,
         `dur=${Math.round(s.durationMs / 60000)}m`,
-        `cost=$${Number(s.costUsd || 0).toFixed(4)}`,
+        `cost=${s.costUsd == null ? 'n/a' : '$' + Number(s.costUsd).toFixed(4)}`,
         `model=${s.model || '?'}`,
+        `agent=${s.agent || 'claude'}`,
       ].join(' '),
     )
   }
@@ -311,67 +472,65 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
   agentEnv.DOTNET_SKIP_FIRST_TIME_EXPERIENCE = '1'
   agentEnv.MSBUILDDISABLENODEREUSE = '1'
 
+  const agentDef = AGENTS[args.agent]
+
   let mcpConfigPath = null
+  let mcpProfile = null
   if (args.mode === 'toolchain') {
-    mcpConfigPath = join(runDir, 'mcp-config.json')
-    writeFileSync(
-      mcpConfigPath,
-      JSON.stringify(
-        {
-          mcpServers: {
-            'dsh-agent-toolchain': {
-              type: 'stdio',
-              command: process.execPath,
-              args: [join(REPO_ROOT, 'mcp', 'server.mjs')],
-              env: {
-                DSH_BUILD_CLIENT_ROOT: repoDir,
-                DSH_BUILD_LOGS_DIR: join(runDir, 'build-logs'),
-                DSH_API_CAPTURE_STORE: join(runDir, 'capture'),
-                DSH_UI_EVIDENCE_DIR: join(runDir, 'ui-evidence'),
-                ...(task.cfg.agentEnv ?? {}),
+    if (args.agent === 'codex') {
+      // Codex MCP servers live in $CODEX_HOME/<profile>.config.toml (layered
+      // on top of the user config via -p). Literal single-quoted TOML strings
+      // keep Windows backslashes intact. The user's bundled MCP servers
+      // (e.g. node_repl) remain available in BOTH codex arms — inherent to
+      // the codex environment, disclosed in the report.
+      const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex')
+      mcpProfile = 'bench'
+      const toml = [
+        args.model ? `model = "${args.model}"` : '',
+        '[mcp_servers.dsh-agent-toolchain]',
+        `command = '${process.execPath}'`,
+        `args = ['${join(REPO_ROOT, 'mcp', 'server.mjs')}']`,
+        'startup_timeout_sec = 120',
+        '[mcp_servers.dsh-agent-toolchain.env]',
+        `DSH_BUILD_CLIENT_ROOT = '${repoDir}'`,
+        `DSH_BUILD_LOGS_DIR = '${join(runDir, 'build-logs')}'`,
+        `DSH_API_CAPTURE_STORE = '${join(runDir, 'capture')}'`,
+        `DSH_UI_EVIDENCE_DIR = '${join(runDir, 'ui-evidence')}'`,
+      ]
+      for (const [k, v] of Object.entries(task.cfg.agentEnv ?? {})) {
+        toml.push(`${k} = '${v}'`)
+      }
+      writeFileSync(join(codexHome, `${mcpProfile}.config.toml`), toml.join('\n') + '\n', 'utf8')
+    } else {
+      mcpConfigPath = join(runDir, 'mcp-config.json')
+      writeFileSync(
+        mcpConfigPath,
+        JSON.stringify(
+          {
+            mcpServers: {
+              'dsh-agent-toolchain': {
+                type: 'stdio',
+                command: process.execPath,
+                args: [join(REPO_ROOT, 'mcp', 'server.mjs')],
+                env: {
+                  DSH_BUILD_CLIENT_ROOT: repoDir,
+                  DSH_BUILD_LOGS_DIR: join(runDir, 'build-logs'),
+                  DSH_API_CAPTURE_STORE: join(runDir, 'capture'),
+                  DSH_UI_EVIDENCE_DIR: join(runDir, 'ui-evidence'),
+                  ...(task.cfg.agentEnv ?? {}),
+                },
               },
             },
           },
-        },
-        null,
-        2,
-      ),
-      'utf8',
-    )
+          null,
+          2,
+        ),
+        'utf8',
+      )
+    }
   }
 
-  const cliArgs = [
-    '-p',
-    '--output-format',
-    'json',
-    '--max-turns',
-    String(maxTurns),
-    '--dangerously-skip-permissions',
-    '--add-dir',
-    repoDir,
-    // --strict-mcp-config: load ONLY the servers from --mcp-config (below),
-    // never the user's personal MCP servers (~/.claude.json). Without it the
-    // CLI launches user-configured servers at startup (observed: npx fetches
-    // for design-tool MCPs hanging through the proxy for 30+ min, freezing
-    // the agent with ~0 CPU) and the baseline mode would silently inherit
-    // tools it must not have.
-    '--strict-mcp-config',
-    // Hard-block web access at the tool level (WebSearch/WebFetch excluded):
-    // the answer must come from the code, not from looking up the fix online.
-    // MCP tools are unaffected by --allowedTools.
-    '--allowedTools',
-    'Bash,Read,Edit,Write,Grep,Glob,PowerShell',
-  ]
-  // NOTE: --bare is deliberately NOT used. Empirically, --bare drops MCP
-  // servers entirely (probed: with --bare only built-in tools were listed;
-  // without it all mcp__* tools appear). Both modes must differ only in
-  // whether --mcp-config is passed, so both run without --bare.
-  if (args.model) cliArgs.push('--model', args.model)
-  if (mcpConfigPath) {
-    cliArgs.push('--mcp-config', mcpConfigPath)
-    // MCP server connection evidence lands on stderr (captured in agent.log).
-    cliArgs.push('--mcp-debug')
-  }
+  const cliArgs = agentDef.makeAgentArgs({ maxTurns, model: args.model, mcpConfigPath, mcpProfile, repoDir })
 
   const startedAt = Date.now()
   const timer = { done: false }
@@ -379,7 +538,7 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     if (!timer.done) {
       console.warn(`[run ${runId}] agent timeout after ${Math.round(agentTimeoutMs / 60000)}m, killing`)
       try {
-        spawn('taskkill', ['/IM', 'claude.exe', '/T', '/F'], { windowsHide: true })
+        spawn('taskkill', ['/IM', agentDef.processName, '/T', '/F'], { windowsHide: true })
       } catch {
         /* ignore */
       }
@@ -388,44 +547,43 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
 
   const agentPrompt =
     args.mode === 'toolchain' ? TOOLCHAIN_GUIDANCE + '\n\n' + task.prompt : task.prompt
-  const agent = await runAgentCli(cliArgs, agentPrompt, join(runDir, 'prompt.txt'), repoDir, agentEnv)
+  const agentSpawnEnv = agentDef.transformEnv({ ...agentEnv })
+  const agent = await runAgentCli(agentDef.cli, cliArgs, agentPrompt, join(runDir, 'prompt.txt'), repoDir, agentSpawnEnv)
   timer.done = true
   clearTimeout(killer)
   const durationMs = Date.now() - startedAt
 
   writeFileSync(logPath, `===== stdout =====\n${agent.out}\n\n===== stderr =====\n${agent.err}`, 'utf8')
 
-  const parsed = parseResultJson(agent.out)
+  const parsed = agentDef.parse(agent.out)
+  const isAgentError = args.agent === 'codex' ? agent.code !== 0 : !!parsed.isError
 
   // Machine-check that the toolchain MCP was actually visible to the agent.
   // (A one-turn probe that lists its tools; guards against CLI-flag
-  // regressions like --bare silently dropping MCP servers.)
+  // regressions silently dropping MCP servers.)
   let mcpToolsVisible = null
-  if (mcpConfigPath) {
-    // The CLI's MCP connections are occasionally flaky; retry the probe up to
-    // 3 times before declaring the run invalid (false negatives observed).
-    let probeParsed = null
+  if (args.mode === 'toolchain') {
+    // MCP connections are occasionally flaky; retry the probe up to 3 times
+    // before declaring the run invalid (false negatives observed).
+    let probeText = ''
     let probeOut = ''
     let probeErr = ''
     for (let attempt = 1; attempt <= 3; attempt++) {
       const probe = await runAgentCli(
-        ['-p', '--output-format', 'json', '--max-turns', '2', '--strict-mcp-config', '--mcp-config', mcpConfigPath, '--mcp-debug'],
+        agentDef.cli,
+        agentDef.makeProbeArgs({ mcpConfigPath, mcpProfile, repoDir }),
         'Do NOT call any tools. Answer only with a comma-separated list of the tool names available to you, including MCP tools.',
         join(runDir, 'probe.prompt.txt'),
         runDir,
-        agentEnv,
+        agentSpawnEnv,
       )
       probeOut = probe.out
       probeErr = probe.err
-      probeParsed = parseResultJson(probe.out)
-      mcpToolsVisible = !!(
-        probeParsed &&
-        typeof probeParsed.result === 'string' &&
-        probeParsed.result.includes('mcp__dsh-agent-toolchain__build_run')
-      )
+      probeText = agentDef.parse(probe.out).result
+      mcpToolsVisible = agentDef.probeCheck(probeText)
       if (mcpToolsVisible) break
     }
-    writeFileSync(join(runDir, 'probe.log'), `visible=${mcpToolsVisible}\n\n${probeOut}\n\n${probeErr}`, 'utf8')
+    writeFileSync(join(runDir, 'probe.log'), `visible=${mcpToolsVisible}\n\n${probeText}\n\n${probeOut}\n\n${probeErr}`, 'utf8')
     if (!mcpToolsVisible) {
       console.warn(`[run ${runId}] MCP tools NOT visible to the agent - this run is INVALID as a toolchain datapoint`)
     }
@@ -441,8 +599,8 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
   }
   writeFileSync(patchPath, patch, 'utf8')
 
-  const model = parsed?.modelUsage ? Object.keys(parsed.modelUsage)[0] : parsed?.model || ''
-  const usage = parsed?.usage || {}
+  const model = args.model || parsed.model || ''
+  const usage = parsed
 
   // ---- verify in a clean checkout ----
   let verified = false
@@ -524,19 +682,20 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
     task: task.cfg.id,
     tier: task.cfg.tier || '',
     mode: args.mode,
+    agent: args.agent,
     modeValid: args.mode === 'baseline' ? true : mcpToolsVisible === true,
     mcpToolsVisible,
     toolchainGuidance: args.mode === 'toolchain',
-    model: model || args.model || '',
-    turns: parsed?.num_turns ?? null,
-    stopReason: parsed?.stop_reason ?? null,
-    isError: !!parsed?.is_error,
+    model: model || '',
+    turns: parsed.turns ?? null,
+    stopReason: parsed.stopReason ?? null,
+    isError: isAgentError,
     durationMs,
-    costUsd: parsed?.total_cost_usd ?? null,
-    usageInputTokens: usage?.input_tokens ?? null,
-    usageOutputTokens: usage?.output_tokens ?? null,
-    usageCacheReadTokens: usage?.cache_read_input_tokens ?? null,
-    usageCacheCreateTokens: usage?.cache_creation_input_tokens ?? null,
+    costUsd: parsed.costUsd ?? null,
+    usageInputTokens: parsed.usageInputTokens ?? null,
+    usageOutputTokens: parsed.usageOutputTokens ?? null,
+    usageCacheReadTokens: parsed.usageCacheReadTokens ?? null,
+    usageCacheCreateTokens: parsed.usageCacheCreateTokens ?? null,
     patchBytes: Buffer.byteLength(patch),
     patchFiles: patchFiles(patch),
     patchedTests,
@@ -552,8 +711,9 @@ async function runOnce({ args, task, i, workspaceRoot, maxTurns, agentTimeoutMs,
   appendFileSync(resultsPath, JSON.stringify(rec) + '\n', 'utf8')
   writeFileSync(join(runDir, 'run.json'), JSON.stringify(rec, null, 2), 'utf8')
 
+  const costStr = rec.costUsd == null ? 'n/a' : '$' + Number(rec.costUsd).toFixed(4)
   console.log(
-    `[run ${runId}] valid=${rec.modeValid} verified=${verified} turns=${rec.turns ?? '?'} cost=$${Number(rec.costUsd || 0).toFixed(4)}` +
+    `[run ${runId}] valid=${rec.modeValid} verified=${verified} turns=${rec.turns ?? '?'} cost=${costStr}` +
       (rec.verifyReason ? ` reason=${rec.verifyReason.slice(0, 120)}` : ''),
   )
   return rec
