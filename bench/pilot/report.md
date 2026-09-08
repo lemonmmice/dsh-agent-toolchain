@@ -186,7 +186,28 @@ not the other way around.
 - Web tools were hard-blocked in pilot 2 (`--allowedTools`); pilot 1 numbers
   predate that block, which is why the two pilots are reported separately.
 
-## 11. Attribution rules
+## 11. Review loop (rounds 2–3)
+
+After pilot 2, the external reviewer re-tested everything. Round 2 verdict:
+**NOT SATISFIED** — 3 of 4 previous fixes held; two new must-fixes found:
+
+1. `build_run` counted MSBuild's double-printed errors twice (`errorCount` 2×
+   the summary line, on both engines). Fixed by deduping on
+   (file,line,col,code); re-verified on real logs (80 raw lines → 6 unique
+   errors; counts now agree).
+2. `memory_index` wiped a legacy-format store (relative-path keys) to 0 chunks
+   on the first post-upgrade index call, and `DSH_MEMORY_DIR` was documented
+   but never honored. Fixed: the eviction sweep skips non-absolute stored
+   paths; `defaultDataDir()` honors `DSH_MEMORY_DIR`. Round-3 re-verification
+   (isolated harnesses + live tool): **SATISFIED**. Remaining items are
+   should-fix/nice-to-have only (see §7 deferred list).
+
+Both rounds' evidence, the reviewer's disclosures (it demonstrated the legacy
+wipe on a real store and said so), and its final verdict are on record in the
+local review files. The author re-verified every finding before fixing —
+external review can be wrong too, and evidence-first cuts both ways.
+
+## 12. Attribution rules
 
 - Numbers in §3/§9 come from `bench-runs/results.jsonl` (machine-recorded).
 - §7 is an external agent's opinion, machine-triggered and verbatim-distilled;

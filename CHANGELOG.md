@@ -34,6 +34,12 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Changed
 
+- **Review round 2 must-fixes** — `build_run` no longer double-counts
+  MSBuild's twice-printed errors (dedupe on file,line,col,code; errorCount now
+  agrees with the summary line on both engines), and `memory_index` no longer
+  wipes legacy relative-path chunks on the first post-upgrade call (eviction
+  skips non-absolute stored paths) while `DSH_MEMORY_DIR` is now actually
+  honored. External reviewer re-verified both and closed with SATISFIED.
 - **Pilot 2 (3 tasks)** — neutral prompts (no prescribed shell commands),
   WebSearch/WebFetch hard-blocked, hardened MCP-visibility probe (3 retries +
   `--mcp-debug` evidence). Result, now replicated across 3 tasks: every run
