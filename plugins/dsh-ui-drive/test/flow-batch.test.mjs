@@ -161,6 +161,71 @@ if ($Action -eq 'find') { Write-Output ("FOUND [Button] name=" + $Name + " enabl
   delete process.env.DSH_UI_SERVE_IDLE_MS
 }
 
+// ---------------------------------------------------------------- 7. 动态界面原语：动作名归一化 + 新字段透传
+{
+  installFakeBatch({ ok: true, elapsedMs: 5, steps: [
+    { step: 1, action: 'waitfor', ok: true, found: true, waitedMs: 320, detail: '[Button] name="A"' },
+    { step: 2, action: 'type', ok: true, output: 'TYPED "1234{ENTER}" into box' },
+    { step: 3, action: 'drag', ok: true, output: 'drag 10,10 -> 200,10 (12 steps)' },
+  ] })
+  const capture = join(evidenceDir, 'captured-dynamic.json')
+  process.env.FAKE_CAPTURE_STEPS = capture
+  const d = newDriver()
+  const v = await d.flow({ tag: 'unit-dynamic', allowSideEffects: true, steps: [
+    { action: 'waitFor', name: 'A', waitFor: { ms: 3000, state: 'enabled' } }, // 大小写混杂
+    { action: 'type', aid: 'box', value: '1234{ENTER}', allowSideEffects: true },
+    { action: 'drag', fromX: 10, fromY: 10, toX: 200, toY: 10, allowSideEffects: true },
+  ] })
+  const captured = existsSync(capture) ? JSON.parse(readFileSync(capture, 'utf8')) : null
+  check('waitFor 归一化成 waitfor', captured && captured[0].action === 'waitfor', JSON.stringify(captured && captured[0]))
+  check('waitFor 参数透传', captured && captured[0].waitFor && captured[0].waitFor.ms === 3000 && captured[0].waitFor.state === 'enabled')
+  check('type 动作透传 keys/value', captured && captured[1].action === 'type' && captured[1].value === '1234{ENTER}')
+  check('drag 坐标透传', captured && captured[2].action === 'drag' && captured[2].fromX === 10 && captured[2].toX === 200)
+  check('waitfor 计入断言 passed', v.passed === 1, 'passed=' + v.passed)
+  delete process.env.FAKE_CAPTURE_STEPS
+  d.warmShutdown()
+}
+
+// ---------------------------------------------------------------- 8. waitfor 条件不满足 = 断言失败（不是静默通过）
+{
+  installFakeBatch({ ok: false, elapsedMs: 9, steps: [
+    { step: 1, action: 'waitfor', ok: false, found: false, waitedMs: 3000, error: '条件未满足: state=appear target=/X 超时 3000ms' },
+  ] })
+  const d = newDriver()
+  const v = await d.flow({ tag: 'unit-waitfor-fail', steps: [{ action: 'waitfor', name: 'X', waitFor: { ms: 3000 } }] })
+  check('waitfor 超时 → failed=1', v.failed === 1 && v.ok === false, JSON.stringify({ ok: v.ok, failed: v.failed }))
+  check('waitfor 超时 transcript 带 waitedMs/error', v.transcript[0].waitedMs === 3000 && /超时/.test(v.transcript[0].error || ''))
+  d.warmShutdown()
+}
+
+// ---------------------------------------------------------------- 9. 新动作在一次性进程路径下自动走批量引擎
+{
+  installFakeBatch({ ok: true, elapsedMs: 3, steps: [{ step: 1, action: 'windows', ok: true, count: 2, lines: ['[Window] "a"', '[Window] "b"'] }] })
+  delete process.env.DSH_UI_SERVE
+  process.env.DSH_UI_SERVE = '0'
+  const d = newDriver()
+  const r = await d.drive({ action: 'windows' })
+  check('windows 动作走批量引擎', r.ok === true && r.count === 2, JSON.stringify(r))
+  check('windows 是只读动作（不需要 allowSideEffects）', r.ok === true)
+  const r2 = await d.drive({ action: 'type', name: 'box', value: 'x' })
+  check('type 仍受副作用护栏保护', r2.ok === false && /allowSideEffects/.test(r2.error || ''), JSON.stringify(r2))
+  d.warmShutdown()
+}
+
+// ---------------------------------------------------------------- 10. ui_state 快照透传
+{
+  installFakeBatch({ ok: true, elapsedMs: 7, steps: [
+    { step: 1, action: 'state', ok: true, window: '主窗口', focusedWindow: '主窗口', focused: '[Edit] name="搜索" enabled=True', count: 2, lines: ['#0 [Button] "登录"', '#1 [Edit] "搜索"'] },
+  ] })
+  process.env.DSH_UI_SERVE = '0'
+  const d = newDriver()
+  const r = await d.drive({ action: 'state', max: 2 })
+  check('state 返回窗口/焦点/控件清单', r.ok === true && r.window === '主窗口' && /Edit/.test(r.focused) && r.count === 2, JSON.stringify(r))
+  const v = await d.flow({ tag: 'unit-state', steps: [{ action: 'state', max: 2 }] })
+  check('state 是只读动作（不需要 allowSideEffects）', v.ok === true && v.transcript[0].focused !== undefined, JSON.stringify(v.transcript[0]))
+  d.warmShutdown()
+}
+
 rmSync(scriptsDir, { recursive: true, force: true })
 rmSync(evidenceDir, { recursive: true, force: true })
 delete process.env.FAKE_BATCH_PAYLOAD

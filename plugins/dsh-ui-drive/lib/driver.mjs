@@ -10,7 +10,7 @@
  *  - status 走 batch 脚本的 -Status 快路径（不加载 UIA）。
  */
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { decodeBuffer } from '../../../lib/decode.mjs'
@@ -197,7 +197,11 @@ export function makeDriver(cfg) {
     if (warm.proc) return Promise.resolve(true)
     if (!warmEnabled()) return Promise.resolve(false)
     const idleMs = Number(process.env.DSH_UI_SERVE_IDLE_MS || 300000)
-    const child = spawn(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', batchScript(), '-Serve', '-ProcName', c.procName, '-WindowName', c.windowName], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    // ScriptStamp：把脚本 mtime 传给常驻进程，脚本被改过时它自己退出，
+    // Node 侧重启进程——否则开发期热改脚本后常驻进程会一直跑旧代码（踩过）。
+    let stamp = ''
+    try { stamp = String(statSync(batchScript()).mtimeMs) } catch { stamp = '' }
+    const child = spawn(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', batchScript(), '-Serve', '-ProcName', c.procName, '-WindowName', c.windowName, '-ScriptStamp', stamp], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
     warm.proc = child
     warm.buf = Buffer.alloc(0)
     warm.startedAt = Date.now()
@@ -277,7 +281,19 @@ export function makeDriver(cfg) {
       }, timeoutMs)
       warm.pending.set(id, {
         timer,
-        resolve: (obj) => resolve(obj),
+        resolve: (obj) => {
+          // 脚本热改：常驻进程自报 STALE_SCRIPT 后退出，这里静默重试一次（换新进程）
+          if (obj && obj.error === 'STALE_SCRIPT') {
+            clearTimeout(timer)
+            warm.pending.delete(id)
+            warmStop('stale script')
+            warmStart().then(() => {
+              warmSend(payload, timeoutMs).then(resolve)
+            })
+            return
+          }
+          resolve(obj)
+        },
         reject: () => { clearTimeout(timer); resolve(null) },
       })
       try {
@@ -305,7 +321,60 @@ export function makeDriver(cfg) {
 
   // ------------------------------------------------------------ 单步驱动
 
-  const READ_ONLY_ACTIONS = new Set(['find', 'read', 'shot', 'status'])
+  const READ_ONLY_ACTIONS = new Set(['find', 'read', 'shot', 'status', 'windows', 'waitfor', 'state', 'expectwindow', 'expecttext', 'waitany'])
+
+  /**
+   * 新动作（type/drag/windows/waitfor/state/expectwindow/expecttext/waitany）与带条件的
+   * 等待（waitFor）只有批量引擎实现；一次性脚本路径不支持时走批量引擎单步执行——
+   * 语义一致，代价是每步多付一次 PowerShell 启动（约 0.4s），可接受。
+   */
+  const BATCH_ONLY_ACTIONS = new Set(['type', 'drag', 'windows', 'waitfor', 'state', 'expectwindow', 'expecttext', 'waitany'])
+
+  /** 动作名归一化：waitFor / WaitFor / WAITFOR 都是 waitfor（模型大小写写法不一致）。 */
+  function normAction(a) {
+    return typeof a === 'string' ? a.trim().toLowerCase() : a
+  }
+
+  /** 动作参数 → 批量步骤字段（两处共用，避免字段漏传）。 */
+  function stepFields(args) {
+    const s = {
+      action: normAction(args.action),
+      name: args.name,
+      aid: args.aid,
+      value: args.value,
+      ascii: args.ascii,
+      match: args.match,
+      waitMs: args.waitMs,
+      index: args.index,
+      inAid: args.inAid,
+      inName: args.inName,
+      waitFor: args.waitFor,
+      state: args.state,
+      keys: args.keys,
+      fromX: args.fromX,
+      fromY: args.fromY,
+      toX: args.toX,
+      toY: args.toY,
+      steps: args.steps,
+      holdMs: args.holdMs,
+      max: args.max,
+      // 跨窗口 + 凭据 + 竞速等待
+      winTitle: args.winTitle,
+      winHandle: args.winHandle,
+      secret: args.secret,
+      expectValue: args.expectValue,
+      titleRe: args.titleRe,
+      textRe: args.textRe,
+      gone: args.gone,
+      ms: args.ms,
+      interval: args.interval,
+      conds: args.conds,
+      stableCount: args.stableCount,
+      out: args.out,
+    }
+    for (const k of Object.keys(s)) if (s[k] === undefined) delete s[k]
+    return s
+  }
 
   /**
    * ui_drive：单步动作。
@@ -313,7 +382,8 @@ export function makeDriver(cfg) {
    * 副作用动作（click/setvalue/key）必须显式 allowSideEffects=true（安全护栏）。
    */
   async function drive(args) {
-    const { action, name = '', aid = '', value = '', ascii = false, match = '', waitMs = c.defaultWaitMs, procId = 0, allowSideEffects = false, workspace = '', label = '', shotsDir = '' } = args
+    const { action: rawAction, name = '', aid = '', value = '', ascii = false, match = '', waitMs = c.defaultWaitMs, procId = 0, allowSideEffects = false, workspace = '', label = '', shotsDir = '', index, inAid = '', inName = '', waitFor = null, state = '', keys = '', fromX, fromY, toX, toY, steps = 12, holdMs = 120, max, winTitle = '', winHandle, secret = false, expectValue, titleRe = '', textRe = '', gone = false, ms, interval, conds, stableCount, observe = false, observeMatch = '', observeMax = 15 } = args
+    const action = normAction(rawAction)
     if (!READ_ONLY_ACTIONS.has(action)) {
       if (!allowSideEffects) {
         return { ok: false, action, error: '动作 ' + action + ' 是真实副作用操作，必须显式传 allowSideEffects=true 才执行（安全护栏）' }
@@ -326,11 +396,33 @@ export function makeDriver(cfg) {
       mkdirSync(shotPlan.dir, { recursive: true })
     }
 
+    // ---- 动作后快照（observe:true）：一次调用拿到「点了之后界面变成什么样」，
+    //      省掉 agent 的二次 state 往返（外部复核建议的 opt-in 轻量观察）。
+    const wantObserve = args.observe === true && !READ_ONLY_ACTIONS.has(action)
+    const attachObserve = async (out) => {
+      if (!wantObserve) return out
+      let snapshot = null
+      try {
+        const st = await drive({ action: 'state', match: args.observeMatch || '', max: args.observeMax || 15, procId })
+        snapshot = st.ok ? { window: st.window, focused: st.focused, count: st.count, lines: st.lines } : { error: st.error }
+      } catch (e) {
+        snapshot = { error: String(e).slice(0, 160) }
+      }
+      return { ...out, observe: snapshot }
+    }
+
     // ---- 常驻进程快路径
     if (warmEnabled()) {
       await warmStart()
       if (warm.proc && warm.ready === true) {
-        const payload = { action, name, aid, value, ascii, match, waitMs, procId }
+        const payload = {
+          action, name, aid, value, ascii, match, waitMs, procId,
+          index, inAid, inName, waitFor, state, keys,
+          fromX, fromY, toX, toY, steps, holdMs, max,
+          // 跨窗口 + 凭据 + 竞速等待（漏传过一次：warm 路径下这些参数全部失效）
+          winTitle, winHandle, secret, expectValue,
+          titleRe, textRe, gone, ms, interval, conds, stableCount,
+        }
         if (action === 'shot') payload.out = shotPlan.path
         const res = await warmSend(payload, action === 'shot' ? 60000 : c.defaultTimeoutMs)
         if (res && res.ok === false && res.timeout === true) {
@@ -347,9 +439,31 @@ export function makeDriver(cfg) {
             }
           }
         }
-        if (res) return shapeResult(action, res, shotPlan, workspace)
+        if (res) return await attachObserve(shapeResult(action, res, shotPlan, workspace))
         // 只读动作：常驻进程不可用时回退一次性脚本路径是安全的
       }
+    }
+
+    // ---- 回退：批量引擎单步（type/drag/windows/waitfor 只有批量引擎实现；
+    //      其余动作在传了 index/inAid/waitFor 时也必须走批量，一次性脚本不认识）
+    const needsBatch =
+      BATCH_ONLY_ACTIONS.has(action) || wantObserve || /\$\{cred:/.test(String(value) + String(keys)) ||
+      index !== undefined || inAid !== '' || inName !== '' || waitFor !== null || keys !== ''
+    if (needsBatch) {
+      const b = await batch({
+        steps: [stepFields({
+          action, name, aid, value, ascii, match, waitMs, index, inAid, inName, waitFor, state, keys,
+          fromX, fromY, toX, toY, steps, holdMs, max,
+          winTitle, winHandle, secret, expectValue, titleRe, textRe, gone, ms, interval, conds,
+          out: shotPlan ? shotPlan.path : undefined,
+        })],
+        procId,
+        waitMs,
+      })
+      if (!b.ok || b.steps.length === 0) {
+        return { ok: false, action, error: b.error || '批量单步执行失败' }
+      }
+      return await attachObserve(shapeResult(action, b.steps[0], shotPlan, workspace))
     }
 
     // ---- 回退：一次性脚本进程
@@ -368,18 +482,18 @@ export function makeDriver(cfg) {
 
     if (action === 'find') {
       const m = text.match(/FOUND (.+)/)
-      if (m) return { ok: true, action, found: true, detail: m[1] }
-      if (notFound) return { ok: true, action, found: false, detail: null }
+      if (m) return await attachObserve({ ok: true, action, found: true, detail: m[1] })
+      if (notFound) return await attachObserve({ ok: true, action, found: false, detail: null })
       return { ok: false, action, error: cleanPsError(r.stderr) || text.slice(0, 500) }
     }
     if (action === 'click' || action === 'setvalue' || action === 'key') {
       if (notFound) return { ok: false, action, notFound: true, error: '未找到目标控件（' + (name || aid) + '）' }
       const m = text.match(/^(CLICKED|SET|KEYED)(.*)$/m)
-      if (m) return { ok: true, action, output: (m[1] + m[2]).trim() }
+      if (m) return await attachObserve({ ok: true, action, output: (m[1] + m[2]).trim() })
       return { ok: false, action, error: cleanPsError(r.stderr) || text.slice(0, 500) }
     }
     if (action === 'read') {
-      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^\[(Button|Edit|Text|RadioButton|CheckBox|TabItem|ComboBox)\]/.test(l))
+      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^\[(Button|Edit|Text|RadioButton|CheckBox|TabItem|ComboBox|ListItem|MenuItem|TreeItem|Hyperlink)\]/.test(l))
       return { ok: true, action, count: lines.length, lines: lines.slice(0, 200), truncated: text.length > LIMIT_READ }
     }
     if (action === 'shot') {
@@ -396,11 +510,48 @@ export function makeDriver(cfg) {
       const out = { ok: false, action }
       if (res.error) out.error = res.error
       if (res.notFound) out.notFound = true
+      if (res.found !== undefined) out.found = res.found === true
+      if (res.waitedMs !== undefined) out.waitedMs = res.waitedMs
+      if (res.count !== undefined) out.count = res.count
       return out
     }
-    if (action === 'find') return { ok: true, action, found: res.found === true, detail: res.detail !== undefined ? res.detail : null }
+    if (action === 'find') {
+      const out = { ok: true, action, found: res.found === true, detail: res.detail !== undefined ? res.detail : null }
+      if (res.count !== undefined) out.count = res.count
+      if (res.waitedMs) out.waitedMs = res.waitedMs
+      return out
+    }
     if (action === 'read') return { ok: true, action, count: res.count || 0, lines: res.lines || [], truncated: false }
-    if (action === 'click' || action === 'setvalue' || action === 'key') return { ok: true, action, output: res.output || '' }
+    if (action === 'windows') return { ok: true, action, count: res.count || 0, lines: res.lines || [] }
+    if (action === 'state') {
+      return {
+        ok: true,
+        action,
+        window: res.window ?? null,
+        focusedWindow: res.focusedWindow ?? null,
+        focused: res.focused ?? null,
+        count: res.count || 0,
+        lines: res.lines || [],
+      }
+    }
+    if (action === 'waitfor') return { ok: true, action, found: res.found === true, detail: res.detail ?? null, waitedMs: res.waitedMs ?? 0 }
+    if (action === 'expectwindow' || action === 'expecttext') {
+      const out = { ok: true, action, found: res.found === true, waitedMs: res.waitedMs ?? 0 }
+      if (res.detail !== undefined) out.detail = res.detail
+      if (res.count !== undefined) out.count = res.count
+      if (res.lines !== undefined) out.lines = res.lines
+      return out
+    }
+    if (action === 'waitany') {
+      const out = { ok: true, action, hitIndex: res.hitIndex ?? -1, waitedMs: res.waitedMs ?? 0 }
+      if (res.hitKind !== undefined) out.hitKind = res.hitKind
+      if (res.hitLabel !== undefined) out.hitLabel = res.hitLabel
+      if (res.detail !== undefined) out.detail = res.detail
+      return out
+    }
+    if (action === 'click' || action === 'setvalue' || action === 'key' || action === 'type' || action === 'drag') {
+      return { ok: true, action, output: res.output || '' }
+    }
     if (action === 'shot') return shapeShot(action, res, shotPlan, workspace)
     return { ok: true, action, output: res.output || '' }
   }
@@ -457,7 +608,7 @@ export function makeDriver(cfg) {
     const stepsFile = join(dir, 'batch-steps.json')
     const outFile = join(dir, 'batch-result.json')
     const cleanSteps = steps.map((s) => {
-      const o = { action: s.action }
+      const o = { action: normAction(s.action) }
       if (s.name !== undefined) o.name = s.name
       if (s.aid !== undefined) o.aid = s.aid
       if (s.value !== undefined) o.value = s.value
@@ -467,6 +618,30 @@ export function makeDriver(cfg) {
       if (s.waitMs !== undefined && s.waitMs !== null) o.waitMs = s.waitMs
       if (s.expectEnabled !== undefined) o.expectEnabled = s.expectEnabled
       if (s.expectMatch !== undefined) o.expectMatch = s.expectMatch
+      if (s.index !== undefined && s.index !== null) o.index = s.index
+      if (s.inAid !== undefined && s.inAid !== '') o.inAid = s.inAid
+      if (s.inName !== undefined && s.inName !== '') o.inName = s.inName
+      if (s.waitFor !== undefined && s.waitFor !== null) o.waitFor = s.waitFor
+      if (s.state !== undefined && s.state !== '') o.state = s.state
+      if (s.keys !== undefined && s.keys !== '') o.keys = s.keys
+      if (s.fromX !== undefined && s.fromX !== null) o.fromX = s.fromX
+      if (s.fromY !== undefined && s.fromY !== null) o.fromY = s.fromY
+      if (s.toX !== undefined && s.toX !== null) o.toX = s.toX
+      if (s.toY !== undefined && s.toY !== null) o.toY = s.toY
+      if (s.steps !== undefined && s.steps !== null) o.steps = s.steps
+      if (s.holdMs !== undefined && s.holdMs !== null) o.holdMs = s.holdMs
+      if (s.max !== undefined && s.max !== null) o.max = s.max
+      if (s.winTitle !== undefined && s.winTitle !== '') o.winTitle = s.winTitle
+      if (s.winHandle !== undefined && s.winHandle !== null) o.winHandle = s.winHandle
+      if (s.secret === true) o.secret = true
+      if (s.expectValue !== undefined && s.expectValue !== null) o.expectValue = s.expectValue
+      if (s.titleRe !== undefined && s.titleRe !== '') o.titleRe = s.titleRe
+      if (s.textRe !== undefined && s.textRe !== '') o.textRe = s.textRe
+      if (s.gone !== undefined) o.gone = s.gone
+      if (s.ms !== undefined && s.ms !== null) o.ms = s.ms
+      if (s.interval !== undefined && s.interval !== null) o.interval = s.interval
+      if (s.conds !== undefined && s.conds !== null) o.conds = s.conds
+      if (s.stableCount !== undefined && s.stableCount !== null) o.stableCount = s.stableCount
       return o
     })
     writeFileSync(stepsFile, JSON.stringify(cleanSteps), 'utf8')
@@ -508,7 +683,7 @@ export function makeDriver(cfg) {
 
   // ------------------------------------------------------------ 流程自验
 
-  const FLOW_ACTIONS = new Set(['find', 'click', 'setvalue', 'key', 'read', 'shot', 'wait', 'expect'])
+  const FLOW_ACTIONS = new Set(['find', 'click', 'setvalue', 'key', 'type', 'drag', 'read', 'state', 'shot', 'wait', 'waitfor', 'expect', 'windows', 'expectwindow', 'expecttext', 'waitany'])
 
   /**
    * ui_flow：步骤序列驱动 + 证据收集。
@@ -540,7 +715,7 @@ export function makeDriver(cfg) {
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i] || {}
       const n = i + 1
-      const action = s.action
+      const action = normAction(s.action)
       if (!FLOW_ACTIONS.has(action)) {
         failed++
         transcript.push({ step: n, action, ok: false, error: '非法动作 ' + action })
@@ -558,7 +733,7 @@ export function makeDriver(cfg) {
       // wait 在 PowerShell 侧执行（不占进程启动开销）；read/find 无需动作后静默
       const stepWait = s.waitMs !== undefined && s.waitMs !== null
         ? s.waitMs
-        : (action === 'read' || action === 'find' || action === 'expect' || action === 'shot' ? 0 : (waitMs !== undefined ? waitMs : c.defaultWaitMs))
+        : (action === 'read' || action === 'find' || action === 'expect' || action === 'shot' || action === 'windows' || action === 'state' ? 0 : (waitMs !== undefined ? waitMs : c.defaultWaitMs))
       const label = s.label || action + '-' + n
       const batchStep = {
         action,
@@ -570,6 +745,18 @@ export function makeDriver(cfg) {
         waitMs: stepWait,
         expectEnabled: s.expectEnabled,
         expectMatch: s.expectMatch,
+        index: s.index,
+        inAid: s.inAid,
+        inName: s.inName,
+        waitFor: s.waitFor,
+        state: s.state,
+        keys: s.keys,
+        fromX: s.fromX,
+        fromY: s.fromY,
+        toX: s.toX,
+        toY: s.toY,
+        steps: s.steps,
+        holdMs: s.holdMs,
         out: action === 'shot' ? join(dir, safeLabel(label) + '.png') : undefined,
       }
       runnable.push({ index: i, step: n, label, src: s, batchStep })
@@ -604,6 +791,22 @@ export function makeDriver(cfg) {
       } else if (action === 'read') {
         entry.count = res.count || 0
         entry.lines = (res.lines || []).slice(0, 50)
+      } else if (action === 'windows') {
+        entry.count = res.count || 0
+        entry.lines = res.lines || []
+      } else if (action === 'state') {
+        entry.window = res.window ?? null
+        entry.focusedWindow = res.focusedWindow ?? null
+        entry.focused = res.focused ?? null
+        entry.count = res.count || 0
+        entry.lines = res.lines || []
+      } else if (action === 'waitfor' || action === 'expectwindow' || action === 'expecttext' || action === 'waitany') {
+        entry.found = res.found === true
+        if (res.detail !== undefined) entry.detail = res.detail
+        if (res.waitedMs !== undefined) entry.waitedMs = res.waitedMs
+        if (res.count !== undefined) entry.count = res.count
+        if (res.lines !== undefined) entry.lines = res.lines
+        if (res.hitIndex !== undefined) { entry.hitIndex = res.hitIndex; entry.hitKind = res.hitKind; entry.hitLabel = res.hitLabel }
       } else if (action === 'shot') {
         if (res.path) { entry.path = res.path; finalShot = res.path }
         entry.size = res.ok ? res.w + 'x' + res.h : null
@@ -615,10 +818,10 @@ export function makeDriver(cfg) {
       }
       if (res.error) entry.error = res.error
 
-      if (action === 'expect') {
+      if (action === 'expect' || action === 'waitfor' || action === 'expectwindow' || action === 'expecttext' || action === 'waitany') {
         ok ? passed++ : failed++
         entry.ok = ok
-        w('step ' + r.step + ': expect ' + (ok ? 'PASS' : 'FAIL') + ' ' + (res.detail || '(未找到)') + (res.reasons ? ' [' + res.reasons + ']' : ''))
+        w('step ' + r.step + ': ' + action + ' ' + (ok ? 'PASS' : 'FAIL') + ' ' + (res.detail || '(未找到)') + (res.reasons ? ' [' + res.reasons + ']' : '') + (res.waitedMs ? ' (' + res.waitedMs + 'ms)' : ''))
         transcript.push(entry)
         if (!ok && failFast) break
         continue
@@ -627,6 +830,7 @@ export function makeDriver(cfg) {
       entry.ok = ok
       if (action === 'shot') w('step ' + r.step + ': shot ' + (ok ? (res.path + ' ' + res.w + 'x' + res.h) : 'FAIL ' + (res.error || '')))
       else if (action === 'read') w('step ' + r.step + ': read ' + (res.count || 0) + ' 行')
+      else if (action === 'windows') w('step ' + r.step + ': windows ' + (res.count || 0) + ' 个窗口')
       else if (action === 'find') w('step ' + r.step + ': find ' + (res.found ? 'FOUND' : 'MISS') + ' ' + (res.detail || ''))
       else if (action === 'wait') w('step ' + r.step + ': wait ' + (res.waitedMs || 0) + 'ms')
       else w('step ' + r.step + ': ' + action + ' ' + (ok ? (res.output || 'OK') : 'FAIL ' + (res.error || '')))

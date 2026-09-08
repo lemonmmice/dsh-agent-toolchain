@@ -8,6 +8,55 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- **dsh-ui-drive: dynamic-UI driving primitives (login / captcha / branch-on-screen)** —
+  driving a real client is not "click a few buttons": the agent must log in, then keep
+  acting on what the screen shows. Two independent external reviews (Claude Code +
+  Codex/GPT-6 Astra) audited the driver against that bar and named three P0 gaps;
+  all three are now implemented and measured on a real client and on a local
+  no-network WPF login host.
+  - **Cross-window primitives** — the login window is a *different top-level window*
+    from the main window, and this client shows no success dialog, so "did login
+    succeed" is a window-level question the old subtree-only `waitfor` could not
+    express. New read-only actions: `expectwindow` (title regex appear/gone),
+    `expecttext` (scan every window's Text/Edit values, e.g. `ErrorInfo`), `waitany`
+    (race several conditions at once — success / error / still-here — and return which
+    branch hit, with `stableCount` confirmation against transient states), plus
+    `winTitle`/`winHandle` scoping on find/read/waitfor.
+  - **Input correctness — no more silent success** — the target login page's phone box
+    sets `e.Handled = true` for every key except digits, so `key`'s clipboard paste is
+    swallowed *while still reporting ok*. Now `setvalue` (ValuePattern, bypasses key
+    filtering) is the path for restricted fields, `key`/`type`/`setvalue` read the
+    control value back and fail loudly on mismatch, and `type` sends printable ASCII
+    through `keybd_event`/`VkKeyScan` instead of `SendKeys` (which silently typed
+    nothing on the test host until this fix).
+  - **Credential isolation** — `value: "${cred:name}"` is expanded inside the driver
+    process from `DSH_CRED_name`, so the secret never enters the model context, the
+    step file or the evidence; password/captcha controls report only `<secret:Nchars>`;
+    `secret=true` (or a placeholder) masks the value in output.
+  - **Hard deny (driver-level, not a prompt)** — buy/sell/order/commission/pay/withdraw
+    controls are rejected by name/AutomationId match even with `allowSideEffects=true`.
+  - New actions `state` (window + focused element + interactive-control snapshot,
+    `#index` reusable as `index`), `windows` (all top-level windows), `type`
+    (`{ENTER}`/`{TAB}` sequences), `drag` (slider captcha); `index` / `inAid` /
+    `inName` targeting; `waitFor` on any action; `observe:true` on any side-effecting
+    action returns the post-action snapshot; `click` dispatches by pattern
+    (Invoke / Toggle / SelectionItem, then mouse) and refuses disabled controls.
+  - Semantic tool split for agents: `ui_observe` (read-only) and `ui_act` (side
+    effects) on both the DSH and MCP surfaces; `ui_windows` / `ui_state` exposed
+    directly; `ui_drive` kept as the generic entry point.
+  - Hang-inspector is now on the MCP surface too: `hang_status` / `hang_run` /
+    `hang_stop` / `hang_packs` / `hang_pack` / `hang_analyze` / `hang_delete`
+    (`plugins/dsh-hang-inspector/lib/hang.mjs` is the shared core; the panel routes
+    are a thin transport over it).
+  - Warm serve self-heals on script edits (`ScriptStamp`): a stale persistent process
+    exits and the Node side respawns with the new script.
+  - Tests: `flow-batch.test.mjs` covers action-name normalisation, the new step fields,
+    `waitfor` as an assertion, and batch routing for the new actions;
+    `plugins/dsh-win-terminal-inspector/test/inspector.test.mjs` no longer requires
+    Git Bash (node-spawned process tree), so it runs in restricted environments too.
+
 ### Changed
 
 - **dsh-ui-drive: UI driving is now real-time (3 layers)** — the old design
