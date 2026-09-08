@@ -19,7 +19,7 @@ test hook and is guarded + reversible).
 
 | Plugin | Depends on | Notes |
 | --- | --- | --- |
-| dsh-build | — | Needs `DSH_BUILD_CLIENT_ROOT`; MSBuild auto-detected (VS path / vswhere) |
+| dsh-build | — | Needs `DSH_BUILD_CLIENT_ROOT`/`DSH_BUILD_REPO_ROOT`; MSBuild auto-detected (VS path / vswhere). Defaults auto-resolve by repo layout (legacy `WholeSolution.sln`+x86 preserved; stock repos get .sln/.slnx + platform detection) |
 | dsh-ui-drive | — | Needs `DSH_UI_PROC_NAME` / `DSH_UI_WINDOW_NAME`; `DSH_SNOOP_DIR` for ui_tree |
 | dsh-api-visualizer | — | Panel package (`@dsh-agent-toolchain/dsh-api-visualizer`), `node-forge` |
 | dsh-postman | — | Panel package, `@grpc/grpc-js` for gRPC helper |

@@ -122,6 +122,16 @@ write a harsh review. Raw review is local-only; the findings below were each
 | 3 | `memory_index` wiped 23 pre-existing chunks when indexing a second root (eviction keyed on "inside current root"), and the index path had no secret screening while embedding egresses to `api.minimax.chat` | Reproduced in code + the critic session demonstrably damaged the local store | Chunk keys carry absolute paths; eviction judges disk existence (multi-root safe); index path runs the fail-closed sensitive filter (`sensitiveSkipped`); egress disclosed in `memory_status` + README + tool descriptions |
 | 4 | `ui_drive` error output was mojibake (GBK decoded as UTF-8) and the garbage was auto-recorded into the corpus | Confirmed in code (`driver.mjs` decoded per-chunk as UTF-8) | Shared `lib/decode.mjs` (UTF-8→GBK) now used by builder + driver; `ui_status` distinguishes `unconfigured` |
 
+> **Follow-up (later session):** the msbuild engine itself was then
+> generalized instead of staying doc-scoped to `engine=dotnet`
+> (`lib/build-resolve.mjs`): repos containing `WholeSolution.sln` keep the
+> legacy defaults byte-for-byte; stock repos get `.sln`/`.slnx` +
+> platform auto-detection (Any CPU preferred), ambiguity is an explicit
+> error; the engine always passes `/restore`; SDK-resolution chains
+> (MSB4236/MSB4276/NETSDK1004) classify as environment errors. Verified
+> green on the stock repo through VS MSBuild (auto-detected
+> `src/MahApps.Metro.sln` + `Any CPU`, 0 errors).
+
 ### Accepted, deferred (not fixed yet)
 
 - Fit-and-finish: `memory_recall` nested shape, gate `detail` too thin on

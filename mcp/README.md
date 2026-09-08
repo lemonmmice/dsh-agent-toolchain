@@ -50,7 +50,8 @@ Same `DSH_*` variables as the plugins:
 | --- | --- | --- |
 | `DSH_UI_PROC_NAME` / `DSH_UI_WINDOW_NAME` / `DSH_UI_CLIENT_EXE` | ui tools | driving your desktop client |
 | `DSH_UI_EVIDENCE_DIR` | ui tools | screenshot/evidence dir (default `~/.dsh-agent-toolchain/ui-evidence`) |
-| `DSH_BUILD_CLIENT_ROOT` | build_run | solution root (or pass `clientRoot` per call) |
+| `DSH_BUILD_CLIENT_ROOT` / `DSH_BUILD_REPO_ROOT` | build_run | repo root (or pass `clientRoot`/`repoRoot` per call) |
+| `DSH_BUILD_PLATFORM` | build_run | override the auto-resolved platform (`x86` / `Any CPU` / …) |
 | `DSH_BUILD_MSBUILD` | build_run | explicit MSBuild path (auto-detect otherwise) |
 | `DSH_MEMORY_DIR` | memory tools | data dir (default `~/.dsh/memory`) |
 | `MINIMAX_CN_API_KEY` | memory_search | MiniMax embeddings (falls back to local bigram search) |

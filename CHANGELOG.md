@@ -10,6 +10,29 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **msbuild engine generalization** — the msbuild engine no longer hardcodes
+  the legacy client defaults. A repo containing `WholeSolution.sln` keeps the
+  old behavior byte-for-byte (default target `WholeSolution.sln`, platform
+  `x86`); any other repo gets `.sln`/`.slnx` auto-detection (root, then one
+  level deep, skipping bin/obj/.git/node_modules/…) and platform detection
+  from the solution file itself (`Any CPU` preferred, then
+  `Mixed Platforms`, then `x86`). Ambiguity is an explicit error listing the
+  candidates — never a guess. Shared logic in `lib/build-resolve.mjs` with
+  its own CI unit test (`lib/build-resolve.test.mjs`); `repoRoot` /
+  `DSH_BUILD_REPO_ROOT` / `DSH_BUILD_PLATFORM` accepted by both the DSH tool
+  and the MCP tool.
+- **msbuild engine always restores** — MSBuild.exe does not restore
+  implicitly (unlike `dotnet build`), so SDK-style projects used to fail
+  with NETSDK1004 (missing assets file); the engine now always passes
+  `/restore` (a no-op for legacy packages.config projects).
+- **SDK-resolution error chains parsed honestly** — six-letter code prefixes
+  (`NETSDK1004`, `NETSDK1045`, …) now parse (the old regex only allowed five
+  letters); the embedded-code form `file : error : MSB4276: …` is extracted
+  from SDK-resolution prose chains while pure-prose lines stay out of the
+  structured list (MSBuild's own summary does not count them — count parity
+  holds); MSB4236/MSB4276/NETSDK1004/NETSDK1045/NU1301 now classify as
+  environment errors, so a repo missing the .NET SDK or a targeting pack
+  reports `blockedByEnvironment` instead of pretending it is a code bug.
 - **Benchmark pilot harness** — `bench/harness/bench.mjs` runs one real coding
   task against an external agent CLI in two modes (`baseline` = built-in tools
   only, `toolchain` = built-in tools plus the dsh-agent-toolchain MCP server),
