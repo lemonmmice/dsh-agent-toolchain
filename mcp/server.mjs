@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 
 import { makeBuilder } from '../plugins/dsh-build/lib/builder.mjs'
 import { makeDriver } from '../plugins/dsh-ui-drive/lib/driver.mjs'
+import { makePerf } from '../plugins/dsh-perf/lib/perf.mjs'
 import { sendRequest } from '../plugins/dsh-postman/lib/http.mjs'
 import { DshMemory } from '../plugins/dsh-memory/lib/memory.mjs'
 import { makeFailureCorpus, FAILURE_CLASSES } from '../lib/failure-corpus.mjs'
@@ -55,6 +56,20 @@ let memory = null
 function mem() {
   if (!memory) memory = new DshMemory({})
   return memory
+}
+
+let perf = null
+function prf() {
+  if (!perf) {
+    perf = makePerf({
+      scriptsDir: join(root, 'plugins', 'dsh-perf', 'scripts'),
+      procName: process.env.DSH_UI_PROC_NAME || '',
+      windowName: process.env.DSH_UI_WINDOW_NAME || '',
+      evidenceDir: process.env.DSH_PERF_EVIDENCE_DIR || '',
+      srcRoot: process.env.DSH_PERF_SRC_ROOT || '',
+    })
+  }
+  return perf
 }
 
 let corpus = null
@@ -171,8 +186,73 @@ server.tool(
   }
 )
 
-// ---------------------------------------------------------------- http
+server.tool(
+  'ui_flow',
+  'Run a whole UI verification sequence and collect evidence (find/read/shot/wait/expect are read-only; ' +
+    'click/setvalue/key need allowSideEffects=true). The sequence runs inside ONE PowerShell process ' +
+    '(no per-step process start), so a 10-step flow takes ~1-2s instead of ~10s. ' +
+    'Every step output + screenshot is written to the evidence dir (steps.json); the returned transcript has passed/failed counts.',
+  {
+    steps: z.array(z.object({
+      action: z.enum(['find', 'click', 'setvalue', 'key', 'read', 'shot', 'wait', 'expect']),
+      name: z.string().optional(),
+      aid: z.string().optional(),
+      value: z.string().optional(),
+      ascii: z.boolean().optional(),
+      match: z.string().optional(),
+      waitMs: z.number().optional().describe('Post-action settle time; find/read/shot/expect default to 0'),
+      label: z.string().optional(),
+      expectEnabled: z.boolean().optional().describe('expect: assert enabled state'),
+      expectMatch: z.string().optional().describe('expect: regex the control detail must match'),
+    })).describe('Step sequence'),
+    tag: z.string().optional().describe('Evidence dir label (default flow)'),
+    failFast: z.boolean().optional().describe('Stop at the first failed assertion'),
+    allowSideEffects: z.boolean().optional().describe('REQUIRED true when the sequence contains click/setvalue/key'),
+  },
+  async (args) => {
+    const hasSideEffects = (args.steps || []).some((s) => ['click', 'setvalue', 'key'].includes(s.action))
+    if (hasSideEffects && !args.allowSideEffects) {
+      return text('Blocked: the sequence contains a real side effect (click/setvalue/key). Re-call with allowSideEffects=true after confirming with the user.')
+    }
+    const r = await drv().flow({
+      steps: args.steps,
+      tag: args.tag || 'flow',
+      failFast: args.failFast === true,
+      allowSideEffects: args.allowSideEffects === true,
+    })
+    if (r.failed > 0) autoRecord('verification-failure', 'ui_flow', `ui_flow assertion failure: ${r.failed}/${r.totalSteps} steps failed (evidence: ${r.stepsJson || r.evidenceDir || '?'})`)
+    return jtext(r)
+  }
+)
 
+// ---------------------------------------------------------------- perf
+
+server.tool(
+  'perf_probe',
+  'Measure UI stutter: loops a window-message round trip against the target client main window, ' +
+    'reports P50/P95/P99 and every event over the threshold. capture=log (default) only records; ' +
+    'capture=shot screenshots the stall; capture=dump grabs a full dump on the first stall (hundreds of MB).',
+  {
+    seconds: z.number().default(60).describe('Sampling duration in seconds'),
+    thresholdMs: z.number().default(500).describe('Stutter threshold in ms'),
+    capture: z.enum(['log', 'shot', 'dump']).default('log'),
+    intervalMs: z.number().default(300).describe('Sampling interval in ms'),
+  },
+  async (args) => {
+    const r = await prf().probe(args)
+    if (r && r.stallCount > 0) autoRecord('verification-failure', 'perf_probe', `perf_probe saw ${r.stallCount} stall(s) over ${args.thresholdMs}ms (p99=${r.p99 ?? '?'}ms)`)
+    return jtext(r)
+  }
+)
+
+server.tool(
+  'perf_report',
+  'Read the most recent perf_probe report (P50/P95/P99 + stall events).',
+  {},
+  async () => jtext(prf().report())
+)
+
+// ---------------------------------------------------------------- http
 server.tool(
   'http_request',
   'Send an HTTP request from the host (server-side, no browser CORS) and return status / headers / body. ' +
