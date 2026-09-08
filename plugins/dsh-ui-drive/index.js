@@ -25,10 +25,12 @@ const API = '/api/dsh-ui-drive'
 const GUIDANCE =
   '本机已安装 dsh-ui-drive 插件（DSH 的 UI 自验驱动）：通过 Windows UIA 程序化操作正在运行的目标桌面客户端并截图留证，支撑「改完代码 → 启动/驱动客户端到目标页面 → 截图 → 视觉复核」的自验闭环。' +
   '工具：ui_status 查客户端进程/主窗口状态（未运行先 ui_launch）；ui_launch 启动客户端（构建产物（DSH_UI_CLIENT_EXE 指定），可 extraArgs 传 --remote-debugging-port=9222 等）并等待主窗口；' +
-  'ui_drive(action=find|click|setvalue|key|read|shot) 单步操作——find/read/shot 只读，click/setvalue/key 是真实副作用操作，必须显式传 allowSideEffects=true 才执行；' +
+  'ui_windows 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，动态界面第一步先看这个）；' +
+  'ui_drive(action=find|read|windows|shot|waitfor|click|setvalue|key|type|drag) 单步操作——find/read/windows/shot/waitfor 只读，click/setvalue/key/type/drag 是真实副作用操作，必须显式传 allowSideEffects=true 才执行；' +
   'ui_tree(maxDepth) 进程内视觉树 dump（真实类型+Name+AutomationId+DataContext 类型），只读深查；' +
-  'ui_flow(steps, tag, failFast, allowSideEffects) 按步骤序列驱动并收集证据（find/click/setvalue/key/read/shot/wait/expect 断言），每步输出+截图写进证据目录 steps.json，返回 transcript。' +
-  '实时性：ui_drive 走常驻 PowerShell 进程（启动成本只付一次，实测单动作 p50 30ms）；ui_flow 整段序列进一个进程批量执行（13 步实测 1.6s，替代旧实现的 11.9s）。DSH_UI_SERVE=0 可退回一次性进程路径。' +
+  'ui_flow(steps, tag, failFast, allowSideEffects) 按步骤序列驱动并收集证据（find/click/setvalue/key/type/drag/read/windows/shot/wait/waitfor/expect），每步输出+截图写进证据目录 steps.json，返回 transcript。' +
+  '动态界面（登录、验证码、按界面情况分支）必须「看一步再做下一步」：用 ui_drive 逐步走，先用 ui_windows/read/shot(describe=true) 看现状，再用 waitFor={ms,state:"appear|gone|enabled|disabled"} 等条件成立再点（别靠猜 sleep），同名控件用 index，容器内定位用 inAid/inName，回车提交用 type 的 {ENTER}，滑块验证码用 drag。' +
+  '实时性：ui_drive 走常驻 PowerShell 进程（启动成本只付一次，实测单动作 p50 30ms）；ui_flow 整段序列进一个进程批量执行（13 步实测 1.6s）。DSH_UI_SERVE=0 可退回一次性进程路径。' +
   '视觉即返（推荐）：ui_launch 启动完成会自动截图并用视觉模型描述当前界面（返回 uiState.description，一步知道在登录页还是主界面）；ui_drive action=shot 加 describe=true 同样直接返回界面描述——优先用这两个，不必再单独 describe_image。需要深度视觉复核时才用 describe_image 对该 png 细看（当前主模型不读图，必须走 describe_image）。' +
   '安全边界：点击=真实操作（保存/生成/跳转可能落库）；「保存/删除/清空/导出」类按钮点击前先把按钮名报给用户确认；「下单/交易」类入口一律不点；优先用 find/read/shot/expect 做只读验证；定位卡住三步就停止报告，不盲点轰炸。' +
   '证据目录默认 ~/.dsh-agent-toolchain/ui-evidence（DSH_UI_EVIDENCE_DIR 可覆盖），目标进程名/窗口名/客户端 exe 分别由 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE 指定。' +
@@ -138,17 +140,30 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_drive',
-    description: '对正在运行的目标客户端执行单步 UIA 操作：find 定位控件（返回类型/名称/AutomationId/启用态/坐标）；read 读可见文本与控件状态（match 正则过滤，控件名/自动Id）；shot 截主窗口 PNG；click 点击；setvalue ValuePattern 输入；key 键盘输入（ascii 纯代码/数字整串，中文走剪贴板粘贴）。' + READ_ONLY_NOTE + '。click/setvalue/key 必须传 allowSideEffects=true 才执行。截图传 workspace=<会话工作目录> 会复制到 workspace 的 .dsh-ui-evidence 供 describe_image 视觉复核。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
+    description: '对正在运行的目标客户端执行单步 UIA 操作（实时、有状态）。动作：find 定位控件；read 读可见控件（含输入框真实 value 与 #序号，序号可当 index 复用）；windows 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，动态界面先看这个）；shot 截主窗口 PNG（describe=true 直接返回视觉描述）；waitfor 等条件成立（state=appear|gone|enabled|disabled）；click 点击；setvalue ValuePattern 写值；key 键盘输入（中文走剪贴板粘贴）；type 键盘序列（{ENTER}/{TAB}/{ESC}/{DOWN}/^a 等，用于回车提交、Tab 跳转、下拉选择）；drag 鼠标拖拽（滑块验证码）。' +
+      '动态界面三件套：waitFor={ms,interval,state,match,index} 让 click/setvalue/key/type/find/expect 先等条件成立再动手（不再靠猜 sleep）；index 取同名控件的第 N 个；inAid/inName 把查找限定在某个容器内。' + READ_ONLY_NOTE + '。click/setvalue/key/type/drag 必须传 allowSideEffects=true 才执行。截图传 workspace=<会话工作目录> 会复制到 workspace 的 .dsh-ui-evidence 供 describe_image 视觉复核。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
     parameters: {
-      action: { type: 'string', required: true, description: 'find | click | setvalue | key | read | shot' },
+      action: { type: 'string', required: true, description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag' },
       name: { type: 'string', description: '控件 Name（与 aid 二选一或都传）' },
       aid: { type: 'string', description: '控件 AutomationId' },
-      value: { type: 'string', description: 'setvalue/key 的内容' },
-      ascii: { type: 'boolean', description: 'key 模式用 ASCII 直发（纯代码/数字），否则走剪贴板（中文）' },
-      match: { type: 'string', description: 'read 模式的正则过滤' },
+      value: { type: 'string', description: 'setvalue/key/type 的内容（type 支持 SendKeys 语法，如 1234{ENTER}）' },
+      ascii: { type: 'boolean', description: 'key 模式用 ASCII 直发（纯代码/数字）；type 模式下 true=把 { } + ^ % ~ ( ) 当普通字符' },
+      match: { type: 'string', description: 'read 的正则过滤；find/click 等传 match 时按控件名正则挑（配合 index）' },
+      index: { type: 'number', description: '同名控件的序号（0 起；read 输出的 #序号 可直接复用）' },
+      inAid: { type: 'string', description: '限定在该 AutomationId 的容器子树内查找' },
+      inName: { type: 'string', description: '限定在该 Name 的容器子树内查找' },
+      waitFor: { type: 'object', additionalProperties: true, description: '先等条件成立再执行：{ms?:5000, interval?:150, state?:"appear"|"gone"|"enabled"|"disabled", match?:控件名正则, index?}' },
+      state: { type: 'string', description: 'waitfor 动作的等待条件：appear(默认) | gone | enabled | disabled' },
+      keys: { type: 'string', description: 'type 模式的按键序列（等价 value，语义更清楚）' },
+      fromX: { type: 'number', description: 'drag：起点 X（窗口客户区坐标）' },
+      fromY: { type: 'number', description: 'drag：起点 Y' },
+      toX: { type: 'number', description: 'drag：终点 X' },
+      toY: { type: 'number', description: 'drag：终点 Y' },
+      steps: { type: 'number', description: 'drag：拖动分几步（默认 12，步越小越像人手）' },
+      holdMs: { type: 'number', description: 'drag：按下/松开前的停留毫秒（默认 120）' },
       waitMs: { type: 'number', description: '动作后等待毫秒，默认 250' },
       procId: { type: 'number', description: '指定进程 PID（默认自动找）' },
-      allowSideEffects: { type: 'boolean', description: 'click/setvalue/key 必须显式传 true 才执行' },
+      allowSideEffects: { type: 'boolean', description: 'click/setvalue/key/type/drag 必须显式传 true 才执行' },
       workspace: { type: 'string', description: '会话工作目录：shot 时截图复制到 <workspace>/.dsh-ui-evidence 供视觉复核' },
       label: { type: 'string', description: '截图文件名标签（shot 用）' },
       describe: { type: 'boolean', description: 'shot 时顺带用视觉模型描述界面内容（视觉即返，一步拿到界面状态）' },
@@ -167,6 +182,104 @@ const tools = () => [
     },
   }),
   defineTool({
+    name: 'ui_windows',
+    description: '列出目标客户端进程的所有顶层窗口（类型/标题/handle/位置/是否离屏）。只读。登录窗口、验证码弹窗、模态对话框常常不是「主窗口」——动态界面（登录、切页、弹窗）第一步先看这个，再决定在哪操作。Triggers: 有哪些窗口 / 登录窗口 / 弹窗在哪 / list windows.',
+    parameters: {},
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.ok ? (v.count + ' 个窗口：\n' + (v.lines || []).join('\n')) : '失败：' + (v.error || '') }] },
+    timeoutMs: 60000,
+    async execute() {
+      return await drv().drive({ action: 'windows' })
+    },
+  }),
+  defineTool({
+    name: 'ui_state',
+    description: '界面快照（只读，一步看清「现在是什么状态」）：当前主窗口名 + 当前焦点元素 + 交互型控件清单（按钮/输入框/页签/勾选/列表项，带 #序号、aid、enabled、真实输入值）。' +
+      '动态界面每做一步之后先看它，比反复 read 省上下文（read 会连文本一起返回几百行）。match 可按控件名正则过滤，max 限制条数（默认 40）。Triggers: 现在什么界面 / 界面状态 / 焦点在哪 / ui state.',
+    parameters: {
+      match: { type: 'string', description: '按控件名正则过滤（如 登录|验证码）' },
+      max: { type: 'number', description: '最多返回几条，默认 40' },
+    },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.ok ? ('窗口=' + (v.window || '?') + ' 焦点=' + (v.focused || '无') + '\n交互控件 ' + v.count + ' 个：\n' + (v.lines || []).join('\n')) : '失败：' + (v.error || '') }] },
+    timeoutMs: 60000,
+    async execute(args) {
+      return await drv().drive({ action: 'state', match: args.match || '', max: args.max || 40 })
+    },
+  }),
+  defineTool({
+    name: 'ui_observe',
+    description: '只读观察（推荐入口，无需 allowSideEffects）：find 定位 / read 读控件与真实输入值 / state 界面快照（窗口+焦点+交互控件）/ windows 顶层窗口 / waitfor 等条件成立 / expectwindow 窗口出现或消失 / expecttext 文本出现 / waitany 多条件竞速 / shot 截图。' +
+      '动态界面（登录、验证码、按界面情况分支）的循环就是：ui_observe 看现状 → 决定 → ui_act 动手 → 再 ui_observe 确认。' +
+      'waitany 是判定登录结果的关键：一次同时押注「主窗口出现」「错误文本出现」「登录窗口还在」三支，返回命中的那支。Triggers: 看界面 / 等条件 / 判断登录结果 / observe.',
+    parameters: {
+      action: { type: 'string', required: true, description: 'find | read | state | windows | waitfor | expectwindow | expecttext | waitany | shot' },
+      name: { type: 'string', description: '控件 Name' },
+      aid: { type: 'string', description: '控件 AutomationId' },
+      match: { type: 'string', description: 'read/state 的控件名正则；find/click 用 match 时按名字挑（配合 index）' },
+      textRe: { type: 'string', description: 'expecttext / waitany(text)：文本正则（抓 ErrorInfo 之类）' },
+      titleRe: { type: 'string', description: 'expectwindow / waitany(window)：窗口标题正则' },
+      gone: { type: 'boolean', description: 'expectwindow：true = 等窗口消失' },
+      ms: { type: 'number', description: '等待上限毫秒（默认 5000；waitany 默认 15000）' },
+      interval: { type: 'number', description: '轮询间隔毫秒（默认 150）' },
+      state: { type: 'string', description: 'waitfor 条件：appear(默认) | gone | enabled | disabled' },
+      waitFor: { type: 'object', additionalProperties: true, description: '{ms?, interval?, state?, match?, index?}' },
+      conds: { type: 'array', description: 'waitany 条件数组：[{kind:"window"|"text"|"appear"|"gone"|"enabled"|"disabled", titleRe?, textRe?, name?, aid?, label?}]' },
+      index: { type: 'number', description: '同名控件序号（0 起；read 输出的 #序号 可直接用）' },
+      inAid: { type: 'string', description: '限定在容器 AutomationId 子树内查找' },
+      winTitle: { type: 'string', description: '限定在标题匹配的窗口内查找（跨窗口定位）' },
+      max: { type: 'number', description: 'state 最多返回控件数（默认 40）' },
+      label: { type: 'string', description: 'shot 文件名标签' },
+      procId: { type: 'number', description: '指定进程 PID（默认自动找）' },
+      workspace: { type: 'string', description: 'shot：截图副本放到 <workspace>/.dsh-ui-evidence' },
+      describe: { type: 'boolean', description: 'shot：顺带返回视觉描述' },
+    },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderDrive(v) }] },
+    timeoutMs: 120000,
+    async execute(args) {
+      const r = await drv().drive({ ...args, action: args.action })
+      if (r.ok && r.action === 'shot' && args.describe) {
+        const v = await vsn().describeImage(r.workspacePath || r.path, UI_STATE_PROMPT)
+        if (v.ok) r.description = v.text
+        else r.visionError = v.error
+      }
+      return r
+    },
+  }),
+  defineTool({
+    name: 'ui_act',
+    description: '真实操作客户端（副作用，必须 allowSideEffects=true）：click 点击 / setvalue 写值（受限输入框如手机号框走它，绕开按键过滤）/ key 键盘输入（中文走剪贴板）/ type 键盘序列（{ENTER}/{TAB}/{ESC}，回车提交、Tab 跳转）/ drag 鼠标拖拽（滑块验证码）。' +
+      '写输入后驱动会回读校验，值没进去直接报错（不再假成功）；密码/验证码类控件的值不回显、不落证据；买入/卖出/下单/委托/支付类控件被驱动层硬拒绝，传 true 也点不动。' +
+      'observe=true 时动作后直接附带界面快照（窗口+焦点+交互控件），省一次往返。凭据用 ${cred:name} 占位符（驱动进程从环境变量 DSH_CRED_name 展开，模型看不到明文）。' + READ_ONLY_NOTE + '。Triggers: 点一下 / 输入 / 登录 / 拖滑块 / ui act.',
+    parameters: {
+      action: { type: 'string', required: true, description: 'click | setvalue | key | type | drag' },
+      name: { type: 'string', description: '控件 Name' },
+      aid: { type: 'string', description: '控件 AutomationId' },
+      value: { type: 'string', description: 'setvalue/key/type 的内容；支持 ${cred:name} 占位符（凭据不经过模型）' },
+      keys: { type: 'string', description: 'type 的按键序列（等价 value，语义更清楚）' },
+      ascii: { type: 'boolean', description: 'key：ASCII 直发（逐字符 keybd_event）；type：把 {}^%~() 当普通字符' },
+      match: { type: 'string', description: '按控件名正则挑目标（配合 index）' },
+      index: { type: 'number', description: '同名控件序号（0 起）' },
+      inAid: { type: 'string', description: '限定在容器内查找' },
+      winTitle: { type: 'string', description: '限定在标题匹配的窗口内操作' },
+      waitFor: { type: 'object', additionalProperties: true, description: '先等条件成立再动手：{ms?, state?, match?, index?}' },
+      expectValue: { type: 'string', description: 'type：写完回读校验的期望值（不一致 → ok:false）' },
+      secret: { type: 'boolean', description: 'true = 输出与证据里对该值打码' },
+      fromX: { type: 'number', description: 'drag 起点 X（客户区坐标）' },
+      fromY: { type: 'number', description: 'drag 起点 Y' },
+      toX: { type: 'number', description: 'drag 终点 X' },
+      toY: { type: 'number', description: 'drag 终点 Y' },
+      observe: { type: 'boolean', description: '动作后附带界面快照' },
+      observeMatch: { type: 'string', description: '快照里控件名过滤正则' },
+      waitMs: { type: 'number', description: '动作后等待毫秒（默认 250）' },
+      procId: { type: 'number', description: '指定进程 PID' },
+      allowSideEffects: { type: 'boolean', description: '必须为 true 才执行（安全护栏）' },
+    },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderDrive(v) + (v.observe ? '\n动作后界面：窗口=' + (v.observe.window || '?') + ' 焦点=' + (v.observe.focused || '无') + '\n' + (v.observe.lines || []).join('\n') : '') }] },
+    timeoutMs: 120000,
+    async execute(args) {
+      return await drv().drive(args)
+    },
+  }),
+  defineTool({
     name: 'ui_tree',
     description: '进程内视觉树 dump：注入只读探针进客户端进程，输出真实控件类型 + Name + AutomationId + DataContext 类型（比 UIA 信息全，深度定位绑定/模板问题）。只读，不弹窗。Triggers: 视觉树 / 控件结构 / dump-tree.',
     parameters: {
@@ -180,12 +293,15 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_flow',
-    description: '按步骤序列驱动客户端并收集自验证据：steps 数组每步 {action: find|click|setvalue|key|read|shot|wait|expect, name?, aid?, value?, ascii?, match?, waitMs?, label?, expectEnabled?, expectMatch?}；expect 步断言控件存在/启用/名称匹配（expectMatch 正则），统计 passed/failed；每步输出+截图写入证据目录 steps.json，返回 transcript。默认只读（find/read/shot/wait/expect），含 click/setvalue/key 必须传 allowSideEffects=true。failFast=true 时断言失败即停。整段序列在一个常驻 PowerShell 进程里批量执行（步间无进程启动开销），waitMs 只在动作需要静默时传（默认 250ms，find/read/shot 不等待）。Triggers: UI 自验 / 自动验证流程 / 端到端验证 / ui flow.',
+    description: '按步骤序列驱动客户端并收集自验证据：steps 数组每步 {action: find|click|setvalue|key|type|drag|read|windows|shot|wait|waitfor|expect, name?, aid?, value?, keys?, ascii?, match?, index?, inAid?, inName?, waitFor?, state?, fromX?/fromY?/toX?/toY?, waitMs?, label?, expectEnabled?, expectMatch?}；' +
+      'expect/waitfor 步做断言并计入 passed/failed（waitfor 等条件成立：state=appear|gone|enabled|disabled）；waitFor 可挂在任意动作上（先等再动，替代固定 sleep）；index 取同名控件第 N 个，inAid/inName 限定容器。' +
+      '每步输出+截图写入证据目录 steps.json，返回 transcript。默认只读（find/read/windows/shot/wait/waitfor/expect），含 click/setvalue/key/type/drag 必须传 allowSideEffects=true。failFast=true 时断言失败即停。整段序列在一个 PowerShell 进程里批量执行（步间无进程启动开销），waitMs 只在动作需要静默时传（默认 250ms，find/read/shot/expect/windows 不等待）。' +
+      '需要「看一步再做下一步」的复杂流程（登录、验证码、按界面情况分支）用 ui_drive 逐步走，别用 ui_flow 预排。Triggers: UI 自验 / 自动验证流程 / 端到端验证 / ui flow.',
     parameters: {
       steps: { type: 'array', required: true, description: '步骤数组（每步一个对象，action 必填）' },
       tag: { type: 'string', description: '证据目录标签（如 verify-etf-dialog），默认 flow' },
       failFast: { type: 'boolean', description: '断言失败即停，默认 false' },
-      allowSideEffects: { type: 'boolean', description: '含点击/输入步骤时必须显式传 true' },
+      allowSideEffects: { type: 'boolean', description: '含点击/输入/拖拽步骤时必须显式传 true' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: '自验流程结束：' + v.passed + ' 通过 / ' + v.failed + ' 失败（批量执行 ' + (v.elapsedMs != null ? v.elapsedMs + 'ms' : '?') + '），证据：' + v.evidenceDir }] },
     timeoutMs: 600000,
@@ -202,8 +318,10 @@ const tools = () => [
 function renderDrive(v) {
   if (!v.ok) return '失败：' + (v.error || '未知错误')
   switch (v.action) {
-    case 'find': return v.found ? '找到：' + v.detail : '未找到目标控件'
+    case 'find': return v.found ? ('找到：' + v.detail + (v.count > 1 ? '（共 ' + v.count + ' 个匹配，可用 index 指定第几个）' : '')) : '未找到目标控件'
     case 'read': return '读到 ' + v.count + ' 个控件：\n' + (v.lines || []).join('\n')
+    case 'windows': return v.count + ' 个顶层窗口：\n' + (v.lines || []).join('\n')
+    case 'waitfor': return (v.found ? '条件已满足' : '条件已满足（目标已消失）') + '（等待 ' + (v.waitedMs || 0) + 'ms）' + (v.detail ? '：' + v.detail : '')
     case 'shot': return '截图：' + v.path + ' ' + v.w + 'x' + v.h + (v.workspacePath ? '（副本 ' + v.workspacePath + '，可用 describe_image 复核）' : '') + (v.description ? '\n界面描述：' + v.description : '')
     default: return v.output || '完成'
   }

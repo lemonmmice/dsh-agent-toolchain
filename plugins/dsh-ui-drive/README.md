@@ -11,9 +11,39 @@ DSH（DeepSeek Harness）的 **UI 自验驱动插件**：通过 Windows UIA 程�
 | --- | --- |
 | \`ui_status\` | 目标客户端进程/主窗口状态（只读） |
 | \`ui_launch\` | 启动客户端并等待主窗口；**视觉即返**：完成后自动截图+视觉模型描述界面（返回 \`uiState.description\`） |
-| \`ui_drive\` | 单步 UIA 操作：find / read / shot（只读），click / setvalue / key（副作用，需显式 \`allowSideEffects=true\`）；shot 加 \`describe=true\` 直接返回界面描述 |
+| \`ui_observe\` | **只读观察（推荐入口）**：find / read（含输入框真实值）/ state（窗口+焦点+交互控件快照）/ windows / waitfor / expectwindow / expecttext / waitany / shot |
+| \`ui_act\` | **真实操作**：click / setvalue / key / type / drag；\`observe=true\` 动作后附带界面快照；需 \`allowSideEffects=true\` |
+| \`ui_windows\` | 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，只读） |
+| \`ui_state\` | 界面快照：当前窗口 + 焦点元素 + 交互控件清单（只读） |
+| \`ui_drive\` | 通用单步入口（等价 ui_observe + ui_act 的并集，保留兼容） |
 | \`ui_tree\` | 进程内视觉树 dump（真实类型 + Name + AutomationId + DataContext 类型，只读深查） |
-| \`ui_flow\` | 步骤序列自验：find/click/setvalue/key/read/shot/wait/expect 断言，统计 passed/failed，证据落盘 steps.json |
+| \`ui_flow\` | 步骤序列自验：find/click/setvalue/key/type/drag/read/state/windows/shot/wait/waitfor/expect/expectwindow/expecttext/waitany，统计 passed/failed，证据落盘 steps.json |
+
+**动态界面（登录、验证码、按界面情况分支）的正确用法**——不是预排固定点击序列，而是「看一步再做下一步」：
+
+\`\`\`text
+ui_observe(action="windows")                       # 现在是登录窗还是主窗？有哪些弹窗？
+ui_observe(action="state", match="登录|验证码")      # 焦点在哪、按钮什么文案、输入框填了没
+ui_act(action="setvalue", aid="phoneBox", value="138…", allowSideEffects=true)   # 受限输入框用 setvalue
+ui_act(action="click", name="获取验证码", allowSideEffects=true, observe=true)   # 动作后直接带回界面快照
+ui_observe(action="waitany", ms=30000, conds=[
+  {kind:"window", titleRe:"主界面",   label:"success"},
+  {kind:"text",   textRe:"密码错误|不能为空", label:"error"},
+  {kind:"window", titleRe:"登录",     label:"still-here"}])                  # 一次押注三支，返回命中的那支
+\`\`\`
+
+跨窗口能力是关键：登录成功 = 登录窗关闭 + 主窗出现（本客户端**没有**成功弹窗），
+所以 \`expectwindow\` / \`waitany(kind="window")\` 才是判定登录结果的唯一可靠信号。
+
+**输入正确性（实测踩过的坑）**：本客户端登录页手机号框 \`PreviewKeyDown\` 只放行数字键，
+\`key\` 的剪贴板粘贴会被静默吃掉——所以受限输入框用 \`setvalue\`（ValuePattern 绕开按键过滤），
+且 \`key/type\` 写完会**回读校验**，值没进去直接 \`ok:false\`（不再假成功）。
+
+**凭据**：用 \`${cred:name}\` 占位符，驱动进程从自己的环境变量 \`DSH_CRED_name\` 展开，
+密码不经过模型上下文、不落证据；密码/验证码类控件的值在 read/state 里只回长度（\`<secret:12chars>\`）。
+
+**硬护栏（驱动层强制，不是提示词）**：买入/卖出/下单/委托/支付/提现/申购/赎回类控件一律拒绝，
+\`allowSideEffects=true\` 也解锁不了；副作用超时返回 \`unknown\` 且绝不重放。
 
 **视觉闭环**：主模型不读图也能视觉复核——截图 → 插件内置视觉模型（复用 \`describe-image\` 配置）描述界面，
 或截图复制到 \`<workspace>/.dsh-ui-evidence/\` 后用 \`describe_image\` 深度复核。
@@ -29,7 +59,11 @@ DSH（DeepSeek Harness）的 **UI 自验驱动插件**：通过 Windows UIA 程�
 ## 安全边界
 
 - 点击/输入 = 真实操作，可能落库
-- 插件硬护栏：click / setvalue / key 必须显式 \`allowSideEffects=true\` 才执行
+- 插件硬护栏：click / setvalue / key / type / drag 必须显式 \`allowSideEffects=true\` 才执行
+- **驱动层硬拒绝**：买入/卖出/下单/委托/支付/提现/申购/赎回类控件（按控件名/AutomationId 匹配），传 true 也点不动
+- **输入回读校验**：key/type/setvalue 写完回读控件真实值，不一致即 \`ok:false\`（防「假成功」）
+- **凭据不落地**：\`${cred:name}\` 占位符 + 密码/验证码控件值只回长度；敏感值在输出/证据里打码
+- **超时不重放**：副作用动作在常驻进程超时时返回 \`unknown\`，绝不自动重试（避免点两次/输两次）
 - 软约束（systemPrompt 公告）：「保存/删除/清空/导出」点击前报按钮名给用户确认；
   「下单/交易」类入口一律不点；优先只读验证；定位卡住三步即停，不盲点轰炸
 

@@ -163,8 +163,14 @@ switch ($Action) {
       if ($n.Length -gt 60) { $n = $n.Substring(0,60) }
       $b = $el.Current.BoundingRectangle
       if ($Match -and $n -notmatch $Match) { continue }
-      if ($t -in @('Button','Edit','Text','RadioButton','CheckBox','TabItem','ComboBox')) {
-        Write-Output ('[' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + [int]$b.X + ',' + [int]$b.Y)
+      if ($t -in @('Button','Edit','Text','RadioButton','CheckBox','TabItem','ComboBox','ListItem','MenuItem','TreeItem','Hyperlink')) {
+        $val = ''
+        if ($t -in @('Edit','ComboBox')) {
+          try { $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $val = [string]$vp.Current.Value } catch { }
+        }
+        $line = '[' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + [int]$b.X + ',' + [int]$b.Y
+        if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
+        Write-Output $line
       }
     }
   }
