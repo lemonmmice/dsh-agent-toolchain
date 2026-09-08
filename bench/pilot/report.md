@@ -219,7 +219,67 @@ external review can be wrong too, and evidence-first cuts both ways.
 
 ## 12. Attribution rules
 
-- Numbers in §3/§9 come from `bench-runs/results.jsonl` (machine-recorded).
+- Numbers in §3/§9/§13 come from `bench-runs/results.jsonl` (machine-recorded).
 - §7 is an external agent's opinion, machine-triggered and verbatim-distilled;
   it is not the author's claim. Facts inside it were re-checked where cheap
   (tool returns are reproducible by re-running).
+
+## 13. Pilot 3 — the home-turf task (UI-driven hidden verification)
+
+The meta-criticism ("task shapes must match the tool; two pilots show the
+tools have no pull") is answered by a task on the toolchain's home turf: a
+desktop-client-shaped change whose hidden verification is a **UIA probe** —
+`verify.patch` adds a minimal WPF host + probe script, `verifyCommand` builds
+the host, launches the real window and asserts the rendered control text.
+The task also declares `agentEnv` (`DSH_UI_PROC_NAME`, `DSH_UI_WINDOW_NAME`),
+which the harness injects into the agent process and the toolchain MCP server
+(harness support added for this; `bench/README.md` documents the shape).
+Task identity local-only (same privacy policy).
+
+| mode | turns | cost | dur | verified | MCP tool calls (from session transcript) |
+|---|---|---|---|---|---|
+| baseline | 31 | $1.51 | 6m | ✅ | — |
+| toolchain | 41 | $2.84 | 11m | ✅ (hit the 40-turn cap) | **`ui_status` ×2, `ui_drive` ×3** |
+
+Census of the toolchain session: `Bash ×10, PowerShell ×10, Write ×7,
+Read ×3, Edit ×2, Grep ×2, mcp__ui_drive ×3, mcp__ui_status ×2`. First MCP
+tool usage across all pilots (0 in the previous six runs): on a task where
+the bug is only observable in a live window, the agent reached for the
+UI tools to launch-check-read the rendered text. `build_run` was still not
+used — the build-loop pull remains the open question (structured errors must
+beat raw `dotnet` output at least once, visibly).
+
+Cost note: toolchain cost more and hit the turn cap while still verified —
+the tools pulled, but the run budget is not yet the win. That is the honest
+baseline to optimize against, not a victory lap.
+
+Also recorded: the first prompt draft triggered a **cyber-safeguard refusal**
+before turn 1 (the "int saturation / 32-bit" wording of a benign rendering
+bug read as cyber-related). The prompt was reworded to neutral user-facing
+terms (same bug, same fix); the refusal is recorded in the failure corpus as
+a prompt-design lesson for benchmark authoring.
+
+## 14. Review loop (round 4) — fresh adversarial pass
+
+A fresh independent review round (52 turns, evidence-first, all deterministic
+suites re-run, adversarial probes written in-repo): verdict **SATISFIED**,
+**0 must-fix**. It reproduced and disproved the primary benchmark cheat
+(agent patch clobbering the hidden tests fails to apply → `verified=false`),
+and found 4 should-fix items, all author-reproduced and fixed this session:
+
+- **S1** `verify kind=api` certified `pass` for `expect.min ≤ 0` with zero
+  evidence → now `unverified` (anti-green-wash, same discipline as the gate).
+- **S2** vacuous-gate missed the .NET wordings `No test is available in the
+  specified test containers` / `Tests run: 0` / `OK (0 tests)` → added.
+- **S3** bench `verified` was a raw exit-0 with no runtime vacuous guard →
+  in-harness vacuous-output check (reuses the same pattern list) +
+  `patchedTests` now downgrades `verified`.
+- **S4** `/source/open` treated a different-drive path as inside its root
+  (`path.relative` returns an absolute path across drives) → rejected; the
+  `start` invocations now quote the target.
+
+Notes N1–N6 accepted and recorded in the review file (parity is a discipline
+not a runtime invariant; CI test hard-codes the Git-Bash path; http_request
+SSRF-by-design; external repo claims not live-verified). The review round
+cost ≈ $5.10. A parallel third-party (Codex) review was started but deferred
+by the author's user ("bring it along in a later optimization pass").
