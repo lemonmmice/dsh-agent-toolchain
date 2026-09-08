@@ -34,6 +34,10 @@ export function makeDriver(cfg) {
     defaultWaitMs: DEFAULT_WAIT_MS,
     ...cfg,
   }
+  // 空字符串不是「配置」：MCP 侧习惯传 evidenceDir: process.env.X || ''，
+  // 直接展开会让空值覆盖默认值，证据目录退化成 cwd 下的相对路径。
+  if (!c.evidenceDir) c.evidenceDir = join(homedir(), '.dsh-agent-toolchain', 'ui-evidence')
+  if (!c.scriptsDir) c.scriptsDir = join(import.meta.dirname, '..', 'scripts')
 
   // ------------------------------------------------------------ 进程执行
 

@@ -30,8 +30,10 @@ const LOCAL_ONLY = [
   join(root, 'bench-runs'),
   // Tool evidence directories hold real client screenshots/UI text (and may
   // legitimately contain product names) — local artifacts, never scanned and
-  // never committed.
+  // never committed. ui-evidence is the default evidence root when a run is
+  // started from the repo root.
   join(root, '.dsh-agent-toolchain'),
+  join(root, 'ui-evidence'),
 ]
 
 function isLocalOnly(p) {
