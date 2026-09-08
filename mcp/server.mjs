@@ -36,7 +36,20 @@ const server = new McpServer({
 // ---------------------------------------------------------------- shared
 
 const text = (s) => ({ content: [{ type: 'text', text: s }] })
-const jtext = (o) => text(JSON.stringify(o, null, 1))
+
+/**
+ * Serialize a tool result AND set the protocol-level isError flag when the
+ * payload itself says the call failed. Without this an MCP client sees
+ * `isError: false` for `{ok:false}` / `{verdict:"fail"}` payloads and scores a
+ * failed call as success — the system knows it failed, the agent does not.
+ * (Reported by two independent external agents during the toolchain loop.)
+ */
+const jtext = (o) => {
+  const isError = o !== null && typeof o === 'object' && (o.ok === false || o.verdict === 'fail')
+  const r = text(JSON.stringify(o, null, 1))
+  if (isError) r.isError = true
+  return r
+}
 
 let driver = null
 function drv() {
@@ -240,7 +253,10 @@ server.tool(
   },
   async (args) => {
     const r = await prf().probe(args)
-    if (r && r.stallCount > 0) autoRecord('verification-failure', 'perf_probe', `perf_probe saw ${r.stallCount} stall(s) over ${args.thresholdMs}ms (p99=${r.p99 ?? '?'}ms)`)
+    // perf reports stalls as stutterCount (not stallCount) — read the real field
+    // or a genuine UI stall never reaches the failure corpus (external review).
+    const stutters = r && (r.stutterCount ?? r.stallCount ?? 0)
+    if (stutters > 0) autoRecord('verification-failure', 'perf_probe', `perf_probe saw ${stutters} stall(s) over ${args.thresholdMs}ms (p99=${r.p99Ms ?? '?'}ms, max=${r.maxMs ?? '?'}ms)`)
     return jtext(r)
   }
 )
