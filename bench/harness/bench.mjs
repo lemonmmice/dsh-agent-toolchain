@@ -191,6 +191,25 @@ const AGENTS = {
     probeCheck(text) {
       return /\bbuild_run\b/.test(String(text || ''))
     },
+    /**
+     * Stall probe: newest mtime under the codex session transcript tree.
+     * Codex streams its rollout JSONL while it works, so a frozen transcript
+     * means a hung agent — the failure mode that burned a whole overnight slot
+     * (two runs sat 20+ minutes with an empty agent.log and no CPU).
+     */
+    progressMtimeMs() {
+      const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex')
+      const dayDir = join(codexHome, 'sessions', ...new Date().toISOString().slice(0, 10).split('-'))
+      let newest = 0
+      try {
+        for (const f of readdirSync(dayDir)) {
+          if (!f.endsWith('.jsonl')) continue
+          const m = statSync(join(dayDir, f)).mtimeMs
+          if (m > newest) newest = m
+        }
+      } catch { /* dir may not exist yet */ }
+      return newest
+    },
     // Codex must reach its model endpoint directly (relay); proxy variables
     // would route it through the local proxy and hang. The agent's shell
     // inherits the same env, so dotnet/nuget inside codex also go direct
