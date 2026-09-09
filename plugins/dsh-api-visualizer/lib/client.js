@@ -104,21 +104,10 @@ body[data-ds-dark-theme] .apv-s-5{background:#4c1d1d;color:#f87171}body[data-ds-
 .apv-detail-bar .apv-in{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:inherit;border-radius:6px;padding:4px 8px;font:inherit}
 .apv-detail-bar .apv-in-note{flex:1 1 160px;min-width:120px}
 .apv-detail-bar .apv-in-tag{width:110px}
-.apv-detail-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto;padding:0 12px 12px}
-.apv-sec{flex:none;margin-top:10px}
-.apv-sec-fill{display:flex;flex:1 0 160px;flex-direction:column;min-height:160px}
-.apv-sec-fill[data-apv-collapsed]{flex:0 0 auto;min-height:0}
-.apv-sec-fill>.apv-sec-body{flex:1;min-height:0;max-height:none}
-.apv-sec-title{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dsw-alias-label-tertiary);margin-bottom:4px;cursor:pointer;user-select:none}
+.apv-detail-body{flex:1;min-height:0;overflow:auto;padding:0 12px 12px}
+.apv-sec{margin-top:10px}
+.apv-sec-title{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dsw-alias-label-tertiary);margin-bottom:4px}
 .apv-sec-title .apv-t{font-weight:600}
-.apv-sec-title:hover .apv-t{color:var(--dsw-static-deepseek-500)}
-.apv-sec-caret{flex:none;width:10px;color:var(--dsw-alias-label-tertiary)}
-.apv-sec[data-apv-collapsed] > .apv-sec-body,
-.apv-sec[data-apv-collapsed] > .apv-sec-pre,
-.apv-sec[data-apv-collapsed] > .apv-jt-toolbar{display:none}
-.apv-jt-toolbar{display:flex;gap:6px;margin-bottom:6px}
-.apv-jt-toolbar[hidden]{display:none}
-.apv-jt-toolbar .apv-btn{padding:2px 8px;font-size:11px}
 .apv-sec-pre{margin:0;padding:8px 10px;font:12px/1.5 Consolas,Menlo,monospace;color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:normal;overflow-wrap:anywhere;background:var(--dsw-alias-bg-layer-2);border-radius:6px;max-height:340px;overflow:auto}
 .apv-sec-body{background:var(--dsw-alias-bg-layer-2);border-radius:6px;padding:8px 10px;max-height:340px;overflow:auto}
 .apv-viewbtns{display:flex;gap:4px;margin-left:auto}
@@ -126,11 +115,10 @@ body[data-ds-dark-theme] .apv-s-5{background:#4c1d1d;color:#f87171}body[data-ds-
 [data-apv-back-entry]{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary);border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit;white-space:nowrap}
 [data-apv-back-entry]:hover{color:var(--dsw-static-deepseek-500);border-color:var(--dsw-static-deepseek-500)}
 .apv-jt{font:12px/1.6 Consolas,Menlo,monospace}
-.apv-jt-row{display:flex;align-items:baseline;min-height:19px;white-space:pre}
-.apv-jt-toggle{cursor:pointer;user-select:none;border-radius:3px}
-.apv-jt-toggle:hover{color:var(--dsw-static-deepseek-500);background:var(--dsw-alias-interactive-bg-hover)}
-.apv-jt-caret{flex:0 0 12px;width:12px;color:var(--dsw-alias-label-tertiary)}
-.apv-jt-leaf>.apv-jt-caret{visibility:hidden}
+.apv-jt-row{white-space:pre}
+.apv-jt-toggle{cursor:pointer;user-select:none}
+.apv-jt-toggle:hover{color:var(--dsw-static-deepseek-500)}
+.apv-jt-collapsed::after{content:' …';color:var(--dsw-alias-label-tertiary)}
 .apv-jt-brace{color:var(--dsw-alias-label-tertiary)}
 .apv-jt-key{color:var(--dsw-static-deepseek-500)}
 .apv-jt-idx{color:var(--dsw-alias-label-tertiary)}
@@ -637,63 +625,39 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
 
     // ------------------------------------------------------- P0-3 json tree
 
-    /**
-     * Collapsible JSON tree (plain DOM).
-     * - 大数组/大对象（子项超过 maxInline）默认折叠，长 JSON（如折线图数据点）不再一屏铺到底。
-     * - 子节点懒构建：折叠节点不生成 DOM，展开时才构建，几千个点也不会卡。
-     * - opts.forceExpandAll / opts.forceCollapseAll 供「全部展开 / 全部折叠」按钮使用。
-     */
-    function jsonTreeEl(value, depth, opts, label) {
+    /** Collapsible JSON tree (plain DOM). Objects/arrays expand/collapse on click. */
+    function jsonTreeEl(value, depth) {
       const d = depth ?? 0
-      const o = opts ?? {}
-      const MAX_INLINE = Number.isFinite(o.maxInline) ? o.maxInline : 24
-      const appendLabel = (row) => {
-        if (label !== undefined) row.appendChild(el('span', label.className, label.text))
-      }
       if (value !== null && typeof value === 'object') {
         const isArr = Array.isArray(value)
-        const kids = Object.keys(value)
         const wrap = el('div', 'apv-jt')
         const row = el('div', 'apv-jt-row apv-jt-toggle')
-        const caret = el('span', 'apv-jt-caret', '▾')
-        const container = el('div', 'apv-jt-kids')
-        let built = false
-        const build = () => {
-          if (built) return
-          built = true
-          const frag = document.createDocumentFragment()
-          for (const key of kids) {
-            const childLabel = isArr
-              ? { className: 'apv-jt-idx', text: key + ': ' }
-              : { className: 'apv-jt-key', text: JSON.stringify(key) + ': ' }
-            frag.appendChild(jsonTreeEl(value[key], d + 1, o, childLabel))
-          }
-          container.appendChild(frag)
-        }
-        const setExpanded = (next) => {
-          container.hidden = !next
-          row.classList.toggle('apv-jt-collapsed', !next)
-          caret.textContent = next ? '▾' : '▸'
-          if (next) build()
-        }
-        row.addEventListener('click', () => setExpanded(container.hidden))
-        row.appendChild(caret)
-        appendLabel(row)
-        row.appendChild(el('span', 'apv-jt-brace', isArr ? '[' + kids.length + ']' : '{' + kids.length + '}'))
+        const kids = Object.keys(value)
+        const expanded = d < 2
+        row.appendChild(el('span', 'apv-jt-brace', isArr ? `[${kids.length}]` : `{${kids.length}}`))
+        row.addEventListener('click', () => {
+          container.hidden = !container.hidden
+          row.classList.toggle('apv-jt-collapsed', container.hidden)
+        })
         wrap.appendChild(row)
+        const container = el('div', 'apv-jt-kids')
+        if (!expanded) {
+          container.hidden = true
+          row.classList.add('apv-jt-collapsed')
+        }
+        for (const key of kids) {
+          const childRow = el('div', 'apv-jt-row')
+          if (isArr) childRow.appendChild(el('span', 'apv-jt-idx', key + ': '))
+          else childRow.appendChild(el('span', 'apv-jt-key', JSON.stringify(key) + ': '))
+          childRow.appendChild(jsonTreeEl(value[key], d + 1))
+          container.appendChild(childRow)
+        }
         wrap.appendChild(container)
-        if (o.forceExpandAll) setExpanded(true)
-        else if (o.forceCollapseAll || kids.length > MAX_INLINE || d >= 2) setExpanded(false)
-        else setExpanded(true)
         return wrap
       }
-      const row = el('div', 'apv-jt-row apv-jt-leaf')
-      row.appendChild(el('span', 'apv-jt-caret'))
-      appendLabel(row)
       const span = el('span', value === null ? 'apv-jt-null' : typeof value === 'number' ? 'apv-jt-num' : value === true || value === false ? 'apv-jt-bool' : 'apv-jt-str')
       span.textContent = value === null ? 'null' : typeof value === 'string' ? JSON.stringify(value) : String(value)
-      row.appendChild(span)
-      return row
+      return span
     }
 
     /** Highlight matches of a query inside a pre (returns element; skips when query empty). */
@@ -1405,7 +1369,6 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
         proxy: { running: false, status: null },
         autoScroll: initialPrefs.autoScroll !== false,
         frozen: false,
-        detailAutoFit: true,
       }
 
       const setDetailHeight = (height, persist = true) => {
@@ -1419,57 +1382,16 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
         if (persist) savePrefs()
       }
 
-      // 自适应高度：详情抽屉跟随内容变化（折叠/展开/切换视图后重算），
-      // 折叠后不再在抽屉底部留下大片空白；内容超高时抽屉内部滚动。
-      const fitDetail = () => {
-        if (!state.detailAutoFit || detail.hidden) return
-        const bodyRect = body.getBoundingClientRect()
-        if (bodyRect.height < 120) return
-        const min = 120
-        const max = Math.max(min, bodyRect.height - 140)
-        const content = detailHead.offsetHeight + detailBar.offsetHeight + detailBody.scrollHeight + 2
-        const next = Math.round(Math.max(min, Math.min(max, content)))
-        detail.style.setProperty('--apv-detail-height', `${next}px`)
-      }
-
-      let fitRaf = null
-      const scheduleFit = () => {
-        if (fitRaf !== null) return
-        fitRaf = requestAnimationFrame(() => {
-          fitRaf = null
-          fitDetail()
-        })
-      }
-      new MutationObserver((mutations) => {
-        const hasOuterLayoutChange = mutations.some((mutation) => {
-          const target = mutation.target
-          return !(target instanceof Element && target.closest('.apv-sec-body'))
-        })
-        if (hasOuterLayoutChange) scheduleFit()
-      }).observe(detailBody, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['hidden', 'data-apv-collapsed'],
-      })
-      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(scheduleFit).observe(body)
-
       if (state.detailHeight !== null) detail.style.setProperty('--apv-detail-height', `${state.detailHeight}px`)
 
       let resizeDrag = null
-      detailResize.title = '拖动调整详情高度；双击恢复自适应'
       detailResize.addEventListener('pointerdown', (event) => {
         if (detail.hidden) return
         event.preventDefault()
-        state.detailAutoFit = false // 手动调整后暂停自适应
         detailResize.setPointerCapture?.(event.pointerId)
         resizeDrag = { startY: event.clientY, startHeight: detail.getBoundingClientRect().height }
         document.body.style.userSelect = 'none'
         document.body.style.cursor = 'ns-resize'
-      })
-      detailResize.addEventListener('dblclick', () => {
-        state.detailAutoFit = true
-        fitDetail()
       })
       detailResize.addEventListener('pointermove', (event) => {
         if (resizeDrag === null) return
@@ -1487,7 +1409,6 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
       detailResize.addEventListener('keydown', (event) => {
         if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
         event.preventDefault()
-        state.detailAutoFit = false // 键盘调整后同样暂停自适应
         const current = detail.getBoundingClientRect().height
         if (event.key === 'ArrowUp') setDetailHeight(current + 24)
         else if (event.key === 'ArrowDown') setDetailHeight(current - 24)
@@ -1521,39 +1442,22 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
       }
 
       /** Build one body section with Pretty/Raw/树/预览/图片 views; returns re-render fn. */
-      function makeBodySection(title, text, contentType, parent, fillRemaining) {
+      function makeBodySection(title, text, contentType, parent) {
         const info = detectBodyKind(text, contentType)
         const truncated = text.endsWith('…(截断)')
         const sec = el('div', 'apv-sec')
-        if (fillRemaining) sec.classList.add('apv-sec-fill')
         const secTitle = el('div', 'apv-sec-title')
-        const caret = el('span', 'apv-sec-caret', '▾')
-        secTitle.appendChild(caret)
         secTitle.appendChild(el('span', 'apv-t', title + (truncated ? ' (已截断)' : '')))
         const viewBtns = el('div', 'apv-viewbtns')
         secTitle.appendChild(viewBtns)
-        const treeBar = el('div', 'apv-jt-toolbar')
-        const expandAllBtn = el('button', 'apv-btn', '全部展开')
-        expandAllBtn.title = '展开 JSON 树全部节点（节点很多时可能较慢）'
-        const collapseAllBtn = el('button', 'apv-btn', '全部折叠')
-        collapseAllBtn.title = '折叠 JSON 树全部节点'
-        treeBar.appendChild(expandAllBtn)
-        treeBar.appendChild(collapseAllBtn)
-        treeBar.hidden = true
         const container = el('div', 'apv-sec-body')
         sec.appendChild(secTitle)
-        sec.appendChild(treeBar)
         sec.appendChild(container)
         parent.appendChild(sec)
-        secTitle.addEventListener('click', (event) => {
-          if (event.target.closest('.apv-viewbtns, button, a, input, select')) return
-          sec.toggleAttribute('data-apv-collapsed')
-          caret.textContent = sec.hasAttribute('data-apv-collapsed') ? '▸' : '▾'
-        })
 
         const base = () => (truncated ? text.slice(0, -5) : text)
         let mode
-        if (info.kind === 'json') mode = 'tree'
+        if (info.kind === 'json') mode = 'pretty'
         else if (info.kind === 'base64' || info.kind === 'image') mode = 'image'
         else if (info.kind === 'hex') mode = 'hex'
         else mode = 'raw'
@@ -1573,8 +1477,9 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           viewBtns.appendChild(b)
         }
         if (info.kind === 'json') {
-          addBtn('树', 'tree')
+          addBtn('Pretty', 'pretty')
           addBtn('Raw', 'raw')
+          addBtn('树', 'tree')
         } else if (info.kind === 'base64' || info.kind === 'image') {
           addBtn('图片', 'image')
           addBtn('Raw', 'raw')
@@ -1588,53 +1493,27 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           addBtn('Raw', 'raw')
         }
 
-        let parsed = null
-        let treeExpand = 'auto' // auto | all | none
-        const parseTree = () => {
-          if (parsed !== null) return parsed
-          try {
-            parsed = JSON.parse(base())
-          } catch {
-            parsed = null
-          }
-          return parsed
-        }
-        const renderTree = () => {
-          container.textContent = ''
-          treeBar.hidden = false
-          expandAllBtn.classList.toggle('apv-btn-on', treeExpand === 'all')
-          collapseAllBtn.classList.toggle('apv-btn-on', treeExpand === 'none')
-          const value = parseTree()
-          if (value === null) {
-            container.appendChild(highlightedPre('(JSON 不完整，无法建树，请切到 Pretty)', bodyQuery))
-            return
-          }
-          const opts = { maxInline: 24 }
-          if (treeExpand === 'all') opts.forceExpandAll = true
-          else if (treeExpand === 'none') opts.forceCollapseAll = true
-          container.appendChild(jsonTreeEl(value, 0, opts))
-        }
-        expandAllBtn.addEventListener('click', () => {
-          treeExpand = 'all'
-          renderTree()
-        })
-        collapseAllBtn.addEventListener('click', () => {
-          treeExpand = 'none'
-          renderTree()
-        })
-
         const render = () => {
           container.textContent = ''
-          treeBar.hidden = mode !== 'tree'
           const t = base()
           if (mode === 'raw') {
             container.appendChild(highlightedPre(text, bodyQuery))
+          } else if (mode === 'pretty') {
+            try {
+              container.appendChild(highlightedPre(JSON.stringify(JSON.parse(t), null, 2), bodyQuery))
+            } catch {
+              container.appendChild(highlightedPre(/^\s*[[{]/.test(t) ? prettyJsonFragment(t) : text, bodyQuery))
+            }
           } else if (mode === 'tree') {
-            renderTree()
+            try {
+              container.appendChild(jsonTreeEl(JSON.parse(t)))
+            } catch {
+              container.appendChild(highlightedPre('(JSON 不完整，无法建树，请切到 Pretty)', bodyQuery))
+            }
           } else if (mode === 'image') {
             const img = el('img', 'apv-img')
             img.alt = '响应图片'
-            img.src = info.kind === 'base64' ? 'data:' + info.mime + ';base64,' + info.data : text
+            img.src = info.kind === 'base64' ? `data:${info.mime};base64,${info.data}` : text
             container.appendChild(img)
           } else if (mode === 'preview') {
             const frame = el('iframe', 'apv-iframe')
@@ -1650,22 +1529,12 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
       }
 
       /** Meta/headers pre section (no body views). */
-      function makePreSection(title, content, collapsedByDefault) {
+      function makePreSection(title, content) {
         const sec = el('div', 'apv-sec')
         const secTitle = el('div', 'apv-sec-title')
-        const caret = el('span', 'apv-sec-caret', '▾')
-        secTitle.appendChild(caret)
         secTitle.appendChild(el('span', 'apv-t', title))
         sec.appendChild(secTitle)
         sec.appendChild(highlightedPre(content, ''))
-        if (collapsedByDefault) {
-          sec.setAttribute('data-apv-collapsed', '')
-          caret.textContent = '▸'
-        }
-        secTitle.addEventListener('click', () => {
-          sec.toggleAttribute('data-apv-collapsed')
-          caret.textContent = sec.hasAttribute('data-apv-collapsed') ? '▸' : '▾'
-        })
         return sec
       }
 
@@ -1803,7 +1672,7 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           process: full.process,
           id: full.id,
         }
-        detailBody.appendChild(makePreSection('基本信息', JSON.stringify(meta, null, 2), true))
+        detailBody.appendChild(makePreSection('基本信息', JSON.stringify(meta, null, 2)))
         if (full.caller !== undefined && full.caller !== null) {
           const c = full.caller
           const lines = []
@@ -1818,13 +1687,13 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           }
           if (lines.length > 0) detailBody.appendChild(makePreSection('调用方', lines.join('\n')))
         }
-        if (full.reqHeaders !== undefined) detailBody.appendChild(makePreSection('请求头', JSON.stringify(full.reqHeaders, null, 2), true))
+        if (full.reqHeaders !== undefined) detailBody.appendChild(makePreSection('请求头', JSON.stringify(full.reqHeaders, null, 2)))
         if (typeof full.reqBody === 'string' && full.reqBody !== '') {
           bodySections.push(makeBodySection('请求体', full.reqBody, headerValue(full.reqHeaders, 'content-type'), detailBody))
         }
-        if (full.resHeaders !== undefined) detailBody.appendChild(makePreSection('响应头', JSON.stringify(full.resHeaders, null, 2), true))
+        if (full.resHeaders !== undefined) detailBody.appendChild(makePreSection('响应头', JSON.stringify(full.resHeaders, null, 2)))
         if (typeof full.resBody === 'string' && full.resBody !== '') {
-          bodySections.push(makeBodySection('响应体', full.resBody, headerValue(full.resHeaders, 'content-type'), detailBody, true))
+          bodySections.push(makeBodySection('响应体', full.resBody, headerValue(full.resHeaders, 'content-type'), detailBody))
         }
         noteInput.value = full.note ?? ''
         tagInput.value = full.tag ?? ''
@@ -1843,7 +1712,7 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           parentId: full.parentId,
           ruleId: full.ruleId,
         }
-        if (Object.values(streamMeta).some((v) => v !== undefined)) detailBody.insertBefore(makePreSection('流式/关联元数据', JSON.stringify(streamMeta, null, 2), true), detailBody.firstChild)
+        if (Object.values(streamMeta).some((v) => v !== undefined)) detailBody.insertBefore(makePreSection('流式/关联元数据', JSON.stringify(streamMeta, null, 2)), detailBody.firstChild)
         if (full.ws !== undefined && full.ws !== null) {
           const ws = {
             closeCode: full.ws.closeCode,
@@ -1854,7 +1723,6 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           }
           detailBody.insertBefore(makePreSection('WebSocket 帧记录', JSON.stringify(ws, null, 2)), detailBody.firstChild)
         }
-        fitDetail()
       }
 
       function renderReplayResult(response, original) {
