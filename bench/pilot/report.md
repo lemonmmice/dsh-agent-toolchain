@@ -396,3 +396,102 @@ of ad-hoc Bash builds — observable behavior the baseline cannot show. A
 turn/cost advantage still needs a task whose build output is genuinely
 noisy (multi-project, dozens of errors) and >= 5 repeats per condition
 before any claim is made.
+
+## 16. Cross-model wave — Codex (GPT-6 Astra) on the home-turf suite
+
+Section 15 measured one agent (Claude Code, Claude-family model). This wave
+repeats the same task/mode matrix with a **different vendor's agent**: Codex CLI
+0.144.5 driving `gpt-6-astra`, same harness, same tasks, same hidden
+verification. The point is not "who is better" — it is whether the toolchain's
+effect (structured build loop + evidence adjudication) survives a model change.
+
+### 16.1 Protocol
+
+- `node bench/harness/bench.mjs --task <task> --mode <baseline|toolchain>
+  --agent codex --model gpt-6-astra --reference <upstream checkout>
+  --agent-timeout-ms 3000000 [--runs N]`
+- Two tasks: `wpf-synth-buildbreak` (compile-error repair, gated by the
+  library's multi-TFM build) and `wpf-maxby-build` (MaxBy break, same gate).
+- Modes identical to section 15: `baseline` = raw agent; `toolchain` = the same
+  agent plus the `dsh-agent-toolchain` MCP server **and** the guidance section.
+- Verification is unchanged and hidden from the agent (`verifyCommand` runs the
+  library build + probe; `verified` is machine-decided).
+
+### 16.2 Two disclosures that bound every comparison below
+
+1. **Turn granularity differs across agents.** A Claude Code turn is one
+   assistant step; a Codex `exec` turn can contain many tool calls, so the
+   `turns` counter is **not** comparable across agents (Codex reports 1 turn for
+   a whole session here). Only *within-agent* baseline-vs-toolchain deltas and
+   the tool-call census are comparable.
+2. **Codex has no USD cost in its output** — only token counts. This wave
+   therefore reports tokens (`usageInputTokens` / `usageOutputTokens`), not
+   dollars. Cross-agent cost comparison is not possible from these artifacts.
+
+### 16.3 Results (per run, machine-verified)
+
+| run | task | mode | verified | duration | input tok | output tok | MCP pulls (census) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| wpf-maxby-build-baseline-20260908-171240 † | maxby-build | baseline | true | 394s | 194,696 | 1,945 | 0 (10 shell) |
+| wpf-maxby-build-toolchain-20260908-172001 † | maxby-build | toolchain | true | 320s | 203,786 | 2,110 | build_run x1, verify_report x1 (9 shell) |
+| wpf-synth-buildbreak-baseline-20260908-173558-1 | synth-buildbreak | baseline | true | 383s | 206,422 | 1,982 | 0 (11 shell) |
+| wpf-synth-buildbreak-baseline-20260908-174255-2 | synth-buildbreak | baseline | true | 1354s | 374,316 | 2,836 | 0 (9 shell, 1 file_change) |
+| wpf-synth-buildbreak-toolchain-20260908-180554-1 | synth-buildbreak | toolchain | true | 801s | 475,569 | 3,579 | build_run x2, verify_report x1 (13 shell, 1 todo_list) |
+| wpf-synth-buildbreak-toolchain-20260908-182100-2 | synth-buildbreak | toolchain | true | 620s | 558,379 | 3,707 | build_run x2, verify_report x1 (9 shell, 1 todo_list) |
+| wpf-maxby-build-baseline-20260908-183229 | maxby-build | baseline | true | 455s | 333,670 | 3,451 | 0 (7 shell, 1 file_change, 1 todo_list) |
+| wpf-maxby-build-toolchain-20260908-184034-1 | maxby-build | toolchain | true | 282s | 159,225 | 1,678 | build_run x1, verify_report x1 (7 shell) |
+| wpf-maxby-build-toolchain-20260909-095012 | maxby-build | toolchain | true | 145s | 133,321 | 1,177 | build_run x1, verify_report x1 (5 shell) |
+
+† = pre-wave calibration run (the first baseline/toolchain pair, used to
+validate the codex adapter under the same protocol). The 7 unmarked runs are
+the wave matrix from `bench-runs/overnight-wave.ps1`: synth baseline x2 /
+toolchain x2, maxby baseline x1 / toolchain x2 — executed to completion.
+
+All nine runs `verified=true`, none patched the tests (`patchedTests=false`),
+and every `modeValid` check passed (the toolchain arm really had the MCP server
+attached and visible; the baseline arm really had none). The 7-run wave matrix
+went 7/7 on hidden verification.
+
+### 16.4 What the wave shows
+
+- **The toolchain's structured loop engages under a different vendor.**
+  All five Codex toolchain runs (4/4 in the wave, 5/5 including calibration)
+  pulled `build_run` **and** `verify_report` exactly as the guidance predicts,
+  versus zero MCP pulls in any of the three baseline runs — the same
+  100%-engagement result section 15.4 found for Claude. Both synth toolchain
+  runs even iterated (`build_run` twice), i.e. the loop was used to recover
+  from a failed compile, not just to rubber-stamp. The pull effect is not
+  model-specific.
+- **Verified-by-construction held across agents.** Every run, both modes, both
+  tasks, passed the hidden verification — including the baseline runs that
+  never touched the toolchain. Nothing here supports a "toolchain makes the
+  fix more correct" claim; it supports "the toolchain does not break the fix
+  and makes the verification step explicit".
+- **Wall-clock is dominated by model variance, not the mode.** The two synth
+  baselines spread 383s→1354s (3.5x, same condition) while the two synth
+  toolchain runs sit inside that range (620s, 801s); on maxby the toolchain
+  (145s, 282s) beat its baseline (455s) both times. No timing claim is made.
+- **The token delta is task-dependent, not a flat overhead.** On
+  maxby-build the toolchain used ~50% *fewer* input tokens than baseline
+  (133k-159k vs 334k) — the guidance compressed the search (5-7 shell calls,
+  no file_change round-trips); on synth-buildbreak it used ~50-170% *more*
+  (476k-558k vs 206k-374k) — it reads real build errors and verification
+  output instead of guessing. Same-mode repeats also vary up to 1.8x (the two
+  synth baselines). Tokens are reported per run; no "toolchain costs X%"
+  claim survives both tasks.
+
+### 16.5 What this wave does NOT establish
+
+- **No cross-model win claim.** The turn counter is incomparable across
+  agents (every Codex run here reports 1 turn for a whole session), so
+  nothing here compares Codex to Claude. The only defensible reading is
+  within-agent: the guidance-driven pull effect reproduces (5/5 toolchain
+  runs) and the mode does not change verification outcomes.
+- **No statistical claim.** Section 15.4 already retracted an N=1 turn win for
+  the Claude arm; this wave does not restore it. A turn/cost claim needs >= 5
+  repeats per condition per agent; this wave has two at most.
+- **Task scope.** Both tasks are compile-error repairs in one third-party WPF
+  library. UI-driven tasks (where `ui_flow` / `perf_probe` matter) were not
+  part of this wave; their toolchain value is argued in the toolchain-loop
+  evidence, not here.
+
