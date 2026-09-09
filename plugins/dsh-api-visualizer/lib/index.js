@@ -1049,14 +1049,6 @@ function makeRoutes(capture, proxy) {
           }
           if (typeof body.logPath === 'string' && body.logPath.trim() !== '') {
             capture.setLogPath(body.logPath.trim())
-          } else if (body.replay !== true) {
-            // 面板「开始实时捕获」不带 logPath：重置回客户端默认 System.Net 跟踪日志，
-            // 防止测试/重放留下的自定义路径粘住下次捕获；运行中切换会抛错，保持现状即可
-            try {
-              capture.setLogPath(DEFAULT_LOG)
-            } catch {
-              // already running — keep current path
-            }
           }
           capture.start({ replay: body.replay === true })
           writeJson(res, 200, { ...capture.status(), managed: true })
