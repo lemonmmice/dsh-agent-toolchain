@@ -575,6 +575,18 @@ export function makeDriver(cfg) {  const c = {
     return { ok: false, action, error: '未知动作 ' + action }
   }
 
+  /**
+   * PS 5.1 的 ConvertTo-Json 会把单元素集合塌缩成标量（只有一个顶层窗口 /
+   * 只有一行控件时 lines 是字符串），而宿主渲染契约要求 lines 恒为 string[]。
+   * 统一归一化，避免 "output.render failed: (v.lines || []).join is not a
+   * function" 这类渲染崩溃（ui_windows/read/state 单元素时必现）。
+   */
+  const normLines = (v) => {
+    if (v === undefined || v === null) return []
+    if (Array.isArray(v)) return v
+    return [String(v)]
+  }
+
   /** 把常驻进程返回的原始结果整形成 ui_drive 的稳定返回结构。 */
   function shapeResult(action, res, shotPlan, workspace) {
     if (res.ok !== true) {
@@ -592,8 +604,8 @@ export function makeDriver(cfg) {  const c = {
       if (res.waitedMs) out.waitedMs = res.waitedMs
       return out
     }
-    if (action === 'read') return { ok: true, action, count: res.count || 0, lines: res.lines || [], truncated: false }
-    if (action === 'windows') return { ok: true, action, count: res.count || 0, lines: res.lines || [] }
+    if (action === 'read') return { ok: true, action, count: res.count || 0, lines: normLines(res.lines), truncated: false }
+    if (action === 'windows') return { ok: true, action, count: res.count || 0, lines: normLines(res.lines) }
     if (action === 'state') {
       return {
         ok: true,
@@ -602,7 +614,7 @@ export function makeDriver(cfg) {  const c = {
         focusedWindow: res.focusedWindow ?? null,
         focused: res.focused ?? null,
         count: res.count || 0,
-        lines: res.lines || [],
+        lines: normLines(res.lines),
       }
     }
     if (action === 'waitfor') return { ok: true, action, found: res.found === true, detail: res.detail ?? null, waitedMs: res.waitedMs ?? 0 }
@@ -610,7 +622,7 @@ export function makeDriver(cfg) {  const c = {
       const out = { ok: true, action, found: res.found === true, waitedMs: res.waitedMs ?? 0 }
       if (res.detail !== undefined) out.detail = res.detail
       if (res.count !== undefined) out.count = res.count
-      if (res.lines !== undefined) out.lines = res.lines
+      if (res.lines !== undefined) out.lines = normLines(res.lines)
       return out
     }
     if (action === 'waitany') {
@@ -869,22 +881,22 @@ export function makeDriver(cfg) {  const c = {
         if (res.detail !== undefined) entry.detail = res.detail
       } else if (action === 'read') {
         entry.count = res.count || 0
-        entry.lines = (res.lines || []).slice(0, 50)
+        entry.lines = normLines(res.lines).slice(0, 50)
       } else if (action === 'windows') {
         entry.count = res.count || 0
-        entry.lines = res.lines || []
+        entry.lines = normLines(res.lines)
       } else if (action === 'state') {
         entry.window = res.window ?? null
         entry.focusedWindow = res.focusedWindow ?? null
         entry.focused = res.focused ?? null
         entry.count = res.count || 0
-        entry.lines = res.lines || []
+        entry.lines = normLines(res.lines)
       } else if (action === 'waitfor' || action === 'expectwindow' || action === 'expecttext' || action === 'waitany') {
         entry.found = res.found === true
         if (res.detail !== undefined) entry.detail = res.detail
         if (res.waitedMs !== undefined) entry.waitedMs = res.waitedMs
         if (res.count !== undefined) entry.count = res.count
-        if (res.lines !== undefined) entry.lines = res.lines
+        if (res.lines !== undefined) entry.lines = normLines(res.lines)
         if (res.hitIndex !== undefined) { entry.hitIndex = res.hitIndex; entry.hitKind = res.hitKind; entry.hitLabel = res.hitLabel }
       } else if (action === 'shot') {
         if (res.path) { entry.path = res.path; finalShot = res.path }
