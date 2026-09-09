@@ -9,6 +9,7 @@ bench-runs/
 bench/local.env
 # Tool evidence dirs (screenshots, UI text, build logs) are local-only.
 .dsh-agent-toolchain/
+.dsh-ui-evidence/
 # Tool last-run pointers written next to the caller's cwd when a tool runs
 # from the repo root (build/perf/verify).
 last-probe.json
