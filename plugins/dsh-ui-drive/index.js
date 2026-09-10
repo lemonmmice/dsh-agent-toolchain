@@ -14,6 +14,7 @@ import { basename, join, extname } from 'node:path'
 import { homedir } from 'node:os'
 import { makeDriver } from './lib/driver.mjs'
 import { makeVision, UI_STATE_PROMPT } from './lib/vision.mjs'
+import { makeLive } from './lib/live.mjs'
 
 export const name = 'dsh-ui-drive'
 
@@ -32,6 +33,7 @@ const GUIDANCE =
   '动态界面（登录、验证码、按界面情况分支）必须「看一步再做下一步」：用 ui_drive 逐步走，先用 ui_windows/read/shot(describe=true) 看现状，再用 waitFor={ms,state:"appear|gone|enabled|disabled"} 等条件成立再点（别靠猜 sleep），同名控件用 index，容器内定位用 inAid/inName，回车提交用 type 的 {ENTER}，滑块验证码用 drag。' +
   '实时性：ui_drive 走常驻 PowerShell 进程（启动成本只付一次，实测单动作 p50 30ms）；ui_flow 整段序列进一个进程批量执行（13 步实测 1.6s）。DSH_UI_SERVE=0 可退回一次性进程路径。' +
   '视觉即返（推荐）：ui_launch 启动完成会自动截图并用视觉模型描述当前界面（返回 uiState.description，一步知道在登录页还是主界面）；ui_drive action=shot 加 describe=true 同样直接返回界面描述——优先用这两个，不必再单独 describe_image。需要深度视觉复核时才用 describe_image 对该 png 细看（当前主模型不读图，必须走 describe_image）。' +
+  '实时看见（agent 专用）：ui_live(action=start|stop|status|frame|wait) 后台循环抓「窗口内容」帧（1500ms 默认，不抢前台不恢复最小化）；frame 返回 latest.png 路径+帧 hash+控件状态，read_image(frame.path) 即看见当前画面；wait({fromHash}) 阻塞等画面变化；未 start 时 frame 退化为一次捕获。敏感帧（焦点=密码/验证码）默认不给 path（allowSensitive=true 才给）。截图一律在 E 盘证据目录。' +
   '安全边界：点击=真实操作（保存/生成/跳转可能落库）；「保存/删除/清空/导出」类按钮点击前先把按钮名报给用户确认；「下单/交易」类入口一律不点；优先用 find/read/shot/expect 做只读验证；定位卡住三步就停止报告，不盲点轰炸。' +
   '证据目录默认 ~/.dsh-agent-toolchain/ui-evidence（DSH_UI_EVIDENCE_DIR 可覆盖），目标进程名/窗口名/客户端 exe 分别由 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE 指定。' +
   '用户提到「UI 自验 / 驱动客户端 / 自动验证页面 / 截图验证 / 帮我点一下客户端」时即指本插件，请据此协作。'
@@ -54,6 +56,13 @@ function drv() {
 function vsn() {
   if (!vision) vision = makeVision({})
   return vision
+}
+
+let live = null
+function liveCtl() {
+  // 模块级单例：宿主热重载/多路复用下绝不出现两个 setInterval（双循环双写 latest.png）
+  if (!live) live = makeLive({ driver: drv() })
+  return live
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -124,7 +133,7 @@ const tools = () => [
     parameters: {
       extraArgs: { type: 'string', description: '额外启动参数（空格分隔），可为空' },
       waitMs: { type: 'number', description: '等待主窗口超时毫秒，默认 60000' },
-      workspace: { type: 'string', description: '会话工作目录：启动后自动截图+视觉描述界面状态，截图副本放 <workspace>/.dsh-ui-evidence' },
+      workspace: { type: 'string', description: '保留兼容（已废弃）：截图一律写入证据目录（DSH_UI_EVIDENCE_DIR，默认 ~/.dsh-agent-toolchain/ui-evidence），不再复制到 workspace/仓库' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: (v.started ? ('已启动 pid=' + v.pid + ' 窗口=' + v.title) : (v.alreadyRunning ? '客户端已在运行（' + v.pid + '）' : '启动失败：' + (v.error || v.warning || ''))) + (v.uiState && v.uiState.description ? '\n当前界面：' + v.uiState.description : '') }] },
     timeoutMs: 120000,
@@ -141,7 +150,7 @@ const tools = () => [
   defineTool({
     name: 'ui_drive',
     description: '对正在运行的目标客户端执行单步 UIA 操作（实时、有状态）。动作：find 定位控件；read 读可见控件（含输入框真实 value 与 #序号，序号可当 index 复用）；windows 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，动态界面先看这个）；shot 截主窗口 PNG（describe=true 直接返回视觉描述）；waitfor 等条件成立（state=appear|gone|enabled|disabled）；click 点击；setvalue ValuePattern 写值；key 键盘输入（中文走剪贴板粘贴）；type 键盘序列（{ENTER}/{TAB}/{ESC}/{DOWN}/^a 等，用于回车提交、Tab 跳转、下拉选择）；drag 鼠标拖拽（滑块验证码）。' +
-      '动态界面三件套：waitFor={ms,interval,state,match,index} 让 click/setvalue/key/type/find/expect 先等条件成立再动手（不再靠猜 sleep）；index 取同名控件的第 N 个；inAid/inName 把查找限定在某个容器内。' + READ_ONLY_NOTE + '。click/setvalue/key/type/drag 必须传 allowSideEffects=true 才执行。截图传 workspace=<会话工作目录> 会复制到 workspace 的 .dsh-ui-evidence 供 describe_image 视觉复核。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
+      '动态界面三件套：waitFor={ms,interval,state,match,index} 让 click/setvalue/key/type/find/expect 先等条件成立再动手（不再靠猜 sleep）；index 取同名控件的第 N 个；inAid/inName 把查找限定在某个容器内。' + READ_ONLY_NOTE + '。click/setvalue/key/type/drag 必须传 allowSideEffects=true 才执行。截图一律写入证据目录（DSH_UI_EVIDENCE_DIR），不写仓库；需要视觉复核时用 describe_image 读返回的 path。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
     parameters: {
       action: { type: 'string', required: true, description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag' },
       name: { type: 'string', description: '控件 Name（与 aid 二选一或都传）' },
@@ -164,7 +173,7 @@ const tools = () => [
       waitMs: { type: 'number', description: '动作后等待毫秒，默认 250' },
       procId: { type: 'number', description: '指定进程 PID（默认自动找）' },
       allowSideEffects: { type: 'boolean', description: 'click/setvalue/key/type/drag 必须显式传 true 才执行' },
-      workspace: { type: 'string', description: '会话工作目录：shot 时截图复制到 <workspace>/.dsh-ui-evidence 供视觉复核' },
+      workspace: { type: 'string', description: '保留兼容（已废弃）：截图一律写证据目录（DSH_UI_EVIDENCE_DIR），不复制到仓库' },
       label: { type: 'string', description: '截图文件名标签（shot 用）' },
       describe: { type: 'boolean', description: 'shot 时顺带用视觉模型描述界面内容（视觉即返，一步拿到界面状态）' },
     },
@@ -229,7 +238,7 @@ const tools = () => [
       max: { type: 'number', description: 'state 最多返回控件数（默认 40）' },
       label: { type: 'string', description: 'shot 文件名标签' },
       procId: { type: 'number', description: '指定进程 PID（默认自动找）' },
-      workspace: { type: 'string', description: 'shot：截图副本放到 <workspace>/.dsh-ui-evidence' },
+      workspace: { type: 'string', description: '保留兼容（已废弃）：截图一律写证据目录（DSH_UI_EVIDENCE_DIR），不复制到仓库' },
       describe: { type: 'boolean', description: 'shot：顺带返回视觉描述' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderDrive(v) }] },
@@ -313,6 +322,40 @@ const tools = () => [
       return v
     },
   }),
+  defineTool({
+    name: 'ui_live',
+    description: 'agent 实时看见客户端界面：后台循环持续抓「窗口内容」帧（不抢前台、不恢复最小化），随时取最新一帧截图 + 控件状态摘要 + 帧变化感知。' +
+      'action：start（启动后台循环，intervalMs 默认 1500ms；幂等）/ stop / status（当前快照）/ frame（取最新帧信息，fresh=true 强制新抓一帧；未启动时退化为一次性捕获）/ wait（阻塞到帧变化，fromHash 为基线 hash，timeoutMs 默认 30000）。' +
+      '拿到 frame 后 read_image(frame.path) 即「看见」客户端当前画面（path 是 latest.png 绝对路径，截图只在 E 盘证据目录）。wait 返回 changed=true 时 hash 变了=画面变了（行情动画也会触发，多看一眼无害；要语义结论时对 path 按需做视觉描述——循环内绝不自动调视觉模型）。' +
+      '敏感帧：焦点在密码/验证码/token 控件时 frame.secretFocused=true，默认不返回 path（像素无法脱敏），需显式 allowSensitive=true 才给。' +
+      '图形/脚本消费：/api/dsh-ui-drive/live/start|stop|status|frame|frame.png（回环）。Triggers: 实时看见 / 实时视图 / 看现在的界面 / 等界面变化 / live view.',
+    parameters: {
+      action: { type: 'string', required: true, description: 'start | stop | status | frame | wait' },
+      intervalMs: { type: 'number', description: '截图间隔毫秒，默认 1500' },
+      stateIntervalMs: { type: 'number', description: '控件状态采集间隔毫秒，默认 3000' },
+      maxControls: { type: 'number', description: 'state 最多返回控件数，默认 40' },
+      fresh: { type: 'boolean', description: 'frame 时强制新抓一帧' },
+      fromHash: { type: 'string', description: 'wait：基线帧 hash（区间的起点）' },
+      timeoutMs: { type: 'number', description: 'wait：最大等待毫秒，默认 30000' },
+      allowSensitive: { type: 'boolean', description: '敏感帧（焦点=密码/验证码）也返回 path（默认拒出）' },
+    },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderLive(v) }] },
+    timeoutMs: 120000,
+    async execute(args) {
+      const ctl = liveCtl()
+      const action = String(args.action || '').toLowerCase()
+      if (action === 'start') return await ctl.start({ intervalMs: args.intervalMs, stateIntervalMs: args.stateIntervalMs, maxControls: args.maxControls })
+      if (action === 'stop') return ctl.stop()
+      if (action === 'status') return sanitizeLive(ctl.status(), args.allowSensitive === true)
+      if (action === 'frame') {
+        const s = await ctl.frame({ fresh: args.fresh === true })
+        // 敏感帧默认拒出 path：像素无法脱敏（描述/agent 上下文里都不给）
+        return sanitizeLive(s, args.allowSensitive === true)
+      }
+      if (action === 'wait') return await ctl.wait({ fromHash: args.fromHash, timeoutMs: args.timeoutMs })
+      return { ok: false, error: '未知 action：' + action + '（start|stop|status|frame|wait）' }
+    },
+  }),
 ]
 
 function renderDrive(v) {
@@ -325,6 +368,51 @@ function renderDrive(v) {
     case 'shot': return '截图：' + v.path + ' ' + v.w + 'x' + v.h + (v.workspacePath ? '（副本 ' + v.workspacePath + '，可用 describe_image 复核）' : '') + (v.description ? '\n界面描述：' + v.description : '')
     default: return v.output || '完成'
   }
+}
+
+/**
+ * live 快照脱敏（统一出口）：任何 live 输出（status/frame/frame.png 路由）都过这里。
+ * 敏感帧（焦点=密码/验证码）默认把 frame.path 置空 + sensitiveBlocked 标记，
+ * agent/路由拿不到 png 路径（像素无法脱敏）；allowSensitive=true 显式解锁。
+ * old codex 评审否决项①：/live/status 曾直出未过滤快照。
+ */
+function sanitizeLive(s, allowSensitive) {
+  if (!s || !s.frame) return s
+  if (s.frame.secretFocused && !allowSensitive) {
+    return { ...s, frame: { ...s.frame, path: null, sensitiveBlocked: true } }
+  }
+  return s
+}
+
+function renderLive(v) {
+  if (v.error) return 'ui_live 失败：' + v.error
+  // Claude 1.4：wait() 返回 {ok,changed,hash,seq,timedOut,waitedMs,reason,snapshot}，
+  // 顶层没有 live/frame/ui——必须单独渲染，否则 agent 看到的永远是「已停止 0 帧」。
+  if (v.changed !== undefined || v.timedOut !== undefined) {
+    const snap = v.snapshot || {}
+    const f = snap.frame || null
+    const lines = []
+    lines.push('帧变化等待：' + (v.timedOut ? '超时 ' + (v.waitedMs || 0) + 'ms（画面未变化）' : (v.changed ? '已变化 ' + (v.waitedMs || 0) + 'ms，新帧 #' + v.seq + ' hash=' + String(v.hash || '').slice(0, 12) + '…' : '结束')))
+    if (!v.ok && v.reason) lines.push('原因：' + v.reason)
+    if (snap.live) lines.push('实时视图：' + (snap.live.running ? '运行中' : '已停止') + '（帧 ' + (snap.live.frameCount || 0) + (snap.live.autostopReason ? '，autostop=' + snap.live.autostopReason : '') + '）')
+    if (f && f.path) lines.push('最新帧 #' + f.seq + '：' + f.path)
+    return lines.join('\n')
+  }
+  const l = v.live || {}
+  const f = v.frame || null
+  const ui = v.ui || null
+  const lines = []
+  lines.push('实时视图：' + (l.running ? '运行中' : '已停止') + '（帧 ' + (l.frameCount || 0) + '，间隔 ' + (l.intervalMs || '-') + 'ms' + (l.autostopReason ? '，autostop=' + l.autostopReason : '') + (l.lastError ? '，最近错误：' + l.lastError : '') + '）')
+  if (v.client && v.client.pid) lines.push('客户端：pid=' + v.client.pid + ' ' + (v.client.window || '') + (v.client.running === false ? '（未运行）' : ''))
+  if (f) {
+    const state = f.state || '?'
+    const sec = f.secretFocused ? '，敏感帧' : ''
+    lines.push('最新帧 #' + f.seq + '：' + (f.path ? f.path + ' ' + f.w + 'x' + f.h : ('未出帧（' + state + sec + '）')) + (f.changed === false ? '（无变化）' : '（已变化）') + ' hash=' + String(f.hash || '').slice(0, 12) + '…' + sec + (f.captureMethod ? ' 抓法=' + f.captureMethod : ''))
+  }
+  if (ui) {
+    lines.push('控件状态：' + (ui.window || '?') + ' 焦点=' + (ui.focused || '无') + ' 共 ' + (ui.count || 0) + ' 个')
+  }
+  return lines.join('\n')
 }
 
 // ---------------------------------------------------------------- Web 路由（仅回环，面板雏形）
@@ -432,6 +520,44 @@ function makeRoutes() {
           return
         }
 
+        // ---- /live/* — agent 实时视图（回环；参数走 query，避免 body 解析）
+        if (rest.startsWith('/live')) {
+          const q = new URL(req.url, 'http://127.0.0.1').searchParams
+          if (method === 'POST' && rest === '/live/start') {
+            writeJson(res, 200, await liveCtl().start({ intervalMs: Number(q.get('intervalMs')), stateIntervalMs: Number(q.get('stateIntervalMs')), maxControls: Number(q.get('maxControls')) }))
+            return
+          }
+          if (method === 'POST' && rest === '/live/stop') {
+            writeJson(res, 200, liveCtl().stop())
+            return
+          }
+          if (method === 'GET' && rest === '/live/status') {
+            writeJson(res, 200, sanitizeLive(liveCtl().status(), q.get('allowSensitive') === '1'))
+            return
+          }
+          if (method === 'GET' && rest === '/live/frame') {
+            const s = await liveCtl().frame({ fresh: q.get('fresh') === '1' })
+            writeJson(res, 200, sanitizeLive(s, q.get('allowSensitive') === '1'))
+            return
+          }
+          if (method === 'GET' && rest === '/live/frame.png') {
+            const s = sanitizeLive(await liveCtl().frame(), q.get('allowSensitive') === '1')
+            // 敏感帧（焦点=密码/验证码）像素无法脱敏：与 /live/frame 同一边界——
+            // 默认拒出，allowSensitive=1 才出图（否则该路由绕过工具层检查成为裸读径）
+            if (s.frame && s.frame.sensitiveBlocked && !s.frame.path) {
+              writeJson(res, 423, { error: 'sensitive frame: 焦点在密码/验证码控件，默认拒出（allowSensitive=1 才给）' })
+              return
+            }
+            const p = s.frame && s.frame.path ? join(liveCtl().dir(), s.frame.path) : ''
+            if (!p || !existsSync(p)) { writeJson(res, 404, { error: 'no frame yet' }); return }
+            res.writeHead(200, { 'content-type': 'image/png', 'referrer-policy': 'no-referrer', 'x-frame-hash': s.frame.hash || '' })
+            res.end(readFileSync(p))
+            return
+          }
+          writeJson(res, 404, { error: 'unknown live route' })
+          return
+        }
+
         writeJson(res, 404, { error: 'not found' })
       },
     },
@@ -453,7 +579,9 @@ export function apply(ctx) {
         for (const d of disposers) d()
         disposeRoutes()
         disposeSection()
-        // 卸载时回收常驻 PowerShell 进程，避免插件重载后留下孤儿进程
+        // 卸载时先停 live 循环（clearInterval，绝不留双 timer），再回收常驻 PowerShell
+        // 进程——顺序固定：live 的 tick 用着 serve 通道，先停 live 再杀 serve。
+        try { liveCtl().stop('plugin-unload') } catch { /* ignore */ }
         try { driver && driver.warmShutdown() } catch { /* ignore */ }
       }
     },

@@ -18,6 +18,7 @@ DSH（DeepSeek Harness）的 **UI 自验驱动插件**：通过 Windows UIA 程�
 | \`ui_drive\` | 通用单步入口（等价 ui_observe + ui_act 的并集，保留兼容） |
 | \`ui_tree\` | 进程内视觉树 dump（真实类型 + Name + AutomationId + DataContext 类型，只读深查） |
 | \`ui_flow\` | 步骤序列自验：find/click/setvalue/key/type/drag/read/state/windows/shot/wait/waitfor/expect/expectwindow/expecttext/waitany，统计 passed/failed，证据落盘 steps.json |
+| \`ui_live\` | **实时看见（agent 专用）**：\`action=start\|stop\|status\|frame\|wait\` 后台循环抓「窗口内容」帧（默认 1500ms，不抢前台、不恢复最小化）；\`frame\` 返回 latest.png 路径 + 帧 hash + 控件状态摘要，\`wait\` 可阻塞等画面变化；敏感帧（焦点=密码/验证码）默认不出 path（\`allowSensitive=true\` 才给） |
 
 **动态界面（登录、验证码、按界面情况分支）的正确用法**——不是预排固定点击序列，而是「看一步再做下一步」：
 
@@ -125,3 +126,40 @@ UI 驱动最早的瓶颈是「每个动作新起一个 PowerShell 进程」：�
 | --- | --- |
 | `DSH_UI_SERVE` | `0` 关闭常驻进程（默认开启） |
 | `DSH_UI_SERVE_IDLE_MS` | 常驻进程空闲回收毫秒，默认 300000 |
+| `DSH_UI_LIVE_DIR` | `ui_live` 帧目录，默认 `~/.dsh-agent-toolchain/ui-live`（可指向大盘/独立卷） |
+| `DSH_UI_LOCK` | 客户端进程级锁开关，`0` 关闭（默认开启，防多 agent 同时驱动同一客户端） |
+| `DSH_UI_LOCK_STALE_MS` | 锁的过期毫秒（持有者崩溃后自动失效），默认 120000 |
+| `DSH_UI_LOCK_WAIT_MS` | 抢锁等待上限毫秒，默认 30000 |
+
+## 行为变更与修复（2026-09-10）
+
+本轮回灌把长期只存在于本机运行副本里的修复同步进仓库，逐条如下：
+
+1. **`read` 不再偶发返回 0 行（可靠性根因修复）**
+   `Get-ControlTypeName` 原先直接 `$el.Current.ControlType.ProgrammaticName.Replace(...)`：
+   界面重绘/切页瞬间 UIA 会枚举到 `ControlType=null` 的**瞬时元素**，`.Replace()` 打在 null 上抛
+   「不能对 Null 值表达式调用方法」，**整次枚举崩掉 → 0 行**（会被误读成「客户端没响应」）。
+   现在：该函数全程 try/catch 降级为 `Unknown`；`read` 分支逐元素 try/catch 并缓存 `$cur` 快照；
+   带 `match` 却读到 0 行时自动重试一次（返回字段新增 `attempts`）。
+2. **`read` 输出新增 `help="…"` 与控件尺寸 `WxH`，且 `match` 同时命中 Name 与 HelpText**
+   WPF 在 `AutomationProperties.HelpText` 为空时会回落 `ToolTip`，所以只显示图标的按钮
+   （Name 为空、语义只在 ToolTip）现在可以直接按 help 读到。**注意**：`click`/`find` 的 `match`
+   目前仍只匹配 Name（见下「已知缺口」）。
+3. **只读动作不再改变窗口状态**
+   旧实现每次调用都无条件 `ShowWindow(hwnd, SW_RESTORE)`：对已最大化窗口等价于「还原成浮窗」
+   （用户肉眼可见，也是坐标漂移的根因）。现在用 `IsIconic` 门控：只有真的最小化才恢复；
+   只有输入/截图类动作才抢前台。
+4. **截图只写证据目录**
+   `shot`/`capture` 一律写 `DSH_UI_EVIDENCE_DIR`（默认 `~/.dsh-agent-toolchain/ui-evidence`），
+   不再往 workspace/仓库复制副本——仓库只放代码证据。
+5. **新增 `ui_live` 模块**（`lib/live.mjs`）
+   后台循环抓帧 + `wait` 等变化；`warmSend` 的 `killOnTimeout=false` 语义保证后台循环超时
+   不会误杀常驻进程；插件卸载时先停 live 循环再回收常驻进程（顺序固定，避免双 timer/孤儿进程）。
+
+### 已知缺口（尚未修复，欢迎 PR）
+
+- `click`/`find`/`waitfor` 的 `match` **只匹配 Name**，不匹配 HelpText → 空 Name 的图标按钮
+  仍点不到（脚本层已支持坐标点击 `clickat`，但**工具层未暴露**：`ui_drive`/`ui_act`/`ui_flow`
+  的动作枚举里没有 `clickat`/`move`/`wheel`/`doubleclick`/`capture`，只能绕到自带 harness 里发）。
+- 客户端重启类调用缺超时上限与心跳看门狗。
+- 证据目录无按会话聚合与上限，长跑会堆积大量时间戳目录。
