@@ -30,6 +30,15 @@ jobs:
       - name: dsh-ui-drive flow batch unit test
         run: node plugins/dsh-ui-drive/test/flow-batch.test.mjs
         shell: bash
+      - name: dsh-ui-drive read skip-count unit test
+        run: node plugins/dsh-ui-drive/test/read-skips.test.mjs
+        shell: bash
+      - name: dsh-ui-drive restart/watchdog unit test
+        run: node plugins/dsh-ui-drive/test/restart-watchdog.test.mjs
+        shell: bash
+      - name: dsh-build killClient unit test
+        run: node plugins/dsh-build/test/kill-client.test.mjs
+        shell: bash
       - name: Config defaults (empty string is not a config) unit test
         run: node lib/config-defaults.test.mjs
         shell: bash
