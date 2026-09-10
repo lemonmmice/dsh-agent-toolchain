@@ -80,6 +80,13 @@ public class UiDriveBatchWin32 {
   [DllImport("user32.dll")] public static extern short VkKeyScan(char ch);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lp);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, System.Text.StringBuilder sb, int max);
+  public delegate bool EnumWindowsProc(IntPtr h, IntPtr lp);
   public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@
@@ -109,8 +116,20 @@ function Get-MainWindow([int]$procId) {
   return $first
 }
 
+# 取控件类型名。UIA 在界面重绘/换指标/翻页的瞬间会枚举到 ControlType=null 的瞬时元素，
+# 旧写法 $el.Current.ControlType.ProgrammaticName.Replace(...) 会把 null 当方法接收者，
+# 抛「不能对 Null 值表达式调用方法」——整个 read/state 直接崩成 0 行（长跑里反复出现的假失败）。
+# 现在统一降级为 Unknown，交给各处的类型白名单过滤掉，绝不让单个坏元素打断整次枚举。
 function Get-ControlTypeName($el) {
-  return $el.Current.ControlType.ProgrammaticName.Replace('ControlType.', '')
+  try {
+    $ct = $el.Current.ControlType
+    if ($null -eq $ct) { return 'Unknown' }
+    $pn = $ct.ProgrammaticName
+    if (-not $pn) { return 'Unknown' }
+    return $pn.Replace('ControlType.', '')
+  } catch {
+    return 'Unknown'
+  }
 }
 
 # UIA 里有些元素（虚拟化列表项、折叠面板里的 TextBlock）BoundingRectangle 是 ±∞，
@@ -459,6 +478,28 @@ function Get-Windows([int]$procId) {
   return $out
 }
 
+# Win32 级顶层窗口枚举（EnumWindows，不走 UIA）：返回 @{Handle; Title; Visible}。
+# 用途：capture 动作解析主窗口——UIA 路径在登录/弹窗阶段可能拿不到主窗口元素，
+# 而 MainWindowHandle 常被输入法状态条（CiceroUIWndFrame）抢占（实测）。
+# 注意标题用 GetText 读（UTF-16），中文标题可靠。
+function Get-ProcessTopWindows([int]$procId) {
+  $out = New-Object System.Collections.ArrayList
+  $cb = {
+    param($h, $lp)
+    $winPid = 0
+    [UiDriveBatchWin32]::GetWindowThreadProcessId($h, [ref]$winPid) | Out-Null
+    if ($winPid -eq $procId) {
+      $sb = New-Object System.Text.StringBuilder 512
+      [UiDriveBatchWin32]::GetWindowTextW($h, $sb, 512) | Out-Null
+      $visible = [UiDriveBatchWin32]::IsWindowVisible($h)
+      [void]$out.Add(@{ Handle = $h; Title = $sb.ToString(); Visible = $visible })
+    }
+    return $true
+  }
+  [UiDriveBatchWin32]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
+  return $out
+}
+
 # 顶层窗口元素列表（跨窗口原语的基础）
 function Get-WindowElements([int]$procId) {
   $root = $UIA::RootElement
@@ -518,7 +559,11 @@ function Get-ProcessTextLines([int]$procId, [string]$re, [int]$max) {
 
 function Get-ElementDetail($el) {
   $b = $el.Current.BoundingRectangle
-  return ('[' + (Get-ControlTypeName $el) + '] name="' + $el.Current.Name + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y) + ' ' + (Get-SafeInt $b.Width) + 'x' + (Get-SafeInt $b.Height))
+    $help = ''
+  try { $help = [string]$el.Current.HelpText } catch { }
+    $h = ''
+    if ($help) { $h = ' help="' + $help + '"' }
+  return ('[' + (Get-ControlTypeName $el) + '] name="' + $el.Current.Name + '" aid="' + $el.Current.AutomationId + '"' + $h + ' enabled=' + $el.Current.IsEnabled + ' @' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y) + ' ' + (Get-SafeInt $b.Width) + 'x' + (Get-SafeInt $b.Height))
 }
 
 # 当前焦点元素（UIA FocusedElement）+ 它所属的顶层窗口名。
@@ -685,6 +730,22 @@ function Send-KeyTo($el, [string]$value, [bool]$ascii, [int]$waitMs) {
   Start-Sleep -Milliseconds $waitMs
 }
 
+# 动作是否需要窗口在前台：只有鼠标/键盘/屏幕截图类需要；
+# 纯 UIA 只读动作（find/read/state/windows/waitfor/expect*）绝不抢焦点、绝不改窗口状态。
+function Test-NeedsForeground($step) {
+  $ro = @('find','read','state','windows','waitfor','expectwindow','expecttext','waitany','state-live')
+  $acts = New-Object System.Collections.ArrayList
+  if ($step.PSObject.Properties.Name -contains 'action' -and $step.action) { [void]$acts.Add(([string]$step.action).Trim().ToLowerInvariant()) }
+  if ($step.PSObject.Properties.Name -contains 'steps' -and $step.steps) {
+    foreach ($s in $step.steps) {
+      if ($s.PSObject.Properties.Name -contains 'action' -and $s.action) { [void]$acts.Add(([string]$s.action).Trim().ToLowerInvariant()) }
+    }
+  }
+  if ($acts.Count -eq 0) { return $true }
+  foreach ($a in $acts) { if ($ro -notcontains $a) { return $true } }
+  return $false
+}
+
 function Save-Shot($main, [string]$outPath) {
   if (-not $outPath) { $outPath = Join-Path $env:TEMP ('uia-shot-' + (Get-Date -Format 'HHmmss') + '.png') }
   $dir = Split-Path -Parent $outPath
@@ -813,6 +874,67 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         if ($step.PSObject.Properties.Name -contains 'match' -and $step.match) { $matchRe = [string]$step.match }
         $lines = Get-InteractiveLines $main $matchRe $max
         $res.count = $lines.Count; $res.lines = $lines
+      }
+      'state-live' {
+        # live 循环专用「免前台」界面快照：与 state 相同内容，但主窗口在分支内
+        # 自行解析（UIA 按 WindowName，绝不 ShowWindow/SetForegroundWindow ——
+        # Claude 评审 1.1：state 走 serve 主窗口路径会把最小化窗口弹起、抢焦点，
+        # 直接破坏「后台非侵入」承诺）。
+        # 额外输出 secretFocused（live 敏感帧防线用）：焦点元素是否命中敏感词表
+        # 或 IsPassword，供 Node 侧识别密码/验证码输入瞬间。
+        $foc = Get-FocusedInfo
+        $res.ok = $true
+        $res.window = ''
+        if ($main) { $res.window = [string]$main.Current.Name }
+        else {
+          try {
+            $wins = Get-WindowElements $procId
+            for ($i = 0; $i -lt $wins.Count; $i++) {
+              if ($WindowName -and [string]$wins[$i].Current.Name -eq $WindowName) { $res.window = [string]$wins[$i].Current.Name; break }
+            }
+            if (-not $res.window -and $wins.Count -gt 0) { $res.window = [string]$wins[0].Current.Name }
+          } catch { }
+        }
+        $res.focusedWindow = $foc.window
+        $res.focused = $foc.detail
+        $max = 40
+        if ($step.PSObject.Properties.Name -contains 'max' -and $null -ne $step.max) { $max = [int]$step.max }
+        $matchRe = ''
+        if ($step.PSObject.Properties.Name -contains 'match' -and $step.match) { $matchRe = [string]$step.match }
+        # 免前台遍历：自行解析主窗口元素（不 ShowWindow/不 SetForegroundWindow）
+        $target = $null
+        try {
+          $wins = Get-WindowElements $procId
+          for ($i = 0; $i -lt $wins.Count; $i++) {
+            if ($WindowName -and [string]$wins[$i].Current.Name -eq $WindowName) { $target = $wins[$i]; break }
+          }
+          if (-not $target -and $wins.Count -gt 0) { $target = $wins[0] }
+        } catch { }
+        if ($target) {
+          $lines = Get-InteractiveLines $target $matchRe $max
+          $res.count = $lines.Count; $res.lines = $lines
+        } else {
+          $res.count = 0; $res.lines = @()
+        }
+        # 敏感焦点标记（供 live 跳帧）：focused 明细命中敏感词表，或焦点元素 IsPassword
+        $res.secretFocused = $false
+        if ($foc.detail) {
+          if ($foc.detail -match '密码|password|passwd|验证码|verify|code|captcha|token|secret|口令') { $res.secretFocused = $true }
+          else {
+            try {
+              $fe = [System.Windows.Automation.AutomationElement]::FocusedElement
+              if ($null -ne $fe) {
+                $n = [string]$fe.Current.Name; $aid = [string]$fe.Current.AutomationId
+                $t = ''
+                try { $t = Get-ControlTypeName $fe } catch { }
+                if ($t -in @('Edit', 'Document', 'ComboBox')) {
+                  try { if ($fe.Current.IsPassword -eq $true) { $res.secretFocused = $true } } catch { }
+                }
+                if ($n -match '密码|password|passwd|验证码|verify|code|captcha|token|secret|口令' -or $aid -match '密码|password|passwd|验证码|verify|code|captcha|token|secret|口令') { $res.secretFocused = $true }
+              }
+            } catch { }
+          }
+        }
       }
       'waitfor' {
         # waitfor 的等待参数优先取 step.waitFor（与其它动作统一），没有就用 step 自身（ms/state/match/index 平铺写法）
@@ -1151,20 +1273,33 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         $res.ok = $true; $res.output = ([string]$out)
       }
       'read' {
-        $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
         $match = [string]$step.match
         $lines = New-Object System.Collections.ArrayList
-        $seen = @{}
-        for ($i = 0; $i -lt $all.Count; $i++) {
-          $el = $all.Item($i)
-          if ($el.Current.IsOffscreen) { continue }
+        $attempt = 0
+        while ($true) {
+          $attempt++
+          $lines = New-Object System.Collections.ArrayList
+          $seen = @{}
+          $all = $null
+          try { $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { $all = $null }
+          if ($null -ne $all) {
+          for ($i = 0; $i -lt $all.Count; $i++) {
+          $el = $null
+          try { $el = $all.Item($i) } catch { continue }
+          if ($null -eq $el) { continue }
+          $cur = $null
+          try { $cur = $el.Current } catch { continue }
+          if ($null -eq $cur) { continue }
+          if ($cur.IsOffscreen) { continue }
           $t = Get-ControlTypeName $el
           if ($t -notin @('Button', 'Edit', 'Text', 'RadioButton', 'CheckBox', 'TabItem', 'ComboBox', 'ListItem', 'MenuItem', 'TreeItem', 'DataItem', 'Hyperlink', 'Image', 'Slider', 'Spinner', 'Group', 'Custom', 'Pane', 'Document')) { continue }
-          $n = $el.Current.Name
+          $n = $cur.Name
           if (-not $n) { $n = '' }
           if ($n.Length -gt 60) { $n = $n.Substring(0, 60) }
-          if ($match -and $n -notmatch $match) { continue }
-          $b = $el.Current.BoundingRectangle
+          $help = ''
+          try { $help = [string]$cur.HelpText } catch { }
+          if ($match -and ($n -notmatch $match) -and ($help -notmatch $match)) { continue }
+          $b = $cur.BoundingRectangle
           $val = ''
           if ($t -in @('Edit', 'ComboBox', 'Document')) { $val = Get-ElementValueForReport $el }
           if ($val.Length -gt 60) { $val = $val.Substring(0, 60) }
@@ -1172,13 +1307,18 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $key = $t + '|' + $n + '|' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y)
           if ($seen.ContainsKey($key)) { continue }
           $seen[$key] = $true
-          $line = '#' + $lines.Count + ' [' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y)
+          $line = '#' + $lines.Count + ' [' + $t + '] "' + $n + '" aid="' + $cur.AutomationId + '" enabled=' + $cur.IsEnabled + ' @' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y) + ' ' + (Get-SafeInt $b.Width) + 'x' + (Get-SafeInt $b.Height)
+          if ($help) { $line = $line + ' help="' + $help + '"' }
           if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
           [void]$lines.Add($line)
           # 已经够 300 行就停：继续遍历整棵树只为了截断，纯浪费（read 曾 22s）
           if ($lines.Count -ge 320) { break }
+          }
+          }
+          if ($lines.Count -gt 0 -or -not $match -or $attempt -ge 2) { break }
+          Start-Sleep -Milliseconds 250
         }
-        $res.ok = $true; $res.count = $lines.Count
+        $res.ok = $true; $res.count = $lines.Count; $res.attempts = $attempt
         # 单次 read 上限 300 行：主界面可达 900+ 条，全量返回会挤爆模型上下文
         # （需要全量时分 match 多次读，或用 state 只看交互控件）
         if ($lines.Count -gt 300) {
@@ -1191,6 +1331,83 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       'shot' {
         $s = Save-Shot $main ([string]$step.out)
         $res.ok = $true; $res.path = $s.path; $res.w = $s.w; $res.h = $s.h
+      }
+      'capture' {
+        # agent 实时视图专用：抓「窗口内容」而非屏幕合成区域。
+        # 与 shot 的区别（都是踩过或被评审指出的坑）：
+        #   - 不 ShowWindow(SW_RESTORE)/不 SetForegroundWindow → 绝不抢用户焦点；
+        #   - 最小化（IsIconic）或不可见时直接返回 state，不强制恢复；
+        #   - PrintWindow(PW_RENDERFULLCONTENT) 优先 → 被遮挡也能拿到窗口自身内容
+        #     （CopyFromScreen 抓的是屏幕矩形，实时循环每 1-2s 一次会把别的窗口内容
+        #     当客户端画面喂给 agent——变化检测会撒谎、隐私会外溢）。
+        #   - 主窗口解析：绝不用 Process.MainWindowHandle——它返回「第一个可见窗口」，
+        #     输入法状态条（CiceroUIWndFrame）会抢先命中（实测 47x23 图标被抓成画面）。
+        #   - 主窗口解析：绝不用 Process.MainWindowHandle——它返回「第一个可见窗口」，
+        #     输入法状态条（CiceroUIWndFrame）会抢先命中（实测 47x23 图标被抓成画面）。
+        #     解析顺序：① UIA 按 WindowName 匹配（Current.Name 是 WPF 原生标题，可靠——
+        #     GetWindowTextW 对 WPF 自绘窗口返回垃圾字符，实测某 WPF 自绘标题栏客户端标题被读成乱码 4 字符，
+        #     Win32 匹配永远失败）；② 不行再 Win32 枚举 + 可见窗口标题最长者兜底
+        #     （DSH 浏览器窗口标题较长可能抢赢，所以 ① 必须可行才是主路径）。
+        # 返回：{path,w,h,state:visible|minimized|hidden|nowindow,captureMethod:print|screen,pid,window}
+        $sp = Get-Process -Id $procId -ErrorAction SilentlyContinue
+        if (-not $sp) { $res.error = ('进程未运行: ' + $procId) }
+        else {
+          $h = [IntPtr]::Zero
+          # ① UIA 原名匹配（WPF 主窗口标题可靠）
+          if ($WindowName) {
+            try {
+              $uaWins = Get-WindowElements $procId
+              for ($i = 0; $i -lt $uaWins.Count; $i++) {
+                if ([string]$uaWins[$i].Current.Name -eq $WindowName) { $h = [IntPtr]$uaWins[$i].Current.NativeWindowHandle; break }
+              }
+            } catch { }
+          }
+          # ② Win32 兜底：可见窗口里挑标题最长（主窗口）；全不可见/无标题 → 无窗口
+          if ($h -eq [IntPtr]::Zero) {
+            $hwnds = Get-ProcessTopWindows $procId
+            $best = $null
+            for ($i = 0; $i -lt $hwnds.Count; $i++) {
+              $wd = $hwnds[$i]
+              if (-not $wd.Visible) { continue }
+              if (-not $wd.Title) { continue }
+              if ($null -eq $best -or $wd.Title.Length -gt $best.Title.Length) { $best = $wd }
+            }
+            if ($best) { $h = $best.Handle }
+          }
+          if ($h -eq [IntPtr]::Zero) { $res.ok = $true; $res.state = 'nowindow' }
+          elseif ([UiDriveBatchWin32]::IsIconic($h)) { $res.ok = $true; $res.state = 'minimized' }
+          elseif (-not [UiDriveBatchWin32]::IsWindowVisible($h)) { $res.ok = $true; $res.state = 'hidden' }
+          else {
+            $r = New-Object UiDriveBatchWin32+RECT
+            [UiDriveBatchWin32]::GetWindowRect($h, [ref]$r) | Out-Null
+            $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
+            if ($w -le 0 -or $hh -le 0) { $res.ok = $true; $res.state = 'nowindow' }
+            else {
+              $outPath = [string]$step.out
+              if (-not $outPath) { $outPath = Join-Path $env:TEMP ('uia-capture-' + (Get-Date -Format 'HHmmss') + '.png') }
+              $dir = Split-Path -Parent $outPath
+              if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+              $bmp = New-Object System.Drawing.Bitmap($w, $hh)
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              $hdc = $g.GetHdc()
+              $method = 'print'
+              # PW_RENDERFULLCONTENT=2：抓 DWM 合成后的窗口内容（含 WPF），
+              # 某些无 DWM 的窗口会失败 → 退回 CopyFromScreen（记 captureMethod 区别）。
+              $ok = [UiDriveBatchWin32]::PrintWindow($h, $hdc, 2)
+              $g.ReleaseHdc($hdc)
+              if (-not $ok) {
+                $method = 'screen'
+                # 退回屏幕矩形抓取：需要窗口在前台才有意义（被遮挡时画的是别人的内容）
+                $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
+              }
+              $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
+              $g.Dispose(); $bmp.Dispose()
+              $res.ok = $true; $res.path = $outPath; $res.w = $w; $res.h = $hh
+              $res.state = 'visible'; $res.captureMethod = $method
+            }
+          }
+          if ($sp) { $res.pid = $sp.Id; $res.window = [string]$sp.MainWindowTitle }
+        }
       }
       default {
         $res.error = '非法动作 ' + $action
@@ -1288,18 +1505,41 @@ if ($Serve) {
             $procId = [int]$req.procId
             $main = $null
           }
-          if (@('windows','expectwindow','expecttext','waitany') -contains $wantAction) {
-            # 窗口枚举不需要主窗口，登录窗口/弹窗场景下主窗口可能都还没出现
+          if (@('windows','expectwindow','expecttext','waitany','capture','state-live') -contains $wantAction) {
+            # 窗口枚举/捕获/免前台状态采样不需要主窗口（登录窗口/弹窗场景下主窗口可能都还没出现；
+            # capture 直接在窗口消失时返回 state；state-live 自行解析主窗口元素且绝不抢前台
+            # —— live 后台循环的「非侵入」承诺靠这张清单 + state-live 分支保证）
             $procId = Get-ClientPid
             $res = Invoke-Step $null $req 0 $procId
           } else {
+            # 客户端可能已重启（PID 变化）：缓存的 $main 指向已销毁的窗口 → UIA 遍历静默返回空。
+            # 实测：不校验的话，客户端重启后 read 会 5s 返回 n=0，所有断言假失败。
+            $livePid = Get-ClientPid
+            if ($livePid -ne $procId) { $procId = $livePid; $main = $null }
+            if ($main) {
+              # 失效的 UIA 元素访问 .Current 不一定抛异常（可能返回缓存值），
+              # 必须比对 ProcessId：与当前客户端 PID 不一致就是死元素，重解析。
+              try {
+                if ([int]$main.Current.ProcessId -ne $procId) { $main = $null }
+              } catch { $main = $null }
+            }
             if (-not $main) {
               $procId = Get-ClientPid
               $main = Get-MainWindow $procId
               if (-not $main) { throw ('未找到主窗口（' + $WindowName + '）') }
-              [UiDriveBatchWin32]::ShowWindow([IntPtr]$main.Current.NativeWindowHandle, 9) | Out-Null
-              [UiDriveBatchWin32]::SetForegroundWindow([IntPtr]$main.Current.NativeWindowHandle) | Out-Null
-              Start-Sleep -Milliseconds 150
+              # 只读动作绝不改变窗口状态；输入/截图类才需要前台。
+              # 旧实现无条件 ShowWindow(SW_RESTORE)：对已最大化窗口等价于「还原成非最大化」
+              # → 每次工具调用窗口尺寸都变（用户可见的“缩小一下”），也让所有坐标标定失效
+              # （K 线缩放/平移坐标漂移的真正根因）。
+              $mh = [IntPtr]$main.Current.NativeWindowHandle
+              if ([UiDriveBatchWin32]::IsIconic($mh)) {
+                [UiDriveBatchWin32]::ShowWindow($mh, 9) | Out-Null
+                Start-Sleep -Milliseconds 200
+              }
+              if (Test-NeedsForeground $req) {
+                [UiDriveBatchWin32]::SetForegroundWindow($mh) | Out-Null
+                Start-Sleep -Milliseconds 150
+              }
             }
             $res = Invoke-Step $main $req 0 $procId
           }
@@ -1340,18 +1580,27 @@ if ($steps.Count -eq 0) { throw '步骤为空' }
 if ($env:UI_DRIVE_BATCH_DEBUG) { Write-Host ('DBG steps=' + $steps.Count + ' type=' + $steps.GetType().Name + ' a0=' + $steps[0].action) }
 
 $procId = Get-ClientPid
-# windows 动作只枚举顶层窗口，不依赖主窗口（登录页/弹窗阶段主窗口可能还没出现）
+# windows/capture/state-live 动作只枚举顶层窗口/抓 MainWindowHandle/免前台采样，
+# 不依赖主窗口（登录页/弹窗阶段主窗口可能还没出现）
 $needsMain = $false
 for ($i = 0; $i -lt $steps.Count; $i++) {
-  if (@('windows','expectwindow','expecttext','waitany') -notcontains [string]$steps[$i].action) { $needsMain = $true; break }
+  if (@('windows','expectwindow','expecttext','waitany','capture','state-live') -notcontains [string]$steps[$i].action) { $needsMain = $true; break }
 }
 $main = $null
 if ($needsMain) {
   $main = Get-MainWindow $procId
   if (-not $main) { throw ('未找到主窗口（' + $WindowName + '）' ) }
-  [UiDriveBatchWin32]::ShowWindow([IntPtr]$main.Current.NativeWindowHandle, 9) | Out-Null
-  [UiDriveBatchWin32]::SetForegroundWindow([IntPtr]$main.Current.NativeWindowHandle) | Out-Null
-  Start-Sleep -Milliseconds 200
+  $mh = [IntPtr]$main.Current.NativeWindowHandle
+  if ([UiDriveBatchWin32]::IsIconic($mh)) {
+    [UiDriveBatchWin32]::ShowWindow($mh, 9) | Out-Null
+    Start-Sleep -Milliseconds 200
+  }
+  $needsFg = $false
+  for ($i = 0; $i -lt $steps.Count; $i++) { if (Test-NeedsForeground $steps[$i]) { $needsFg = $true; break } }
+  if ($needsFg) {
+    [UiDriveBatchWin32]::SetForegroundWindow($mh) | Out-Null
+    Start-Sleep -Milliseconds 200
+  }
 }
 
 $results = New-Object System.Collections.ArrayList
