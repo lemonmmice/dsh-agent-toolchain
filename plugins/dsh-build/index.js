@@ -75,6 +75,7 @@ const tools = () => [
       engine: { type: 'string', description: '可选：msbuild（默认，VS MSBuild）或 dotnet（dotnet build，现代 SDK 仓库推荐）' },
       repoRoot: { type: 'string', description: '可选：仓库根目录（默认 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT）' },
       killClient: { type: 'boolean', description: '客户端在运行时强制结束它再构建（会打断用户界面，需先确认）' },
+      runId: { type: 'string', description: '可选：本次任务的 runId。传了才会写 run-<runId>.json 凭证记录（verify_report 的 build 类 claim 正是读这个文件；不传则只写 last.json，多 agent 并发时会互相覆盖）。建议用 who-task-n 形式，如 dsh-logon-fix-1' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderBuild(v) }] },
     timeoutMs: 16 * 60 * 1000,
