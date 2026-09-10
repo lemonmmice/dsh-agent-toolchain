@@ -152,7 +152,7 @@ const tools = () => [
     description: '对正在运行的目标客户端执行单步 UIA 操作（实时、有状态）。动作：find 定位控件；read 读可见控件（含输入框真实 value 与 #序号，序号可当 index 复用）；windows 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，动态界面先看这个）；shot 截主窗口 PNG（describe=true 直接返回视觉描述）；waitfor 等条件成立（state=appear|gone|enabled|disabled）；click 点击；setvalue ValuePattern 写值；key 键盘输入（中文走剪贴板粘贴）；type 键盘序列（{ENTER}/{TAB}/{ESC}/{DOWN}/^a 等，用于回车提交、Tab 跳转、下拉选择）；drag 鼠标拖拽（滑块验证码）。' +
       '动态界面三件套：waitFor={ms,interval,state,match,index} 让 click/setvalue/key/type/find/expect 先等条件成立再动手（不再靠猜 sleep）；index 取同名控件的第 N 个；inAid/inName 把查找限定在某个容器内。' + READ_ONLY_NOTE + '。click/setvalue/key/type/drag 必须传 allowSideEffects=true 才执行。截图一律写入证据目录（DSH_UI_EVIDENCE_DIR），不写仓库；需要视觉复核时用 describe_image 读返回的 path。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
     parameters: {
-      action: { type: 'string', required: true, description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag' },
+      action: { type: 'string', required: true, description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag | clickat | doubleclick | move | wheel | capture | state-live（clickat=按窗口客户区坐标点击、doubleclick=坐标双击，用于 UIA 拿不到稳定元素的表格行/图表点位——坐标脆弱，窗口一移动就失效；move/wheel=移动鼠标/滚轮，属只读白名单、不需 allowSideEffects；capture=抓一帧窗口内容；state-live=免前台状态采样）' },
       name: { type: 'string', description: '控件 Name（与 aid 二选一或都传）' },
       aid: { type: 'string', description: '控件 AutomationId' },
       value: { type: 'string', description: 'setvalue/key/type 的内容（type 支持 SendKeys 语法，如 1234{ENTER}）' },
@@ -220,7 +220,7 @@ const tools = () => [
       '动态界面（登录、验证码、按界面情况分支）的循环就是：ui_observe 看现状 → 决定 → ui_act 动手 → 再 ui_observe 确认。' +
       'waitany 是判定登录结果的关键：一次同时押注「主窗口出现」「错误文本出现」「登录窗口还在」三支，返回命中的那支。Triggers: 看界面 / 等条件 / 判断登录结果 / observe.',
     parameters: {
-      action: { type: 'string', required: true, description: 'find | read | state | windows | waitfor | expectwindow | expecttext | waitany | shot' },
+      action: { type: 'string', required: true, description: 'find | read | state | windows | waitfor | expectwindow | expecttext | waitany | shot | move | wheel | capture | state-live（move/wheel=移动鼠标/滚轮、capture=抓帧、state-live=免前台状态采样，都是只读白名单）' },
       name: { type: 'string', description: '控件 Name' },
       aid: { type: 'string', description: '控件 AutomationId' },
       match: { type: 'string', description: 'read/state 的控件名正则；find/click 用 match 时按名字挑（配合 index）' },
@@ -259,7 +259,7 @@ const tools = () => [
       '写输入后驱动会回读校验，值没进去直接报错（不再假成功）；密码/验证码类控件的值不回显、不落证据；买入/卖出/下单/委托/支付类控件被驱动层硬拒绝，传 true 也点不动。' +
       'observe=true 时动作后直接附带界面快照（窗口+焦点+交互控件），省一次往返。凭据用 ${cred:name} 占位符（驱动进程从环境变量 DSH_CRED_name 展开，模型看不到明文）。' + READ_ONLY_NOTE + '。Triggers: 点一下 / 输入 / 登录 / 拖滑块 / ui act.',
     parameters: {
-      action: { type: 'string', required: true, description: 'click | setvalue | key | type | drag' },
+      action: { type: 'string', required: true, description: 'click | setvalue | key | type | drag | clickat | doubleclick | move | wheel（clickat/doubleclick 按窗口客户区坐标操作，用于 UIA 拿不到稳定元素的表格行/图表点位，坐标脆弱；move/wheel 只移动鼠标/滚轮，属只读白名单、无需副作用授权）' },
       name: { type: 'string', description: '控件 Name' },
       aid: { type: 'string', description: '控件 AutomationId' },
       value: { type: 'string', description: 'setvalue/key/type 的内容；支持 ${cred:name} 占位符（凭据不经过模型）' },

@@ -156,10 +156,17 @@ UI 驱动最早的瓶颈是「每个动作新起一个 PowerShell 进程」：�
    后台循环抓帧 + `wait` 等变化；`warmSend` 的 `killOnTimeout=false` 语义保证后台循环超时
    不会误杀常驻进程；插件卸载时先停 live 循环再回收常驻进程（顺序固定，避免双 timer/孤儿进程）。
 
+### 2026-09-10 第二批修复
+
+- **`click`/`find`/`waitfor` 的 `match` 现在同时匹配 Name 与 HelpText**（新增 `Test-MatchText` 助手，
+  逐元素 try/catch 保护）→ 空 Name、语义只在 ToolTip 的图标按钮（放大/缩小/筹码…）现在可以直接
+  `click match="放大"`，不必再退化成坐标点击。
+- **工具层补齐坐标类动作文档**：`ui_drive`/`ui_act` 现列出 `clickat`/`doubleclick`/`move`/`wheel`，
+  `ui_observe` 列出 `move`/`wheel`/`capture`/`state-live`。此前脚本层已支持这些动作，但工具描述里
+  没写，agent 无从知道，只能绕到自带 harness 里发坐标点击——这是「能用但没人知道」型的缺口。
+  文档同时标注：坐标类动作**脆弱**（窗口一移动就失效），优先用 `find`/`click` + `match`。
+
 ### 已知缺口（尚未修复，欢迎 PR）
 
-- `click`/`find`/`waitfor` 的 `match` **只匹配 Name**，不匹配 HelpText → 空 Name 的图标按钮
-  仍点不到（脚本层已支持坐标点击 `clickat`，但**工具层未暴露**：`ui_drive`/`ui_act`/`ui_flow`
-  的动作枚举里没有 `clickat`/`move`/`wheel`/`doubleclick`/`capture`，只能绕到自带 harness 里发）。
 - 客户端重启类调用缺超时上限与心跳看门狗。
 - 证据目录无按会话聚合与上限，长跑会堆积大量时间戳目录。
