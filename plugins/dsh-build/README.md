@@ -49,6 +49,25 @@ restore，SDK 工程缺 restore 会以 NETSDK1004（找不到 assets 文件）�
 （MSB3021/3027 文件锁风暴），插件直接拦截并提示——传 \`killClient=true\` 可先结束它再构建。
 环境错误与代码错误分开归类，避免 AI 把文件锁误当代码错误瞎修。
 
+### 2026-09-10 修复：\`killClient\` 不再被门控（B-3）
+
+**问题**：两次构建失败于文件锁（绘图库 Core / 基础设施等**共享依赖 DLL** 被运行中的客户端占着），
+调用方传了 \`killClient=true\` **却没生效**，于是被归因成「参数没生效」。真根因是**门控**：
+kill 分支要求 \`touchesClientOutput\`（目标程序集名 == 客户端进程名）为真，而锁共享依赖时构建目标是
+\`.sln\` 或别的工程，门控为假 → 分支根本不执行。
+
+**现在**：
+
+- \`killClient=true\` → **无条件**结束目标客户端（不再看目标是不是客户端本体）；
+- 结束动作按**目标实例**定位（进程名 → 同名进程的全部 PID，绝不宽匹配），并且**等进程真的退出**
+  才返回：\`taskkill\` 是异步的，旧实现的固定 \`sleep(1500)\` 既没确认进程死、也没确认锁释放，
+  进程还在时 MSBuild 照样 MSB3021。等待上限 \`DSH_BUILD_KILL_WAIT_MS\`（默认 15000ms）；
+- 结果新增 \`clientKill\`（\`{killed, name, pids, remaining, waitedMs}\`）；若等超时仍在跑，
+  返回 \`clientKillFailed: true\` 并明确说明「文件锁大概率仍在」，不再静默假装杀成功；
+- 构建失败且带 **MSB3021/3027** 时新增 \`lockDiagnosis\`：从报文里解析**被锁文件**，
+  并补上关键事实「客户端现在还在不在跑」（\`clientRunning\`/\`clientPid\`/\`hint\`）——
+  文件锁报文本身只说文件、不说占用者，这里把归因补全。
+
 ## 实现
 
 - \`lib/builder.mjs\` — MSBuild/dotnet spawn（超时杀进程树）、UTF-8/GBK 双解码（收敛到 \`lib/decode.mjs\`）、错误行正则解析（含无行列号的顶层 \`MSBUILD : error MSBxxxx\`、嵌入式 \`file : error : MSBxxxx:\`、NETSDKxxxx 六字母码前缀）、环境/代码错误分类（SDK 解析、NuGet 源不可达、文件锁归环境类）、运行记录
@@ -66,6 +85,7 @@ restore，SDK 工程缺 restore 会以 NETSDK1004（找不到 assets 文件）�
 | \`DSH_BUILD_MSBUILD\` | MSBuild.exe 路径（默认 VS 自带，缺失时 vswhere 定位） |
 | \`DSH_BUILD_ENGINE\` | 构建引擎 \`msbuild\`（默认）/ \`dotnet\`（SDK 仓库推荐） |
 | \`DSH_BUILD_CLIENT_PROC\` | 输出目录会被锁定的客户端进程名（可选，缺省用 \`DSH_UI_PROC_NAME\`） |
+| \`DSH_BUILD_KILL_WAIT_MS\` | \`killClient=true\` 时等待客户端真正退出的上限（默认 15000ms） |
 | \`DSH_BUILD_LOGS_DIR\` | 日志目录，默认 \`~/.dsh-agent-toolchain/build-logs\` |
 
 ## 安装

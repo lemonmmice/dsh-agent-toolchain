@@ -59,15 +59,64 @@ export function makeBuilder(cfg) {
 
   // ------------------------------------------------------------ 客户端进程检测
 
-  function clientProcess() {
-    const proc = process.env.DSH_BUILD_CLIENT_PROC || process.env.DSH_UI_PROC_NAME || ''
-    if (!proc) return { running: false, pid: null, unconfigured: true }
+  /** 列出同名进程的全部 PID（tasklist CSV 可能多行）；失败一律当「没在跑」。 */
+  function listClientPids(proc) {
+    if (!proc) return []
     try {
       const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + proc + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
-      const m = out.match(new RegExp('"' + proc + '\\.exe","(\\d+)"'))
-      if (m) return { running: true, pid: Number(m[1]), name: proc }
-    } catch { /* ignore */ }
-    return { running: false, pid: null, name: proc }
+      const pids = []
+      const re = new RegExp('"' + proc + '\\.exe","(\\d+)"', 'g')
+      let m
+      while ((m = re.exec(out)) !== null) pids.push(Number(m[1]))
+      return pids
+    } catch { return [] }
+  }
+
+  function clientProcess() {
+    const proc = process.env.DSH_BUILD_CLIENT_PROC || process.env.DSH_UI_PROC_NAME || ''
+    if (!proc) return { running: false, pid: null, pids: [], unconfigured: true }
+    const pids = listClientPids(proc)
+    if (pids.length) return { running: true, pid: pids[0], pids, name: proc }
+    return { running: false, pid: null, pids: [], name: proc }
+  }
+
+  /**
+   * 结束目标客户端（B-3）：按**目标实例**定位（进程名 → 同名进程的全部 PID，绝不宽匹配），
+   * 并且**等它真的退出**再返回。
+   *
+   * 为什么必须等：`taskkill` 是异步的，旧实现 `spawn(taskkill…) + sleep(1500)` 既没确认
+   * 进程死了、也没确认锁释放了 —— 进程还活着的时候 MSBuild 照样 MSB3021（昨夜两次构建
+   * 失败并归因错误「参数没生效」，真因是门控 + 没等退出）。
+   * 上限 `DSH_BUILD_KILL_WAIT_MS`（默认 15000ms），超时如实回报 remaining。
+   */
+  async function killClientProcess(client) {
+    const startedAt = Date.now()
+    const name = (client && client.name) || ''
+    const pids = (client && client.pids && client.pids.length) ? client.pids.slice() : (client && client.pid ? [client.pid] : [])
+    for (const pid of pids) {
+      try { spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }) } catch { /* ignore */ }
+    }
+    const waitMs = Number(process.env.DSH_BUILD_KILL_WAIT_MS || 15000)
+    const deadline = Date.now() + waitMs
+    let remaining = listClientPids(name)
+    while (remaining.length > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 250))
+      remaining = listClientPids(name)
+    }
+    return { killed: remaining.length === 0, name, pids, remaining, waitedMs: Date.now() - startedAt }
+  }
+
+  /** 从 MSB3021/3027 报文里挖出被锁文件（报文形如：无法将文件"源"复制到"目标"。…）。 */
+  function lockedFilesOf(errs) {
+    const out = []
+    for (const e of errs) {
+      const quoted = String(e.message || '').match(/"([^"]+)"/g) || []
+      for (const q of quoted) {
+        const f = q.slice(1, -1)
+        if (f && !out.includes(f)) out.push(f)
+      }
+    }
+    return out.slice(0, 4)
   }
 
   // ------------------------------------------------------------ 错误解析
@@ -232,6 +281,7 @@ export function makeBuilder(cfg) {
     // 判定：目标程序集名 == 客户端进程名（例如 MyClient.csproj vs MyClient.exe）。
     const client = clientProcess()
     let clientRunningWarning = null
+    let clientKill = null
     const targetAssembly = targetArg ? basename(targetArg).replace(/\.(cs|vb|fs)proj$/i, '').replace(/\.(sln|slnx)$/i, '') : ''
     const clientName = client.name ? client.name.toLowerCase() : ''
     const touchesClientOutput = clientName !== '' && targetAssembly !== '' && targetAssembly.toLowerCase() === clientName
@@ -243,11 +293,14 @@ export function makeBuilder(cfg) {
         clientPid: client.pid,
       }
     }
-    if (client.running && opts.killClient && touchesClientOutput) {
-      try { spawn('taskkill', ['/PID', String(client.pid), '/T', '/F'], { windowsHide: true }) } catch { /* ignore */ }
-      await new Promise((r) => setTimeout(r, 1500))
+    if (client.running && opts.killClient) {
+      // B-3：killClient=true 的语义就是「先结束目标客户端再构建」，**无条件生效**。
+      // 旧实现把它门控在 touchesClientOutput（目标程序集名 == 客户端进程名）之下，
+      // 于是最需要它的场景反而没杀：锁的是**共享依赖 DLL**（构建目标是 .sln 或别的工程）
+      // 时门控为假 → 不 kill → 构建继续 MSB3021，调用方还以为是「参数没生效」。
+      clientKill = await killClientProcess(client)
     }
-    if (client.running && !touchesClientOutput && !opts.killClient) {
+    if (client.running && !opts.killClient && !touchesClientOutput) {
       // 无关目标：只提示，不阻断（客户端仍可能锁住共享依赖的 copy 目标，
       // 真出问题会以 MSB3021 的形式出现在结构化错误里）
       clientRunningWarning = '客户端正在运行（PID ' + client.pid + '），但构建目标 ' + (targetDisplay || targetArg) + ' 与客户端本体无关，已继续构建。'
@@ -314,6 +367,28 @@ export function makeBuilder(cfg) {
     const logPath = join(c.logsDir, logName)
     writeFileSync(logPath, text, 'utf8')
 
+    // B-3：文件锁错误的归因要「指名道姓」。MSB3021/3027 的报文只说被锁的文件，
+    // 不说占用者是谁——这里补上最关键的一条事实：目标客户端现在还在不在跑。
+    const lockErrors = envErrors.filter((e) => /MSB302[0-9]/.test(e.code || ''))
+    let lockDiagnosis = null
+    if (run.code !== 0 && lockErrors.length > 0) {
+      const codes = [...new Set(lockErrors.map((e) => e.code))]
+      const files = lockedFilesOf(lockErrors)
+      const clientAfter = clientProcess()
+      lockDiagnosis = {
+        codes,
+        lockedFiles: files,
+        clientRunning: !!clientAfter.running,
+        clientPid: clientAfter.running ? clientAfter.pid : null,
+        killedBeforeBuild: !!(clientKill && clientKill.killed),
+        hint: clientAfter.running
+          ? ('检测到文件锁（' + codes.join('/') + '），且客户端 ' + clientAfter.name + ' 仍在运行（PID ' + clientAfter.pid + '）' +
+             (files.length ? '；被锁文件：' + files.join('、') : '') + '。传 killClient=true 可先结束它再构建。')
+          : ('检测到文件锁（' + codes.join('/') + '），但目标客户端进程当前未运行：占用者可能是别的进程（另一个会话的同类进程 / 杀软 / 资源管理器预览）' +
+             (files.length ? '；被锁文件：' + files.join('、') : '') + '。'),
+      }
+    }
+
     const result = {
       ok: run.code === 0,
       exitCode: run.code,
@@ -335,8 +410,13 @@ export function makeBuilder(cfg) {
       envErrors: envErrors.slice(0, 8),
       warnings: warnings.slice(0, 20),
       truncated: errors.length > 40 || warnings.length > 20,
-      clientWasKilled: !!(client.running && opts.killClient),
+      clientWasKilled: !!(clientKill && clientKill.killed),
+      ...(clientKill ? { clientKill } : {}),
+      ...(clientKill && !clientKill.killed
+        ? { clientKillFailed: true, error: 'killClient=true 但客户端进程仍未退出（PID ' + clientKill.remaining.join(',') + '，等待 ' + clientKill.waitedMs + 'ms）：文件锁大概率仍在，构建会继续报 MSB3021/3027。' }
+        : {}),
       ...(clientRunningWarning ? { clientRunningWarning } : {}),
+      ...(lockDiagnosis ? { lockDiagnosis } : {}),
       // A failed build with zero code errors is a blocked-by-environment
       // situation (missing targeting packs, restore failures, locked
       // outputs). Surface it loudly instead of leaving the agent with
@@ -400,5 +480,5 @@ export function makeBuilder(cfg) {
     return { hasRun: true, logPath: s.logPath, errors, warnings }
   }
 
-  return { config: c, build, status, errorsOfLast, parseErrors, isEnvError, findMsbuild, decodeBuffer, logsDir: () => c.logsDir }
+  return { config: c, build, status, errorsOfLast, parseErrors, isEnvError, findMsbuild, decodeBuffer, clientProcess, killClientProcess, listClientPids, lockedFilesOf, logsDir: () => c.logsDir }
 }
