@@ -166,7 +166,79 @@ UI 驱动最早的瓶颈是「每个动作新起一个 PowerShell 进程」：�
   没写，agent 无从知道，只能绕到自带 harness 里发坐标点击——这是「能用但没人知道」型的缺口。
   文档同时标注：坐标类动作**脆弱**（窗口一移动就失效），优先用 `find`/`click` + `match`。
 
+### 2026-09-10 第三批修复：观测完整性必须报数（B-1）
+
+**问题**：上一批把 `read` 的假空真凶（`Get-ControlTypeName` 在 `ControlType=null` 上抛异常 → 整次枚举
+崩成 0 行）改成了逐元素 `try/catch` + `continue`。但**静默 `continue` 是新一轮假空**：调用方拿到一份
+「变少了的控件清单」，却不知道少了几行、为什么少 —— 「观测不完整」和「界面真的没有」分不开。
+
+**现在**：
+
+- `read` / `state` 结果**恒带 `skipped=N`**：本次枚举里「读不到元素状态」而被跳过的数量
+  （元素失效 `Item` 抛异常 / `Current` 抛异常 / 元素与状态为 null）。
+  类型白名单、`IsOffscreen`、`match` 过滤、同名去重这些**正常过滤一律不计数**——报数只报真正的观测失败。
+- `skipped > 0` 时同结果附带 `warn`（`⚠ 跳过 N 个读不到状态的元素，本次清单不完整（原因…）——不要把
+  「没读到」当成「界面上没有」），由 `lib/render.mjs` 渲染进 `ui_drive`/`ui_observe`/`ui_state` 的可见文本；
+  `ui_flow` 的每一步 transcript 同样带 `skipped`/`warn`，步进日志会打印「（跳过 N 个…）」。
+- `skipped=null` = 该路径**没有回报**（未知），**不等于 0**：绝不把「不知道」伪装成「观测完整」。
+- **`state` 路径顺带补齐逐元素容错**：`Get-InteractiveLines` 原先裸取 `$el.Current`，界面重绘瞬间会被
+  单个坏元素打断成 0 行（与 `read` 那处根因同源）。现在同样逐元素容错并计 skipped。
+- **一次性回退脚本 `ui-drive.ps1` 的 `read` 同步修**：它的 `Current.ControlType.ProgrammaticName.Replace(...)`
+  还是旧写法（同样能崩成 0 行），现在逐元素容错并输出协议行 `SKIPPED <n>`（+ 最多一条 `SKIPREASON <text>`），
+  driver 侧解析成 `skipped`/`skippedReasons`。
+- 渲染层（`renderDrive`/`renderState`）抽到 `lib/render.mjs`：渲染文本是 agent 唯一看得见的契约，必须能离线单测
+  （`index.js` 依赖宿主 `@deepseek-ai/dsh-tools`，普通 node 进程 import 不到）。顺带修好
+  `ui_observe(action=state)` 过去因 `renderDrive` 没有 `state` 分支而回落成「完成」不显示清单的问题。
+
+**单测**：`test/read-skips.test.mjs`（离线，不需要客户端/不启动 PowerShell，已进 CI 11 → 12 道闸门），
+覆盖「报数 / 零值不误报 / 未回报为 null / flow 每步透传 / 渲染可见 / 回退脚本 SKIPPED 协议行」21 项断言。
+
+**现场验证**（脚本层真路径，非单测）：`test/read-skips-live.ps1` 起一个自建 WPF 窗口，分两阶段跑
+`scripts/ui-drive-batch.ps1` 的 `read`/`state`：
+
+- **阶段 A（窗口静止）**：清单必须非空（`count>0`）——证明正常路径没被改坏、`skipped` 不是假警报；
+- **阶段 B（窗口高频变动：虚拟化列表滚动 + 尾部控件拆建）**：必须回报 `skipped>=1`，
+  并给出原因（实测最稳定的瞬态形态是「整次枚举失败：目标元素的对应 UI 不再可用」）——
+  这正是 B-1 的核心：**读不到的元素要报数**，而不是静默少几行；
+- 任何一轮 `ok!=true` 都算失败（异常必须显式暴露，不能被当成「界面为空」）。
+
+用法：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File test\read-skips-live.ps1
+# 退出码 0 = 两阶段都通过；1 = 条件未满足；2 = 环境问题（窗口起不来）
+```
+
+> 实测记录（2026-09-10 夜）：阶段 A `count=320`；阶段 B 3/8 轮 `skipped=1`（含原因），无异常轮。
+
+### 2026-09-10 第四批修复：重启类调用不再挂死（B-2）
+
+**问题**：昨夜整晚卡在「客户端重启调用」里 **2.5 小时**，只靠日志时间戳才发现。根因形态是：
+常驻进程**不会退出、也不会报错**，只是把请求吞掉 —— 只看退出码的看门狗等于没有看门狗。
+
+**现在**：
+
+- **僵死看门狗**：判据是「**最近一次成功响应的时间**」（`warm.lastOkAt` 由每个成功响应刷新），
+  不是退出码。只要「还有请求排队」且「超过 `DSH_UI_STALL_MS`（默认 90000ms）没有任何成功响应」，
+  即判僵死：杀进程 + `stalls++` + 记 `lastStallReason`，下一次请求重新 spawn 并重新解析 PID/主窗口。
+  排队中的请求会被明确拒绝为「已执行但结果未知」，**不会被静默当成没执行**。
+- **失败重试（只读动作）**：`read`/`find`/`state`/`windows` 等只读动作超时后**自动重试一次**
+  （新进程 + ready 握手 + 重新解析窗口），重试总时长受 20s 上限约束；只读重放无副作用，安全。
+- **副作用动作绝不重放**：`click`/`setvalue`/`key`/`type`/`drag` 在看门狗重启或请求超时时，
+  一律返回 `{ok:false, unknown:true}` 并提示「先复核控件状态再决定」，绝不走回退路径重跑。
+- **`status` 超时 ≠ 未运行**：状态查询超时改为返回 `{running:false, unknown:true, error:'status 超时…'}`，
+  `ui_status` 渲染成「客户端状态未知」——把「查询卡住」误报成「客户端没起来」会导致反复重启客户端（踩过）。
+- **启动/重启调用有硬上限**：`ui_launch` 的整段调用受 `waitMs` 硬上限约束（最小 3s），
+  **每次轮询都把剩余预算传给 `status()`**，任何一次卡住的状态查询都拖不垮整个调用；
+  返回里带 `polls`/`statusTimeouts` 心跳，便于区分「客户端真没起来」与「轮询自身被拖慢」。
+- 诊断出口：`warmStatus()` 现在带 `lastOkAt` / `stalls` / `lastStallAt` / `lastStallReason`。
+
+**环境变量**：`DSH_UI_STALL_MS`（僵死判定阈值，默认 90000ms）。
+
+**单测**：`test/restart-watchdog.test.mjs`（离线，假 serve 进程模拟「活着但不回请求」），
+15 项断言覆盖「看门狗判僵死 + 只读重试 + 副作用不重放 + status 未知语义 + launch 硬上限」。
+
 ### 已知缺口（尚未修复，欢迎 PR）
 
-- 客户端重启类调用缺超时上限与心跳看门狗。
 - 证据目录无按会话聚合与上限，长跑会堆积大量时间戳目录。
+- `read`/`state` 的 `skipped` 只在批量/常驻引擎路径有值；一次性回退路径解析老脚本时可能为 `null`（未知）。
