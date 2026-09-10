@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node
 import { basename, join, extname } from 'node:path'
 import { homedir } from 'node:os'
 import { makeDriver } from './lib/driver.mjs'
+import { renderDrive, renderState } from './lib/render.mjs'
 import { makeVision, UI_STATE_PROMPT } from './lib/vision.mjs'
 import { makeLive } from './lib/live.mjs'
 
@@ -32,6 +33,7 @@ const GUIDANCE =
   'ui_flow(steps, tag, failFast, allowSideEffects) 按步骤序列驱动并收集证据（find/click/setvalue/key/type/drag/read/windows/shot/wait/waitfor/expect），每步输出+截图写进证据目录 steps.json，返回 transcript。' +
   '动态界面（登录、验证码、按界面情况分支）必须「看一步再做下一步」：用 ui_drive 逐步走，先用 ui_windows/read/shot(describe=true) 看现状，再用 waitFor={ms,state:"appear|gone|enabled|disabled"} 等条件成立再点（别靠猜 sleep），同名控件用 index，容器内定位用 inAid/inName，回车提交用 type 的 {ENTER}，滑块验证码用 drag。' +
   '实时性：ui_drive 走常驻 PowerShell 进程（启动成本只付一次，实测单动作 p50 30ms）；ui_flow 整段序列进一个进程批量执行（13 步实测 1.6s）。DSH_UI_SERVE=0 可退回一次性进程路径。' +
+  '观测完整性（B-1）：read/state 结果恒带 skipped=N——本次枚举里「读不到状态」而被跳过的元素数（类型白名单/offscreen/match/去重这些正常过滤不算）；skipped>0 时同结果附带 warn，明确写出「本次清单不完整」。别把「没读到」当成「界面上没有」；skipped=null 表示该路径没回报（未知），不等于 0。' +
   '视觉即返（推荐）：ui_launch 启动完成会自动截图并用视觉模型描述当前界面（返回 uiState.description，一步知道在登录页还是主界面）；ui_drive action=shot 加 describe=true 同样直接返回界面描述——优先用这两个，不必再单独 describe_image。需要深度视觉复核时才用 describe_image 对该 png 细看（当前主模型不读图，必须走 describe_image）。' +
   '实时看见（agent 专用）：ui_live(action=start|stop|status|frame|wait) 后台循环抓「窗口内容」帧（1500ms 默认，不抢前台不恢复最小化）；frame 返回 latest.png 路径+帧 hash+控件状态，read_image(frame.path) 即看见当前画面；wait({fromHash}) 阻塞等画面变化；未 start 时 frame 退化为一次捕获。敏感帧（焦点=密码/验证码）默认不给 path（allowSensitive=true 才给）。截图一律在 E 盘证据目录。' +
   '安全边界：点击=真实操作（保存/生成/跳转可能落库）；「保存/删除/清空/导出」类按钮点击前先把按钮名报给用户确认；「下单/交易」类入口一律不点；优先用 find/read/shot/expect 做只读验证；定位卡住三步就停止报告，不盲点轰炸。' +
@@ -122,7 +124,7 @@ const tools = () => [
     name: 'ui_status',
     description: '查目标桌面客户端的进程与主窗口状态（是否运行/PID/窗口标题/位置大小）。只读。未运行时用 ui_launch 拉起。Triggers: 客户端状态 / 客户端开着吗 / client status.',
     parameters: {},
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.running ? ('客户端运行中 pid=' + v.pid + ' 窗口=' + v.title) : '客户端未运行' }] },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.running ? ('客户端运行中 pid=' + v.pid + ' 窗口=' + v.title) : (v.unknown ? ('客户端状态未知：' + (v.error || '查询超时')) : '客户端未运行') }] },
     async execute() {
       return await drv().status()
     },
@@ -149,7 +151,7 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_drive',
-    description: '对正在运行的目标客户端执行单步 UIA 操作（实时、有状态）。动作：find 定位控件；read 读可见控件（含输入框真实 value 与 #序号，序号可当 index 复用）；windows 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，动态界面先看这个）；shot 截主窗口 PNG（describe=true 直接返回视觉描述）；waitfor 等条件成立（state=appear|gone|enabled|disabled）；click 点击；setvalue ValuePattern 写值；key 键盘输入（中文走剪贴板粘贴）；type 键盘序列（{ENTER}/{TAB}/{ESC}/{DOWN}/^a 等，用于回车提交、Tab 跳转、下拉选择）；drag 鼠标拖拽（滑块验证码）。' +
+    description: '对正在运行的目标客户端执行单步 UIA 操作（实时、有状态）。动作：find 定位控件；read 读可见控件（含输入框真实 value 与 #序号，序号可当 index 复用）；windows 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，动态界面先看这个）；shot 截主窗口 PNG（describe=true 直接返回视觉描述）；waitfor 等条件成立（state=appear|gone|enabled|disabled）；click 点击；setvalue ValuePattern 写值；key 键盘输入（中文走剪贴板粘贴）；type 键盘序列（{ENTER}/{TAB}/{ESC}/{DOWN}/^a 等，用于回车提交、Tab 跳转、下拉选择）；drag 鼠标拖拽（滑块验证码）。read/state 结果恒带 skipped=N（读不到状态被跳过的元素数），>0 时附 warn 提示「清单不完整」。' +
       '动态界面三件套：waitFor={ms,interval,state,match,index} 让 click/setvalue/key/type/find/expect 先等条件成立再动手（不再靠猜 sleep）；index 取同名控件的第 N 个；inAid/inName 把查找限定在某个容器内。' + READ_ONLY_NOTE + '。click/setvalue/key/type/drag 必须传 allowSideEffects=true 才执行。截图一律写入证据目录（DSH_UI_EVIDENCE_DIR），不写仓库；需要视觉复核时用 describe_image 读返回的 path。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
     parameters: {
       action: { type: 'string', required: true, description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag | clickat | doubleclick | move | wheel | capture | state-live（clickat=按窗口客户区坐标点击、doubleclick=坐标双击，用于 UIA 拿不到稳定元素的表格行/图表点位——坐标脆弱，窗口一移动就失效；move/wheel=移动鼠标/滚轮，属只读白名单、不需 allowSideEffects；capture=抓一帧窗口内容；state-live=免前台状态采样）' },
@@ -203,12 +205,12 @@ const tools = () => [
   defineTool({
     name: 'ui_state',
     description: '界面快照（只读，一步看清「现在是什么状态」）：当前主窗口名 + 当前焦点元素 + 交互型控件清单（按钮/输入框/页签/勾选/列表项，带 #序号、aid、enabled、真实输入值）。' +
-      '动态界面每做一步之后先看它，比反复 read 省上下文（read 会连文本一起返回几百行）。match 可按控件名正则过滤，max 限制条数（默认 40）。Triggers: 现在什么界面 / 界面状态 / 焦点在哪 / ui state.',
+      '动态界面每做一步之后先看它，比反复 read 省上下文（read 会连文本一起返回几百行）。match 可按控件名正则过滤，max 限制条数（默认 40）。结果恒带 skipped=N：本次枚举里读不到状态而被跳过的元素数，>0 时附 warn 明说「清单不完整」。Triggers: 现在什么界面 / 界面状态 / 焦点在哪 / ui state.',
     parameters: {
       match: { type: 'string', description: '按控件名正则过滤（如 登录|验证码）' },
       max: { type: 'number', description: '最多返回几条，默认 40' },
     },
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.ok ? ('窗口=' + (v.window || '?') + ' 焦点=' + (v.focused || '无') + '\n交互控件 ' + v.count + ' 个：\n' + (v.lines || []).join('\n')) : '失败：' + (v.error || '') }] },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderState(v) }] },
     timeoutMs: 60000,
     async execute(args) {
       return await drv().drive({ action: 'state', match: args.match || '', max: args.max || 40 })
@@ -217,6 +219,7 @@ const tools = () => [
   defineTool({
     name: 'ui_observe',
     description: '只读观察（推荐入口，无需 allowSideEffects）：find 定位 / read 读控件与真实输入值 / state 界面快照（窗口+焦点+交互控件）/ windows 顶层窗口 / waitfor 等条件成立 / expectwindow 窗口出现或消失 / expecttext 文本出现 / waitany 多条件竞速 / shot 截图。' +
+      'read/state 结果恒带 skipped=N（本次枚举里读不到状态被跳过的元素数），>0 时附 warn 明说「清单不完整」——「没读到」不等于「界面上没有」。' +
       '动态界面（登录、验证码、按界面情况分支）的循环就是：ui_observe 看现状 → 决定 → ui_act 动手 → 再 ui_observe 确认。' +
       'waitany 是判定登录结果的关键：一次同时押注「主窗口出现」「错误文本出现」「登录窗口还在」三支，返回命中的那支。Triggers: 看界面 / 等条件 / 判断登录结果 / observe.',
     parameters: {
@@ -358,17 +361,8 @@ const tools = () => [
   }),
 ]
 
-function renderDrive(v) {
-  if (!v.ok) return '失败：' + (v.error || '未知错误')
-  switch (v.action) {
-    case 'find': return v.found ? ('找到：' + v.detail + (v.count > 1 ? '（共 ' + v.count + ' 个匹配，可用 index 指定第几个）' : '')) : '未找到目标控件'
-    case 'read': return '读到 ' + v.count + ' 个控件：\n' + (v.lines || []).join('\n')
-    case 'windows': return v.count + ' 个顶层窗口：\n' + (v.lines || []).join('\n')
-    case 'waitfor': return (v.found ? '条件已满足' : '条件已满足（目标已消失）') + '（等待 ' + (v.waitedMs || 0) + 'ms）' + (v.detail ? '：' + v.detail : '')
-    case 'shot': return '截图：' + v.path + ' ' + v.w + 'x' + v.h + (v.workspacePath ? '（副本 ' + v.workspacePath + '，可用 describe_image 复核）' : '') + (v.description ? '\n界面描述：' + v.description : '')
-    default: return v.output || '完成'
-  }
-}
+// renderDrive / renderState 已移到 lib/render.mjs：渲染文本是 agent 唯一看得见的契约，
+// 必须能离线单测（index.js 依赖宿主 @deepseek-ai/dsh-tools，普通 node 进程 import 不到）。
 
 /**
  * live 快照脱敏（统一出口）：任何 live 输出（status/frame/frame.png 路由）都过这里。
