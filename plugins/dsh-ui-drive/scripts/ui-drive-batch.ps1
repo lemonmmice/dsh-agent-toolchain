@@ -132,6 +132,18 @@ function Get-ControlTypeName($el) {
   }
 }
 
+# 匹配目标控件：Name 与 HelpText 都参与。
+# WPF 里只显示图标的按钮 Name 常为空、语义只写在 ToolTip 中，而 WPF 会把 ToolTip 作为
+# UIA HelpText 暴露（AutomationProperties.HelpText 为空时回落 ToolTip）。
+# 过去 click/find 只匹配 Name，导致这类按钮「读得到、点不到」，只能退化成坐标点击。
+function Test-MatchText($el, [string]$re) {
+  if (-not $re) { return $true }
+  $n = ''; $h = ''
+  try { $n = [string]$el.Current.Name } catch { }
+  try { $h = [string]$el.Current.HelpText } catch { }
+  return ($n -match $re) -or ($h -match $re)
+}
+
 # UIA 里有些元素（虚拟化列表项、折叠面板里的 TextBlock）BoundingRectangle 是 ±∞，
 # 直接 [int] 会抛「值对于 Int32 太大或太小」把整个动作打断。统一按「不可用」处理。
 function Is-RectUsable($rect) {
@@ -255,7 +267,7 @@ function Wait-ForCondition($main, [string]$aid, [string]$name, $spec, $scope = $
     if ($list.Count -gt 0) {
       $picked = @($list)
       if ($matchRe) {
-        $picked = @($picked | Where-Object { $_.Current.Name -match $matchRe })
+        $picked = @($picked | Where-Object { Test-MatchText $_ $matchRe })
       }
       if ($picked.Count -gt $idx) { $el = $picked[$idx] }
     }
@@ -807,7 +819,7 @@ function Resolve-Target($main, $step, [int]$procId) {
   $list = Find-Elements $root ([string]$step.aid) ([string]$step.name) $scope
   $matchRe = ''
   if ($step.PSObject.Properties.Name -contains 'match' -and $step.match -and $step.action -ne 'read') { $matchRe = [string]$step.match }
-  if ($matchRe) { $list = @($list | Where-Object { $_.Current.Name -match $matchRe }) }
+  if ($matchRe) { $list = @($list | Where-Object { Test-MatchText $_ $matchRe }) }
   $idx = 0
   if ($step.PSObject.Properties.Name -contains 'index' -and $null -ne $step.index) { $idx = [int]$step.index }
   $el = $null
