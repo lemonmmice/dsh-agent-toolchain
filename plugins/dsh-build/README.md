@@ -7,9 +7,16 @@ AI 改完代码 → 增量编译 → 结构化错误回填 → 修复 → 再编
 
 | 工具 | 说明 |
 | --- | --- |
-| \`build_run\` | 运行构建：\`target=Build\`（增量快检，默认）/ \`Rebuild\`（全量结论）；\`engine=msbuild\`（默认，VS MSBuild）/ \`engine=dotnet\`（\`dotnet build\`，自动 restore，现代 SDK 仓库推荐）；\`project\` 可定向单工程/.sln；\`killClient\` 先结束占用输出目录的客户端；返回结构化错误（file/line/col/code/message，环境错误与代码错误分开归类） |
+| \`build_run\` | 运行构建：\`target=Build\`（增量快检，默认）/ \`Rebuild\`（全量结论）；\`engine=msbuild\`（默认，VS MSBuild）/ \`engine=dotnet\`（\`dotnet build\`，自动 restore，现代 SDK 仓库推荐）；\`project\` 可定向单工程/.sln；\`killClient\` 先结束占用输出目录的客户端；\`runId\` 写本次构建的凭证记录（见下）；返回结构化错误（file/line/col/code/message，环境错误与代码错误分开归类） |
 | \`build_status\` | 最近一次构建结果（目标/耗时/错误数/日志路径） |
 | \`build_errors\` | 从最近日志重解析错误/警告列表 |
+
+### 证据链：`runId`
+
+`build_run` 传了 `runId` 才会写 `run-<runId>.json`（落在构建日志目录），**而 `verify_report` 的
+`build` 类 claim 正是读这个文件**。不传 `runId` 时只写 `last.json`——多个 agent 并发时互相覆盖，
+`build` claim 就无法用于收尾裁决（只能退回人工判断）。建议统一用 `who-task-n` 形式，例如
+`dsh-logon-fix-1`、`codex-etf-2`，一条任务链全程复用同一个 runId。
 
 ## msbuild 引擎的布局识别
 
