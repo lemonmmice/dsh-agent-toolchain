@@ -34,6 +34,7 @@ using System.Runtime.InteropServices;
 public class UiDriveWin32 {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
@@ -126,9 +127,21 @@ if ($Action -eq 'status') {
 $procId = Get-ClientPid
 $main = Get-MainWindow $procId
 if (-not $main) { throw '未找到主窗口（' + $WindowName + '）' }
-[UiDriveWin32]::ShowWindow([IntPtr]$main.Current.NativeWindowHandle, 9) | Out-Null   # SW_RESTORE（最小化时恢复）
-[UiDriveWin32]::SetForegroundWindow([IntPtr]$main.Current.NativeWindowHandle) | Out-Null
-Start-Sleep -Milliseconds 300
+# 只读动作绝不改变窗口状态；只有真的最小化才恢复，只有输入/截图类才抢前台。
+# 旧实现无条件 ShowWindow(SW_RESTORE)：对已最大化窗口等价于「还原成非最大化」
+# → 每次调用窗口尺寸都变（用户可见的“缩小一下”），也让坐标标定全部失效。
+$mh = [IntPtr]$main.Current.NativeWindowHandle
+$isIconic = $false
+try { $isIconic = [UiDriveWin32]::IsIconic($mh) } catch { }
+if ($isIconic) {
+  [UiDriveWin32]::ShowWindow($mh, 9) | Out-Null
+  Start-Sleep -Milliseconds 300
+}
+$needFg = @('click','setvalue','key','type','drag','move','wheel','clickat','doubleclick','shot','capture') -contains $Action.ToLowerInvariant()
+if ($needFg) {
+  [UiDriveWin32]::SetForegroundWindow($mh) | Out-Null
+  Start-Sleep -Milliseconds 300
+}
 
 switch ($Action) {
   'find' {
@@ -162,13 +175,16 @@ switch ($Action) {
       if (-not $n) { $n = '' }
       if ($n.Length -gt 60) { $n = $n.Substring(0,60) }
       $b = $el.Current.BoundingRectangle
-      if ($Match -and $n -notmatch $Match) { continue }
+      $help = ''
+      try { $help = [string]$el.Current.HelpText } catch { }
+      if ($Match -and ($n -notmatch $Match) -and ($help -notmatch $Match)) { continue }
       if ($t -in @('Button','Edit','Text','RadioButton','CheckBox','TabItem','ComboBox','ListItem','MenuItem','TreeItem','Hyperlink')) {
         $val = ''
         if ($t -in @('Edit','ComboBox')) {
           try { $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $val = [string]$vp.Current.Value } catch { }
         }
-        $line = '[' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + [int]$b.X + ',' + [int]$b.Y
+        $line = '[' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + [int]$b.X + ',' + [int]$b.Y + ' ' + [int]$b.Width + 'x' + [int]$b.Height
+        if ($help) { $line = $line + ' help="' + $help + '"' }
         if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
         Write-Output $line
       }

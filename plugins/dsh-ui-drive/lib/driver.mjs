@@ -321,8 +321,14 @@ export function makeDriver(cfg) {  const c = {
     })
   }
 
-  /** 向常驻进程发一条请求；超时/异常降级为 null（只读动作可安全回退）。 */
-  function warmSend(payload, timeoutMs = c.defaultTimeoutMs) {
+  /**
+   * 向常驻进程发一条请求；超时/异常降级为 null（只读动作可安全回退）。
+   * opts.killOnTimeout=false（live 后台循环用）：超时只放弃这次请求、绝不
+   * warmStop 杀常驻进程——live tick 超时若杀进程，会把正在排队的 agent 副作用
+   * 动作一起清掉（可能已执行、结果未知，评审定为最关键事故源）。
+   * 反例：agent 正常动作超时仍杀进程（卡住的 serve 没救），保持原语义。
+   */
+  function warmSend(payload, timeoutMs = c.defaultTimeoutMs, opts = {}) {
     return new Promise((resolve) => {
       if (!warm.proc) { resolve(null); return }
       const id = ++warm.seq
@@ -330,7 +336,9 @@ export function makeDriver(cfg) {  const c = {
         if (warm.pending.has(id)) {
           warm.pending.delete(id)
           const why = warm.lastProtocolError ? ('；最近协议输出：' + warm.lastProtocolError) : ''
-          warmStop('request timeout')
+          if (opts.killOnTimeout !== false) {
+            warmStop('request timeout')
+          }
           // 明确区分「超时」：调用方据此禁止副作用重放
           resolve({ ok: false, timeout: true, error: '常驻进程请求超时 ' + timeoutMs + 'ms' + why })
         }
@@ -370,6 +378,15 @@ export function makeDriver(cfg) {  const c = {
     warmStop('shutdown')
   }
 
+  /**
+   * 重启常驻进程（客户端重启后调用）：杀掉当前进程，下次请求重新 spawn 并重新解析 PID/主窗口。
+   * 与 warmShutdown 的区别：不会把 disabled 置 true（那是永久禁用，会退化到一次性脚本路径）。
+   */
+  function warmRestart() {
+    warm.disabled = false
+    warmStop('manual restart')
+  }
+
   /** 常驻进程状态（诊断用）。 */
   function warmStatus() {
     return { alive: warm.proc !== null, pending: warm.pending.size, seq: warm.seq, startedAt: warm.startedAt || null, lastUsed: warm.lastUsed || null, disabled: warm.disabled }
@@ -380,14 +397,14 @@ export function makeDriver(cfg) {  const c = {
   // 纯输入型动作（移动鼠标/滚轮/拖拽/坐标点击）：不会提交或改数据，可逆，
   // 因此不受 allowSideEffects 护栏限制（K线滑动、十字光标、列表滚动要用）。
   const INPUT_ACTIONS = new Set(['move', 'wheel', 'drag', 'clickat', 'doubleclick'])
-  const READ_ONLY_ACTIONS = new Set(['find', 'read', 'shot', 'status', 'windows', 'waitfor', 'state', 'expectwindow', 'expecttext', 'waitany', 'move', 'wheel'])
+  const READ_ONLY_ACTIONS = new Set(['find', 'read', 'shot', 'status', 'windows', 'waitfor', 'state', 'state-live', 'expectwindow', 'expecttext', 'waitany', 'move', 'wheel', 'capture'])
 
   /**
    * 新动作（type/drag/windows/waitfor/state/expectwindow/expecttext/waitany）与带条件的
    * 等待（waitFor）只有批量引擎实现；一次性脚本路径不支持时走批量引擎单步执行——
    * 语义一致，代价是每步多付一次 PowerShell 启动（约 0.4s），可接受。
    */
-  const BATCH_ONLY_ACTIONS = new Set(['type', 'drag', 'move', 'wheel', 'clickat', 'doubleclick', 'windows', 'waitfor', 'state', 'expectwindow', 'expecttext', 'waitany'])
+  const BATCH_ONLY_ACTIONS = new Set(['type', 'drag', 'move', 'wheel', 'clickat', 'doubleclick', 'windows', 'waitfor', 'state', 'state-live', 'expectwindow', 'expecttext', 'waitany', 'capture'])
 
   /** 动作名归一化：waitFor / WaitFor / WAITFOR 都是 waitfor（模型大小写写法不一致）。 */
   function normAction(a) {
@@ -448,7 +465,27 @@ export function makeDriver(cfg) {  const c = {
    * 默认走常驻进程（实时）；常驻进程不可用时自动回退到一次性脚本进程。
    * 副作用动作（click/setvalue/key）必须显式 allowSideEffects=true（安全护栏）。
    */
+  // 瞬时失败特征：元素在解析与操作之间被销毁（客户端页面切换/虚拟化重建）。
+  const TRANSIENT_ERR_RE = /不再可用|父窗口已关闭|元素.*不可用|ElementNotAvailable/i
+
   async function drive(args) {
+    const firstAction = normAction(args && args.action)
+    const retryable = READ_ONLY_ACTIONS.has(firstAction)
+    const maxTries = retryable ? 2 : 1
+    let last = null
+    for (let i = 0; i < maxTries; i++) {
+      last = await driveOnce(args)
+      if (!last || last.ok !== false) return last
+      if (!TRANSIENT_ERR_RE.test(String(last.error || ""))) return last
+      if (i + 1 >= maxTries) break
+      // 重试前：重启常驻进程（重新解析 PID/主窗口），给客户端一点恢复时间
+      try { warmRestart() } catch { /* ignore */ }
+      await new Promise((r) => setTimeout(r, 400))
+    }
+    return last
+  }
+
+  async function driveOnce(args) {
     const { action: rawAction, name = '', aid = '', value = '', ascii = false, match = '', waitMs = c.defaultWaitMs, procId = 0, allowSideEffects = false, workspace = '', label = '', shotsDir = '', index, inAid = '', inName = '', waitFor = null, state = '', keys = '', fromX, fromY, toX, toY, steps = 12, holdMs = 120, max, winTitle = '', winHandle, secret = false, expectValue, titleRe = '', textRe = '', gone = false, ms, interval, conds, stableCount, observe = false, observeMatch = '', observeMax = 15, x, y, delta, count, mods = '', double = false, button = '', focus = false } = args
     const action = normAction(rawAction)
     if (!READ_ONLY_ACTIONS.has(action) && !INPUT_ACTIONS.has(action)) {
@@ -458,7 +495,7 @@ export function makeDriver(cfg) {  const c = {
     }
 
     let shotPlan = null
-    if (action === 'shot') {
+    if (action === 'shot' || action === 'capture') {
       shotPlan = prepareShotPath(shotsDir, label)
       mkdirSync(shotPlan.dir, { recursive: true })
     }
@@ -492,8 +529,13 @@ export function makeDriver(cfg) {  const c = {
           // 图表交互（同样漏传过：warm 路径下 move/wheel/clickat 收到 x=0,y=0）
           x, y, delta, count, mods, double, button, focus,
         }
-        if (action === 'shot') payload.out = shotPlan.path
-        const res = await warmSend(payload, action === 'shot' ? 60000 : (Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : c.defaultTimeoutMs))
+        if (action === 'shot' || action === 'capture') payload.out = shotPlan.path
+        // 超时口径：调用方显式给的 timeoutMs 优先，但 capture/shot 上限 60s
+        // （Claude 评审 1.3：原来 direct 硬选 60000，live 传的 timeoutMs:8000 被吞，
+        //  一次卡帧顶死 single-flight 最长 60s/10min——现在 min(caller,60s) 生效）。
+        const callerMs = Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : c.defaultTimeoutMs
+        const effMs = (action === 'shot' || action === 'capture') ? Math.min(callerMs, 60000) : callerMs
+        const res = await warmSend(payload, effMs, { killOnTimeout: action === 'capture' ? false : true })
         if (res && res.ok === false && res.timeout === true) {
           // 超时 ≠ 没执行：请求可能已经到达并被处理，只是响应没回来。
           // 副作用动作绝不能走回退路径重放（会点两次 / 输两次），必须如实
@@ -617,6 +659,20 @@ export function makeDriver(cfg) {  const c = {
         lines: normLines(res.lines),
       }
     }
+    if (action === 'state-live') {
+      // live 循环专用免前台快照：结构与 state 相同，额外带 secretFocused
+      // （敏感帧防线：焦点=密码/验证码 → Node 侧跳过抓帧）
+      return {
+        ok: true,
+        action,
+        window: res.window ?? null,
+        focusedWindow: res.focusedWindow ?? null,
+        focused: res.focused ?? null,
+        count: res.count || 0,
+        lines: normLines(res.lines),
+        secretFocused: res.secretFocused === true,
+      }
+    }
     if (action === 'waitfor') return { ok: true, action, found: res.found === true, detail: res.detail ?? null, waitedMs: res.waitedMs ?? 0 }
     if (action === 'expectwindow' || action === 'expecttext') {
       const out = { ok: true, action, found: res.found === true, waitedMs: res.waitedMs ?? 0 }
@@ -636,21 +692,31 @@ export function makeDriver(cfg) {  const c = {
       return { ok: true, action, output: res.output || '' }
     }
     if (action === 'shot') return shapeShot(action, res, shotPlan, workspace)
+    if (action === 'capture') {
+      const out = {
+        ok: res.ok === true,
+        action,
+        state: res.state || null,
+        captureMethod: res.captureMethod || null,
+        pid: res.pid ?? null,
+        window: res.window ?? null,
+      }
+      if (res.path) { out.path = res.path; out.w = res.w; out.h = res.h }
+      if (res.error) out.error = res.error
+      return out
+    }
     return { ok: true, action, output: res.output || '' }
   }
 
-  /** shot 结果：补上 workspace 副本路径。 */
+  /**
+   * shot 结果：截图只写证据目录（DSH_UI_EVIDENCE_DIR，默认 ~/.dsh-agent-toolchain/
+   * ui-evidence，可指向 E 盘），不再复制进 workspace/仓库——用户约定：UI 截图一律
+   * 丢 E 盘，仓库只放代码证据。旧版本会把副本写进 <workspace>/.dsh-ui-evidence，
+   * 该目录曾误入 git status；现在显式拒绝（workspace 参数保留兼容，忽略）。
+   */
   function shapeShot(action, res, shotPlan, workspace) {
-    let workspacePath = null
     const src = res.path
-    if (workspace && src) {
-      workspacePath = join(workspace, '.dsh-ui-evidence', basename(shotPlan.dir), basename(src))
-      try {
-        mkdirSync(join(workspacePath, '..'), { recursive: true })
-        copyFileSync(src, workspacePath)
-      } catch { workspacePath = null }
-    }
-    return { ok: true, action, path: src, w: res.w, h: res.h, workspacePath }
+    return { ok: true, action, path: src, w: res.w, h: res.h, workspacePath: null }
   }
 
   function parseStatusText(text) {
@@ -990,6 +1056,7 @@ export function makeDriver(cfg) {  const c = {
     runPs1,
     tsDir,
     warmShutdown,
+    warmRestart,
     // 显式释放客户端互斥锁（长跑脚本轮间让锁用；进程退出时会自动释放）
     releaseLock: () => {
       if (!lockPath) return
