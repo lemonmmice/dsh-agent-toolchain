@@ -156,8 +156,12 @@ export function makeDriver(cfg) {  const c = {
 
   // ------------------------------------------------------------ 状态 / 启动
 
-  /** ui_status：进程 + 主窗口状态（batch 脚本 -Status 快路径，不加载 UIA）。 */
-  async function status() {
+  /**
+   * ui_status：进程 + 主窗口状态（batch 脚本 -Status 快路径，不加载 UIA）。
+   * opts.timeoutMs：上限由调用方给（launch 的轮询会把「剩余预算」传进来）——
+   * 否则一次卡住的 status 就能把「客户端重启调用」拖到远超 waitMs（B-2）。
+   */
+  async function status({ timeoutMs = 30000 } = {}) {
     const procName = c.procName || (c.clientExe ? basename(c.clientExe).replace(/\.exe$/i, '') : '')
     if (!procName && !c.clientExe) {
       // 未配置目标进程：明确区分「未配置」与「未运行」，避免三个状态塌缩成一个 running:false。
@@ -167,16 +171,25 @@ export function makeDriver(cfg) {  const c = {
     const args = existsSync(batchScript())
       ? ['-Status', '-ProcName', procName, '-WindowName', c.windowName]
       : ['-ProcName', procName, '-WindowName', c.windowName, '-Action', 'status']
-    const r = await runPs1(script, args, 30000)
+    const r = await runPs1(script, args, timeoutMs)
     const text = r.stdout
-    if (r.timedOut) return { running: false, error: 'status 超时' }
+    // 超时 = 「不知道」，不是「未运行」：混为一谈会让上层把「卡住」当成「没起来」
+    // 而反复重启客户端（踩过的归因错误）。
+    if (r.timedOut) return { running: false, unknown: true, error: 'status 超时（' + timeoutMs + 'ms 未返回）' }
     if (/NOT_RUNNING/.test(text)) return { running: false, pid: null, title: null, raw: text.slice(0, 300) }
     return parseStatusText(text)
   }
 
-  /** ui_launch：启动客户端（detached），轮询等待主窗口。 */
+  /**
+   * ui_launch：启动客户端（detached），轮询等待主窗口。
+   * B-2：整段调用有**硬上限**（waitMs，最小 3s）——每次轮询都把「剩余预算」传给 status()，
+   * 任何一次卡住的 status 都不可能把重启调用拖成无限等待（昨夜整夜挂死 2.5h 的形态）。
+   * 结果里带 polls/statusTimeouts 心跳，便于区分「客户端真没起来」与「轮询自身被拖慢」。
+   */
   async function launch({ extraArgs = '', waitMs = 60000 } = {}) {
-    const st0 = await status()
+    const startedAt = Date.now()
+    const budget = Math.max(3000, Number(waitMs) || 60000)
+    const st0 = await status({ timeoutMs: Math.min(30000, budget) })
     if (st0.running && st0.title) {
       return { started: false, alreadyRunning: true, pid: st0.pid, title: st0.title, waitedMs: 0 }
     }
@@ -196,17 +209,34 @@ export function makeDriver(cfg) {  const c = {
       return { started: false, error: '启动失败: ' + e }
     }
     child.unref()
-    const deadline = Date.now() + waitMs
-    let last = null
+    const deadline = startedAt + budget
+    let last = st0
+    let polls = 0
+    let statusTimeouts = 0
     while (Date.now() < deadline) {
-      await sleep(1000)
-      last = await status()
+      const remain = deadline - Date.now()
+      if (remain <= 0) break
+      await sleep(Math.min(1000, Math.max(50, remain)))
+      const budgetLeft = deadline - Date.now()
+      if (budgetLeft <= 0) break
+      last = await status({ timeoutMs: Math.max(1000, Math.min(30000, budgetLeft)) })
+      polls++
+      if (last.unknown) statusTimeouts++
       if (last.running && last.title) {
-        return { started: true, alreadyRunning: false, pid: last.pid, title: last.title, waitedMs: waitMs - (deadline - Date.now()) }
+        return { started: true, alreadyRunning: false, pid: last.pid, title: last.title, waitedMs: Date.now() - startedAt, polls }
       }
     }
     const running = last ? last.running : false
-    return { started: running, alreadyRunning: false, pid: last ? last.pid : null, title: last ? last.title : null, waitedMs: waitMs, warning: running ? '进程已起但主窗口超时未出现' : '启动超时' }
+    return {
+      started: running,
+      alreadyRunning: false,
+      pid: last ? last.pid : null,
+      title: last ? last.title : null,
+      waitedMs: Date.now() - startedAt,
+      polls,
+      statusTimeouts,
+      warning: running ? '进程已起但主窗口超时未出现' : (statusTimeouts > 0 ? '启动超时（其中 ' + statusTimeouts + ' 次状态查询自身超时，进程状态未知）' : '启动超时'),
+    }
   }
 
   // ------------------------------------------------------------ 常驻进程（serve 模式）
@@ -226,6 +256,12 @@ export function makeDriver(cfg) {  const c = {
     disabled: false,
     idleTimer: null,
     lastProtocolError: null,
+    // B-2：看门狗的判据是「最近一次**成功动作**的时间」，不是进程退出码。
+    // 卡死的 serve 既不会退出、也不会报错，只会吞掉请求 —— 只看退出码就等于没看门狗。
+    lastOkAt: 0,
+    stalls: 0,
+    lastStallAt: null,
+    lastStallReason: null,
   }
 
   function warmEnabled() {
@@ -262,6 +298,7 @@ export function makeDriver(cfg) {  const c = {
     warm.buf = Buffer.alloc(0)
     warm.startedAt = Date.now()
     warm.lastUsed = Date.now()
+    warm.lastOkAt = Date.now()
     warm.lastProtocolError = null
 
     const onLine = (line) => {
@@ -283,6 +320,7 @@ export function makeDriver(cfg) {  const c = {
       warm.pending.delete(obj.id)
       clearTimeout(e.timer)
       warm.lastUsed = Date.now()
+      warm.lastOkAt = Date.now() // 成功响应 = 心跳：看门狗据此判「还活着」
       e.resolve(obj)
     }
     child.stdout.on('data', (d) => {
@@ -311,6 +349,29 @@ export function makeDriver(cfg) {  const c = {
     }, Math.min(60000, Math.max(5000, idleMs / 2)))
     warm.idleTimer = timer
     if (timer.unref) timer.unref()
+
+    // 僵死看门狗（B-2）：判据是「最近一次成功动作的时间」，不是退出码——
+    // 卡住的 serve 进程既不会退出也不会报错，只会把请求吞掉（昨夜整晚挂死就是这么来的）。
+    // 只要「还有请求在排队」且「超过 stallMs 没有任何成功响应」，就判僵死：杀进程 + 计数，
+    // 下一次请求会重新 spawn（并重新解析 PID/主窗口）。只读动作另有一次性重试兜底。
+    const stallMs = Number(process.env.DSH_UI_STALL_MS || 90000)
+    const wd = setInterval(() => {
+      if (warm.proc !== child) { clearInterval(wd); return }
+      if (warm.pending.size === 0) return // 空闲不算僵死，看门狗继续待命
+      let oldest = Number.MAX_SAFE_INTEGER
+      for (const [, e] of warm.pending) { if (e.since && e.since < oldest) oldest = e.since }
+      const now = Date.now()
+      const idleOk = now - (warm.lastOkAt || warm.startedAt || now)
+      const idleOldest = oldest === Number.MAX_SAFE_INTEGER ? 0 : now - oldest
+      if (idleOk > stallMs && idleOldest > stallMs) {
+        warm.stalls++
+        warm.lastStallAt = now
+        warm.lastStallReason = 'watchdog: 排队 ' + warm.pending.size + ' 个请求、' + Math.round(idleOk / 1000) + 's 无成功响应 → 判僵死并重启常驻进程'
+        warm.lastProtocolError = warm.lastStallReason
+        warmStop('stall watchdog')
+      }
+    }, Math.min(15000, Math.max(500, Math.floor(stallMs / 3))))
+    if (wd.unref) wd.unref()
     // ready 握手：确认 serve 脚本已经起来并在监听 stdin，避免「进程刚 spawn
     // 就发请求」时首个动作白等一个超时（Codex 复核提出的 should-fix）。
     return warmSend({ cmd: 'ping' }, 15000).then((r) => {
@@ -345,6 +406,7 @@ export function makeDriver(cfg) {  const c = {
       }, timeoutMs)
       warm.pending.set(id, {
         timer,
+        since: Date.now(), // 看门狗用：这条请求已经等了多久
         resolve: (obj) => {
           // 脚本热改：常驻进程自报 STALE_SCRIPT 后退出，这里静默重试一次（换新进程）
           if (obj && obj.error === 'STALE_SCRIPT') {
@@ -358,7 +420,12 @@ export function makeDriver(cfg) {  const c = {
           }
           resolve(obj)
         },
-        reject: () => { clearTimeout(timer); resolve(null) },
+        // 常驻进程在排队期间被看门狗判僵死 / 退出：必须给出「已执行但结果未知」的语义，
+        // 绝不能解成 null 让调用方当「没执行」而重放副作用（点两次）。
+        reject: (err) => {
+          clearTimeout(timer)
+          resolve({ ok: false, timeout: true, killed: true, error: '常驻进程在请求排队期间被重启：' + (err && err.message ? err.message : '未知原因') })
+        },
       })
       try {
         warm.proc.stdin.write(JSON.stringify({ ...payload, id }) + '\n')
@@ -387,9 +454,20 @@ export function makeDriver(cfg) {  const c = {
     warmStop('manual restart')
   }
 
-  /** 常驻进程状态（诊断用）。 */
+  /** 常驻进程状态（诊断用）。lastOkAt/stalls 是 B-2 的看门狗心跳与判僵死计数。 */
   function warmStatus() {
-    return { alive: warm.proc !== null, pending: warm.pending.size, seq: warm.seq, startedAt: warm.startedAt || null, lastUsed: warm.lastUsed || null, disabled: warm.disabled }
+    return {
+      alive: warm.proc !== null,
+      pending: warm.pending.size,
+      seq: warm.seq,
+      startedAt: warm.startedAt || null,
+      lastUsed: warm.lastUsed || null,
+      lastOkAt: warm.lastOkAt || null,
+      stalls: warm.stalls,
+      lastStallAt: warm.lastStallAt,
+      lastStallReason: warm.lastStallReason,
+      disabled: warm.disabled,
+    }
   }
 
   // ------------------------------------------------------------ 单步驱动
@@ -535,7 +613,7 @@ export function makeDriver(cfg) {  const c = {
         //  一次卡帧顶死 single-flight 最长 60s/10min——现在 min(caller,60s) 生效）。
         const callerMs = Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : c.defaultTimeoutMs
         const effMs = (action === 'shot' || action === 'capture') ? Math.min(callerMs, 60000) : callerMs
-        const res = await warmSend(payload, effMs, { killOnTimeout: action === 'capture' ? false : true })
+        let res = await warmSend(payload, effMs, { killOnTimeout: action === 'capture' ? false : true })
         if (res && res.ok === false && res.timeout === true) {
           // 超时 ≠ 没执行：请求可能已经到达并被处理，只是响应没回来。
           // 副作用动作绝不能走回退路径重放（会点两次 / 输两次），必须如实
@@ -548,6 +626,15 @@ export function makeDriver(cfg) {  const c = {
               unknown: true,
               error: '常驻进程超时：' + action + ' 可能已执行但未收到结果，未做任何重试（避免重复副作用）。请用 read/find 复核控件状态后再决定。',
             }
+          }
+          // 只读动作：超时后常驻进程已被判僵死杀掉，**重试一次**（B-2 的「失败重试」）——
+          // 换新进程 + ready 握手 + 重新解析 PID/主窗口，且总时长受 20s 上限约束，
+          // 绝不无限等。只读重放没有副作用，重试是安全的。
+          const up = await warmStart()
+          if (up) {
+            const r2 = await warmSend(payload, Math.min(effMs, 20000), { killOnTimeout: true })
+            if (r2 && r2.ok === true) res = r2
+            else if (!res.killed && r2 && r2.error) res = r2
           }
         }
         if (res) return await attachObserve(shapeResult(action, res, shotPlan, workspace))
@@ -607,7 +694,13 @@ export function makeDriver(cfg) {  const c = {
     }
     if (action === 'read') {
       const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^\[(Button|Edit|Text|RadioButton|CheckBox|TabItem|ComboBox|ListItem|MenuItem|TreeItem|Hyperlink)\]/.test(l))
-      return { ok: true, action, count: lines.length, lines: lines.slice(0, 200), truncated: text.length > LIMIT_READ }
+      // 回退脚本（ui-drive.ps1）的 read 同样逐元素容错并回报 SKIPPED（B-1）；
+      // 老版本脚本没有这一行 → skipped=null（未知），不谎报 0
+      const sk = text.match(/^SKIPPED\s+(\d+)\s*$/m)
+      const reason = text.match(/^SKIPREASON\s+(.+)$/m)
+      const raw = { skipped: sk ? Number(sk[1]) : null }
+      if (reason) raw.skippedReasons = [reason[1].trim()]
+      return { ok: true, action, count: lines.length, lines: lines.slice(0, 200), truncated: text.length > LIMIT_READ, ...skipInfo(raw) }
     }
     if (action === 'shot') {
       const m = text.match(/SHOT (.+) (\d+)x(\d+)/)
@@ -629,6 +722,26 @@ export function makeDriver(cfg) {  const c = {
     return [String(v)]
   }
 
+  /**
+   * B-1：跳过计数归一化。
+   * 逐元素 try/catch 修好了「整次枚举崩成 0 行」的假空，但静默 continue 会制造**新一轮假空**：
+   * 调用方拿到一份「变少了的清单」，却不知道少了几行、为什么少 —— 于是「观测不完整」
+   * 和「界面真的没有」分不开（Codex 评审：不能吞错伪装成功）。
+   * res.skipped 缺失 = 该引擎没回报 → null（未知），绝不谎报 0。
+   */
+  const skipInfo = (res) => {
+    const n = typeof res.skipped === 'number' ? res.skipped : null
+    const reasons = res.skippedReasons ? normLines(res.skippedReasons) : []
+    const out = { skipped: n }
+    if (reasons.length) out.skippedReasons = reasons
+    if (n > 0) {
+      out.warn = '⚠ 跳过 ' + n + ' 个读不到状态的元素，本次清单不完整（' +
+        (reasons.length ? reasons.join('；') : '原因未回报') +
+        '）——不要把「没读到」当成「界面上没有」'
+    }
+    return out
+  }
+
   /** 把常驻进程返回的原始结果整形成 ui_drive 的稳定返回结构。 */
   function shapeResult(action, res, shotPlan, workspace) {
     if (res.ok !== true) {
@@ -646,7 +759,9 @@ export function makeDriver(cfg) {  const c = {
       if (res.waitedMs) out.waitedMs = res.waitedMs
       return out
     }
-    if (action === 'read') return { ok: true, action, count: res.count || 0, lines: normLines(res.lines), truncated: false }
+    if (action === 'read') {
+      return { ok: true, action, count: res.count || 0, lines: normLines(res.lines), truncated: false, ...skipInfo(res) }
+    }
     if (action === 'windows') return { ok: true, action, count: res.count || 0, lines: normLines(res.lines) }
     if (action === 'state') {
       return {
@@ -657,6 +772,7 @@ export function makeDriver(cfg) {  const c = {
         focused: res.focused ?? null,
         count: res.count || 0,
         lines: normLines(res.lines),
+        ...skipInfo(res),
       }
     }
     if (action === 'state-live') {
@@ -671,6 +787,7 @@ export function makeDriver(cfg) {  const c = {
         count: res.count || 0,
         lines: normLines(res.lines),
         secretFocused: res.secretFocused === true,
+        ...skipInfo(res),
       }
     }
     if (action === 'waitfor') return { ok: true, action, found: res.found === true, detail: res.detail ?? null, waitedMs: res.waitedMs ?? 0 }
@@ -948,6 +1065,7 @@ export function makeDriver(cfg) {  const c = {
       } else if (action === 'read') {
         entry.count = res.count || 0
         entry.lines = normLines(res.lines).slice(0, 50)
+        Object.assign(entry, skipInfo(res)) // B-1：跳过数随每一步一起回报
       } else if (action === 'windows') {
         entry.count = res.count || 0
         entry.lines = normLines(res.lines)
@@ -957,6 +1075,7 @@ export function makeDriver(cfg) {  const c = {
         entry.focused = res.focused ?? null
         entry.count = res.count || 0
         entry.lines = normLines(res.lines)
+        Object.assign(entry, skipInfo(res))
       } else if (action === 'waitfor' || action === 'expectwindow' || action === 'expecttext' || action === 'waitany') {
         entry.found = res.found === true
         if (res.detail !== undefined) entry.detail = res.detail
@@ -986,7 +1105,7 @@ export function makeDriver(cfg) {  const c = {
 
       entry.ok = ok
       if (action === 'shot') w('step ' + r.step + ': shot ' + (ok ? (res.path + ' ' + res.w + 'x' + res.h) : 'FAIL ' + (res.error || '')))
-      else if (action === 'read') w('step ' + r.step + ': read ' + (res.count || 0) + ' 行')
+      else if (action === 'read') w('step ' + r.step + ': read ' + (res.count || 0) + ' 行' + (res.skipped > 0 ? '（跳过 ' + res.skipped + ' 个读不到状态的元素）' : ''))
       else if (action === 'windows') w('step ' + r.step + ': windows ' + (res.count || 0) + ' 个窗口')
       else if (action === 'find') w('step ' + r.step + ': find ' + (res.found ? 'FOUND' : 'MISS') + ' ' + (res.detail || ''))
       else if (action === 'wait') w('step ' + r.step + ': wait ' + (res.waitedMs || 0) + 'ms')

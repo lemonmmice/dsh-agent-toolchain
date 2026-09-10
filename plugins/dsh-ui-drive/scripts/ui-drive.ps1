@@ -166,9 +166,19 @@ switch ($Action) {
     Start-Sleep -Milliseconds $WaitMs
   }
   'read' {
-    $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    # 逐元素容错 + 跳过计数：与 ui-drive-batch.ps1 的 read 同一约定（B-1）。
+    # 这里只是常驻进程不可用时的回退路径，但「假空」在这条路上同样成立——
+    # 旧写法 $el.Current.ControlType.ProgrammaticName.Replace(...) 在界面重绘瞬间
+    # 会把整次枚举打断成 0 行，而且调用方连「少了几个」都不知道。
+    $skipped = 0
+    $skipReason = ''
+    $all = $null
+    try { $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { $skipped++; $skipReason = [string]$_.Exception.Message }
+    if ($null -ne $all) {
     for ($i = 0; $i -lt $all.Count; $i++) {
+      try {
       $el = $all.Item($i)
+      if ($null -eq $el) { $skipped++; continue }
       if ($el.Current.IsOffscreen) { continue }
       $t = $el.Current.ControlType.ProgrammaticName.Replace('ControlType.','')
       $n = $el.Current.Name
@@ -188,7 +198,16 @@ switch ($Action) {
         if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
         Write-Output $line
       }
+      } catch {
+        $skipped++
+        if (-not $skipReason) { $skipReason = [string]$_.Exception.Message }
+        continue
+      }
     }
+    }
+    # 协议行：调用方据此知道「这份清单不完整」——绝不能静默少几行
+    Write-Output ('SKIPPED ' + $skipped)
+    if ($skipReason) { Write-Output ('SKIPREASON ' + $skipReason) }
   }
   'shot' {
     if (-not $Out) { $Out = Join-Path $env:TEMP ('uia-shot-' + (Get-Date -Format 'HHmmss') + '.png') }

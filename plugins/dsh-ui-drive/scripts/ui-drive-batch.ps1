@@ -132,6 +132,28 @@ function Get-ControlTypeName($el) {
   }
 }
 
+# ------------------------------------------------------------ 跳过计数
+# 逐元素 try/catch 修好了「整次枚举崩成 0 行」，但 `continue` 是静默的：
+# 调用方拿到一份「少了几行」的清单，却不知道少了几行、为什么少 —— 假空只是换了
+# 个地方藏（Codex 评审原话：不能吞错伪装成功）。
+# 约定：调用方在枚举前 Reset-SkipCounter，枚举后读 $script:SkipCount / $script:SkipReasons，
+# 连同 lines 一起回报给上层；只有「读不到元素状态」的失败才计数，
+# 类型白名单 / IsOffscreen / match / 同名去重这些**正常过滤**一律不计数。
+$script:SkipCount = 0
+$script:SkipReasons = New-Object System.Collections.ArrayList
+
+function Reset-SkipCounter {
+  $script:SkipCount = 0
+  $script:SkipReasons = New-Object System.Collections.ArrayList
+}
+
+function Add-Skip([string]$reason) {
+  $script:SkipCount++
+  if ($reason -and $script:SkipReasons.Count -lt 3 -and ($script:SkipReasons -notcontains $reason)) {
+    [void]$script:SkipReasons.Add($reason)
+  }
+}
+
 # 匹配目标控件：Name 与 HelpText 都参与。
 # WPF 里只显示图标的按钮 Name 常为空、语义只写在 ToolTip 中，而 WPF 会把 ToolTip 作为
 # UIA HelpText 暴露（AutomationProperties.HelpText 为空时回落 ToolTip）。
@@ -604,30 +626,40 @@ function Get-FocusedInfo {
 $INTERACTIVE_TYPES = @('Button', 'Edit', 'RadioButton', 'CheckBox', 'TabItem', 'ComboBox', 'ListItem', 'MenuItem', 'TreeItem', 'DataItem', 'Hyperlink', 'Slider', 'Spinner', 'Document', 'Custom')
 
 function Get-InteractiveLines($main, [string]$match, [int]$max) {
-  $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+  # 逐元素容错 + 跳过计数（与 read 同一约定）：界面重绘/切页瞬间 UIA 会枚举到瞬时元素，
+  # 旧写法 $el.Current 直接抛异常会把**整次 state 崩成 0 行**（假空的另一半来源，
+  # 与 read 那处根因同源）。现在单个坏元素只计一次 skipped，不再打断整次枚举。
   $lines = New-Object System.Collections.ArrayList
+  $all = $null
+  try { $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { Add-Skip ('整次枚举失败: ' + $_.Exception.Message); return $lines }
   $seen = @{}
   for ($i = 0; $i -lt $all.Count; $i++) {
-    $el = $all.Item($i)
-    if ($el.Current.IsOffscreen) { continue }
-    $b = $el.Current.BoundingRectangle
-    if (-not (Is-RectUsable $b)) { continue }
-    $t = Get-ControlTypeName $el
-    if ($t -notin $INTERACTIVE_TYPES) { continue }
-    $n = $el.Current.Name
-    if (-not $n) { $n = '' }
-    if ($n.Length -gt 60) { $n = $n.Substring(0, 60) }
-    if ($match -and $n -notmatch $match) { continue }
-    $key = $t + '|' + $n + '|' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y)
-    if ($seen.ContainsKey($key)) { continue }
-    $seen[$key] = $true
-    $val = ''
-    if ($t -in @('Edit', 'ComboBox', 'Document')) { $val = Get-ElementValueForReport $el }
-    if ($val.Length -gt 60) { $val = $val.Substring(0, 60) }
-    $line = '#' + $lines.Count + ' [' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y)
-    if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
-    [void]$lines.Add($line)
-    if ($max -gt 0 -and $lines.Count -ge $max) { break }
+    try {
+      $el = $all.Item($i)
+      if ($null -eq $el) { Add-Skip '元素为空'; continue }
+      if ($el.Current.IsOffscreen) { continue }
+      $b = $el.Current.BoundingRectangle
+      if (-not (Is-RectUsable $b)) { continue }
+      $t = Get-ControlTypeName $el
+      if ($t -notin $INTERACTIVE_TYPES) { continue }
+      $n = $el.Current.Name
+      if (-not $n) { $n = '' }
+      if ($n.Length -gt 60) { $n = $n.Substring(0, 60) }
+      if ($match -and $n -notmatch $match) { continue }
+      $key = $t + '|' + $n + '|' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y)
+      if ($seen.ContainsKey($key)) { continue }
+      $seen[$key] = $true
+      $val = ''
+      if ($t -in @('Edit', 'ComboBox', 'Document')) { $val = Get-ElementValueForReport $el }
+      if ($val.Length -gt 60) { $val = $val.Substring(0, 60) }
+      $line = '#' + $lines.Count + ' [' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y)
+      if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
+      [void]$lines.Add($line)
+      if ($max -gt 0 -and $lines.Count -ge $max) { break }
+    } catch {
+      Add-Skip ('读取元素失败: ' + $_.Exception.Message)
+      continue
+    }
   }
   return $lines
 }
@@ -884,8 +916,12 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         if ($step.PSObject.Properties.Name -contains 'max' -and $null -ne $step.max) { $max = [int]$step.max }
         $matchRe = ''
         if ($step.PSObject.Properties.Name -contains 'match' -and $step.match) { $matchRe = [string]$step.match }
+        # 逐元素容错 + 跳过计数（与 read / state-live 同一约定，B-1）
+        Reset-SkipCounter
         $lines = Get-InteractiveLines $main $matchRe $max
         $res.count = $lines.Count; $res.lines = $lines
+        $res.skipped = $script:SkipCount
+        if ($script:SkipReasons.Count -gt 0) { $res.skippedReasons = @($script:SkipReasons) }
       }
       'state-live' {
         # live 循环专用「免前台」界面快照：与 state 相同内容，但主窗口在分支内
@@ -923,8 +959,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           if (-not $target -and $wins.Count -gt 0) { $target = $wins[0] }
         } catch { }
         if ($target) {
+          Reset-SkipCounter
           $lines = Get-InteractiveLines $target $matchRe $max
           $res.count = $lines.Count; $res.lines = $lines
+          $res.skipped = $script:SkipCount
+          if ($script:SkipReasons.Count -gt 0) { $res.skippedReasons = @($script:SkipReasons) }
         } else {
           $res.count = 0; $res.lines = @()
         }
@@ -1292,16 +1331,18 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $attempt++
           $lines = New-Object System.Collections.ArrayList
           $seen = @{}
+          # 每次尝试各自计数：回报的 skipped 必须与这一次真正返回的 lines 对得上
+          Reset-SkipCounter
           $all = $null
-          try { $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { $all = $null }
+          try { $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { $all = $null; Add-Skip ('整次枚举失败: ' + $_.Exception.Message) }
           if ($null -ne $all) {
           for ($i = 0; $i -lt $all.Count; $i++) {
           $el = $null
-          try { $el = $all.Item($i) } catch { continue }
-          if ($null -eq $el) { continue }
+          try { $el = $all.Item($i) } catch { Add-Skip ('元素已失效: ' + $_.Exception.Message); continue }
+          if ($null -eq $el) { Add-Skip '元素为空'; continue }
           $cur = $null
-          try { $cur = $el.Current } catch { continue }
-          if ($null -eq $cur) { continue }
+          try { $cur = $el.Current } catch { Add-Skip ('读取元素状态失败: ' + $_.Exception.Message); continue }
+          if ($null -eq $cur) { Add-Skip '元素状态为空'; continue }
           if ($cur.IsOffscreen) { continue }
           $t = Get-ControlTypeName $el
           if ($t -notin @('Button', 'Edit', 'Text', 'RadioButton', 'CheckBox', 'TabItem', 'ComboBox', 'ListItem', 'MenuItem', 'TreeItem', 'DataItem', 'Hyperlink', 'Image', 'Slider', 'Spinner', 'Group', 'Custom', 'Pane', 'Document')) { continue }
@@ -1331,6 +1372,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           Start-Sleep -Milliseconds 250
         }
         $res.ok = $true; $res.count = $lines.Count; $res.attempts = $attempt
+        # 跳过数恒回报（0 = 本次枚举里每个元素的 Current 都读到了）。
+        # skipped > 0 表示「这份清单不完整」，上层必须显式提示 —— 让调用方能把
+        # 「观测不完整」和「界面真的没有」分开，而不是把假空当结论。
+        $res.skipped = $script:SkipCount
+        if ($script:SkipReasons.Count -gt 0) { $res.skippedReasons = @($script:SkipReasons) }
         # 单次 read 上限 300 行：主界面可达 900+ 条，全量返回会挤爆模型上下文
         # （需要全量时分 match 多次读，或用 state 只看交互控件）
         if ($lines.Count -gt 300) {
