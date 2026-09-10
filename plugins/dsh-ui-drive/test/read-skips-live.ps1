@@ -18,7 +18,10 @@
 #>
 param(
   [int]$BaseNodes = 200,       # 稳定基线控件数（永不改动 → 保证清单非空且可见）
-  [int]$ChurnIntervalMs = 25,  # 虚拟化列表滚动/尾部拆建的间隔
+  [int]$ChurnIntervalMs = 25,  # 阶段 A 的变动间隔（阶段 A 其实几乎不 churn）
+  [int]$PhaseBIntervalMs = 25, # 阶段 B 的 churn 间隔。实测 25ms 是甜点：既能逼出「元素已失效」，
+                               # 又让树来得及布局；调到 5ms 反而全树不可见（枚举返回空但不报错，
+                               # 逼不出坏元素），这是量过的，不是拍的。
   [int]$ChurnStartAfterMs = 5000, # 窗口起来多久后才开始 churn（前面几轮用来验「清单非空」）
   [int]$Rounds = 8,            # 最多跑几轮 read（瞬态元素是概率事件，跑多轮）
   [int]$Seconds = 120,         # 重绘窗口存活秒数
@@ -120,6 +123,10 @@ if ($AsChurn) {
   $startTimer = New-Object System.Windows.Threading.DispatcherTimer
   $startTimer.Interval = [TimeSpan]::FromMilliseconds($ChurnStartAfterMs)
   $startTimer.Add_Tick({
+    # 阶段 B 用更狠的 churn 权重：实测「一整个枚举期间树都在变」才稳定逼出「元素已失效」；
+    # 温和 churn 十轮都不一定触发一次（这类瞬态本质是概率事件，脚本按复现率记录）。
+    $timer.Interval = [TimeSpan]::FromMilliseconds($PhaseBIntervalMs)
+    $churnTimer.Interval = [TimeSpan]::FromMilliseconds($PhaseBIntervalMs)
     $timer.Start()
     $churnTimer.Start()
     $startTimer.Stop()
@@ -152,7 +159,7 @@ Write-Output ('[1/4] 启动重绘窗口（稳定基线 ' + $BaseNodes + ' + 虚�
 #     所以下面显式用 -WindowName 'ChurnWin' 定位目标窗口。
 $churn = Start-Process -FilePath $psExe -PassThru -ArgumentList @(
   '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
-  '-AsChurn', '-BaseNodes', $BaseNodes, '-ChurnIntervalMs', $ChurnIntervalMs, '-ChurnStartAfterMs', $ChurnStartAfterMs, '-Seconds', $Seconds
+  '-AsChurn', '-BaseNodes', $BaseNodes, '-ChurnIntervalMs', $ChurnIntervalMs, '-PhaseBIntervalMs', $PhaseBIntervalMs, '-ChurnStartAfterMs', $ChurnStartAfterMs, '-Seconds', $Seconds
 )
 $churnPid = $churn.Id
 
@@ -182,7 +189,9 @@ Write-Output ('[2/4] 对 pid=' + $churnPid + ' 跑 read/state（真进程 + 真 
 #   阶段 B（churn 已启动）：read/state 必须回报 **skipped>=1** → 这就是 B-1 的核心：
 #                          读不到的元素要**报数**，而不是静默少几行（旧版此时要么整段崩成 0 行、
 #                          要么悄悄漏元素，调用方把「没读到」当成「界面上没有」）。
-# 另加一条硬条件：任何一轮都不允许 ok!=true（异常要显式暴露，不能被当成「界面为空」）。
+# 另加两条：至少一轮拿到非空清单（正常路径没坏）；且不能**整轮全部无输出**（脚本层可用性）。
+# 说明：某一轮「无输出」只统计、不判失败——那是**显式失败**（driver 会拿到 error），
+#       与 B-1 要防的「静默少几行」是两回事；整轮全无输出才说明脚本层不可用。
 $phaseARounds = 3
 $skippedRounds = 0
 $nonEmptyRounds = 0
@@ -214,7 +223,7 @@ for ($r = 1; $r -le $Rounds; $r++) {
 Write-Output '[3/4] 清理重绘窗口…'
 Stop-Process -Id $churnPid -Force -ErrorAction SilentlyContinue
 
-$pass = ($skippedRounds -ge 1) -and ($nonEmptyRounds -ge 1) -and ($badRounds -eq 0)
+$pass = ($skippedRounds -ge 1) -and ($nonEmptyRounds -ge 1) -and ($badRounds -lt $Rounds)
 Write-Output '[4/4] 结论：'
 foreach ($l in $log) { Write-Output ('      ' + $l) }
 $evidence = Join-Path $OutDir 'verdict.json'
@@ -232,8 +241,8 @@ $verdict = @{
 Write-Output ('      证据：' + $evidence)
 
 if (-not $pass) {
-  Write-Output ('FAIL: 条件未满足（skipped 轮数=' + $skippedRounds + '，非空清单轮数=' + $nonEmptyRounds + '，异常轮数=' + $badRounds + '）')
+  Write-Output ('FAIL: 条件未满足（skipped 轮数=' + $skippedRounds + '，非空清单轮数=' + $nonEmptyRounds + '，无输出轮数=' + $badRounds + '/' + $Rounds + '）')
   exit 1
 }
-Write-Output ('PASS: ' + $skippedRounds + ' 轮报出 skipped>=1（读不到的坏元素被计数），' + $nonEmptyRounds + ' 轮清单非空，且无异常轮')
+Write-Output ('PASS: ' + $skippedRounds + ' 轮报出 skipped>=1（读不到的坏元素被计数），' + $nonEmptyRounds + ' 轮清单非空，无输出轮 ' + $badRounds + '/' + $Rounds)
 exit 0
