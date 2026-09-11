@@ -126,6 +126,31 @@ Write-Output 'SKIPREASON ElementNotAvailable'
   d.warmShutdown()
 }
 
+// ------------------------------------------------- 7. 空枚举必须显式提示（UIA 给空集合、不报错）
+{
+  installFakeBatch({ ok: true, elapsedMs: 2, steps: [
+    { step: 1, action: 'read', ok: true, count: 0, lines: [], skipped: 0, scanned: 0 },
+  ] })
+  const d = newDriver()
+  const r = await d.drive({ action: 'read', match: 'x', index: 0 })
+  check('空枚举透传 scanned=0', r.scanned === 0, JSON.stringify(r.scanned))
+  check('空枚举必带 warn（0 行不能静默）', /0 个元素/.test(r.warn || ''), String(r.warn))
+  check('空枚举的 warn 渲染给 agent', /0 个元素/.test(renderDrive(r)), renderDrive(r).slice(0, 200))
+  d.warmShutdown()
+}
+
+// ------------------------------------------------- 8. 有元素但全被过滤 ≠ 没看到（别误报）
+{
+  installFakeBatch({ ok: true, elapsedMs: 2, steps: [
+    { step: 1, action: 'read', ok: true, count: 0, lines: [], skipped: 0, scanned: 240, offscreen: 240 },
+  ] })
+  const d = newDriver()
+  const r = await d.drive({ action: 'read', match: 'x', index: 0 })
+  check('全过滤：scanned/offscreen 透传', r.scanned === 240 && r.offscreen === 240, JSON.stringify(r).slice(0, 160))
+  check('全过滤：不误报「空枚举」', r.warn === undefined, String(r.warn))
+  d.warmShutdown()
+}
+
 rmSync(scriptsDir, { recursive: true, force: true })
 rmSync(evidenceDir, { recursive: true, force: true })
 delete process.env.FAKE_BATCH_PAYLOAD

@@ -723,21 +723,29 @@ export function makeDriver(cfg) {  const c = {
   }
 
   /**
-   * B-1：跳过计数归一化。
-   * 逐元素 try/catch 修好了「整次枚举崩成 0 行」的假空，但静默 continue 会制造**新一轮假空**：
-   * 调用方拿到一份「变少了的清单」，却不知道少了几行、为什么少 —— 于是「观测不完整」
-   * 和「界面真的没有」分不开（Codex 评审：不能吞错伪装成功）。
+   * B-1：观测完整性归一化（两半，缺一不可）。
+   *  · skipped：逐元素读取**失败**被跳过的数量（异常路径）——静默 continue 会制造假空；
+   *  · scanned：本次枚举**扫到多少个元素**——UIA 在界面重绘/最小化瞬间会返回**空集合而不报错**
+   *    （2026-09-11 上午实测：重绘窗口连续 4 次 FindAll 返回 0 元素、无异常、无过滤），
+   *    此时只报 count=0 会被读成「界面上没有控件」，这是另一种假空。
+   *    scanned>0 而 count=0 且无 skipped，才是真的「有元素但都被过滤掉（offscreen/match）」。
    * res.skipped 缺失 = 该引擎没回报 → null（未知），绝不谎报 0。
    */
   const skipInfo = (res) => {
     const n = typeof res.skipped === 'number' ? res.skipped : null
     const reasons = res.skippedReasons ? normLines(res.skippedReasons) : []
     const out = { skipped: n }
+    if (typeof res.scanned === 'number') out.scanned = res.scanned
+    if (typeof res.offscreen === 'number') out.offscreen = res.offscreen
     if (reasons.length) out.skippedReasons = reasons
     if (n > 0) {
       out.warn = '⚠ 跳过 ' + n + ' 个读不到状态的元素，本次清单不完整（' +
         (reasons.length ? reasons.join('；') : '原因未回报') +
         '）——不要把「没读到」当成「界面上没有」'
+    } else if (out.scanned === 0 && (res.count || 0) === 0) {
+      // 空枚举的显式提示：这不是「界面没有控件」，是「这次没看到」（重绘中/窗口刚切换/最小化）
+      out.warn = '⚠ 本次枚举返回 0 个元素（UIA 给了空集合，通常是界面正在重绘或窗口刚切换）：' +
+        '这不等于「界面上没有控件」，请稍后重读或用 shot 复核'
     }
     return out
   }
