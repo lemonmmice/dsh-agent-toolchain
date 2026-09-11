@@ -519,7 +519,7 @@ export function makeDriver(cfg) {  const c = {
    * 等待（waitFor）只有批量引擎实现；一次性脚本路径不支持时走批量引擎单步执行——
    * 语义一致，代价是每步多付一次 PowerShell 启动（约 0.4s），可接受。
    */
-  const BATCH_ONLY_ACTIONS = new Set(['type', 'drag', 'move', 'wheel', 'clickat', 'doubleclick', 'windows', 'waitfor', 'state', 'state-live', 'expectwindow', 'expecttext', 'waitany', 'capture'])
+  const BATCH_ONLY_ACTIONS = new Set(['type', 'drag', 'move', 'wheel', 'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext', 'windows', 'waitfor', 'state', 'state-live', 'expectwindow', 'expecttext', 'waitany', 'capture'])
 
   /** 动作名归一化：waitFor / WaitFor / WAITFOR 都是 waitfor（模型大小写写法不一致）。 */
   function normAction(a) {
@@ -1237,7 +1237,10 @@ export function makeDriver(cfg) {  const c = {
 
   // ------------------------------------------------------------ 流程自验
 
-  const FLOW_ACTIONS = new Set(['find', 'click', 'setvalue', 'key', 'type', 'drag', 'read', 'state', 'shot', 'wait', 'waitfor', 'expect', 'windows', 'expectwindow', 'expecttext', 'waitany'])
+  // W5b 三个新动词已放行（W1 新鲜度门 + W2 policy/急停门均已落地，冻结稿的"禁用前提"解除）。
+  // 分类仍走 classifyAction 的默认分支 = 'effect'（未知动作按副作用），因此它们必须显式 allowSideEffects
+  // 并过 policy/急停门；不单独加进 COORD_EFFECT（它们有具名元素或可定位祖先）。
+  const FLOW_ACTIONS = new Set(['find', 'click', 'setvalue', 'key', 'type', 'drag', 'pattern', 'scroll', 'selecttext', 'read', 'state', 'shot', 'wait', 'waitfor', 'expect', 'windows', 'expectwindow', 'expecttext', 'waitany'])
 
   /**
    * ui_flow：步骤序列驱动 + 证据收集。
