@@ -494,9 +494,12 @@ export function makeDriver(cfg) {  const c = {
 
   // ------------------------------------------------------------ 单步驱动
 
-  // 纯输入型动作（移动鼠标/滚轮/拖拽/坐标点击）：不会提交或改数据，可逆，
-  // 因此不受 allowSideEffects 护栏限制（K线滑动、十字光标、列表滚动要用）。
-  const INPUT_ACTIONS = new Set(['move', 'wheel', 'drag', 'clickat', 'doubleclick'])
+  // 纯输入型动作（移动鼠标/滚轮）：不会致效、可逆，因此不受 allowSideEffects 护栏限制
+  // （K线十字光标、列表滚动要用）。
+  // 注意（2026-09-11 三方联合评审 P0）：drag/clickat/doubleclick 原先被一并豁免是安全漏洞 ——
+  // 它们能落在任意控件上（含交易类按钮），而坐标动作没有控件名，$DENY_RE 无从匹配；
+  // 且 drag 的文档一直承诺"必须 allowSideEffects"，代码却没兑现。现三者已移出本集合。
+  const INPUT_ACTIONS = new Set(['move', 'wheel'])
   const READ_ONLY_ACTIONS = new Set(['find', 'read', 'shot', 'status', 'windows', 'waitfor', 'state', 'state-live', 'expectwindow', 'expecttext', 'waitany', 'move', 'wheel', 'capture'])
 
   /**
