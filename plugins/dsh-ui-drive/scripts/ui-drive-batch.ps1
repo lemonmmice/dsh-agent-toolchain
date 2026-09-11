@@ -58,6 +58,24 @@ public class UiDriveStatusWin32 {
   if (-not $h -or $h -eq [IntPtr]::Zero) { Write-Output ('RUNNING pid=' + $sp.Id + ' window=NONE'); exit 0 }
   Write-Output ('RUNNING pid=' + $sp.Id + ' window=' + $sp.MainWindowTitle)
   Write-Output ('HANDLE ' + [int64]$h)
+  # 进程身份（W2 policy 门用）：单行 base64(JSON)，老解析器忽略即可、向后兼容。
+  # 授权主键 = exeCanonical（GetFullPath + 小写）；版本元数据只作可选二次约束
+  # （实测 codex.exe / 自研 exe 的 Company/Product/Description 可能全为空）。
+  try {
+    $exePath = [string]$sp.Path
+    if ($exePath) {
+      $identObj = @{ exe = $exePath }
+      try { $identObj.exeCanonical = [System.IO.Path]::GetFullPath($exePath).ToLowerInvariant() } catch { $identObj.exeCanonical = $exePath.ToLowerInvariant() }
+      try {
+        $vi = (Get-Item -LiteralPath $exePath).VersionInfo
+        $identObj.company = [string]$vi.CompanyName
+        $identObj.product = [string]$vi.ProductName
+        $identObj.description = [string]$vi.FileDescription
+      } catch { }
+      $identJson = ($identObj | ConvertTo-Json -Compress)
+      Write-Output ('IDENT ' + [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($identJson)))
+    }
+  } catch { }
   $r = New-Object UiDriveStatusWin32+RECT
   [UiDriveStatusWin32]::GetWindowRect([IntPtr]$h, [ref]$r) | Out-Null
   Write-Output ('RECT ' + ($r.Right - $r.Left) + 'x' + ($r.Bottom - $r.Top) + ' @' + $r.Left + ',' + $r.Top)

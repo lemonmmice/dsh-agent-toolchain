@@ -14,6 +14,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, wr
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { decodeBuffer } from '../../../lib/decode.mjs'
+import { createPolicy } from './policy.mjs'
 
 const PS = process.env.DSH_UI_POWERSHELL || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
@@ -83,6 +84,7 @@ export function makeDriver(cfg) {  const c = {
   // 直接展开会让空值覆盖默认值，证据目录退化成 cwd 下的相对路径。
   if (!c.evidenceDir) c.evidenceDir = join(homedir(), '.dsh-agent-toolchain', 'ui-evidence')
   if (!c.scriptsDir) c.scriptsDir = join(import.meta.dirname, '..', 'scripts')
+  const policy = c.policy || createPolicy({ classifyAction })
 
   // ------------------------------------------------------------ 进程级互斥
   //
@@ -619,7 +621,7 @@ export function makeDriver(cfg) {  const c = {
    * W2 的 deny/急停判定在同一函数内、snapshot 校验之后挂钩（见下方 seam 注释），不新增第二处接线点。
    * @returns {{allow:true}|{allow:false, result:object}}
    */
-  function checkSideEffectGate(action, allowSideEffects, gateArgs) {
+  async function checkSideEffectGate(action, allowSideEffects, gateArgs) {
     if (!isSideEffectKind(classifyAction(action))) return { allow: true } // 只读 / 纯输入：放行
     if (!allowSideEffects) {
       return { allow: false, result: { ok: false, action, error: '动作 ' + action + ' 是真实副作用操作，必须显式传 allowSideEffects=true 才执行（安全护栏）' } }
@@ -640,8 +642,38 @@ export function makeDriver(cfg) {  const c = {
       }
       return { allow: false, result }
     }
-    // —— W2 seam：deny / 急停（estop）判定在此处挂钩（同一写侧单点、snapshot 校验之后）——
+    // —— W2 seam：deny / 急停（estop）判定（同一写侧单点、snapshot 校验之后）——
+    // 未配置规则表且无急停哨兵 → 直接放行（零开销，保持既有行为；这是显式集成取舍，见 policy.mjs）。
+    if (policy.needsCheck && policy.needsCheck()) {
+      let identity = {}
+      if (policy.requiresIdentity) {
+        try {
+          const st = await resolveIdentity()
+          identity = st ? { exe: st.exeCanonical || st.exe || '', windowHandle: st.handle, aid: gateArgs.aid } : {}
+        } catch {
+          // 身份解析失败 → identity 留空，交给 policy 按 deny-first 返回 policy_unavailable（绝不放行）
+        }
+      }
+      const pol = policy.check({ action, identity, allowSideEffects, sessionId: gateArgs.sessionId })
+      if (!pol.ok) {
+        return { allow: false, result: { ok: false, action, error: pol.error || '策略拒绝', policyCode: pol.code } }
+      }
+    }
     return { allow: true }
+  }
+
+  /**
+   * 目标进程身份（W2 policy 门用）：走 status() 的 -Status 快路径，取 exeCanonical / handle。
+   * status 是一次性 PS 进程（~0.4s），**按 30s 缓存**，避免每个副作用动作都付这个代价；
+   * 缓存失效时重新解析（客户端重启 → exe/句柄变化）。
+   */
+  let identCache = { at: 0, value: null }
+  async function resolveIdentity() {
+    if (identCache.value && Date.now() - identCache.at < 30000) return identCache.value
+    const st = await status({ timeoutMs: 8000 })
+    const value = st && st.running && st.identity ? st.identity : null
+    if (value) identCache = { at: Date.now(), value: Object.assign({ handle: st.handle }, value) }
+    return identCache.value
   }
 
   // ---- diff ----
@@ -751,7 +783,7 @@ export function makeDriver(cfg) {  const c = {
     const action = normAction(rawAction)
     // 写侧单点：副作用动作（含坐标副作用 clickat/drag）过 allowSideEffects + 新鲜度门；只读/纯输入放行。
     // W2 的 deny/急停在 checkSideEffectGate 内挂钩（同一处），不新增第二处接线点。
-    const gate = checkSideEffectGate(action, allowSideEffects, { snapshotId, winTitle, winHandle })
+    const gate = await checkSideEffectGate(action, allowSideEffects, { snapshotId, winTitle, winHandle, aid })
     if (!gate.allow) return gate.result
 
     // read(diff=true) 是 Node 侧对返回 lines 的后处理（不下发 PS1）；仅对成功的 read 生效。
@@ -1066,11 +1098,21 @@ export function makeDriver(cfg) {  const c = {
     if (!pidM) return { running: false, pid: null, title: null, raw: text.slice(0, 300) }
     const winM = text.match(/window=([^\r\n]*)/)
     const rectM = text.match(/RECT (\d+)x(\d+) @(-?\d+),(-?\d+)/)
+    const handleM = text.match(/HANDLE (\d+)/)
+    // 进程身份（W2 policy 门用）：PS1 以 IDENT <base64(JSON)> 单行输出；解析失败 → identity 为 null，
+    // 由 policy 按 deny-first 处理（identity 不可解析 = 不放行），绝不"解析不到就放行"。
+    let identity = null
+    const identM = text.match(/IDENT ([A-Za-z0-9+/=]+)/)
+    if (identM) {
+      try { identity = JSON.parse(Buffer.from(identM[1], 'base64').toString('utf8')) } catch { identity = null }
+    }
     const title = winM ? winM[1].trim() : null
     return {
       running: true,
       pid: Number(pidM[1]),
       title: title === 'NONE' ? null : title,
+      handle: handleM ? Number(handleM[1]) : null,
+      identity,
       rect: rectM ? { w: Number(rectM[1]), h: Number(rectM[2]), x: Number(rectM[3]), y: Number(rectM[4]) } : null,
       raw: text.slice(0, 300),
     }
@@ -1421,3 +1463,4 @@ export function makeDriver(cfg) {  const c = {
     clientExe: () => c.clientExe,
   }
 }
+
