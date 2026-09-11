@@ -196,6 +196,8 @@ $phaseARounds = 3
 $skippedRounds = 0
 $nonEmptyRounds = 0
 $badRounds = 0
+$unexplainedRounds = 0
+$windowDiedAtRound = 0
 $firstHit = $null
 $log = New-Object System.Collections.ArrayList
 for ($r = 1; $r -le $Rounds; $r++) {
@@ -204,32 +206,53 @@ for ($r = 1; $r -le $Rounds; $r++) {
   if (-not (Test-Path $outFile)) { [void]$log.Add("round $r : 无输出（脚本异常）"); $badRounds++; continue }
   $res = [System.IO.File]::ReadAllText($outFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   $st = @($res.steps)[0]
+  # 重绘宿主自己挂了（实测：极端 churn 下 WPF 进程约 40s 会退出）→ 之后的轮次全是
+  # 「未找到主窗口」，那是**环境问题不是产品问题**：直接停下并如实报告，
+  # 别让空转的轮次污染判据（前一版就是这里白跑了 5 轮）。
+  if (-not $res.window) {
+    $code = if ($churn.HasExited) { $churn.ExitCode } else { '(仍在运行但窗口已不可见)' }
+    $windowDiedAtRound = $r
+    [void]$log.Add("round $r : 重绘窗口已消失（宿主 exitCode=$code）→ 提前结束")
+    Write-Output ('      round ' + $r + ' : 重绘窗口已消失（宿主 exitCode=' + $code + '）→ 提前结束')
+    break
+  }
   $stateStep = @($res.steps)[1]
   $sk = $st.skipped
+  $scanned = $st.scanned
+  $offscreen = $st.offscreen
   $stateSk = if ($stateStep) { $stateStep.skipped } else { $null }
   $phase = if ($r -le $phaseARounds) { 'A' } else { 'B' }
   $why = ''
   if ($st.skippedReasons) { $why = (@($st.skippedReasons) -join '；') }
-  $stateNote = if ($stateStep) { "state: count=$($stateStep.count) skipped=$stateSk" } else { 'state: -' }
+  $stateNote = if ($stateStep) { "state: count=$($stateStep.count) skipped=$stateSk scanned=$($stateStep.scanned)" } else { 'state: -' }
   if ($st.ok -ne $true) { $badRounds++ }
   $anySkip = (($null -ne $sk -and [int]$sk -ge 1) -or ($null -ne $stateSk -and [int]$stateSk -ge 1))
   if ($anySkip) { $skippedRounds++; if (-not $firstHit) { $firstHit = $st } }
   if ([int]$st.count -ge 1) { $nonEmptyRounds++ }
-  [void]$log.Add("round $r (阶段$phase) : window=$($res.window) read: ok=$($st.ok) count=$($st.count) skipped=$sk attempts=$($st.attempts) | $stateNote | why=$why")
-  Write-Output ('      round ' + $r + ' [阶段' + $phase + '] : read count=' + $st.count + ' skipped=' + $sk + ' | ' + $stateNote)
+  # 【硬判据】0 行必须**解释得清**：至少满足其一 —— 有行 / 有 skipped / 枚举为 0（这次没看到）
+  # / 有元素但被 offscreen 过滤。四者皆无的「静默 0 行」就是 B-1 要消灭的假空。
+  $explained = ([int]$st.count -ge 1) -or
+               ($null -ne $sk -and [int]$sk -ge 1) -or
+               ($null -ne $scanned -and [int]$scanned -eq 0) -or
+               ($null -ne $offscreen -and [int]$offscreen -ge 1)
+  if (-not $explained) { $unexplainedRounds++ }
+  [void]$log.Add("round $r (阶段$phase) : window=$($res.window) read: ok=$($st.ok) count=$($st.count) scanned=$scanned offscreen=$offscreen skipped=$sk attempts=$($st.attempts) | $stateNote | why=$why")
+  Write-Output ('      round ' + $r + ' [阶段' + $phase + '] : read count=' + $st.count + ' scanned=' + $scanned + ' offscreen=' + $offscreen + ' skipped=' + $sk + ' | ' + $stateNote)
   if ($r -eq $phaseARounds) { Write-Output ('      —— 阶段 A 结束，等 churn 启动（' + $ChurnStartAfterMs + 'ms 后）——'); Start-Sleep -Milliseconds ($ChurnStartAfterMs + 800) }
 }
 
 Write-Output '[3/4] 清理重绘窗口…'
 Stop-Process -Id $churnPid -Force -ErrorAction SilentlyContinue
 
-$pass = ($skippedRounds -ge 1) -and ($nonEmptyRounds -ge 1) -and ($badRounds -lt $Rounds)
+$pass = ($skippedRounds -ge 1) -and ($nonEmptyRounds -ge 1) -and ($badRounds -lt $Rounds) -and ($unexplainedRounds -eq 0)
 Write-Output '[4/4] 结论：'
 foreach ($l in $log) { Write-Output ('      ' + $l) }
 $evidence = Join-Path $OutDir 'verdict.json'
 $verdict = @{
   pass = $pass
   skippedRounds = $skippedRounds
+  unexplainedRounds = $unexplainedRounds
+  windowDiedAtRound = $windowDiedAtRound
   nonEmptyRounds = $nonEmptyRounds
   badRounds = $badRounds
   rounds = $Rounds
@@ -241,8 +264,8 @@ $verdict = @{
 Write-Output ('      证据：' + $evidence)
 
 if (-not $pass) {
-  Write-Output ('FAIL: 条件未满足（skipped 轮数=' + $skippedRounds + '，非空清单轮数=' + $nonEmptyRounds + '，无输出轮数=' + $badRounds + '/' + $Rounds + '）')
+  Write-Output ('FAIL: 条件未满足（skipped 轮数=' + $skippedRounds + '，非空清单轮数=' + $nonEmptyRounds + '，无输出轮数=' + $badRounds + '/' + $Rounds + '，未解释的 0 行轮数=' + $unexplainedRounds + '）')
   exit 1
 }
-Write-Output ('PASS: ' + $skippedRounds + ' 轮报出 skipped>=1（读不到的坏元素被计数），' + $nonEmptyRounds + ' 轮清单非空，无输出轮 ' + $badRounds + '/' + $Rounds)
+Write-Output ('PASS: ' + $skippedRounds + ' 轮报出 skipped>=1，' + $nonEmptyRounds + ' 轮清单非空，无输出轮 ' + $badRounds + '/' + $Rounds + '，0 行全部有解释（未解释=' + $unexplainedRounds + '）')
 exit 0

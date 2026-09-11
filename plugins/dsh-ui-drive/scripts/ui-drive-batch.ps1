@@ -141,10 +141,14 @@ function Get-ControlTypeName($el) {
 # 类型白名单 / IsOffscreen / match / 同名去重这些**正常过滤**一律不计数。
 $script:SkipCount = 0
 $script:SkipReasons = New-Object System.Collections.ArrayList
+# 最近一次枚举「扫描到多少个元素」：UIA 在重绘/最小化瞬间会返回**空集合**（不抛异常），
+# 只报 count=0 会让调用方以为「界面上没有控件」——必须把这个数字一起回报。
+$script:LastScanned = 0
 
 function Reset-SkipCounter {
   $script:SkipCount = 0
   $script:SkipReasons = New-Object System.Collections.ArrayList
+  $script:LastScanned = 0
 }
 
 function Add-Skip([string]$reason) {
@@ -632,6 +636,7 @@ function Get-InteractiveLines($main, [string]$match, [int]$max) {
   $lines = New-Object System.Collections.ArrayList
   $all = $null
   try { $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { Add-Skip ('整次枚举失败: ' + $_.Exception.Message); return $lines }
+  $script:LastScanned = $all.Count
   $seen = @{}
   for ($i = 0; $i -lt $all.Count; $i++) {
     try {
@@ -920,6 +925,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         Reset-SkipCounter
         $lines = Get-InteractiveLines $main $matchRe $max
         $res.count = $lines.Count; $res.lines = $lines
+        $res.scanned = $script:LastScanned
         $res.skipped = $script:SkipCount
         if ($script:SkipReasons.Count -gt 0) { $res.skippedReasons = @($script:SkipReasons) }
       }
@@ -962,6 +968,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           Reset-SkipCounter
           $lines = Get-InteractiveLines $target $matchRe $max
           $res.count = $lines.Count; $res.lines = $lines
+          $res.scanned = $script:LastScanned
           $res.skipped = $script:SkipCount
           if ($script:SkipReasons.Count -gt 0) { $res.skippedReasons = @($script:SkipReasons) }
         } else {
@@ -1327,15 +1334,20 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         $match = [string]$step.match
         $lines = New-Object System.Collections.ArrayList
         $attempt = 0
+        $scanned = 0
+        $offscreen = 0
         while ($true) {
           $attempt++
           $lines = New-Object System.Collections.ArrayList
           $seen = @{}
-          # 每次尝试各自计数：回报的 skipped 必须与这一次真正返回的 lines 对得上
+          $scanned = 0
+          $offscreen = 0
+          # 每次尝试各自计数：回报的 skipped/scanned 必须与这一次真正返回的 lines 对得上
           Reset-SkipCounter
           $all = $null
           try { $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { $all = $null; Add-Skip ('整次枚举失败: ' + $_.Exception.Message) }
           if ($null -ne $all) {
+          $scanned = $all.Count
           for ($i = 0; $i -lt $all.Count; $i++) {
           $el = $null
           try { $el = $all.Item($i) } catch { Add-Skip ('元素已失效: ' + $_.Exception.Message); continue }
@@ -1343,7 +1355,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $cur = $null
           try { $cur = $el.Current } catch { Add-Skip ('读取元素状态失败: ' + $_.Exception.Message); continue }
           if ($null -eq $cur) { Add-Skip '元素状态为空'; continue }
-          if ($cur.IsOffscreen) { continue }
+          if ($cur.IsOffscreen) { $offscreen++; continue }
           $t = Get-ControlTypeName $el
           if ($t -notin @('Button', 'Edit', 'Text', 'RadioButton', 'CheckBox', 'TabItem', 'ComboBox', 'ListItem', 'MenuItem', 'TreeItem', 'DataItem', 'Hyperlink', 'Image', 'Slider', 'Spinner', 'Group', 'Custom', 'Pane', 'Document')) { continue }
           $n = $cur.Name
@@ -1368,10 +1380,22 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           if ($lines.Count -ge 320) { break }
           }
           }
-          if ($lines.Count -gt 0 -or -not $match -or $attempt -ge 2) { break }
-          Start-Sleep -Milliseconds 250
+          # 重试条件（缺一不可地「解释得了 0 行」）：
+          #   ① 枚举返回 0 个元素——UIA 在界面重绘/最小化瞬间**会给出空集合而不报错**，
+          #      实测（2026-09-11 上午，重绘窗口）：FindAll 连续 4 次返回 0 元素、
+          #      既无异常也无过滤，调用方只看到「读到 0 个控件」→ 又是一次假空。必须重试。
+          #   ② 带 match 却 0 行（旧逻辑，保留）。
+          $needRetry = $false
+          if ($scanned -eq 0) { $needRetry = $true }
+          elseif ($lines.Count -eq 0 -and $match) { $needRetry = $true }
+          if (-not $needRetry -or $attempt -ge 3) { break }
+          Start-Sleep -Milliseconds 200
         }
         $res.ok = $true; $res.count = $lines.Count; $res.attempts = $attempt
+        # 扫描到的元素总数 + 被 offscreen 过滤掉的数量：让「0 行」永远解释得清
+        # （scanned=0 = 这次没看到；scanned>0 且 offscreen=scanned = 元素都在但都不可见）
+        $res.scanned = $scanned
+        if ($offscreen -gt 0) { $res.offscreen = $offscreen }
         # 跳过数恒回报（0 = 本次枚举里每个元素的 Current 都读到了）。
         # skipped > 0 表示「这份清单不完整」，上层必须显式提示 —— 让调用方能把
         # 「观测不完整」和「界面真的没有」分开，而不是把假空当结论。
