@@ -1,8 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-export const READ_ONLY = Symbol('read-only')
-
 function canonicalExe(value) {
   if (typeof value !== 'string' || !value.trim()) return null
   try { return path.normalize(path.resolve(value)).replace(/[\\/]+/g, '\\').toLowerCase() } catch { return null }
@@ -30,7 +28,7 @@ function parseRules(value) {
   })
 }
 
-export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY, safetyPolicyFile = process.env.DSH_UI_SAFETY_POLICY_FILE, estopFile = process.env.DSH_UI_ESTOP_FILE, classifyAction } = {}) {
+export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY, safetyPolicyFile = process.env.DSH_UI_SAFETY_POLICY_FILE, estopFile = process.env.DSH_UI_ESTOP_FILE } = {}) {
   let parsed
   const policyConfigured = rules !== undefined || Boolean(policyFile)
   let safetyPolicyText = null
@@ -39,7 +37,6 @@ export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY
     parsed = rules !== undefined ? parseRules(rules) : (policyFile && fs.existsSync(policyFile) ? parseRules(JSON.parse(fs.readFileSync(policyFile, 'utf8'))) : null)
   } catch { parsed = undefined }
   let stoppedSession = null
-  const readOnly = action => typeof classifyAction === 'function' && classifyAction(action) === READ_ONLY
   // 无 session 一律归一到 '__default__'：stop/reset/check 三处语义必须对称
   // （原实现里 `stop()` 不带参会把 stoppedSession 置 null = 解除急停，而 check() 把无 session 当
   //   '__default__'，语义不对称 —— 谁把 stop() 当"停所有"用就恰好停了个寂寞。）
@@ -56,8 +53,9 @@ export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY
     isConfigured: () => Boolean(policyConfigured),
     stop,
     reset,
-    check({ action, identity = {}, snapshot, targetWindowHandle, allowSideEffects = false, sessionId, onExecute } = {}) {
-      if (readOnly(action)) return { ok: true, readOnly: true }
+    // 注：动作分类（只读 vs 副作用）由驱动层的 classifyAction 统一负责，写侧门只在**副作用动作**上调用本函数；
+    // policy 不再自行判「只读放行」（原 readOnly() 判的 READ_ONLY Symbol 全代码无人返回，恒 false = 死契约，已删）。
+    check({ action, identity = {}, allowSideEffects = false, sessionId, onExecute } = {}) {
       // 急停是**全局总闸**：只要哨兵文件在盘上，任何 session 一律拒 —— 与 per-session 锁存解耦。
       // （原实现把文件存在性检查门在 `stoppedSession === null` 后面，于是"第一个锁存的 session"之后
       //   文件是否还在再也不复查，换个 session 直接放行 —— 独立复核 repro 1 复现，与"总闸"语义冲突。）
@@ -77,7 +75,9 @@ export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY
       const hits = parsed.filter(rule => matches(rule, current))
       if (!hits.length || new Set(hits.map(r => r.effect)).size > 1) return { ok: false, code: hits.length ? 'policy_conflict' : 'policy_unavailable', error: '策略拒绝' }
       if (hits[0].effect !== 'allow' || allowSideEffects !== true) return { ok: false, code: 'policy_unavailable', error: '副作用未获授权' }
-      if (snapshot && (snapshot.gen !== identity.gen || snapshot.seq !== identity.latestSeq || String(snapshot.windowHandle) !== String(targetWindowHandle ?? identity.windowHandle))) return { ok: false, code: snapshot.gen !== identity.gen ? 'expiredSnapshot' : 'staleSnapshot', error: '快照无效' }
+      // 新鲜度（快照 seq/gen/窗口）由 W1 的 validateSnapshot（driver 写侧单点）负责，policy **不**管新鲜度：
+      // 集成路径下 driver 从不给 policy.check 传 snapshot，原先这里的 expiredSnapshot/staleSnapshot 判据
+      // 恒不可达，只会造成「policy 在管新鲜度」的假象（2026-09 P2 复核）——故删除，杜绝第二处新鲜度判定漂移。
       if (typeof onExecute === 'function') onExecute()
       return { ok: true }
     }
