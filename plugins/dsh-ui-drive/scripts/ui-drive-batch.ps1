@@ -773,6 +773,119 @@ function Set-ElementValue($el, [string]$value) {
   }
 }
 
+# ---- W5b 输入原语：调用元素实际暴露的 UIA pattern（对标 Codex CUA 的 performSecondaryAction）
+#
+# 背景：我们原先只用了 6 个 pattern（Value/Text/Invoke/Toggle/SelectionItem/ScrollItem），
+# 于是"展开一行 / 自增一次 / 选中范围 / 最大化窗口"这类操作只能靠盲点击。
+# 本函数按元素**实际支持**的 pattern 分派；不支持就明确报错 —— 绝不猜、绝不回退成点击。
+# 安全：入口先过致效汇聚点守卫（W0）—— 这些动作都会改状态（expand / increment / close 等）。
+$PATTERN_ACTIONS = @(
+  'Invoke', 'Toggle', 'Expand', 'Collapse', 'Select', 'AddToSelection', 'RemoveFromSelection',
+  'Increment', 'Decrement', 'ScrollIntoView', 'Focus',
+  'Close', 'Minimize', 'Maximize', 'Restore'
+)
+function Invoke-ElementPattern($el, [string]$name) {
+  Assert-NotDenied $el
+  $n = [string]$name
+  if (-not ($PATTERN_ACTIONS -contains $n)) {
+    throw ('不支持的 pattern 动作 "' + $n + '"（允许：' + ($PATTERN_ACTIONS -join '/') + '）')
+  }
+  switch ($n) {
+    'Invoke'              { $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke();               return 'Invoke' }
+    'Focus'               { $el.SetFocus();                                                                                  return 'Focus' }
+    'Toggle'              { $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle();               return 'Toggle' }
+    'Expand'              { $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand();       return 'Expand' }
+    'Collapse'            { $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse();     return 'Collapse' }
+    'Select'              { $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select();        return 'Select' }
+    'AddToSelection'      { $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).AddToSelection(); return 'AddToSelection' }
+    'RemoveFromSelection' { $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).RemoveFromSelection(); return 'RemoveFromSelection' }
+    'Increment'           { $el.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).SmallIncrement();   return 'Increment' }
+    'Decrement'           { $el.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).SmallDecrement();   return 'Decrement' }
+    'ScrollIntoView'      { $el.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern).ScrollIntoView();   return 'ScrollIntoView' }
+    'Close'               { $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close();                 return 'Close' }
+    'Minimize'            { $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Minimized); return 'Minimize' }
+    'Maximize'            { $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized); return 'Maximize' }
+    'Restore'             { $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal);    return 'Restore' }
+  }
+  throw ('未能对元素执行 pattern 动作 "' + $n + '"')
+}
+
+# 语义滚动（对标他们 scroll(index|coord, direction, pages)）：对元素本身或**最近的
+# 可滚动祖先**调 ScrollPattern，而不是裸 mouse_event 滚轮（后者依赖坐标、还会先移动鼠标）。
+function Invoke-ElementScroll($el, [string]$direction, [int]$pages) {
+  Assert-NotDenied $el   # 判定收紧的一侧：误拦只是"滚不动"，漏拦才是问题
+  $d = ([string]$direction).Trim().ToLowerInvariant()
+  $horizontal = $d -in @('left', 'right', 'l', 'r')
+  if (-not ($d -in @('up', 'down', 'left', 'right', 'u', 'd', 'l', 'r'))) {
+    throw ('不支持的滚动方向 "' + $direction + '"（up/down/left/right 或 u/d/l/r）')
+  }
+  $neg = $d -in @('up', 'left', 'u', 'l')
+  $amount = if ($neg) { [System.Windows.Automation.ScrollAmount]::LargeDecrement } else { [System.Windows.Automation.ScrollAmount]::LargeIncrement }
+  $times = [Math]::Max(1, $pages)
+  $cur = $el
+  for ($hop = 0; $hop -lt 6 -and $null -ne $cur; $hop++) {
+    $sp = $null
+    try { $sp = $cur.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern) } catch { $sp = $null }
+    if ($null -ne $sp) {
+      for ($i = 0; $i -lt $times; $i++) {
+        if ($horizontal) { $sp.Scroll($amount, [System.Windows.Automation.ScrollAmount]::NoAmount) }
+        else { $sp.Scroll([System.Windows.Automation.ScrollAmount]::NoAmount, $amount) }
+        Start-Sleep -Milliseconds 60
+      }
+      return ('SCROLLED ' + $d + ' x' + $times + ' via ' + (Get-ControlTypeName $cur))
+    }
+    try { $cur = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($cur) } catch { $cur = $null }
+  }
+  throw '元素及其祖先都不支持 ScrollPattern（可用 wheel 坐标兜底）'
+}
+
+# 精确文本选区（对标他们 selectText）：在 TextPattern 里查找文本并选中；
+# prefix/suffix 用于消解重复匹配；selectionType 决定选文本本身还是把光标落在其前后。
+function Invoke-SelectText($el, [string]$text, [string]$prefix, [string]$suffix, [string]$selType) {
+  Assert-NotDenied $el
+  $tp = $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+  $doc = $tp.DocumentRange
+  $final = $null
+  if (-not $prefix -and -not $suffix) {
+    $final = $doc.FindText([string]$text, $false, $false)
+    if ($null -eq $final) { throw ('控件里找不到文本 "' + [string]$text + '"') }
+  } else {
+    $cursor = $doc
+    $guard = 0
+    while ($null -ne $cursor -and $guard -lt 200) {
+      $guard++
+      $r = $cursor.FindText([string]$text, $false, $false)
+      if ($null -eq $r) { break }
+      $ok = $true
+      if ($prefix) {
+        $p = $r.Clone()
+        $p.MoveEndpointByRange([System.Windows.Automation.TextPatternRangeEndpoint]::End, $r, [System.Windows.Automation.TextPatternRangeEndpoint]::Start)
+        $p.MoveEndpointByUnit([System.Windows.Automation.TextPatternRangeEndpoint]::Start, [System.Windows.Automation.TextUnit]::Character, -([string]$prefix).Length)
+        if ($p.GetText(-1) -ne [string]$prefix) { $ok = $false }
+      }
+      if ($ok -and $suffix) {
+        $s = $r.Clone()
+        $s.MoveEndpointByRange([System.Windows.Automation.TextPatternRangeEndpoint]::Start, $r, [System.Windows.Automation.TextPatternRangeEndpoint]::End)
+        $s.MoveEndpointByUnit([System.Windows.Automation.TextPatternRangeEndpoint]::End, [System.Windows.Automation.TextUnit]::Character, ([string]$suffix).Length)
+        if ($s.GetText(-1) -ne [string]$suffix) { $ok = $false }
+      }
+      if ($ok) { $final = $r; break }
+      $nx = $r.Clone()
+      $nx.MoveEndpointByRange([System.Windows.Automation.TextPatternRangeEndpoint]::Start, $r, [System.Windows.Automation.TextPatternRangeEndpoint]::End)
+      $nx.MoveEndpointByUnit([System.Windows.Automation.TextPatternRangeEndpoint]::End, [System.Windows.Automation.TextUnit]::Character, 1)
+      $cursor = $nx
+    }
+    if ($null -eq $final) { throw ('文本 "' + [string]$text + '" 有匹配但没有一条满足 prefix/suffix 条件') }
+  }
+  if ([string]$selType -eq 'cursor_before') {
+    $final.MoveEndpointByRange([System.Windows.Automation.TextPatternRangeEndpoint]::End, $final, [System.Windows.Automation.TextPatternRangeEndpoint]::Start)
+  } elseif ([string]$selType -eq 'cursor_after') {
+    $final.MoveEndpointByRange([System.Windows.Automation.TextPatternRangeEndpoint]::Start, $final, [System.Windows.Automation.TextPatternRangeEndpoint]::End)
+  }
+  $final.Select()
+  return ('SELECTED "' + [string]$text + '" (' + (Get-ControlTypeName $el) + ')')
+}
+
 function Send-KeyTo($el, [string]$value, [bool]$ascii, [int]$waitMs) {
   Assert-NotDenied $el   # 致效汇聚点守卫（W0）：本函数会先物理左键点元素中心，等于一次点击
   $b = $el.Current.BoundingRectangle
@@ -1362,6 +1475,53 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $out = Invoke-DoubleClickElement $w.el $main
           Start-Sleep -Milliseconds $waitMs
           $res.ok = $true; $res.output = ([string]$out)
+        }
+      }
+      'pattern' {
+        # W5b：调用元素实际暴露的 UIA pattern（对标 performSecondaryAction：展开/自增/选中/最大化…）
+        # 动作名走 value（或 keys）；不支持就明确报错，绝不回退成盲点击。
+        $w = Wait-Target $main $step $waitSpec $procId
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
+        else {
+          $pact = [string]$step.value
+          if (($step.PSObject.Properties.Name -contains 'keys') -and $step.keys) { $pact = [string]$step.keys }
+          $out = Invoke-ElementPattern $w.el $pact
+          Start-Sleep -Milliseconds $waitMs
+          $res.ok = $true; $res.output = ('PATTERN ' + $out + ' on "' + $w.el.Current.Name + '"')
+        }
+      }
+      'scroll' {
+        # W5b：语义滚动（对元素/最近可滚动祖先用 ScrollPattern，不裸滚轮）
+        $w = Wait-Target $main $step $waitSpec $procId
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
+        else {
+          $dir = 'down'
+          if (($step.PSObject.Properties.Name -contains 'value') -and $step.value) { $dir = [string]$step.value }
+          if (($step.PSObject.Properties.Name -contains 'keys') -and $step.keys) { $dir = [string]$step.keys }
+          $pgs = 1
+          if (($step.PSObject.Properties.Name -contains 'count') -and $null -ne $step.count) { $pgs = [int]$step.count }
+          $out = Invoke-ElementScroll $w.el $dir $pgs
+          Start-Sleep -Milliseconds $waitMs
+          $res.ok = $true; $res.output = $out
+        }
+      }
+      'selecttext' {
+        # W5b：精确文本选区（对标 selectText）
+        # text=value；prefix=match；suffix=expectValue；selectionType=state（text|cursor_before|cursor_after）
+        $w = Wait-Target $main $step $waitSpec $procId
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
+        else {
+          $stxt = [string]$step.value
+          if (($step.PSObject.Properties.Name -contains 'keys') -and $step.keys) { $stxt = [string]$step.keys }
+          $spre = ''; if (($step.PSObject.Properties.Name -contains 'match') -and $step.match) { $spre = [string]$step.match }
+          $ssuf = ''; if (($step.PSObject.Properties.Name -contains 'expectValue') -and $null -ne $step.expectValue) { $ssuf = [string]$step.expectValue }
+          $stype = 'text'; if (($step.PSObject.Properties.Name -contains 'state') -and $step.state) { $stype = [string]$step.state }
+          $out = Invoke-SelectText $w.el $stxt $spre $ssuf $stype
+          Start-Sleep -Milliseconds $waitMs
+          $res.ok = $true; $res.output = $out
         }
       }
       'wheel' {
