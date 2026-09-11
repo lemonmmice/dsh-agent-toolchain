@@ -3,8 +3,9 @@
 // 夹具是**真实报告**（xperf `-a stack -butterfly` 的 HTML），不是手写样例：
 //   · stack-report-managed.html    —— 启用 CPU+DotNet 预设后，含**真实托管方法名**（我们真正要的形态）
 //   · stack-report-symresolved.html —— 只启 CPU 预设，模块能解但**托管函数名解不出**（踩坑形态）
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { makeTrace, parseStackReport, summarize, CAPTURE_SETS } from '../lib/trace.mjs'
 
@@ -17,6 +18,10 @@ function check(name, cond, extra = '') {
 const here = dirname(fileURLToPath(import.meta.url))
 const managedHtml = readFileSync(join(here, 'fixtures', 'stack-report-managed.html'), 'utf8')
 const partialHtml = readFileSync(join(here, 'fixtures', 'stack-report-symresolved.html'), 'utf8')
+// ⚠️ 临时文件一律写**系统临时目录**：曾把 .tmp-* 写在测试目录里、被 git 提交进去（已清理）
+const TMP = mkdtempSync(join(tmpdir(), 'dsh-perf-trace-'))
+// 源码级护栏用（有多处断言直接检查实现写法，因为这些坑只能靠"写法"钉死）
+const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
 
 // ------------------------------------------------- 1. 解析真实报告（含托管符号）
 {
@@ -76,16 +81,15 @@ const partialHtml = readFileSync(join(here, 'fixtures', 'stack-report-symresolve
     CAPTURE_SETS.dotnet.includes('DotNet') && CAPTURE_SETS.dotnet.includes('CPU'), JSON.stringify(CAPTURE_SETS.dotnet))
 
   // 4b. 报告命令必须显式带 -symbols（xperf 帮助：不指定则**符号解码被禁用**）
-  const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
   check('hotstacks 的命令里显式带 -symbols', /cmd\.push\('-symbols'\)/.test(src))
-  check('-symbols 受 offline 开关控制（离线可跳过）', /if \(!args\.offline\) cmd\.push\('-symbols'\)/.test(src))
+  check('-symbols 受 offline 开关控制（离线可跳过）', /if \(!args\.offline\) \{\s*\n\s*cmd\.push\('-symbols'\)/.test(src))
   check('符号路径默认指向微软公网符号 + 本地缓存', /msdl\.microsoft\.com\/download\/symbols/.test(src))
   check('设置 _NT_SYMCACHE_PATH（第二次出报告才快）', /_NT_SYMCACHE_PATH/.test(src))
 }
 
 // ------------------------------------------------- 5. 边界与错误路径
 {
-  const t = makeTrace({ evidenceDir: join(here, '.tmp-trace-evidence') })
+  const t = makeTrace({ evidenceDir: join(TMP, 'evidence') })
   const noEtl = await t.hotstacks({ etlPath: join(here, 'nope.etl') })
   check('etlPath 不存在 → 明确报错（不是静默空结果）', noEtl.ok === false && /不存在/.test(String(noEtl.error)), JSON.stringify(noEtl))
   const badProfile = await t.trace({ profile: 'nonsense' })
@@ -106,12 +110,12 @@ const partialHtml = readFileSync(join(here, 'fixtures', 'stack-report-symresolve
   check('空报告：明说"不等于没有热点"', /不等于["“]?没有热点/.test(emptyText))
 
   // 6b. 空报告 → hotstacks 必须返回 ok:false（不是假成功）
-  const fakeEtl = join(here, '.tmp-fake.etl')
-  const fakeReport = join(here, '.tmp-fake-report.html')
+  const fakeEtl = join(TMP, 'fake.etl')
+  const fakeReport = join(TMP, 'fake-report.html')
   writeFileSync(fakeEtl, 'not a real etl', 'utf8')
   writeFileSync(fakeReport, '', 'utf8')   // 预先放一个空报告，模拟"xperf 留下空文件"
   try {
-    const t = makeTrace({ evidenceDir: join(here, '.tmp-trace-evidence'), xperf: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe') })
+    const t = makeTrace({ evidenceDir: join(TMP, 'evidence'), xperf: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe') })
     const r = await t.hotstacks({ etlPath: fakeEtl, outPath: fakeReport, timeoutMs: 30000 })
     check('空报告 → ok:false（不当成"没有热点"）', r.ok === false, JSON.stringify({ ok: r.ok, error: String(r.error).slice(0, 80) }))
     check('空报告 → 错误信息给出排查方向', /符号|focus|为空/.test(String(r.error)), String(r.error).slice(0, 120))
@@ -125,14 +129,68 @@ const partialHtml = readFileSync(join(here, 'fixtures', 'stack-report-symresolve
     try {
       const xp = existsSync('C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\xperf.exe')
         ? undefined : join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'timeout.exe')
-      const t = makeTrace({ evidenceDir: join(here, '.tmp-trace-evidence'), ...(xp ? { xperf: xp } : {}) })
+      const t = makeTrace({ evidenceDir: join(TMP, 'evidence'), ...(xp ? { xperf: xp } : {}) })
       // timeoutMs=1：任何真实 xperf 都会被立刻杀掉 —— 走的就是"超时"分支
-      const r = await t.hotstacks({ etlPath: fakeEtl, timeoutMs: 1, outPath: join(here, '.tmp-to.html') })
+      const r = await t.hotstacks({ etlPath: fakeEtl, timeoutMs: 1, outPath: join(TMP, 'to.html') })
       check('xperf 超时 → ok:false 且 timedOut:true', r.ok === false && r.timedOut === true, JSON.stringify({ ok: r.ok, timedOut: r.timedOut }))
       check('超时 → 建议里含"加 process 过滤"/调大 timeoutMs', /process 过滤|timeoutMs/.test(String(r.error)), String(r.error).slice(0, 140))
-      try { rmSync(join(here, '.tmp-to.html'), { force: true }) } catch { /* ignore */ }
     } finally { try { rmSync(fakeEtl, { force: true }) } catch { /* ignore */ } }
   }
+}
+
+// ------------------------------------------------- 7. 符号缓存必须**跨运行共享**（端到端实测的第四个坑）
+// 实测现场：第一次运行把 1.15 GB 符号存进 .../e2e/symbols，第二次运行却开在
+// .../e2e2/symbols 从零再下一遍，xperf 长时间 0% CPU 卡在公网符号服务器上。
+// 根因：符号缓存挂在 runDir()（带时间戳）下面，而 runDir 每次运行都是新的。
+{
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+
+  const evDir = mkdtempSync(join(tmpdir(), 'dsh-perf-sym-'))
+  try {
+    const t = makeTrace({ evidenceDir: evDir })
+    const env = t.symbolEnv(false)
+
+    // 7a. 符号缓存必须落在 evidenceDir 下**固定**的目录，而不是任何带时间戳的运行目录
+    check('符号缓存目录不含时间戳运行目录（trace-<stamp>）', !/trace-\d{4}-\d{2}-\d{2}T/.test(String(env._NT_SYMBOL_PATH)), String(env._NT_SYMBOL_PATH))
+    check('symcache 目录同样不含时间戳运行目录', !/trace-\d{4}-\d{2}-\d{2}T/.test(String(env._NT_SYMCACHE_PATH)), String(env._NT_SYMCACHE_PATH))
+
+    // 7b. 两次不同 tag 的"运行"必须解析到**同一个**符号缓存目录（这就是"跨运行共享"的定义）
+    const a = makeTrace({ evidenceDir: evDir })
+    const b = makeTrace({ evidenceDir: evDir })
+    const envA = a.symbolEnv(false)
+    const envB = b.symbolEnv(false)
+    check('同一个 evidenceDir 下，两次运行解析到同一个符号缓存', envA._NT_SYMBOL_PATH === envB._NT_SYMBOL_PATH, envA._NT_SYMBOL_PATH + ' vs ' + envB._NT_SYMBOL_PATH)
+    check('符号缓存与 symcache 是两个不同目录（不能互相覆盖）', envA._NT_SYMBOL_PATH !== envA._NT_SYMCACHE_PATH)
+
+    // 7c. 缓存目录必须真的被建出来（否则 xperf 会当成不可写而回退）
+    const { existsSync } = await import('node:fs')
+    const symDir = String(envA._NT_SYMBOL_PATH).split('*')[1]
+    check('符号缓存目录已创建', existsSync(symDir), symDir)
+    check('symcache 目录已创建', existsSync(String(envA._NT_SYMCACHE_PATH)), String(envA._NT_SYMCACHE_PATH))
+
+    // 7d. DSH_PERF_SYMBOL_CACHE 生效（可把缓存指到大盘上）
+    const custom = mkdtempSync(join(tmpdir(), 'dsh-perf-symcustom-'))
+    try {
+      const t2 = makeTrace({ evidenceDir: evDir, symbolCacheDir: custom })
+      const e2 = t2.symbolEnv(false)
+      check('symbolCacheDir 覆盖生效', String(e2._NT_SYMBOL_PATH).includes(custom), String(e2._NT_SYMBOL_PATH))
+    } finally { try { rmSync(custom, { recursive: true, force: true }) } catch { /* ignore */ } }
+
+    // 7e. offline 时不得注入任何符号环境（保持既有语义）
+    const eo = t.symbolEnv(true)
+    check('offline → 不注入 _NT_SYMBOL_PATH', !eo._NT_SYMBOL_PATH || eo._NT_SYMBOL_PATH === process.env._NT_SYMBOL_PATH)
+  } finally {
+    try { rmSync(evDir, { recursive: true, force: true }) } catch { /* ignore */ }
+    // 7f. 清理失败用例留下的临时报告（历史上 .tmp-to.html 被落进 test/ 且没进 .gitignore）
+    try { rmSync(join(TMP, 'to.html'), { force: true }) } catch { /* ignore */ }
+  }
+
+  // 7g. 符号卡住时必须能诊断：debugSymbols 打开 verbose，且 -symbols 仍单独成 push
+  check('debugSymbols → 追加 -symbols verbose', /if \(args\.debugSymbols\) cmd\.push\('verbose'\)/.test(src))
+  check('-symbols 仍是独立整串 push（verbose 不破坏既有护栏）', /cmd\.push\('-symbols'\)/.test(src))
+  check('超时后会删掉 0 字节报告（不留"有报告"的假象）', /leftoverBytes === 0\) rmSync\(outHtml/.test(src))
+  check('超时返回里带符号缓存目录（给出下一步）', /symbolCacheDir: !args\.offline \? join\(c\.symbolCacheDir/.test(src))
 }
 
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }
