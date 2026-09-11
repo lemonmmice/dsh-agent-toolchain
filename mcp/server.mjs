@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 
 import { makeBuilder } from '../plugins/dsh-build/lib/builder.mjs'
 import { makeDriver } from '../plugins/dsh-ui-drive/lib/driver.mjs'
+import { makeLive } from '../plugins/dsh-ui-drive/lib/live.mjs'
 import { makePerf } from '../plugins/dsh-perf/lib/perf.mjs'
 import { makeHangInspector } from '../plugins/dsh-hang-inspector/lib/hang.mjs'
 import { sendRequest } from '../plugins/dsh-postman/lib/http.mjs'
@@ -87,6 +88,17 @@ function mem() {
   return memory
 }
 
+/**
+ * Live-view singleton. `makeLive` starts an interval-driven frame grabber, so it MUST be a
+ * single instance — two of them would double-write latest.png. (The DSH plugin keeps the same
+ * guarantee with a module-level singleton.)
+ */
+let live = null
+function liveCtl() {
+  if (!live) live = makeLive({ driver: drv() })
+  return live
+}
+
 let perf = null
 function prf() {
   if (!perf) {
@@ -132,6 +144,23 @@ function autoRecord(failureClass, tool, message, extra = {}) {
 
 // ---------------------------------------------------------------- build
 
+/** Shared builder instance. Its constructor options are env-derived; build status and the last
+ *  error list are read back from the logs dir on disk, so build_status/build_errors see the same
+ *  state that build_run wrote even across calls. */
+let builder = null
+function bld() {
+  if (!builder) {
+    builder = makeBuilder({
+      clientRoot: process.env.DSH_BUILD_CLIENT_ROOT || '',
+      repoRoot: process.env.DSH_BUILD_REPO_ROOT || '',
+      msbuild: process.env.DSH_BUILD_MSBUILD || '',
+      engine: process.env.DSH_BUILD_ENGINE || 'msbuild',
+      logsDir: process.env.DSH_BUILD_LOGS_DIR || '',
+    })
+  }
+  return builder
+}
+
 server.tool(
   'build_run',
   'Run a build (incremental Build or full Rebuild) and return structured errors. ' +
@@ -149,13 +178,17 @@ server.tool(
     runId: z.string().optional().describe('Optional run id: the build log and the per-run record (run-<runId>.json) are named with it — the evidence-pack spine'),
   },
   async (args) => {
-    const b = makeBuilder({
-      clientRoot: args.clientRoot || process.env.DSH_BUILD_CLIENT_ROOT || '',
-      repoRoot: args.repoRoot || process.env.DSH_BUILD_REPO_ROOT || '',
-      msbuild: process.env.DSH_BUILD_MSBUILD || '',
-      engine: args.engine || process.env.DSH_BUILD_ENGINE || 'msbuild',
-      logsDir: process.env.DSH_BUILD_LOGS_DIR || '',
-    })
+    // Per-call argument overrides (clientRoot/repoRoot/engine) still win; the shared instance
+    // supplies the env-derived defaults. build() does no I/O at construction, so reusing it is safe.
+    const b = args.clientRoot || args.repoRoot || args.engine
+      ? makeBuilder({
+        clientRoot: args.clientRoot || process.env.DSH_BUILD_CLIENT_ROOT || '',
+        repoRoot: args.repoRoot || process.env.DSH_BUILD_REPO_ROOT || '',
+        msbuild: process.env.DSH_BUILD_MSBUILD || '',
+        engine: args.engine || process.env.DSH_BUILD_ENGINE || 'msbuild',
+        logsDir: process.env.DSH_BUILD_LOGS_DIR || '',
+      })
+      : bld()
     const r = await b.build({
       target: args.target,
       project: args.project,
@@ -428,6 +461,71 @@ server.tool(
   }
 )
 
+// ---------------------------------------------------------------- ui_launch / ui_tree / ui_live
+// These three were reachable from the DSH plugin surface but missing entirely from MCP, so an
+// MCP client could not start the client under test, could not dump its visual tree, and could not
+// watch it live. An independent audit confirmed none of them needs a host-only service: the
+// driver exposes launch/tree, and makeLive is plain Node (it shells out through the same driver).
+
+server.tool(
+  'ui_launch',
+  'Start the target desktop client (the exe named by DSH_UI_CLIENT_EXE) and wait for its main window; ' +
+    'if it is already running the existing process is returned. extraArgs passes extra command-line ' +
+    'arguments (e.g. --remote-debugging-port=9222 for CEF debugging). ' +
+    'Use this when ui_status reports the client is not running - every other ui_* tool needs a live window.',
+  {
+    extraArgs: z.string().optional().describe('Extra command-line arguments, space separated'),
+    waitMs: z.number().optional().describe('How long to wait for the main window (default 60000)'),
+  },
+  async (args) => jtext(await drv().launch({ extraArgs: args.extraArgs || '', waitMs: args.waitMs || 60000 }))
+)
+
+server.tool(
+  'ui_tree',
+  'Dump the in-process visual tree: a read-only probe is injected into the target client and ' +
+    'reports real control types + Name + AutomationId + DataContext type. Richer than UIA, for ' +
+    'diagnosing bindings / templates. Read-only, no popups. Prefer ui_observe for ordinary ' +
+    'interaction - use this only when UIA detail is insufficient.',
+  {
+    maxDepth: z.number().optional().describe('Maximum depth (default 8, capped at 20)'),
+  },
+  async (args) => jtext(await drv().tree({ maxDepth: args.maxDepth || 8 }))
+)
+
+server.tool(
+  'ui_live',
+  'Watch the running client continuously: a background loop grabs "window content" frames without ' +
+    'stealing the foreground or restoring a minimized window. ' +
+    'action=start (idempotent; intervalMs default 1500) / stop / status (current snapshot, no new ' +
+    'capture) / frame (latest frame info: path + hash + control summary; fresh=true forces a new ' +
+    'capture; degrades to a one-shot capture when not started) / wait (block until the frame hash ' +
+    'changes; fromHash is the baseline, timeoutMs default 30000). ' +
+    'Read the returned path with a vision-capable model to actually see the screen. ' +
+    'Frames whose focus is a password/captcha/token control do NOT return a path unless ' +
+    'allowSensitive=true - pixels cannot be redacted. ' +
+    'Only start the loop when you need to watch changes over time; for a single look use frame.',
+  {
+    action: z.enum(['start', 'stop', 'status', 'frame', 'wait']),
+    intervalMs: z.number().optional().describe('Frame interval ms (default 1500)'),
+    stateIntervalMs: z.number().optional().describe('Control-state sampling interval ms (default 3000)'),
+    maxControls: z.number().optional().describe('Max controls in the state summary (default 40)'),
+    fresh: z.boolean().optional().describe('frame: force a new capture'),
+    fromHash: z.string().optional().describe('wait: baseline frame hash'),
+    timeoutMs: z.number().optional().describe('wait: max wait ms (default 30000)'),
+    allowSensitive: z.boolean().optional().describe('Return a frame path even when a password/captcha control has focus'),
+  },
+  async (args) => {
+    const ctl = liveCtl()
+    const action = String(args.action || '').toLowerCase()
+    if (action === 'start') return jtext(await ctl.start({ intervalMs: args.intervalMs, stateIntervalMs: args.stateIntervalMs, maxControls: args.maxControls }))
+    if (action === 'stop') return jtext(ctl.stop())
+    if (action === 'status') return jtext(ctl.status())
+    if (action === 'frame') return jtext(await ctl.frame({ fresh: args.fresh, allowSensitive: args.allowSensitive }))
+    if (action === 'wait') return jtext(await ctl.wait({ fromHash: args.fromHash, timeoutMs: args.timeoutMs }))
+    return text('Unknown ui_live action "' + args.action + '". Use start | stop | status | frame | wait.')
+  }
+)
+
 server.tool(
   'ui_act',
   'Real UI action (side effects; allowSideEffects=true required): click / setvalue (use this for key-filtered fields such as a phone box) / ' +
@@ -516,6 +614,38 @@ server.tool(
   'Read the most recent perf_probe report (P50/P95/P99 + stall events).',
   {},
   async () => jtext(prf().report())
+)
+
+server.tool(
+  'perf_dump',
+  'Capture a full memory dump of the running client (procdump -ma — this SUSPENDS the process for ' +
+    'a few seconds, so the user sees a brief freeze) and immediately analyse it: UI thread managed ' +
+    'stack + top lock-holding threads. Dumps are hundreds of MB and land in the perf evidence dir; ' +
+    'ask the user before deleting.',
+  {
+    note: z.string().optional().describe('Scenario note written alongside the evidence'),
+  },
+  async (args) => jtext(await prf().dump(args))
+)
+
+server.tool(
+  'perf_analyze',
+  'Re-run the ClrMD analysis (UI thread stack + hot lock threads) on an existing dump file.',
+  {
+    dumpPath: z.string().describe('Absolute path to the .dmp file'),
+  },
+  async (args) => jtext(await prf().analyzeDump(args.dumpPath))
+)
+
+server.tool(
+  'perf_heap',
+  'Managed heap type census (object count / total bytes per type, Top N) — the first cut of a memory ' +
+    'leak hunt: take two dumps and compare the same type across them.',
+  {
+    dumpPath: z.string().describe('Absolute path to the .dmp file'),
+    topN: z.number().optional().describe('Top N types (default 30)'),
+  },
+  async (args) => jtext(await prf().heapStats(args.dumpPath, args.topN))
 )
 
 // ---------------------------------------------------------------- hang inspector
@@ -696,6 +826,40 @@ server.tool(
   'Memory store status: chunk count, KV entries, data dir, embedding backend.',
   {},
   async () => jtext(mem().status())
+)
+
+server.tool(
+  'memory_forget',
+  'Delete one KV memory entry. Use when a stored convention no longer applies, so a later session ' +
+    'does not act on a stale decision.',
+  {
+    key: z.string().describe('Memory key to delete'),
+    scope: z.string().optional().describe('Scope (default global)'),
+  },
+  async (args) => {
+    mem().forget(args.key, args.scope || 'global')
+    return jtext({ forgotten: true, key: args.key })
+  }
+)
+
+// ---------------------------------------------------------------- build status
+// build_run reported results but there was no way to re-read them, so an agent that lost the
+// output (compaction, a long gap) had to re-run a build just to see it.
+
+server.tool(
+  'build_status',
+  'Status of the most recent build: target, configuration, duration, error/warning counts and the ' +
+    'log path. Use it to re-read a build result without re-running the build.',
+  {},
+  async () => jtext(bld().status())
+)
+
+server.tool(
+  'build_errors',
+  'Re-parse the structured error/warning list (file / line / column / code / message) out of the ' +
+    'last build log. Use after build_run reports errors, or to re-read them later without rebuilding.',
+  {},
+  async () => jtext(bld().errorsOfLast())
 )
 
 // ---------------------------------------------------------------- failure corpus
