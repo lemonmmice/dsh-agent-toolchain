@@ -107,7 +107,49 @@ const OK_PAYLOAD = { ok: true, elapsedMs: 4, steps: [{ step: 1, action: 'clickat
     check(`${fn} 入口调用 Assert-NotDenied`, body !== null && /Assert-NotDenied/.test(body), '缺守卫 = 该路径可绕过硬拒')
   }
   check('Assert-NotDenied 会抛（不是静默 return）', /function Assert-NotDenied[\s\S]{0,200}?throw/.test(ps1))
-  check('$DENY_RE 仍包含交易类关键词', /买入/.test(ps1) && /下单/.test(ps1))
+  // 「按名硬拒」是**通用机制**（目标客户端没有交易模块），默认名单只是保守默认值，可由环境变量覆盖
+  check('「按名硬拒」名单可由 DSH_UI_DENY_RE 覆盖', /\$DENY_RE = if \(\$env:DSH_UI_DENY_RE\)/.test(ps1))
+  check('未设置环境变量时回落到默认名单', /else \{ '[^']*买入[^']*' \}/.test(ps1))
+  check('拒绝信息如实说明机制与可覆盖性（不再是"交易类"措辞）', /按名硬拒绝（不可解锁）/.test(ps1) && /DSH_UI_DENY_RE 覆盖/.test(ps1))
+  check('源码中不再用"误点会真下单"这类不实论证', !/误点会真下单/.test(ps1))
+}
+
+// ------------------------------------------------- 4b. 「按名硬拒」真机验证：默认名单 + 环境变量覆盖
+{
+  const { execFileSync } = await import('node:child_process')
+  const ps1 = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'ui-drive-batch.ps1'), 'utf8')
+  const ps = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  // 从源码原文抽出 $DENY_RE 赋值与 Test-DenyTarget 函数体（不是重写一份，源码改了这里就跟着变）
+  const denyLine = (/^\$DENY_RE = .*$/m.exec(ps1) || [''])[0]
+  const fnIdx = ps1.indexOf('function Test-DenyTarget')
+  let depth = 0, started = false, fn = ''
+  for (let j = fnIdx; j < ps1.length; j++) {
+    const ch = ps1[j]
+    if (ch === '{') { depth++; started = true } else if (ch === '}') { depth--; if (started && depth === 0) { fn = ps1.slice(fnIdx, j + 1); break } }
+  }
+  const probe = `$DENY_ENV_SEEN = [string]$env:DSH_UI_DENY_RE
+${denyLine}
+${fn}
+function T([string]$n) { $el = New-Object PSObject -Property @{ Current = (New-Object PSObject -Property @{ Name = $n; AutomationId = '' }) }; if (Test-DenyTarget $el) { 'DENY' } else { 'ALLOW' } }
+'a=' + (T '买入按钮')
+'b=' + (T '普通按钮')
+'c=' + (T '危险操作')
+`
+  const run = (denyEnv) => {
+    const env = Object.assign({}, process.env)
+    if (denyEnv) env.DSH_UI_DENY_RE = denyEnv
+    else delete env.DSH_UI_DENY_RE
+    const out = execFileSync(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', probe], { encoding: 'utf8', timeout: 60000, env })
+    const kv = {}
+    for (const line of out.split(/\r?\n/)) { const m = /^([abc])=(.*)$/.exec(line.trim()); if (m) kv[m[1]] = m[2] }
+    return kv
+  }
+  const d1 = run('')
+  check('默认名单：命中"买入"的控件被拒', d1.a === 'DENY', JSON.stringify(d1))
+  check('默认名单：普通控件放行', d1.b === 'ALLOW', JSON.stringify(d1))
+  const d2 = run('危险')
+  check('覆盖生效：自定义名单命中即拒', d2.c === 'DENY', JSON.stringify(d2))
+  check('覆盖生效：默认名单被替换（"买入"不再被拒）', d2.a === 'ALLOW', JSON.stringify(d2))
 }
 
 // ------------------------------------------------- 5. 文档与代码一致（原先 drag 的承诺没兑现）
