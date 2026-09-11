@@ -72,6 +72,43 @@ export function makeBuilder(cfg) {
     } catch { return [] }
   }
 
+  /** 单个 PID 是否还活着（按 PID 精确判定，不用「同名进程列表」当判据）。 */
+  function isPidAlive(pid) {
+    if (!pid) return false
+    try {
+      const out = execFileSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
+      return new RegExp('","' + pid + '",').test(out)
+    } catch { return false }
+  }
+
+  /**
+   * 同名进程的**实例明细**（PID + 可执行文件全路径），用于「按目标实例定位」。
+   *
+   * 为什么不能只看镜像名：`tasklist /FI IMAGENAME eq X.exe` 会把**所有**同名实例找出来 ——
+   * 别的会话、别的用户、甚至测试宿主的同名进程都在里面。B-3 的复核（Codex，2026-09-11）
+   * 把「按镜像名杀全部同名实例」判为 blocker（触犯「不误杀非目标进程」红线），这条实现就是修它。
+   * 走一次 PowerShell/WMI 才拿得到 ExecutablePath，所以只在**真要动手/有歧义**时才调用。
+   */
+  function clientInstances(name) {
+    if (!name) return []
+    const pids = listClientPids(name)
+    if (pids.length === 0) return []
+    if (pids.length === 1) {
+      // 只有一个实例：路径信息只作展示，不阻塞
+      return [{ pid: pids[0], path: exePathOf(pids[0]) }]
+    }
+    return pids.map((pid) => ({ pid, path: exePathOf(pid) }))
+  }
+
+  /** 取某个 PID 的可执行文件全路径（拿不到就返回空串，绝不抛）。 */
+  function exePathOf(pid) {
+    try {
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        '(Get-CimInstance Win32_Process -Filter "ProcessId=' + pid + '").ExecutablePath'], { encoding: 'utf8', windowsHide: true })
+      return String(out || '').trim().split(/\r?\n/)[0] || ''
+    } catch { return '' }
+  }
+
   function clientProcess() {
     const proc = process.env.DSH_BUILD_CLIENT_PROC || process.env.DSH_UI_PROC_NAME || ''
     if (!proc) return { running: false, pid: null, pids: [], unconfigured: true }
@@ -81,29 +118,68 @@ export function makeBuilder(cfg) {
   }
 
   /**
-   * 结束目标客户端（B-3）：按**目标实例**定位（进程名 → 同名进程的全部 PID，绝不宽匹配），
-   * 并且**等它真的退出**再返回。
+   * 结束目标客户端（B-3）：按**目标实例**定位 + **等它真的退出**。
    *
    * 为什么必须等：`taskkill` 是异步的，旧实现 `spawn(taskkill…) + sleep(1500)` 既没确认
    * 进程死了、也没确认锁释放了 —— 进程还活着的时候 MSBuild 照样 MSB3021（昨夜两次构建
    * 失败并归因错误「参数没生效」，真因是门控 + 没等退出）。
+   *
+   * 实例定位规则（`DSH_BUILD_CLIENT_EXE` / `DSH_UI_CLIENT_EXE` 指定期望的 exe 全路径）：
+   *   1) 配了 exe 路径 → 只杀**路径一致**的实例（多实例场景下这是唯一安全的做法）；
+   *   2) 没配路径但**只有 1 个**同名实例 → 杀它（无歧义）；
+   *   3) 没配路径且有 **≥2 个**实例 → **拒绝强杀**，如实回报实例清单，请调用方指定 exe 或手工处理
+   *      （宁可构建失败，也不误杀别人的客户端 —— 红线优先）。
+   * 退出判据只轮询**本次真正杀掉的 PID**，不再用「同名进程列表为空」当判据
+   * （否则别的实例还在时会把「已成功」误报成失败）。
    * 上限 `DSH_BUILD_KILL_WAIT_MS`（默认 15000ms），超时如实回报 remaining。
    */
   async function killClientProcess(client) {
     const startedAt = Date.now()
     const name = (client && client.name) || ''
-    const pids = (client && client.pids && client.pids.length) ? client.pids.slice() : (client && client.pid ? [client.pid] : [])
+    const wanted = String(process.env.DSH_BUILD_CLIENT_EXE || process.env.DSH_UI_CLIENT_EXE || '').trim()
+    const instances = clientInstances(name)
+    let targets = []
+    let scope = ''
+    if (instances.length === 0) {
+      return { killed: false, nothingToKill: true, name, pids: [], remaining: [], waitedMs: 0, instances: [], scope: 'none' }
+    }
+    if (wanted) {
+      const w = wanted.toLowerCase()
+      targets = instances.filter((i) => i.path && i.path.toLowerCase() === w)
+      scope = 'exe-path'
+      if (targets.length === 0) {
+        return {
+          killed: false, refused: true, scope, name, wanted, instances,
+          pids: [], remaining: instances.map((i) => i.pid), waitedMs: Date.now() - startedAt,
+          error: '没有实例的可执行路径等于 DSH_BUILD_CLIENT_EXE（' + wanted + '）；已拒绝强杀，避免误杀其他会话的同名进程。候选：' +
+            instances.map((i) => i.pid + '=' + (i.path || '(路径未知)')).join('、'),
+        }
+      }
+    } else if (instances.length === 1) {
+      targets = instances
+      scope = 'single-instance'
+    } else {
+      return {
+        killed: false, refused: true, scope: 'ambiguous', name, instances,
+        pids: [], remaining: instances.map((i) => i.pid), waitedMs: Date.now() - startedAt,
+        error: '发现 ' + instances.length + ' 个同名实例（' + instances.map((i) => i.pid + '=' + (i.path || '(路径未知)')).join('、') +
+          '）且未配置 DSH_BUILD_CLIENT_EXE，无法唯一定位目标实例：已拒绝强杀（避免误杀其他会话）。' +
+          '请设置 DSH_BUILD_CLIENT_EXE 指向目标 exe，或先手工关闭目标客户端。',
+      }
+    }
+
+    const pids = targets.map((t) => t.pid)
     for (const pid of pids) {
       try { spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }) } catch { /* ignore */ }
     }
     const waitMs = Number(process.env.DSH_BUILD_KILL_WAIT_MS || 15000)
     const deadline = Date.now() + waitMs
-    let remaining = listClientPids(name)
+    let remaining = pids.filter((p) => isPidAlive(p))
     while (remaining.length > 0 && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 250))
-      remaining = listClientPids(name)
+      remaining = pids.filter((p) => isPidAlive(p))
     }
-    return { killed: remaining.length === 0, name, pids, remaining, waitedMs: Date.now() - startedAt }
+    return { killed: remaining.length === 0, name, scope, pids, instances, remaining, waitedMs: Date.now() - startedAt }
   }
 
   /** 从 MSB3021/3027 报文里挖出被锁文件（报文形如：无法将文件"源"复制到"目标"。…）。 */
@@ -299,6 +375,18 @@ export function makeBuilder(cfg) {
       // 于是最需要它的场景反而没杀：锁的是**共享依赖 DLL**（构建目标是 .sln 或别的工程）
       // 时门控为假 → 不 kill → 构建继续 MSB3021，调用方还以为是「参数没生效」。
       clientKill = await killClientProcess(client)
+      if (clientKill.refused) {
+        // 无法唯一定位目标实例（多实例且没配 DSH_BUILD_CLIENT_EXE）→ **fail closed**：
+        // 宁可这次构建失败并说清怎么修，也不误杀别人的客户端（红线优先）。
+        return {
+          ok: false,
+          error: clientKill.error,
+          clientRunning: true,
+          clientPid: client.pid,
+          clientKill,
+          refused: true,
+        }
+      }
     }
     if (client.running && !opts.killClient && !touchesClientOutput) {
       // 无关目标：只提示，不阻断（客户端仍可能锁住共享依赖的 copy 目标，
@@ -412,8 +500,8 @@ export function makeBuilder(cfg) {
       truncated: errors.length > 40 || warnings.length > 20,
       clientWasKilled: !!(clientKill && clientKill.killed),
       ...(clientKill ? { clientKill } : {}),
-      ...(clientKill && !clientKill.killed
-        ? { clientKillFailed: true, error: 'killClient=true 但客户端进程仍未退出（PID ' + clientKill.remaining.join(',') + '，等待 ' + clientKill.waitedMs + 'ms）：文件锁大概率仍在，构建会继续报 MSB3021/3027。' }
+      ...(clientKill && !clientKill.killed && !clientKill.nothingToKill
+        ? { clientKillFailed: true, error: 'killClient=true 但目标客户端进程仍未退出（PID ' + clientKill.remaining.join(',') + '，等待 ' + clientKill.waitedMs + 'ms）：文件锁大概率仍在，构建会继续报 MSB3021/3027。' }
         : {}),
       ...(clientRunningWarning ? { clientRunningWarning } : {}),
       ...(lockDiagnosis ? { lockDiagnosis } : {}),
@@ -480,5 +568,5 @@ export function makeBuilder(cfg) {
     return { hasRun: true, logPath: s.logPath, errors, warnings }
   }
 
-  return { config: c, build, status, errorsOfLast, parseErrors, isEnvError, findMsbuild, decodeBuffer, clientProcess, killClientProcess, listClientPids, lockedFilesOf, logsDir: () => c.logsDir }
+  return { config: c, build, status, errorsOfLast, parseErrors, isEnvError, findMsbuild, decodeBuffer, clientProcess, clientInstances, isPidAlive, exePathOf, killClientProcess, listClientPids, lockedFilesOf, logsDir: () => c.logsDir }
 }
