@@ -103,9 +103,13 @@ function extractFunction(src, name) {
     check('纯输入动作仍豁免（move→input）', d.classifyAction('move') === 'input', d.classifyAction('move'))
     check('只读动作仍是 read（read→read）', d.classifyAction('read') === 'read', d.classifyAction('read'))
     check('坐标副作用被单独归类（clickat→coord-effect）', d.classifyAction('clickat') === 'coord-effect', d.classifyAction('clickat'))
-    check('【硬约束】W5b 新动词尚未接 W2 policy 门时不得出现在批次路由里（保持禁用）',
-      !/\bBATCH_ONLY_ACTIONS\b[^\n]*'(pattern|selecttext)'/.test(driver),
-      '若已放行，必须在同一轮里确认 W2 的 policy/急停门已挂上同一写侧单点')
+    check('【硬约束】W5b 新动词已放行：必须进批次路由（否则经工具面调用会报"非法动作"）',
+      ['pattern', 'scroll', 'selecttext'].every((a) => new RegExp("BATCH_ONLY_ACTIONS\\b[^\\n]*'" + a + "'").test(driver)),
+      '放行前提：W1 新鲜度门 + W2 policy/急停门均已落地（冻结稿要求）')
+    check('【硬约束】W5b 新动词已进 flow 白名单',
+      ['pattern', 'scroll', 'selecttext'].every((a) => new RegExp("FLOW_ACTIONS\\b[^\\n]*'" + a + "'").test(driver)))
+    check('【硬约束】新动词分类为 effect → 必须显式 allowSideEffects 且过 policy/急停门',
+      ['pattern', 'scroll', 'selecttext'].every((a) => d.classifyAction(a) === 'effect'))
   } finally {
     try { d.warmShutdown() } catch { }
     rmSync(scriptsDir, { recursive: true, force: true })
