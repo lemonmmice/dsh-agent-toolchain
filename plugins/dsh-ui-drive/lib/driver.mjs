@@ -1473,28 +1473,15 @@ export function makeDriver(cfg) {  const c = {
         ? s.waitMs
         : (action === 'read' || action === 'find' || action === 'expect' || action === 'shot' || action === 'windows' || action === 'state' ? 0 : (waitMs !== undefined ? waitMs : c.defaultWaitMs))
       const label = s.label || action + '-' + n
+      // ⚠️ 整体展开 s，而不是手写字段清单。
+      // 手写清单的代价（2026-09-11 实测）：`count` 与 `expectValue` 从未被列出 ——
+      // scroll 的页数永远到不了执行器（恒滚 1 页，还回一个像成功的结果），
+      // selecttext 只给 suffix 时走"无前缀无后缀"分支选第一个匹配且不做校验。
+      // 下面显式覆盖的字段都是**本层计算出来**的，必须先展开再覆盖。
       const batchStep = {
+        ...s,
         action,
-        name: s.name,
-        aid: s.aid,
-        value: s.value,
-        ascii: s.ascii,
-        match: s.match,
         waitMs: stepWait,
-        expectEnabled: s.expectEnabled,
-        expectMatch: s.expectMatch,
-        index: s.index,
-        inAid: s.inAid,
-        inName: s.inName,
-        waitFor: s.waitFor,
-        state: s.state,
-        keys: s.keys,
-        fromX: s.fromX,
-        fromY: s.fromY,
-        toX: s.toX,
-        toY: s.toY,
-        steps: s.steps,
-        holdMs: s.holdMs,
         out: action === 'shot' ? join(dir, safeLabel(label) + '.png') : undefined,
       }
       runnable.push({ index: i, step: n, label, src: s, batchStep })
