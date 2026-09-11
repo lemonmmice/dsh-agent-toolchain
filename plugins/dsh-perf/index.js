@@ -154,7 +154,7 @@ const tools = () => [
     parameters: {
       etlPath: { type: 'string', required: true, description: 'perf_trace 产出的 .etl 绝对路径' },
       focus: { type: 'string', description: '正则：只保留名字匹配的函数（模块名或方法名片段，如 SciChart|OnRender|你的 VM 名）' },
-      process: { type: 'string', description: '进程名正则（**强烈建议填**：默认用 DSH_UI_PROC_NAME；不填=分析整个系统，出报告会慢很多甚至超时）' },
+      process: { type: 'string', description: '进程名正则（**建议填**：默认用 DSH_UI_PROC_NAME；不填=报告含全系统栈，统计更杂）。注意：它只筛选**统计口径**，不会减少符号解码量' },
       topN: { type: 'number', description: '排行/链条数，默认 15' },
       minHits: { type: 'number', description: '蝶形视图最小命中数，默认 5（调大更聚焦、调小更全）' },
       offline: { type: 'boolean', description: 'true = 不配符号服务器（快，但原生帧多为 unknown）' },
