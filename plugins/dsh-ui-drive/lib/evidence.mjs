@@ -14,8 +14,13 @@
 
 import { createHash } from 'node:crypto'
 
-/** 证据包 schema 版本。结构变化必须 +1，且旧版本必须仍可被读回去。 */
-export const EVIDENCE_VERSION = 1
+/**
+ * 证据包 schema 版本。结构变化必须 +1，且旧版本必须仍可被读回去。
+ * v2（独立复核打出的 P1-A）：`result` 增加 `applied`，并把 `executed` 明确为
+ *   "**执行器是否被调用**"、允许为 `null`（未知，例如常驻进程超时：驱动自己都说"可能已执行"）。
+ *   原实现把 `executed` 直接等于 `ok`，于是"执行器跑了但失败/超时"被记成"被拒/没执行" —— 账本自相矛盾。
+ */
+export const EVIDENCE_VERSION = 2
 
 /** 默认预算（字节）。required 不计入裁剪，超出直接抛错。 */
 export const DEFAULT_LIMITS = Object.freeze({
@@ -118,10 +123,15 @@ export function createEnvelope(input = {}, limits = DEFAULT_LIMITS) {
       },
       estop: input.gates && input.gates.estop ? (input.gates.estop.code || 'stopped_by_user') : null,
     },
-    // —— 结果（required 的 ok；文本可选有界） ——
+    // —— 结果：三个概念必须分开（账本自相矛盾是本仓的"假成功"同源风险）——
+    //   executed 执行器是否被调用（null = 未知，如超时后"可能已执行"）
+    //   applied  动作是否真的生效（= 驱动认为成功）
     result: {
       ok: input.result ? !!input.result.ok : false,
-      executed: input.result ? !!input.result.executed : false,   // **执行器是否真的被调用**（与 ok 区分）
+      executed: input.result && input.result.executed !== undefined
+        ? (input.result.executed === null ? null : !!input.result.executed)
+        : null,
+      applied: input.result ? !!input.result.applied : false,
       error: input.result ? opt(input.result.error, 'result.error') : null,
       output: input.result ? opt(input.result.output, 'result.output') : null,
     },
@@ -208,7 +218,8 @@ export function envelopeSummary(env) {
     kind: env.kind,
     action: env.action,
     ok: env.result.ok,
-    executed: env.result.executed,
+    executed: env.result.executed,   // true / false / null(未知)
+    applied: env.result.applied,
     gate: env.gates.policy && env.gates.policy.decision ? env.gates.policy.decision
       : (env.gates.snapshot && env.gates.snapshot.verdict && env.gates.snapshot.verdict !== 'ok' ? 'snapshot_' + env.gates.snapshot.verdict : 'pass'),
     code: env.result.ok ? null : (env.gates.policy.code || env.gates.estop || env.gates.snapshot.verdict || null),

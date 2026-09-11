@@ -11,6 +11,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { makePerf } from './lib/perf.mjs'
+import { makeTrace } from './lib/trace.mjs'
 
 export const name = 'dsh-perf'
 
@@ -23,7 +24,12 @@ const GUIDANCE =
   '本机已安装 dsh-perf 插件（DSH 的性能剖析面板）：与 hang-inspector（卡死分析）互补，覆盖 UI「卡顿」（500ms~数秒阻塞）与内存泄漏初筛。' +
   '工具：perf_probe(seconds, thresholdMs, capture=log|shot|dump) 循环给目标客户端主窗口发消息实测响应耗时（空闲毫秒级、UI 忙则同步挂起），统计 P50/P95/P99 并记录每次超过阈值的卡顿事件，capture=shot 时卡顿瞬间截图，capture=dump 时首次卡顿抓全 dump；' +
   'perf_report 读最近一次监测报告；perf_dump(note) 按需 procdump 抓全 dump 并自动 DumpStack(ClrMD) 分析（UI 线程栈 + 锁热点线程）；' +
-  'perf_analyze(dumpPath) 对已有 dump 重分析；perf_heap(dumpPath, topN) 托管堆类型统计 Top N（对象数/总大小，内存泄漏初筛）。' +
+  'perf_analyze(dumpPath) 对已有 dump 重分析；perf_heap(dumpPath, topN) 托管堆类型统计 Top N（对象数/总大小，内存泄漏初筛）；' +
+  'perf_trace(action, seconds, profile, tag, etlPath) + perf_hotstacks(etlPath, focus, process, topN, minHits) = **ETW 采样剖析**：' +
+  '连续采样后可得到「最热函数排行」与「每个函数的调用者/被调用者（蝶形视图）」，即**完整调用链** —— ' +
+  '这是"某串代码导致图表反复重绘、但不知道是哪一串"这类**间歇性**卡顿的正解（dump 只抓一个瞬间、抓不到就只能猜）。' +
+  'perf_trace 需要 DSH 以管理员身份运行（ETW 内核会话），.etl 可能数百 MB；perf_hotstacks 支持 focus 正则聚焦，' +
+  '并会在首行如实报告**符号未解析比例**（未解析多时先配 DSH_PERF_SYMBOL_PATH 再看结论）。' +
   '分工：偶发 500ms~2s 卡顿用 perf_probe/dump；完全无响应用 hang-inspector 的卡死流程；怀疑内存涨用 perf_dump + perf_heap 对比两次 dump。' +
   '注意：dump 文件较大（数百 MB，在 ~/.dsh-agent-toolchain/perf-evidence），分析完可让用户确认后删除；procdump 挂起进程几秒，用户界面会短暂冻结。' +
   '证据目录默认 ~/.dsh-agent-toolchain/perf-evidence（DSH_PERF_EVIDENCE_DIR 可覆盖），源码根由 DSH_PERF_SRC_ROOT 指定。' +
@@ -41,6 +47,17 @@ function prf() {
     })
   }
   return perf
+}
+
+let tracer = null
+function trc() {
+  if (!tracer) {
+    tracer = makeTrace({
+      evidenceDir: process.env.DSH_PERF_EVIDENCE_DIR || join(homedir(), '.dsh-agent-toolchain', 'perf-evidence'),
+      procName: process.env.DSH_UI_PROC_NAME || '',
+    })
+  }
+  return tracer
 }
 
 const OBJECT = { type: 'object', additionalProperties: true }
@@ -107,7 +124,64 @@ const tools = () => [
       return await prf().heapStats(args.dumpPath, args.topN)
     },
   }),
+  defineTool({
+    name: 'perf_trace',
+    description: 'ETW 采样剖析（**要"从卡顿走到完整调用链"就用它**，别靠猜）。action=start 起采样 → 你复现问题 → action=stop 产出 .etl（或 action=run 限时自动停）。' +
+      '与 dump 的分工：perf_dump 是**一个瞬间**的快照，只能回答"此刻谁在栈上"；本工具连续采样，能回答"**谁在反复调用它、它又调用了谁**"，因此对间歇性卡顿/重绘风暴才有效。' +
+      '采集同时启用 CPU 与 DotNet 预设（少了 DotNet 就解不出托管方法名）。要求：**DSH 需以管理员身份运行**（ETW 内核会话），且 .etl 可能数百 MB。' +
+      '跑完用 perf_hotstacks 出调用链。Triggers: 抓 trace / 调用链 / 重绘卡顿定位 / ETW 采样.',
+    parameters: {
+      action: { type: 'string', description: 'start（起采样，等你复现）| stop（停并产出 etl）| run（默认：起→等 seconds 秒→停）| cancel（放弃）' },
+      seconds: { type: 'number', description: 'action=run 时的采集秒数，默认 20（建议够你复现一次问题）' },
+      profile: { type: 'string', description: 'cpu（默认，= CPU+DotNet，能解托管名）| dotnet | general' },
+      tag: { type: 'string', description: '证据目录后缀标签，便于归档（如 repaint-storm）' },
+      etlPath: { type: 'string', description: 'action=stop 时指定要停到哪个 .etl（填 start 返回的 etlPath）' },
+    },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderTrace(v) }] },
+    timeoutMs: 20 * 60 * 1000,
+    async execute(args) {
+      return await trc().trace(args)
+    },
+  }),
+  defineTool({
+    name: 'perf_hotstacks',
+    description: '从 .etl 出**调用链**：最热函数排行（谁占 CPU）+ 蝶形视图（每个函数的**调用者 <-- 与 --> 被调用者**，带命中数）。' +
+      'focus 可只保留名字匹配该正则的函数（例如 focus="SciChart|KLine|你怀疑的那层"），把几 MB 的报告压成一条可读的因果链。' +
+      '注意：**符号未解析的比例会在结果首行如实给出** —— 若显示大量未解析，先确认符号路径（DSH_PERF_SYMBOL_PATH）再看结论，否则"没解析出来"会被误当成"没有这段代码"。' +
+      'Triggers: 出调用链 / 热点栈 / 谁调用了它 / hotstacks.',
+    parameters: {
+      etlPath: { type: 'string', required: true, description: 'perf_trace 产出的 .etl 绝对路径' },
+      focus: { type: 'string', description: '正则：只保留名字匹配的函数（模块名或方法名片段，如 SciChart|OnRender|你的 VM 名）' },
+      process: { type: 'string', description: '进程名正则（默认用 DSH_UI_PROC_NAME 指向的客户端）' },
+      topN: { type: 'number', description: '排行/链条数，默认 15' },
+      minHits: { type: 'number', description: '蝶形视图最小命中数，默认 5（调大更聚焦、调小更全）' },
+      offline: { type: 'boolean', description: 'true = 不配符号服务器（快，但原生帧多为 unknown）' },
+    },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderHotstacks(v) }] },
+    timeoutMs: 30 * 60 * 1000,
+    async execute(args) {
+      return await trc().hotstacks(args)
+    },
+  }),
 ]
+
+function renderTrace(v) {
+  if (!v.ok) {
+    return '采集失败：' + v.error +
+      (v.needsElevation ? '（ETW 需要管理员权限：请以管理员身份启动 DSH）' : '') +
+      (v.raw ? '\n' + String(v.raw).slice(0, 300) : '')
+  }
+  const prof = (v.profiles || []).join('+')
+  if (v.started) return '已开始采集（预设 ' + prof + '）。请复现问题，然后调用 perf_trace(action="stop", etlPath="' + v.etlPath + '")。'
+  return 'trace 完成：' + v.etlPath + '（' + (v.sizeBytes / 1024 / 1024).toFixed(0) + 'MB' +
+    (v.seconds ? '，采集 ' + v.seconds + 's' : '') + '，预设 ' + prof + '）\n' + (v.hint || '')
+}
+
+function renderHotstacks(v) {
+  if (!v.ok) return '出报告失败：' + v.error + (v.raw ? '\n' + String(v.raw).slice(0, 300) : '')
+  return v.text + '\n\n（报告：' + v.reportPath + '，' + (v.reportBytes / 1024).toFixed(0) + 'KB，耗时 ' +
+    (v.elapsedMs / 1000).toFixed(0) + 's' + (v.symbols ? '，已启用符号解析' : '，未启用符号解析') + '）'
+}
 
 function renderProbe(v) {
   if (!v.ok) return '监测失败：' + (v.error || '未知错误')

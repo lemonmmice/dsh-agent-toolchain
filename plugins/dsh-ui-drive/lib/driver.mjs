@@ -805,9 +805,12 @@ export function makeDriver(cfg) {  const c = {
     return env.id
   }
 
-  /** 敏感值绝不进证据：凭据占位符与 secret 标记一律脱敏（模型侧本来也看不到明文）。 */
-  function evidenceSafeValue(args) {
-    const v = args && args.value
+  /**
+   * 敏感值绝不进证据：凭据占位符与 secret 标记一律脱敏（模型侧本来也看不到明文）。
+   * ⚠️ 独立复核 P1-B：原实现只脱敏 `value`，**走 `keys` 的凭据明文落盘** —— 现在两者走同一判定。
+   */
+  function evidenceSafeValue(args, field) {
+    const v = args && args[field]
     if (v == null) return null
     if (args.secret === true || /^\$\{cred:/.test(String(v))) return '[redacted]'
     return String(v)
@@ -839,15 +842,25 @@ export function makeDriver(cfg) {  const c = {
       if (!isSideEffectKind(classifyAction(action))) return res // 只读/纯输入不落证据
       const g = gateVerdictOf(res)
       const ident = identCache.value || {}
+      // 账本语义必须自洽（独立复核 P1-A）：
+      //   · denied  —— **只有门拒了**才算（policy / 急停 / allowSideEffects / 快照三件套）；
+      //   · unknown —— 常驻进程超时等"可能已执行"的情形：驱动自己就标了 unknown，
+      //                证据不得反过来断言"被拒/没执行"（原实现就是这么自相矛盾的）；
+      //   · action  —— 其余（含"执行器跑了但失败"：executed=true 而 applied=false）。
+      const gateDeniedNow = !!(res && (res.policyCode || res.staleSnapshot || res.expiredSnapshot || res.unknownSnapshot))
+      const maybeExecuted = !!(res && res.unknown)
+      const kindNow = gateDeniedNow ? 'denied' : (maybeExecuted ? 'unknown' : 'action')
+      const executedNow = gateDeniedNow ? false : (maybeExecuted ? null : true)
+      const appliedNow = !!(res && res.ok)
       const env = createEnvelope({
-        kind: (res && res.ok) ? 'action' : 'denied',
+        kind: kindNow,
         surface: 'ui_drive',
         action,
         params: {
           name: args && args.name,
           aid: args && args.aid,
-          value: evidenceSafeValue(args),
-          keys: args && args.keys,
+          value: evidenceSafeValue(args, 'value'),
+          keys: evidenceSafeValue(args, 'keys'),
           index: args && args.index,
           extra: stableExtra(args),
         },
@@ -859,7 +872,7 @@ export function makeDriver(cfg) {  const c = {
           windowHandle: ident.handle == null ? null : ident.handle,
         },
         gates: { allowSideEffects: !!(args && args.allowSideEffects), snapshot: g.snapshot, policy: g.policy, estop: g.estop },
-        result: { ok: !!(res && res.ok), executed: !!(res && res.ok), error: res && res.error, output: res && (res.output || res.detail) },
+        result: { ok: appliedNow, executed: executedNow, applied: appliedNow, error: res && res.error, output: res && (res.output || res.detail) },
         observation: { before: null, after: null },
         trust: { source: 'agent', untrustedContent: false },
       })
