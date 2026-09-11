@@ -59,6 +59,8 @@ while ($true) {
   if ($env:FAKE_STALL_MODE -eq 'always') { $stall = $true }
   elseif ($env:FAKE_STALL_MODE -eq 'odd') { $stall = (($k % 2) -eq 1) }
   if ($stall) { continue }
+  # delay 模式：先睡一会儿再回答 —— 用来验「超时后迟到响应会被记下来」（复核 Codex 提的静默丢包）
+  if ($env:FAKE_DELAY_MS) { Start-Sleep -Milliseconds ([int]$env:FAKE_DELAY_MS) }
   $writer.WriteLine('RESP_JSON={"id":' + $req.id + ',"ok":true,"action":"' + [string]$req.action + '","count":2,"lines":["#0 [Button] A","#1 [Text] B"],"skipped":0}')
 }
 `
@@ -79,21 +81,25 @@ function newDriver() {
   return makeDriver({ scriptsDir, evidenceDir, procName: 'FakeProc', clientExe: exePath })
 }
 
-// ------------------------------------------- 1. 看门狗按「最近一次成功动作」判僵死 + 只读重试
+// ------------------------------------------- 1. 卡住的请求：由「请求自己的超时」处置 + 只读重试恢复
+//
+// 语义变化说明（2026-09-11 复核后）：看门狗阈值改成 `max(DSH_UI_STALL_MS, 最老请求自己的超时)`——
+// 因为复核（Codex）指出固定阈值会误杀合法长动作。于是**主防线变成请求自身的超时 + 只读重试**，
+// 看门狗退居「定时器丢失时的兜底」并在 warmStatus 里给诊断（stalls/lastStallReason，见文末说明）。
+// 本段因此断言：① 卡住的请求会被重试救回；② 看门狗**不会**在请求自己还没到期时误杀（stalls=0）。
 {
-  installFakeServe({ mode: 'odd' }) // 第 1 次请求僵死，第 2 次（重试）正常
-  process.env.DSH_UI_STALL_MS = '1000'       // 1s 无成功响应即判僵死（默认 90s）
+  installFakeServe({ mode: 'odd' }) // 第 1 次请求卡住，第 2 次（重试）正常
+  process.env.DSH_UI_STALL_MS = '1000' // 阈值故意小于请求自身的 2s 超时
   const d = newDriver()
   const t0 = Date.now()
-  const r = await d.drive({ action: 'read', timeoutMs: 6000 })
+  const r = await d.drive({ action: 'read', timeoutMs: 2000 })
   const elapsed = Date.now() - t0
   const ws = d.warmStatus()
   const counter = existsSync(counterFile) ? readFileSync(counterFile, 'utf8').trim() : ''
-  check('僵死请求确实被下发过 2 次（1 次僵死 + 1 次重试）', counter === '2', counter)
+  check('卡住的请求被下发 2 次（1 次卡住 + 1 次重试）', counter === '2', counter)
   check('read 超时后重试成功（换新进程）', r.ok === true && r.count === 2, JSON.stringify(r).slice(0, 200))
-  check('看门狗记到一次僵死（stalls=1）', ws.stalls === 1, JSON.stringify(ws))
-  check('僵死原因可诊断（lastStallReason）', /僵死/.test(ws.lastStallReason || ''), String(ws.lastStallReason))
-  check('总耗时远小于请求超时上限 6s（没干等）', elapsed < 5000, elapsed + 'ms')
+  check('看门狗没有抢在请求自身超时之前误杀（stalls=0）', ws.stalls === 0, JSON.stringify({ stalls: ws.stalls, reason: ws.lastStallReason }))
+  check('总耗时 ≈ 一个请求超时 + 重试（远小于 2 个超时）', elapsed < 3200, elapsed + 'ms')
   check('重试后常驻进程恢复可用', ws.alive === true, JSON.stringify(ws))
   d.warmShutdown()
   delete process.env.DSH_UI_STALL_MS
@@ -140,6 +146,46 @@ function newDriver() {
   check('launch 的 waitedMs 与真实耗时一致（不写死 waitMs）', Math.abs(r.waitedMs - elapsed) < 1500, JSON.stringify({ waitedMs: r.waitedMs, elapsed }))
   d.warmShutdown()
   delete process.env.FAKE_STATUS_SLEEP_MS
+}
+
+// ------------------------------------------- 4b. 显式 waitMs 必须被尊重（复核：曾被 Math.max(3000,…) 抬高）
+{
+  installFakeServe({ mode: 'never' }) // status 秒回 NOT_RUNNING → 循环只受 waitMs 约束
+  const d = newDriver()
+  const t0 = Date.now()
+  const r = await d.launch({ waitMs: 1000 })
+  const elapsed = Date.now() - t0
+  check('显式 waitMs=1000 就按 ~1s 结束（不再被抬到 3s）', elapsed < 2600, elapsed + 'ms')
+  check('launch 仍如实回报轮询与耗时', r.started === false && r.waitedMs > 0, JSON.stringify({ started: r.started, waitedMs: r.waitedMs, polls: r.polls }))
+  d.warmShutdown()
+}
+
+// ------------------------------------------- 4c. 看门狗不得抢在「请求自己的超时」之前动手
+{
+  installFakeServe({ mode: 'always' }) // 永远不回
+  process.env.DSH_UI_STALL_MS = '800'  // 阈值故意调得很小
+  const d = newDriver()
+  const r = await d.drive({ action: 'read', timeoutMs: 2500 }) // 请求自己的超时 2.5s > 阈值
+  const ws = d.warmStatus()
+  check('长于阈值的合法请求不会被看门狗提前杀掉（stalls=0）', ws.stalls === 0, JSON.stringify({ stalls: ws.stalls, reason: ws.lastStallReason }))
+  check('该请求最终按自己的超时结束（而不是被误杀）', r.ok === false, JSON.stringify({ ok: r.ok, err: String(r.error || '').slice(0, 80) }))
+  d.warmShutdown()
+  delete process.env.DSH_UI_STALL_MS
+}
+
+// ------------------------------------------- 4d. 迟到响应计数：当前路径下**不可达**，故不断言行为
+// 复核（Codex）指出「killOnTimeout=false 超时后迟到响应被静默丢弃」。实测结论：
+//   · warm 路径里唯一 killOnTimeout=false 的分支是 `capture`，而 `capture` 在
+//     BATCH_ONLY_ACTIONS 里 → **根本不走 warm 路径**（探测到 seq 不增长、结果来自批量路径）。
+//   · 其余只读动作超时都会杀进程，进程都死了自然没有「迟到响应」。
+//   → 也就是说这是一个**理论缺口而非可观测缺口**。我保留了 lateResponses 计数器
+//     （warmStatus 可见）作为诊断，但**不在这里写行为断言**——没验证过的声明不写。
+//   若将来把 capture 迁回 warm 路径，这段就要补回断言（届时 lateResponses 会真的涨）。
+{
+  installFakeServe({ mode: 'never' })
+  const d = newDriver()
+  check('warmStatus 暴露 lateResponses 计数器（诊断用；当前路径下不可达，故不断言行为）', typeof d.warmStatus().lateResponses === 'number', JSON.stringify(d.warmStatus().lateResponses))
+  d.warmShutdown()
 }
 
 // ------------------------------------------- 5. exe 不存在时立即失败，不做无意义轮询

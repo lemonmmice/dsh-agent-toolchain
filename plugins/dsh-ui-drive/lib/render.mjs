@@ -7,13 +7,18 @@
  */
 
 /**
- * B-1：跳过计数的显示尾巴。
- * `warn` 由 driver 统一生成（lib/driver.mjs 的 skipInfo），这里只负责显示——
+ * B-1：观测完整性提示的显示尾巴。
+ *  · `warn` 由 driver 统一生成（lib/driver.mjs 的 skipInfo）：跳过数 > 0 或空枚举时必须说清；
+ *  · `observationWarning`：连「跳过计数」都没拿到（老脚本/回退路径）时，明确告诉调用方
+ *    「完整性未知」——复核（Codex 2026-09-11）指出的第二个静默口子。
  * 逐元素容错后如果不说「少了几行」，调用方会把「没读到」当成「界面上没有」，
  * 那就是换了个地方藏的新一轮假空。
  */
 function skipTail(v) {
-  return v && v.warn ? '\n' + v.warn : ''
+  const parts = []
+  if (v && v.warn) parts.push(v.warn)
+  if (v && v.observationWarning && !v.warn) parts.push('ℹ ' + v.observationWarning)
+  return parts.length ? '\n' + parts.join('\n') : ''
 }
 
 export function renderState(v) {

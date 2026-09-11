@@ -126,6 +126,23 @@ Write-Output 'SKIPREASON ElementNotAvailable'
   d.warmShutdown()
 }
 
+// ------------------------------------------------- 6b. 回退脚本的空枚举同样要被解释（复核 N3）
+{
+  installFakeBatch({ ok: true, elapsedMs: 1, steps: [] })
+  const emptyShot = `param([string]$ProcName='',[string]$WindowName='',[int]$ProcId=0,[string]$Action='',[string]$Name='',[string]$Aid='',[string]$Match='',[int]$WaitMs=0)
+Write-Output 'SCANNED 0'
+Write-Output 'SKIPPED 0'
+`
+  writeFileSync(join(scriptsDir, 'ui-drive.ps1'), emptyShot, 'utf8')
+  process.env.DSH_UI_SERVE = '0'
+  const d = makeDriver({ scriptsDir, evidenceDir, procName: 'FakeProc' })
+  const r = await d.drive({ action: 'read' })
+  check('回退脚本 SCANNED 行被解析成 scanned=0', r.scanned === 0, JSON.stringify(r.scanned))
+  check('回退脚本空枚举也会 warn（不再是静默 0 行）', /0 个元素/.test(r.warn || ''), String(r.warn))
+  check('回退脚本空枚举带 observation=empty-enumeration', r.observation === 'empty-enumeration', JSON.stringify(r.observation))
+  d.warmShutdown()
+}
+
 // ------------------------------------------------- 7. 空枚举必须显式提示（UIA 给空集合、不报错）
 {
   installFakeBatch({ ok: true, elapsedMs: 2, steps: [
@@ -148,6 +165,42 @@ Write-Output 'SKIPREASON ElementNotAvailable'
   const r = await d.drive({ action: 'read', match: 'x', index: 0 })
   check('全过滤：scanned/offscreen 透传', r.scanned === 240 && r.offscreen === 240, JSON.stringify(r).slice(0, 160))
   check('全过滤：不误报「空枚举」', r.warn === undefined, String(r.warn))
+  d.warmShutdown()
+}
+
+// ------------------------------------------------- 9. 截断必须如实回报（复核：曾硬编码 truncated=false）
+{
+  const many = Array.from({ length: 300 }, (_, i) => '# ' + i + ' [Button] "b' + i + '"')
+  installFakeBatch({ ok: true, elapsedMs: 3, steps: [
+    { step: 1, action: 'read', ok: true, count: 320, lines: many, skipped: 0, scanned: 549, truncated: true },
+  ] })
+  const d = newDriver()
+  const r = await d.drive({ action: 'read', index: 0 })
+  check('截断如实透传（truncated=true）', r.truncated === true, JSON.stringify({ truncated: r.truncated, count: r.count }))
+  check('截断时补 returned=实际行数', r.returned === 300, JSON.stringify({ returned: r.returned, lines: (r.lines || []).length }))
+  d.warmShutdown()
+}
+
+// ------------------------------------------------- 10. 跳过计数未回报 → 明说「未知」，不静默
+{
+  installFakeBatch({ ok: true, elapsedMs: 2, steps: [
+    { step: 1, action: 'read', ok: true, count: 1, lines: ['#0 [Button] "A"'] }, // 没有 skipped 字段（老脚本）
+  ] })
+  const d = newDriver()
+  const r = await d.drive({ action: 'read', match: 'x', index: 0 })
+  check('未回报时 skipped=null 且带 observationWarning', r.skipped === null && /完整性未知/.test(r.observationWarning || ''), JSON.stringify({ skipped: r.skipped, w: r.observationWarning }))
+  check('「未知」也会渲染给 agent（ℹ 前缀）', /完整性未知/.test(renderDrive(r)), renderDrive(r).slice(0, 200))
+  d.warmShutdown()
+}
+
+// ------------------------------------------------- 11. 空枚举的结构化标记
+{
+  installFakeBatch({ ok: true, elapsedMs: 2, steps: [
+    { step: 1, action: 'read', ok: true, count: 0, lines: [], skipped: 0, scanned: 0 },
+  ] })
+  const d = newDriver()
+  const r = await d.drive({ action: 'read', match: 'x', index: 0 })
+  check('空枚举带 observation=empty-enumeration（调用方可据此决策）', r.observation === 'empty-enumeration', JSON.stringify(r.observation))
   d.warmShutdown()
 }
 
