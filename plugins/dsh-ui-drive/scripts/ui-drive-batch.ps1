@@ -1355,6 +1355,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $cur = $null
           try { $cur = $el.Current } catch { Add-Skip ('读取元素状态失败: ' + $_.Exception.Message); continue }
           if ($null -eq $cur) { Add-Skip '元素状态为空'; continue }
+          # 逐元素属性读取全部纳入 try/catch（2026-09-11 复核指出：`IsOffscreen`/`BoundingRectangle`/
+          # `AutomationId`/`IsEnabled` 这些访问也可能在元素失效时抛 —— 旧写法会让**整个 read 步骤失败**，
+          # 而不是记一个 skipped。就 B-1 的语义而言，两种结果差得很远：一个是「清单不完整但可用」，
+          # 一个是「什么都没给你」。这里统一降级为 skipped，只有正常过滤（类型/offscreen/match/去重）不计数。
+          try {
           if ($cur.IsOffscreen) { $offscreen++; continue }
           $t = Get-ControlTypeName $el
           if ($t -notin @('Button', 'Edit', 'Text', 'RadioButton', 'CheckBox', 'TabItem', 'ComboBox', 'ListItem', 'MenuItem', 'TreeItem', 'DataItem', 'Hyperlink', 'Image', 'Slider', 'Spinner', 'Group', 'Custom', 'Pane', 'Document')) { continue }
@@ -1376,6 +1381,10 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           if ($help) { $line = $line + ' help="' + $help + '"' }
           if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
           [void]$lines.Add($line)
+          } catch {
+            Add-Skip ('元素属性读取失败: ' + $_.Exception.Message)
+            continue
+          }
           # 已经够 300 行就停：继续遍历整棵树只为了截断，纯浪费（read 曾 22s）
           if ($lines.Count -ge 320) { break }
           }
@@ -1389,7 +1398,9 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           if ($scanned -eq 0) { $needRetry = $true }
           elseif ($lines.Count -eq 0 -and $match) { $needRetry = $true }
           if (-not $needRetry -or $attempt -ge 3) { break }
-          Start-Sleep -Milliseconds 200
+          # 第一次重试**立即**做（重绘通常一两帧就恢复），第二次前才等 150ms：
+          # 复核（Codex 2026-09-11）指出「真实空窗口也会白等约 400ms」，这里把最坏等待压到 150ms。
+          if ($attempt -ge 2) { Start-Sleep -Milliseconds 150 }
         }
         $res.ok = $true; $res.count = $lines.Count; $res.attempts = $attempt
         # 扫描到的元素总数 + 被 offscreen 过滤掉的数量：让「0 行」永远解释得清

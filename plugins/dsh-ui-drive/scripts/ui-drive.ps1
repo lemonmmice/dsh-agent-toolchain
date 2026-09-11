@@ -166,46 +166,71 @@ switch ($Action) {
     Start-Sleep -Milliseconds $WaitMs
   }
   'read' {
-    # 逐元素容错 + 跳过计数：与 ui-drive-batch.ps1 的 read 同一约定（B-1）。
-    # 这里只是常驻进程不可用时的回退路径，但「假空」在这条路上同样成立——
-    # 旧写法 $el.Current.ControlType.ProgrammaticName.Replace(...) 在界面重绘瞬间
-    # 会把整次枚举打断成 0 行，而且调用方连「少了几个」都不知道。
+    # 逐元素容错 + 跳过计数 + **空枚举重试**：与 ui-drive-batch.ps1 的 read 同一约定（B-1）。
+    #
+    # 这条是一次性回退路径（常驻进程不可用 / DSH_UI_SERVE=0），但「假空」在这儿一样成立：
+    #   · 旧写法 $el.Current.ControlType.ProgrammaticName.Replace(...) 在重绘瞬间会把整次枚举打断成 0 行；
+    #   · UIA 还会**返回空集合**（实测：连续 4 次 0 元素、不抛异常）——只报 count=0 等于说「界面上没有控件」。
+    # 复核（Claude 2026-09-11 的 N3）指出上一版这里只有 SKIPPED、没有 SCANNED、也没有空枚举重试，
+    # 于是 7d03bef 想消灭的假空在这条路上原样存在 —— 本版补齐：缓冲输出 + 重试 ≤3 次 + 回报 SCANNED。
+    $lines = New-Object System.Collections.ArrayList
     $skipped = 0
     $skipReason = ''
-    $all = $null
-    try { $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { $skipped++; $skipReason = [string]$_.Exception.Message }
-    if ($null -ne $all) {
-    for ($i = 0; $i -lt $all.Count; $i++) {
-      try {
-      $el = $all.Item($i)
-      if ($null -eq $el) { $skipped++; continue }
-      if ($el.Current.IsOffscreen) { continue }
-      $t = $el.Current.ControlType.ProgrammaticName.Replace('ControlType.','')
-      $n = $el.Current.Name
-      if (-not $n) { $n = '' }
-      if ($n.Length -gt 60) { $n = $n.Substring(0,60) }
-      $b = $el.Current.BoundingRectangle
-      $help = ''
-      try { $help = [string]$el.Current.HelpText } catch { }
-      if ($Match -and ($n -notmatch $Match) -and ($help -notmatch $Match)) { continue }
-      if ($t -in @('Button','Edit','Text','RadioButton','CheckBox','TabItem','ComboBox','ListItem','MenuItem','TreeItem','Hyperlink')) {
-        $val = ''
-        if ($t -in @('Edit','ComboBox')) {
-          try { $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $val = [string]$vp.Current.Value } catch { }
+    $scanned = 0
+    $attempt = 0
+    while ($true) {
+      $attempt++
+      $lines = New-Object System.Collections.ArrayList
+      $skipped = 0
+      $skipReason = ''
+      $scanned = 0
+      $all = $null
+      try { $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { $skipped++; $skipReason = [string]$_.Exception.Message }
+      if ($null -ne $all) {
+      $scanned = $all.Count
+      for ($i = 0; $i -lt $all.Count; $i++) {
+        try {
+        $el = $all.Item($i)
+        if ($null -eq $el) { $skipped++; continue }
+        if ($el.Current.IsOffscreen) { continue }
+        # 与 batch 路统一口径（复核 N4）：ControlType 为 null 的瞬时元素视为「类型未知」并按白名单过滤，
+        # **不计 skipped**（两条路径对同一个坏元素必须给出同一个答案）。
+        $ct = $null
+        try { $ct = $el.Current.ControlType } catch { }
+        if ($null -eq $ct) { continue }
+        $t = $ct.ProgrammaticName.Replace('ControlType.','')
+        $n = $el.Current.Name
+        if (-not $n) { $n = '' }
+        if ($n.Length -gt 60) { $n = $n.Substring(0,60) }
+        $b = $el.Current.BoundingRectangle
+        $help = ''
+        try { $help = [string]$el.Current.HelpText } catch { }
+        if ($Match -and ($n -notmatch $Match) -and ($help -notmatch $Match)) { continue }
+        if ($t -in @('Button','Edit','Text','RadioButton','CheckBox','TabItem','ComboBox','ListItem','MenuItem','TreeItem','Hyperlink')) {
+          $val = ''
+          if ($t -in @('Edit','ComboBox')) {
+            try { $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $val = [string]$vp.Current.Value } catch { }
+          }
+          $line = '[' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + [int]$b.X + ',' + [int]$b.Y + ' ' + [int]$b.Width + 'x' + [int]$b.Height
+          if ($help) { $line = $line + ' help="' + $help + '"' }
+          if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
+          [void]$lines.Add($line)
         }
-        $line = '[' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + [int]$b.X + ',' + [int]$b.Y + ' ' + [int]$b.Width + 'x' + [int]$b.Height
-        if ($help) { $line = $line + ' help="' + $help + '"' }
-        if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
-        Write-Output $line
+        } catch {
+          $skipped++
+          if (-not $skipReason) { $skipReason = [string]$_.Exception.Message }
+          continue
+        }
       }
-      } catch {
-        $skipped++
-        if (-not $skipReason) { $skipReason = [string]$_.Exception.Message }
-        continue
       }
+      # 空枚举重试（第一次立即、第二次前 150ms）：重绘通常一两帧就恢复
+      if ($scanned -gt 0 -or $attempt -ge 3) { break }
+      if ($attempt -ge 2) { Start-Sleep -Milliseconds 150 }
     }
-    }
-    # 协议行：调用方据此知道「这份清单不完整」——绝不能静默少几行
+    foreach ($l in $lines) { Write-Output $l }
+    # 协议行：SCANNED=本次枚举扫到多少元素；SKIPPED=读不到状态的元素数。调用方据此知道
+    # 「这份清单不完整」还是「这次没看到」——绝不能静默少几行/静默空。
+    Write-Output ('SCANNED ' + $scanned)
     Write-Output ('SKIPPED ' + $skipped)
     if ($skipReason) { Write-Output ('SKIPREASON ' + $skipReason) }
   }
