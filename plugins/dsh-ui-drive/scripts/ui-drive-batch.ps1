@@ -1779,6 +1779,24 @@ if ($Serve) {
           else {
             $resp.ok = $true; $resp.pid = $sp.Id; $resp.window = $sp.MainWindowTitle
             $resp.handle = [int64]$sp.MainWindowHandle
+            # 进程身份（W2 policy 门用）：
+            #   授权主键 = 规范化 exe 绝对路径（GetFullPath + 小写，跨"短/长路径、大小写"统一）；
+            #   版本元数据只作**可选二次约束** —— 实测 codex.exe 与自研 exe 的
+            #   Company/Product/Description 可能**全为空**，因此缺元数据既不能让规则
+            #   "永远匹配不上→全拒"，也绝不能被当成放行依据。
+            $exePath = $null
+            try { $exePath = [string]$sp.Path } catch { }
+            if ($exePath) {
+              $resp.exe = $exePath
+              try { $resp.exeCanonical = [System.IO.Path]::GetFullPath($exePath).ToLowerInvariant() } catch { $resp.exeCanonical = $exePath.ToLowerInvariant() }
+              try {
+                $vi = (Get-Item -LiteralPath $exePath).VersionInfo
+                $resp.company = [string]$vi.CompanyName
+                $resp.product = [string]$vi.ProductName
+                $resp.description = [string]$vi.FileDescription
+                $resp.fileVersion = [string]$vi.FileVersion
+              } catch { }
+            }
           }
         }
         default {
