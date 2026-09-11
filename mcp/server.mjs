@@ -82,6 +82,55 @@ function drv() {
  */
 const needsSideEffectAuth = (action) => ['effect', 'coord-effect'].includes(drv().classifyAction(action))
 
+/**
+ * Attach a machine-readable `hint` to a failed driver result, at the MCP boundary.
+ *
+ * Why here and not only in the plugin's render layer: `renderDrive`/`renderState` are consumed
+ * exclusively by the DSH plugin's `output.render`, so the "next step" text they add never reaches
+ * an MCP client. This server returns the driver's object verbatim via jtext(), so without this the
+ * most common call path (an agent calling ui_drive over MCP) gets a bare failure and has to guess.
+ *
+ * The hint goes in a FIELD rather than being wrapped around the JSON: these results are parsed
+ * programmatically (and my own probes rely on that), so prose must not break the contract. Adding a
+ * field is the same shape the repo already uses for completeness reporting (`skipped`, `warn`,
+ * `observationWarning`) - a bare error is an incomplete observation, and this says so explicitly.
+ *
+ * Keyed on shapes the driver actually produces (verified against driver.mjs), not on guesses:
+ * `staleSnapshot`/`expiredSnapshot` flags, the gate's allowSideEffects message, and the two
+ * not-found messages. Anything unrecognised still gets a generic pointer, so no failure is silent.
+ */
+function withHint(r) {
+  if (!r || typeof r !== 'object') return r
+  // find-not-found is a "failure" the driver reports as ok:true + found:false; treat it as one.
+  const failed = r.ok === false || r.found === false
+  if (!failed) return r
+  if (r.hint) return r // the driver already gave one
+  const err = String(r.error || '')
+  let hint
+  if (r.expiredSnapshot) {
+    hint = '客户端或常驻进程已重启，旧 snapshotId 全部失效：重新 ui_observe(state/read) 取一个新 snapshotId 再动作。'
+  } else if (r.staleSnapshot) {
+    hint = '界面在你上次读取之后已刷新（' + r.staleSnapshot + '），旧 snapshotId 已过期：重新 ui_observe(state/read) 拿最新快照再动作。'
+  } else if (r.unknownSnapshot) {
+    hint = '这个 snapshotId 无法解析（可能来自别的进程或已被清理）：省掉 snapshotId 直接重发，或重新 ui_observe(state/read) 取一个新的。'
+  } else if (/allowSideEffects/.test(err)) {
+    hint = '这是真实副作用动作，驱动要求显式授权：确认目标无误后重发并带 allowSideEffects=true。'
+  } else if (r.notFound || /未找到目标控件/.test(err) || r.found === false) {
+    hint = '控件没找到，别用同一个写法反复试：先 ui_observe(action=state) 看当前界面上实际有哪些控件与准确 Name，再放宽 match 正则或去掉 inAid/inName 容器限定后重试；连续三次定位失败就停下报告。'
+  } else if (/未找到主窗口/.test(err)) {
+    hint = '目标进程当前没有可取的主窗口：先 ui_status，若客户端没在运行就 ui_launch；也确认 procId 指对了进程。'
+  } else if (/客户端 exe 不存在|未配置目标进程/.test(err)) {
+    hint = '客户端可执行文件/目标进程没有配置好：设置 DSH_UI_CLIENT_EXE（或 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME）后重试。'
+  } else if (r.timedOut || r.timeout) {
+    hint = '这次调用超时。副作用动作超时后驱动**不做任何重试**（避免重复致效）：先用 find/read 复核控件状态，再决定是否重发。'
+  } else if (/无输出|批量脚本不存在/.test(err)) {
+    hint = '驱动脚本没产出结果：确认 profile 里的 dsh-ui-drive/scripts 已部署（node scripts/deploy-plugins.mjs），以及当前有可用的 PowerShell。'
+  } else {
+    hint = '调用失败。先 ui_observe(action=state) 确认当前界面与目标控件，再重试；定位类失败连续三次就停下报告，不要盲试。'
+  }
+  return Object.assign({}, r, { hint })
+}
+
 let memory = null
 function mem() {
   if (!memory) memory = new DshMemory({})
@@ -328,7 +377,7 @@ server.tool(
     // source of truth, so this cannot drift again.
     const r = await drv().drive({ ...args, action: args.action, allowSideEffects: args.allowSideEffects })
     if (!r.ok) autoRecord('tool-error', 'ui_drive', `ui_drive ${args.action} failed: ${String(r.error ?? 'unknown error').slice(0, 200)}`)
-    return jtext(r)
+    return jtext(withHint(r))
   }
 )
 
@@ -464,7 +513,7 @@ server.tool(
   },
   async (args) => {
     const r = await drv().drive({ ...args, action: args.action })
-    return jtext(r)
+    return jtext(withHint(r))
   }
 )
 
@@ -585,11 +634,19 @@ server.tool(
   },
   async (args) => {
     if (args.allowSideEffects !== true) {
-      return text('Blocked: ui_act performs real side effects. Re-call with allowSideEffects=true after confirming with the user.')
+      // Structured failure, not bare prose: every other failure on this surface comes back as
+      // JSON with a hint, and a client parsing the result should not have to special-case this one.
+      return jtext({
+        ok: false,
+        action: args.action,
+        requiresAllowSideEffects: true,
+        error: 'ui_act 是真实副作用动作，必须显式授权才执行',
+        hint: '确认目标控件无误后重发，并带 allowSideEffects=true（这是安全护栏，不是权限问题）。',
+      })
     }
     const r = await drv().drive(args)
     if (!r.ok) autoRecord('tool-error', 'ui_act', `ui_act ${args.action} failed: ${String(r.error ?? 'unknown').slice(0, 200)}`)
-    return jtext(r)
+    return jtext(withHint(r))
   }
 )
 
