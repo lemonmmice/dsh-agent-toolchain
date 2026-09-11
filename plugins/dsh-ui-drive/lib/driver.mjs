@@ -10,11 +10,12 @@
  *  - status 走 batch 脚本的 -Status 快路径（不加载 UIA）。
  */
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { decodeBuffer } from '../../../lib/decode.mjs'
 import { createPolicy } from './policy.mjs'
+import { createEnvelope, envelopeSummary, envelopeToLine } from './evidence.mjs'
 
 const PS = process.env.DSH_UI_POWERSHELL || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
@@ -766,7 +767,7 @@ export function makeDriver(cfg) {  const c = {
   // 瞬时失败特征：元素在解析与操作之间被销毁（客户端页面切换/虚拟化重建）。
   const TRANSIENT_ERR_RE = /不再可用|父窗口已关闭|元素.*不可用|ElementNotAvailable/i
 
-  async function drive(args) {
+  async function driveInner(args) {
     const firstAction = normAction(args && args.action)
     const retryable = READ_ONLY_ACTIONS.has(firstAction)
     const maxTries = retryable ? 2 : 1
@@ -781,6 +782,103 @@ export function makeDriver(cfg) {  const c = {
       await new Promise((r) => setTimeout(r, 400))
     }
     return last
+  }
+
+  /**
+   * ui_drive：单步动作（公开入口）。
+   * W3：**副作用**动作（含被拒的）落一份审查证据包到证据目录（一行一条 JSONL），
+   * 返回值带紧凑摘要 evidence/evidenceId；只读与纯输入动作不落（零开销）。
+   * 证据写入失败**不得**影响驱动结果，但也**不得静默** —— 失败时结果里带 evidenceError。
+   */
+  async function drive(args) {
+    const res = await driveInner(args)
+    return attachEvidence(res, args)
+  }
+
+  /** 证据文件：证据目录下按天分目录，一行一个包。 */
+  function evidenceFile() { return join(c.evidenceDir, tsDir(), 'evidence.jsonl') }
+
+  function recordEvidence(env) {
+    const f = evidenceFile()
+    mkdirSync(dirname(f), { recursive: true })
+    appendFileSync(f, envelopeToLine(env) + '\n')
+    return env.id
+  }
+
+  /** 敏感值绝不进证据：凭据占位符与 secret 标记一律脱敏（模型侧本来也看不到明文）。 */
+  function evidenceSafeValue(args) {
+    const v = args && args.value
+    if (v == null) return null
+    if (args.secret === true || /^\$\{cred:/.test(String(v))) return '[redacted]'
+    return String(v)
+  }
+
+  /** 从驱动结果反推门结论（供证据固化：判定依据比结论更重要）。 */
+  function gateVerdictOf(res) {
+    const code = (res && res.policyCode) || null
+    let snapshotVerdict = 'ok'
+    if (res && res.staleSnapshot) snapshotVerdict = 'stale'
+    else if (res && res.expiredSnapshot) snapshotVerdict = 'expired'
+    else if (res && res.unknownSnapshot) snapshotVerdict = 'unknown'
+    else if (res && res.ok === false && /snapshotId/.test(String(res.error || ''))) snapshotVerdict = 'rejected'
+    else if (!(res && (res.snapshotId || (res.__gate && res.__gate.snapshotId)))) snapshotVerdict = 'not_passed'
+    return {
+      snapshot: { id: (res && res.snapshotId) || null, verdict: snapshotVerdict },
+      policy: {
+        enabled: !!(policy.isConfigured && policy.isConfigured()),
+        decision: code ? 'deny' : ((policy.isConfigured && policy.isConfigured()) ? 'allow' : null),
+        code,
+      },
+      estop: code === 'stopped_by_user' ? { code } : null,
+    }
+  }
+
+  function attachEvidence(res, args) {
+    try {
+      const action = normAction((args && args.action) || (res && res.action))
+      if (!isSideEffectKind(classifyAction(action))) return res // 只读/纯输入不落证据
+      const g = gateVerdictOf(res)
+      const ident = identCache.value || {}
+      const env = createEnvelope({
+        kind: (res && res.ok) ? 'action' : 'denied',
+        surface: 'ui_drive',
+        action,
+        params: {
+          name: args && args.name,
+          aid: args && args.aid,
+          value: evidenceSafeValue(args),
+          keys: args && args.keys,
+          index: args && args.index,
+          extra: stableExtra(args),
+        },
+        target: {
+          name: args && args.name,
+          aid: args && args.aid,
+          controlType: (res && res.controlType) || null,
+          exeCanonical: ident.exeCanonical || null,
+          windowHandle: ident.handle == null ? null : ident.handle,
+        },
+        gates: { allowSideEffects: !!(args && args.allowSideEffects), snapshot: g.snapshot, policy: g.policy, estop: g.estop },
+        result: { ok: !!(res && res.ok), executed: !!(res && res.ok), error: res && res.error, output: res && (res.output || res.detail) },
+        observation: { before: null, after: null },
+        trust: { source: 'agent', untrustedContent: false },
+      })
+      const id = recordEvidence(env)
+      return Object.assign({}, res, { evidence: envelopeSummary(env), evidenceId: id })
+    } catch (e) {
+      // 不静默：证据失败必须可见，但不能影响驱动本身
+      return Object.assign({}, res, { evidenceError: String((e && e.message) || e).slice(0, 200) })
+    }
+  }
+
+  /** 证据里只放"能定位动作"的最小上下文，避免把整包参数塞进去。 */
+  function stableExtra(args) {
+    if (!args) return null
+    const e = {}
+    for (const k of ['winTitle', 'winHandle', 'snapshotId', 'fromX', 'fromY', 'toX', 'toY', 'x', 'y', 'count', 'state']) {
+      if (args[k] !== undefined && args[k] !== null) e[k] = args[k]
+    }
+    return Object.keys(e).length ? e : null
   }
 
   async function driveOnce(args) {
@@ -1250,7 +1348,46 @@ export function makeDriver(cfg) {  const c = {
    * 默认只读（find/read/shot/wait/expect）；含 click/setvalue/key 必须 allowSideEffects=true。
    * 执行引擎：整个序列进一个 PowerShell 进程（batch），步间无进程启动开销。
    */
-  async function flow({ steps = [], tag = 'flow', failFast = false, allowSideEffects = false, waitMs } = {}) {
+  /**
+   * ui_flow：序列驱动（公开入口）。
+   * W3：**含副作用步**的 flow 落一份证据包（kind=flow 或 denied）；纯只读 flow 不落（零开销）。
+   */
+  async function flow(args = {}) {
+    const res = await flowInner(args)
+    return attachFlowEvidence(res, args)
+  }
+
+  function attachFlowEvidence(res, args) {
+    try {
+      const steps = (args && args.steps) || []
+      const sideCount = steps.filter((s) => s && isSideEffectKind(classifyAction(s.action))).length
+      if (!sideCount) return res
+      const g = gateVerdictOf(res)
+      const ident = identCache.value || {}
+      const env = createEnvelope({
+        kind: (res && res.ok) ? 'flow' : 'denied',
+        surface: 'ui_flow',
+        action: 'flow',
+        params: { extra: { tag: (args && args.tag) || 'flow', steps: steps.length, sideEffectSteps: sideCount } },
+        target: { exeCanonical: ident.exeCanonical || null, windowHandle: ident.handle == null ? null : ident.handle },
+        gates: { allowSideEffects: !!(args && args.allowSideEffects), snapshot: g.snapshot, policy: g.policy, estop: g.estop },
+        result: {
+          ok: !!(res && res.ok),
+          executed: !!(res && !res.policyCode),   // 被门拦下的整段 flow = 没执行
+          error: res && res.error,
+          output: res ? ('passed=' + (res.passed || 0) + ' failed=' + (res.failed || 0)) : null,
+        },
+        observation: { before: null, after: null },
+        trust: { source: 'agent', untrustedContent: false },
+      })
+      const id = recordEvidence(env)
+      return Object.assign({}, res, { evidence: envelopeSummary(env), evidenceId: id })
+    } catch (e) {
+      return Object.assign({}, res, { evidenceError: String((e && e.message) || e).slice(0, 200) })
+    }
+  }
+
+  async function flowInner({ steps = [], tag = 'flow', failFast = false, allowSideEffects = false, waitMs } = {}) {
     if (!Array.isArray(steps) || steps.length === 0) return { ok: false, error: 'steps 不能为空' }
     if (steps.length > 60) return { ok: false, error: 'steps 最多 60 步' }
 
