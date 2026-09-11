@@ -59,22 +59,28 @@ function toolCallSource(src, toolName) {
   return src.slice(from, i)
 }
 
-/** 取该工具 action 参数上的 enum 取值（支持两种写法：内联 z.enum 与 `const uiAction = z.enum(…)` 间接引用）。 */
+/**
+ * 取该工具 action 参数上的 enum 取值。
+ * 支持三种写法：单行内联、多行内联（可含注释）、`const uiAction = z.enum([...])` 间接引用。
+ * ⚠️ 只取**单引号字符串**：多行 enum 里会写注释（`// …`），按"逗号切分"会把注释文字一起吞进来
+ *    （实测就报出了 `"// … \r\n 'move"` 这种假值，反而把好 enum 判成坏的）。
+ */
 function toolEnum(callSrc, src) {
-  // 写法 A：action: z.enum([...])  或  action: <Name>.enum([...])
-  let m = /action:\s*(?:z|[A-Za-z_$][\w$]*)\s*\.?\s*enum\s*\(\s*\[([^\]]*)\]/.exec(callSrc)
+  const values = (body) => [...body.matchAll(/'([a-z][a-z-]*)'/g)].map((m) => m[1])
+  // 写法 A：action: z.enum([ ... ])   或   action: <Name>.enum([ ... ])
+  let m = /action:\s*(?:z|[A-Za-z_$][\w$]*)\s*\.?\s*enum\s*\(\s*\[([\s\S]*?)\]\s*\)/.exec(callSrc)
   if (!m) {
     // 写法 B：action: uiAction（先找引用名，再回到文件里找它的定义）
     const ref = /action:\s*([A-Za-z_$][\w$]*)\s*[,}]/.exec(callSrc)
     if (ref) {
       const v = ref[1]
-      // 用 lastIndexOf：定义通常在使用之前，且同名不应重复定义
       const at = src.lastIndexOf(`const ${v} = `)
-      if (at >= 0) m = /\.enum\s*\(\s*\[([^\]]*)\]/.exec(src.slice(at, at + 400))
+      if (at >= 0) m = /\.enum\s*\(\s*\[([\s\S]*?)\]\s*\)/.exec(src.slice(at, at + 1200))
     }
   }
   if (!m) return null
-  return m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
+  const out = values(m[1])
+  return out.length ? out : null
 }
 
 /**
@@ -115,6 +121,27 @@ function descriptionText(callSrc) {
 
 /** 只在工具内部使用、不作为模型动作暴露的名字。 */
 const INTERNAL = new Set(['ping', 'status', 'reload', 'control'])
+
+/** 取某个 server.tool('name', ...) 注册块（到下一个 server.tool( 为止）。 */
+function toolBlock(name) {
+  const m = new RegExp(`server\\.tool\\(\\s*'${name}'`).exec(serverSrc)
+  if (!m) return ''
+  const next = serverSrc.indexOf('server.tool(', m.index + 1)
+  return serverSrc.slice(m.index, next < 0 ? serverSrc.length : next)
+}
+
+/** 该工具 schema 里声明的参数名（zod 对象的键，缩进 4 空格）。 */
+function declaredParams(block) {
+  if (!block) return []
+  const markers = ['{\n    ', '{\r\n    ']
+  let schemaStart = -1
+  for (const mk of markers) {
+    const at = block.indexOf(mk)
+    if (at >= 0 && (schemaStart < 0 || at < schemaStart)) schemaStart = at
+  }
+  const body = schemaStart >= 0 ? block.slice(schemaStart) : block
+  return [...body.matchAll(/^\s{4}([A-Za-z_][A-Za-z0-9_]*)\s*:/gm)].map((m) => m[1])
+}
 
 const TOOLS = ['ui_drive', 'ui_observe', 'ui_act']
 const parsed = {}
@@ -197,21 +224,7 @@ for (const t of TOOLS) {
 // click/setvalue/…"、"drag: start X"——模型照做，参数凭空蒸发。
 // 护栏：要么整个 `...args` 转发（推荐，schema 成为唯一真源），要么枚举清单必须覆盖全部声明。
 {
-  /** 取某个工具注册块（从 server.tool('name' 到下一个 server.tool(） */
-  function toolBlock(name) {
-    const re = new RegExp(`server\\.tool\\(\\s*'${name}'`)
-    const m = re.exec(serverSrc)
-    if (!m) return ''
-    const next = serverSrc.indexOf('server.tool(', m.index + 1)
-    return serverSrc.slice(m.index, next < 0 ? serverSrc.length : next)
-  }
-
-  /** 该工具 schema 里声明的参数名（zod 对象的键，缩进 4 空格）。 */
-  function declaredParams(block) {
-    const schemaStart = block.indexOf('{', block.indexOf('describe(') > 0 ? block.lastIndexOf('{\n    ', block.indexOf('async (')) : 0)
-    const body = block.slice(schemaStart)
-    return [...body.matchAll(/^\s{4}([A-Za-z_][A-Za-z0-9_]*)\s*:/gm)].map((m) => m[1])
-  }
+  /** 取某个工具注册块（从 server.tool('name' 到下一个 server.tool(）——见文件顶部的 toolBlock */
 
   // 只检查"声明了参数、且有 handler"的工具（ui_status/ui_windows 之类无参工具跳过）
   const HANDLED = ['ui_drive', 'ui_observe', 'ui_act']
@@ -244,6 +257,86 @@ for (const t of TOOLS) {
   for (const v of priorVictims) {
     check(`ui_drive 仍在 schema 里声明 ${v}`, new RegExp(`^\\s{4}${v}\\s*:`, 'm').test(driveBlock))
   }
+}
+
+// ------------------------------------------------- 8. 已实现的能力不得对模型不可达
+// 第四类同类缺陷：驱动把 W5 原语（pattern/scroll/selecttext）实现完了，但 MCP 的 enum 没放进去，
+// 于是这些能力对**模型**等于不存在（只是躺在代码里的死代码）。
+// 判据：凡驱动 BATCH_ONLY / READ_ONLY 支持的动作，至少要有一个 MCP 工具能调到它。
+{
+  // 从驱动里读"它到底支持哪些动作"，而不是手抄
+  const driverSrc = readFileSync(join(here, '..', 'lib', 'driver.mjs'), 'utf8')
+  const setOf = (name) => {
+    const m = new RegExp(`const ${name} = new Set\\(\\[([^\\]]*)\\]`).exec(driverSrc)
+    return m ? [...m[1].matchAll(/'([a-z][a-z-]*)'/g)].map((x) => x[1]) : []
+  }
+  const batchOnly = setOf('BATCH_ONLY_ACTIONS')
+  const readOnly = setOf('READ_ONLY_ACTIONS')
+  check('解析出驱动的 BATCH_ONLY_ACTIONS', batchOnly.length > 0, JSON.stringify(batchOnly))
+  check('解析出驱动的 READ_ONLY_ACTIONS', readOnly.length > 0, JSON.stringify(readOnly))
+
+  // MCP 工具 enum 的并集 + ui_flow 的**步骤** action enum = 模型实际能调到的动作全集
+  const reachable = new Set()
+  for (const t of TOOLS) for (const a of (parsed[t].enum || [])) reachable.add(a)
+  // ui_flow 的步骤是另一套动作集（含只读伪动作 wait/expect），模型同样能调到
+  const flowM = /server\.tool\(\s*'ui_flow'[\s\S]*?z\.enum\(\[([\s\S]*?)\]\s*\)/.exec(serverSrc)
+  const flowActions = flowM ? [...flowM[1].matchAll(/'([a-z][a-z-]*)'/g)].map((m) => m[1]) : []
+  check('解析出 ui_flow 的步骤动作集', flowActions.length > 0, JSON.stringify(flowActions))
+  for (const a of flowActions) reachable.add(a)
+
+  // W5 三原语必须可达（这次修复的核心）
+  for (const a of ['pattern', 'scroll', 'selecttext']) {
+    check(`W5 原语 ${a} 对模型可达（至少一个 MCP 工具能调）`, reachable.has(a),
+      '可达集=' + JSON.stringify([...reachable].sort()))
+  }
+  // 其它已实现但曾经不可达的
+  for (const a of ['clickat', 'doubleclick', 'capture']) {
+    check(`已实现动作 ${a} 对模型可达`, reachable.has(a), '可达集=' + JSON.stringify([...reachable].sort()))
+  }
+
+  // 登记豁免：驱动里出现但**本来就不是动作**的名字，必须写明理由，不能沉默地漏
+  const NOT_ACTIONS = new Set([
+    'alt', 'ctrl', 'shift', // 键盘修饰键**子标签**（Get-ModVk 的 switch 分支），不是可调用动作
+  ])
+  const unreachable = [...new Set([...batchOnly, ...readOnly, ...DRIVER])]
+    .filter((a) => !INTERNAL.has(a) && !NOT_ACTIONS.has(a) && !reachable.has(a))
+  check('没有"驱动支持却对模型不可达"的动作（除已登记的非动作/内部名）', unreachable.length === 0,
+    '不可达=' + JSON.stringify(unreachable.sort()))
+}
+
+// ------------------------------------------------- 9. 驱动接受的字段必须在 MCP schema 里声明
+// 第五类同类缺陷（W5 独立核查发现）：MCP SDK 只把 **zod 解析后**的对象交给 handler
+// （zod 默认 strip 未知键），所以**没在 schema 里声明的参数，无论 handler 怎么转发都到不了驱动**。
+// 实测受害者：`count`（scroll 页数 — 缺了它 scroll 恒滚 1 页且不报错）、
+//             `expectValue`（selecttext 的 suffix / type 的回读校验）。
+// 真值来源用 `batch()` 的 cleanSteps —— 那份清单就是"驱动确实会交给执行器"的字段全集。
+{
+  const driverSrc = readFileSync(join(here, '..', 'lib', 'driver.mjs'), 'utf8')
+  // cleanSteps 保留的字段就是执行器认识的字段
+  const cleanSection = driverSrc.slice(driverSrc.indexOf('const cleanSteps'), driverSrc.indexOf('writeFileSync(stepsFile'))
+  const executorFields = [...new Set([...cleanSection.matchAll(/if \(s\.([A-Za-z_][\w]*)\s*!==/g)].map((m) => m[1]))]
+  check('解析出执行器可接受的字段集（cleanSteps）', executorFields.length > 5, JSON.stringify(executorFields))
+
+  // MCP 三个工具声明的参数并集
+  const declaredOnMcp = new Set()
+  for (const t of TOOLS) for (const p of declaredParams(toolBlock(t))) declaredOnMcp.add(p)
+  // ui_drive/ui_observe/ui_act 之外，ui_state 也接受 max 等
+  for (const t of ['ui_state', 'ui_windows']) for (const p of declaredParams(toolBlock(t))) declaredOnMcp.add(p)
+
+  // 这三个是**坐实过的受害者**，单独钉死（避免有人"清理"掉它们）
+  for (const f of ['count', 'expectValue']) {
+    check(`驱动接受的字段 ${f} 已在 MCP schema 里声明（否则被 zod 静默剥掉）`, declaredOnMcp.has(f),
+      '已声明=' + JSON.stringify([...declaredOnMcp].sort()))
+  }
+
+  // 通用护栏：凡驱动交给执行器的字段，MCP 面必须至少有一个工具声明它；
+  // 未声明的要么补上，要么登记为"不经 MCP 面暴露"并写明理由。
+  const NOT_EXPOSED = new Set([
+    'out', // 截图落盘路径，由驱动内部计算，不是模型该传的
+  ])
+  const missing = executorFields.filter((f) => !declaredOnMcp.has(f) && !NOT_EXPOSED.has(f))
+  check('没有"驱动接受但 MCP 面未声明"的字段（除已登记的非模型参数）', missing.length === 0,
+    '未声明=' + JSON.stringify(missing.sort()) + '（未声明 = zod 会剥掉 = 模型传了也没用）')
 }
 
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }

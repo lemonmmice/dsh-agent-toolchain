@@ -185,7 +185,21 @@ server.tool(
   async () => jtext(await drv().status())
 )
 
-const uiAction = z.enum(['find', 'read', 'state', 'windows', 'shot', 'waitfor', 'click', 'setvalue', 'key', 'type', 'drag'])
+const uiAction = z.enum([
+  // 只读 + 纯输入（输入类由驱动器统一授权，见 uiActionNeedsAuth 说明）
+  'find', 'read', 'state', 'windows', 'shot', 'waitfor',
+  // 副作用（必须 allowSideEffects=true）
+  'click', 'setvalue', 'key', 'type', 'drag',
+  // 以下三处原先漏在 enum 之外，导致驱动已实现的能力对模型完全不可达：
+  // 坐标类副作用
+  'clickat', 'doubleclick',
+  // W5 原语（都在驱动的 BATCH_ONLY_ACTIONS 里，已实现）
+  'pattern', 'scroll', 'selecttext',
+  // 只读白名单输入（驱动 INPUT_ACTIONS，可逆、豁免副作用门）
+  'move', 'wheel',
+  // 其它已实现但原先不可达的动作
+  'capture', 'state-live',
+])
 
 server.tool(
   'ui_state',
@@ -243,6 +257,24 @@ server.tool(
     allowSideEffects: z.boolean().optional().describe('REQUIRED true for click/setvalue/key/type/drag'),
     snapshotId: z.string().optional().describe('W1 freshness token returned by a prior read/state. When set, a side-effect action is rejected if the snapshot is stale (a newer read happened: staleSnapshot) or expired (client/serve restarted: expiredSnapshot). Omit to skip the freshness gate (legacy, zero-regression).'),
     diff: z.boolean().optional().describe('read only: return an incremental diff {added,removed,unchanged} vs the last full read instead of just the flat list'),
+    // The driver's batch engine accepts these but the schema never declared them, and the MCP
+    // SDK hands the handler only the zod-parsed object (zod strips unknown keys by default), so
+    // they were unreachable no matter what the handler forwarded:
+    //   count       — scroll: how many pages (without it scroll always moved exactly one page)
+    //   expectValue — selecttext: the suffix (and type: the read-back check)
+    //   x/y/delta/mods — clickat / wheel / move coordinates and held modifier keys
+    count: z.number().optional().describe('scroll: number of pages/lines (default 1). Also max items for some read modes.'),
+    expectValue: z.string().optional().describe('type: expected value for the read-back check; selecttext: the suffix to select through'),
+    x: z.number().optional().describe('move/clickat: client-area X'),
+    y: z.number().optional().describe('move/clickat: client-area Y'),
+    delta: z.number().optional().describe('wheel: scroll delta'),
+    mods: z.string().optional().describe('held modifier keys for drag/key, e.g. "shift" | "ctrl" | "alt"'),
+    button: z.string().optional().describe('mouse button for coordinate actions (default left)'),
+    double: z.boolean().optional().describe('true = double click at the coordinate instead of a single click'),
+    focus: z.boolean().optional().describe('true = also set keyboard focus to the target'),
+    winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows) instead of the main window'),
+    expectEnabled: z.boolean().optional().describe('expect: assert the control is enabled'),
+    expectMatch: z.string().optional().describe('expect: assert the control name matches this regex'),
   },
   async (args) => {
     // Pre-check reuses the driver's classifyAction (single source) so it can never
@@ -334,7 +366,11 @@ server.tool(
     'waitany is how you adjudicate a login: bet on "main window appeared", "error text appeared" and "login window still there" at once ' +
     'and get back which one hit (with stableCount confirmation to avoid transient states).',
   {
-    action: z.enum(['find', 'read', 'state', 'windows', 'waitfor', 'expectwindow', 'expecttext', 'waitany', 'shot']),
+    action: z.enum([
+      'find', 'read', 'state', 'windows', 'waitfor', 'expectwindow', 'expecttext', 'waitany', 'shot',
+      // 原先漏在 enum 之外：驱动已实现、只读白名单或只读的
+      'move', 'wheel', 'capture', 'state-live',
+    ]),
     name: z.string().optional(),
     aid: z.string().optional(),
     match: z.string().optional(),
@@ -353,6 +389,10 @@ server.tool(
     max: z.number().optional(),
     label: z.string().optional(),
     describe: z.boolean().optional().describe('shot: also return a vision description'),
+    // move/wheel are reversible input primitives, so the DRIVER treats them as 'input' kind and
+    // requires its own side-effect flag. Without declaring it here the driver rejects them while
+    // the schema says they are available - the same silent mismatch this file keeps guarding against.
+    allowSideEffects: z.boolean().optional().describe('Required true for move/wheel (the driver gates input primitives even though they are reversible and read-only by nature).'),
   },
   async (args) => {
     const r = await drv().drive({ ...args, action: args.action })
@@ -363,7 +403,12 @@ server.tool(
 server.tool(
   'ui_act',
   'Real UI action (side effects; allowSideEffects=true required): click / setvalue (use this for key-filtered fields such as a phone box) / ' +
-    'key / type ({ENTER} {TAB} sequences) / drag (slider captcha). ' +
+    'key / type ({ENTER} {TAB} sequences) / drag (slider captcha) / clickat (client-area coordinates, for table rows or chart points where UIA ' +
+    'cannot give a stable element - fragile, invalidated when the window moves) / doubleclick (element-level) / ' +
+    'pattern (invoke a UIA pattern the element actually exposes; put the action name in value, e.g. Expand|Collapse|Increment|Decrement|Select|' +
+    'AddToSelection|RemoveFromSelection|ScrollIntoView|Toggle|Invoke|Focus|Close|Minimize|Maximize|Restore; unsupported patterns report an error ' +
+    'instead of falling back to a click) / scroll (semantic ScrollPattern: direction in value, pages in count) / ' +
+    'selecttext (TextPattern selection: text in value, prefix in match, suffix in expectValue, selectionType in state). ' +
     'Input is read back and verified — a value that did not land is ok:false, never a silent success. Password/captcha fields are never echoed. ' +
     'A name-based hard-deny list is enforced in the driver and allowSideEffects cannot unlock it: any control whose name/AutomationId matches ' +
     'DSH_UI_DENY_RE (a conservative default list of "hard to undo once hit" control names) is refused. Override the list per deployment with ' +
@@ -371,7 +416,11 @@ server.tool(
     'observe=true attaches a UI snapshot after the action. Credentials: pass ${cred:name}; the driver expands DSH_CRED_name from its own environment, ' +
     'so the secret never enters the model context or the evidence files.',
   {
-    action: z.enum(['click', 'setvalue', 'key', 'type', 'drag']),
+    action: z.enum([
+      'click', 'setvalue', 'key', 'type', 'drag',
+      // 原先漏在 enum 之外：驱动均已实现（坐标类副作用 + W5 原语），但模型调不到
+      'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext',
+    ]),
     name: z.string().optional(),
     aid: z.string().optional(),
     value: z.string().optional().describe('setvalue/key/type content; supports ${cred:name}'),
@@ -393,6 +442,13 @@ server.tool(
     waitMs: z.number().optional(),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true'),
     snapshotId: z.string().optional().describe('W1 freshness token from a prior read/state. When set, the action is rejected if the snapshot is stale (staleSnapshot) or expired (expiredSnapshot). Omit to skip the freshness gate. (ui_act forwards all args to the driver, so this reaches the same write-side gate as ui_drive.)'),
+    // Declared for the same reason as in ui_drive: the driver accepts these, but an undeclared
+    // key is stripped by zod before the handler runs, making the capability unreachable.
+    count: z.number().optional().describe('scroll: number of pages/lines (default 1)'),
+    x: z.number().optional().describe('clickat: client-area X'),
+    y: z.number().optional().describe('clickat: client-area Y'),
+    mods: z.string().optional().describe('held modifier keys for drag, e.g. "shift" | "ctrl" | "alt"'),
+    inName: z.string().optional().describe('Scope the search to the subtree of this Name container'),
   },
   async (args) => {
     if (args.allowSideEffects !== true) {
