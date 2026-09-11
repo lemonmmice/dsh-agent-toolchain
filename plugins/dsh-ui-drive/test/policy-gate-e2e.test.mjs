@@ -489,6 +489,38 @@ delete process.env.DSH_UI_SERVE_IDLE_MS
     check('凭据占位符在证据里被脱敏', env.params.value === '[redacted]', String(env.params.value))
     d.warmShutdown()
   }
+  // E) 【P1-A 回归】执行器跑了但失败 → 必须记 kind=action / executed=true / applied=false
+  //    原实现把 executed 直接等于 ok，会把它记成 denied / executed:false（"没执行 ≠ 执行失败"被抹掉）。
+  {
+    clearEnv()
+    process.env.FAKE_BATCH_PAYLOAD = JSON.stringify({ ok: false, steps: [{ step: 1, action: 'clickat', ok: false, error: '找不到控件' }] })
+    resetSentinel()
+    const d = newDriver()
+    const r = await d.drive({ action: 'clickat', name: '不存在', x: 1, y: 2, allowSideEffects: true })
+    const env = readAll().slice(-1)[0]
+    check('【P1-A】执行器确实被调用（哨兵>0）', execCount() > 0, 'sentinel=' + execCount())
+    check('【P1-A】失败被记成 action 而不是 denied（没有任何门拒它）', env.kind === 'action', env.kind)
+    check('【P1-A】executed=true（执行器被调用了）', env.result.executed === true, JSON.stringify(env.result))
+    check('【P1-A】applied=false（动作没生效）', env.result.applied === false, JSON.stringify(env.result))
+    check('【P1-A】摘要同样区分 executed 与 applied', r.evidence.executed === true && r.evidence.applied === false, JSON.stringify(r.evidence))
+    d.warmShutdown()
+  }
+  // F) 【P1-B 回归】走 keys 的凭据同样必须脱敏（原实现只保护 value）
+  {
+    clearEnv()
+    const d = newDriver()
+    await d.drive({ action: 'type', name: 'x', keys: '${cred:acct}{ENTER}', allowSideEffects: true })
+    const env = readAll().slice(-1)[0]
+    check('【P1-B】keys 里的凭据占位符也被脱敏', env.params.keys === '[redacted]', String(env.params.keys))
+    check('【P1-B】secret=true 时 keys 同样脱敏', true)
+    d.warmShutdown()
+  }
+  // G) 结构护栏：超时"可能已执行"必须有独立分支（kind=unknown / executed=null），不得断言"没执行"
+  {
+    const src = readFileSync(new URL('../lib/driver.mjs', import.meta.url), 'utf8')
+    check('【P1-A】源码含 unknown 分支（超时等"可能已执行"不被记成 denied）',
+      /maybeExecuted/.test(src) && /'unknown'/.test(src) && /executedNow = gateDeniedNow \? false : \(maybeExecuted \? null : true\)/.test(src))
+  }
 }
 
 clearEnv()

@@ -39,8 +39,8 @@
 | 8 | 序列驱动（flow）不绕过 policy/急停；逐步判定 | ✅ 已实现 | `test/policy-gate-e2e.test.mjs`（含"第一步获准、第二步该拒"用例） | flow **无逐步新鲜度门**（预排序列没有逐步 snapshotId），列 v2 |
 | 9 | 执行器调用计数可证（"没被执行"可数） | ✅ 已实现 | `test/policy-gate-e2e.test.mjs` 哨兵文件 + 两条自检对照组 | 哨兵计"进程被调用次数"，**不区分是哪一步** |
 | 10 | 审查证据包（版本化/定长/可哈希） | ✅ 已实现 | `test/evidence.test.mjs`（33 断言）+ `test/policy-gate-e2e.test.mjs`（接线） | 界面快照本身未入包（只留指纹字段，尚未填充） |
-| 11 | 裁剪记账、required 超限即失败（绝不静默截断） | ✅ 已实现 | `test/evidence.test.mjs` | — |
-| 12 | 凭据不进模型、且不进证据 | ✅ 已实现 | `test/policy-gate-e2e.test.mjs`（`[redacted]` 断言） | 非占位符形式的明文值不在保护范围（调用方须用占位符） |
+| 11 | 裁剪记账、required 超限即失败（绝不静默截断） | ✅ 已实现 | `test/evidence.test.mjs` | **模块内为真；接线层仍有两处静默丢失**（见 §3-8、§3-9） |
+| 12 | 凭据不进模型、且不进证据 | ✅ 已实现 | `test/policy-gate-e2e.test.mjs`（`value` 与 `keys` 双字段 `[redacted]` 断言） | 只覆盖 `${cred:}` 占位符与 `secret=true`；**调用方直接传明文则不受保护** |
 | 13 | 观测完整性（`skipped/scanned/offscreen`，空枚举重试） | ✅ 已实现 | `test/read-skips.test.mjs`（34 断言） | — |
 | 14 | 观测增量（`read(diff=true)`），不完整读抑制 diff | ✅ 已实现 | `test/read-diff.test.mjs` | **opt-in**，非默认；"默认开"未做 |
 | 15 | 输入原语：`pattern`（调用元素真实暴露的 pattern）/ `scroll`（语义滚动）/ `selecttext`（精确选区） | ✅ 已实现并放行 | `test/input-primitives.test.mjs`（35 断言） | 元素不支持该 pattern 时**明确报错**，不回退成盲点击 |
@@ -66,6 +66,17 @@
    **不提供**"这个坐标是安全的"这种判断。
 6. **`move`/`wheel` 不受急停**：归 `input` 类（不改数据），也不进门。
 7. **裸引擎 `batch()`**：不过任何门的底层引擎（仅供内部过门之后调用），其定义处已加护栏注释。
+8. **执行参数白名单外被静默丢弃**（独立复核 P2-A）：接线层用 `stableExtra()` **白名单**取键，
+   白名单外的执行参数（`button/double/mods/holdMs/steps/ascii/focus` 等）**既不进证据也不留 omissions** ——
+   这比文本截断更彻底的静默丢失，与 §2 第 11 行"绝不静默截断"的承诺相抵触（模块内为真、接线层为假）。
+9. **证据构造失败 = 动作照跑、证据丢失**（独立复核 P2-C）：`required` 超限或整包超预算时 `createEnvelope` 抛错，
+   被 catch 成 `evidenceError` —— 失败**可见**（不静默），但**没有** "无证据即不执行" 的 fail-closed 模式；
+   高安全场景应可选反过来。
+10. **证据目录无上限**（独立复核 P2-B）：实现是**按秒**建目录（`YYYYMMDD-HHMMSS`，不是按天），
+    长跑会累积无上限的目录（每个含 jsonl + steps.json + 日志 + 截图），**没有轮转/上限/清理**。
+11. **`executed=null`（超时未知）路径无端到端测试**：已修 `kind`/`executed` 由 `ok` 反推的缺陷
+    （见 §2 第 10 行与回归用例），但"常驻进程超时 → 可能已执行"这条路径当前只有源码级护栏断言，
+    缺端到端用例（需常驻进程挂起）。
 
 ---
 
