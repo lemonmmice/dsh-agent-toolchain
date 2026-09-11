@@ -785,13 +785,46 @@ function Send-KeyTo($el, [string]$value, [bool]$ascii, [int]$waitMs) {
   if ($ascii) {
     Send-KeyAscii $value
   } else {
-    Set-Clipboard -Value $value
-    Start-Sleep -Milliseconds 150
-    $null = [System.Windows.Forms.SendKeys]::SendWait('^a')
-    Start-Sleep -Milliseconds 120
-    $null = [System.Windows.Forms.SendKeys]::SendWait('^v')
+    # 中文走剪贴板粘贴（keybd_event 发不出非 ASCII）。
+    # W5b：必须先快照并在用完后**还原用户原来的剪贴板** —— 否则我们会静默清掉
+    # 用户刚复制的账号/金额（驱动交易客户端时尤其危险）。
+    $snap = Get-ClipboardSnapshot
+    try {
+      Set-Clipboard -Value $value
+      Start-Sleep -Milliseconds 150
+      $null = [System.Windows.Forms.SendKeys]::SendWait('^a')
+      Start-Sleep -Milliseconds 120
+      $null = [System.Windows.Forms.SendKeys]::SendWait('^v')
+    } finally {
+      # SendKeys ^v 是异步投递：先让目标把内容取走，再还原，避免"还没粘完就被换掉"
+      Start-Sleep -Milliseconds 180
+      Restore-ClipboardSnapshot $snap
+    }
   }
   Start-Sleep -Milliseconds $waitMs
+}
+
+# 剪贴板快照/还原（W5b）：让「中文输入」和「paste」不破坏用户原有的剪贴板内容。
+# 三种状态：text（有文本，可还原）/ none（空，还原为空）/ unknown（读不到——**不碰**，
+# 宁可保留我们的内容，也不冒险清掉用户可能有的图片/文件等非文本数据）。
+function Get-ClipboardSnapshot {
+  try {
+    if ([System.Windows.Forms.Clipboard]::ContainsText()) {
+      return @{ kind = 'text'; value = [string][System.Windows.Forms.Clipboard]::GetText() }
+    }
+    return @{ kind = 'none'; value = '' }
+  } catch {
+    return @{ kind = 'unknown'; value = '' }
+  }
+}
+
+function Restore-ClipboardSnapshot($snap) {
+  if ($null -eq $snap) { return }
+  if ($snap.kind -eq 'unknown') { return }
+  try {
+    if ($snap.kind -eq 'text') { [System.Windows.Forms.Clipboard]::SetText([string]$snap.value) }
+    else { [System.Windows.Forms.Clipboard]::Clear() }
+  } catch { }
 }
 
 # 动作是否需要窗口在前台：只有鼠标/键盘/屏幕截图类需要；
