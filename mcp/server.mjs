@@ -444,6 +444,13 @@ server.tool(
     waitFor: z.record(z.string(), z.any()).optional(),
     conds: z.array(z.record(z.string(), z.any())).optional().describe('waitany conditions: [{kind:"window"|"text"|"appear"|"gone"|"enabled"|"disabled", titleRe?, textRe?, name?, aid?, label?}]'),
     stableCount: z.number().optional().describe('waitany: consecutive confirmations before a hit counts (default 2)'),
+    // Declared for the same reason as the fields in ui_drive: the driver accepts these, but zod
+    // strips undeclared keys before the handler runs. `diff` is the W1 incremental read - without
+    // it on this surface an MCP client could never turn that feature on (verified live against the
+    // client: passing diff=true returned no diff field at all, silently degrading to a full list).
+    diff: z.boolean().optional().describe('read only: return an incremental diff {added,removed,unchanged} against the previous full read (first read returns a diffBaseline marker; an incomplete read suppresses the diff instead of reporting a phantom one)'),
+    procId: z.number().optional().describe('Target a specific process id (default: auto-detected)'),
+    workspace: z.string().optional().describe('Deprecated and ignored: screenshots always go to the evidence dir'),
     index: z.number().optional(),
     inAid: z.string().optional(),
     winTitle: z.string().optional().describe('Scope the search to the window whose title matches'),
