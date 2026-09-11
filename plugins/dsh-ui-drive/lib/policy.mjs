@@ -32,6 +32,7 @@ function parseRules(value) {
 
 export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY, safetyPolicyFile = process.env.DSH_UI_SAFETY_POLICY_FILE, estopFile = process.env.DSH_UI_ESTOP_FILE, classifyAction } = {}) {
   let parsed
+  const policyConfigured = rules !== undefined || Boolean(policyFile)
   let safetyPolicyText = null
   try {
     if (safetyPolicyFile && fs.existsSync(safetyPolicyFile)) safetyPolicyText = fs.readFileSync(safetyPolicyFile, 'utf8')
@@ -43,12 +44,20 @@ export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY
   const reset = sessionId => { if (stoppedSession !== null && String(sessionId) === stoppedSession) stoppedSession = null }
   return {
     diagnostics: { safetyPolicyText },
+    // 门是否需要跑：配了规则表，或急停哨兵存在（急停是外部总闸，与是否配策略无关）。
+    // 两者都没有 → 调用方直接跳过，零开销（保持既有行为；这是显式的集成取舍，不是隐式默认）。
+    needsCheck: () => policyConfigured || Boolean(estopFile && fs.existsSync(estopFile)),
+    // 只有规则表判定才需要进程身份；纯急停不需要（身份解析要走一次 status，能省则省）。
+    requiresIdentity: Boolean(policyConfigured),
+    isConfigured: () => Boolean(policyConfigured),
     stop,
     reset,
     check({ action, identity = {}, snapshot, targetWindowHandle, allowSideEffects = false, sessionId, onExecute } = {}) {
       if (readOnly(action)) return { ok: true, readOnly: true }
       if (stoppedSession === null && estopFile && fs.existsSync(estopFile)) stoppedSession = sessionId == null ? '__default__' : String(sessionId)
       if (stoppedSession !== null && String(sessionId == null ? '__default__' : sessionId) === stoppedSession) return { ok: false, code: 'stopped_by_user', error: '急停已生效' }
+      // 未配置规则表时保持既有行为；配置后严格 deny-first。
+      if (!policyConfigured) return { ok: true, policyDisabled: true }
       if (parsed === undefined || !parsed) return { ok: false, code: 'policy_unavailable', error: '策略不可用' }
       const current = keyOf(identity)
       if (!current.exe) return { ok: false, code: 'policy_unavailable', error: '身份不可解析' }
@@ -63,5 +72,11 @@ export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY
 }
 
 export { canonicalExe }
+
+
+
+
+
+
 
 
