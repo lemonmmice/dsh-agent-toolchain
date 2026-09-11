@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname, relative } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { validateSchemas } from './lib/schema-dsl.mjs'
 
 const root = join(fileURLToPath(import.meta.url), '..', '..')
 
@@ -126,20 +127,30 @@ try {
   /* git not available */
 }
 
-// 5. DSH tool-schema guard: an object-typed parameter without
-//    `additionalProperties` makes defineTool throw at boot and crash-loops
-//    the host (observed with dsh-verify's `context` param: the watchdog
-//    relaunched node every 3s). Static scan catches the single-line form;
-//    multi-line object values are not covered by this scan.
+// 5. DSH tool-schema guard. `defineTool` compiles every tool's `parameters`
+//    through dsh-tools' schema compiler, which enforces a STRICT KEY WHITELIST.
+//    An unknown keyword — or a node carrying neither `type` nor `oneOf` —
+//    rejects the plugin load with `UNSUPPORTED_SCHEMA`, and a plugin that
+//    throws during load takes the whole host down: the watchdog then relaunches
+//    node every few seconds and the GUI never comes up.
+//
+//    Observed twice, so this is not theoretical:
+//      - dsh-verify's `context` param: object type with no additionalProperties
+//      - dsh-ui-drive's `mods`: { type: 'array', additionalItems: false } —
+//        real JSON Schema, but this DSL's arrays accept only `items`
+//
+//    The rule set lives in scripts/lib/schema-dsl.mjs (a whitelist, so the next
+//    unknown keyword is caught without anyone remembering to add it here), and
+//    the pinned cases live in scripts/lib/schema-dsl.test.mjs. The previous
+//    version of this section was a single-line regex that only asked whether an
+//    object param mentioned additionalProperties — it could not see a wrong
+//    keyword at all, and did not cover multi-line literals by its own admission.
 for (const f of walk(join(root, 'plugins'))) {
   const ext = extname(f)
   if (ext !== '.js' && ext !== '.mjs') continue
-  const text = readFileSync(f, 'utf8')
-  for (const [i, line] of text.split(/\r?\n/).entries()) {
-    if (/^\s*\w+\s*:\s*\{\s*type:\s*['"]object['"]\s*,/.test(line) && !line.includes('additionalProperties')) {
-      failures++
-      console.error(`OBJECT PARAM MISSING additionalProperties at ${relative(root, f)}:${i + 1}: ${line.trim().slice(0, 100)}`)
-    }
+  for (const v of validateSchemas(readFileSync(f, 'utf8'), { file: relative(root, f) })) {
+    failures++
+    console.error(`SCHEMA DSL VIOLATION at ${v.file}:${v.line} [${v.path}]: ${v.message}`)
   }
 }
 
@@ -162,4 +173,4 @@ if (failures > 0) {
   console.error(`\nCHECK FAILED: ${failures} problem(s)`)
   process.exit(1)
 }
-console.log('CHECK PASSED: syntax OK, no private references, no nested dirs, tool schemas complete, ps1 encodings safe')
+console.log('CHECK PASSED: syntax OK, no private references, no nested dirs, tool schemas DSL-valid, ps1 encodings safe')
