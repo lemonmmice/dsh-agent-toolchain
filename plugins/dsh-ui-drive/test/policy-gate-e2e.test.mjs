@@ -377,6 +377,41 @@ installFakeScripts()
 process.env.DSH_UI_SERVE = '0'
 delete process.env.DSH_UI_SERVE_IDLE_MS
 
+// ------------------------------------------------- 用例 13：W5b 三个新动词（已放行）也必须过 policy 门
+{
+  clearEnv()
+  process.env.DSH_UI_APP_POLICY = writePolicy('deny-newverbs.json', [{ exe: 'C:/App/client.exe', effect: 'deny' }])
+  for (const act of ['pattern', 'scroll', 'selecttext']) {
+    resetSentinel()
+    const d = newDriver()
+    const args = { action: act, name: 'x', allowSideEffects: true }
+    if (act === 'pattern') args.value = 'Expand'
+    if (act === 'scroll') args.value = 'down'
+    if (act === 'selecttext') args.value = 'abc'
+    const r = await d.drive(args)
+    check(`${act} 过 policy 门：deny → 拒`, r.ok === false && r.policyCode === 'policy_unavailable', JSON.stringify(r).slice(0, 140))
+    check(`${act} deny → 执行器调用计数 = 0`, execCount() === 0, 'sentinel=' + execCount())
+    d.warmShutdown()
+  }
+}
+
+// ------------------------------------------------- 对照组 5：放行真的生效（未配置策略时能下发到执行器）
+// 这三条同时是"放行回归"：放行前它们不在 BATCH_ONLY_ACTIONS 里 → 会报"非法动作"，根本到不了执行器。
+{
+  clearEnv()
+  for (const act of ['pattern', 'scroll', 'selecttext']) {
+    resetSentinel()
+    const d = newDriver()
+    const args = { action: act, name: 'x', allowSideEffects: true }
+    if (act === 'pattern') args.value = 'Expand'
+    if (act === 'scroll') args.value = 'down'
+    if (act === 'selecttext') args.value = 'abc'
+    await d.drive(args)
+    check(`【自检】${act} 已放行：能下发到执行器（哨兵>0）`, execCount() > 0, 'sentinel=' + execCount())
+    d.warmShutdown()
+  }
+}
+
 clearEnv()
 try { rmSync(dir, { recursive: true, force: true }); rmSync(evidenceDir, { recursive: true, force: true }) } catch { }
 
