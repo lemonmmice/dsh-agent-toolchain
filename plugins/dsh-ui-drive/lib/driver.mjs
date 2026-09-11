@@ -84,7 +84,9 @@ export function makeDriver(cfg) {  const c = {
   // 直接展开会让空值覆盖默认值，证据目录退化成 cwd 下的相对路径。
   if (!c.evidenceDir) c.evidenceDir = join(homedir(), '.dsh-agent-toolchain', 'ui-evidence')
   if (!c.scriptsDir) c.scriptsDir = join(import.meta.dirname, '..', 'scripts')
-  const policy = c.policy || createPolicy({ classifyAction })
+  // createPolicy 不再接收 classifyAction：动作分类统一由本层的 classifyAction 负责，写侧门只在
+  // **副作用动作**上调用 policy.check（policy 内原按 Symbol 判只读的 readOnly() 是死契约，已随 P2 删除）。
+  const policy = c.policy || createPolicy()
 
   // ------------------------------------------------------------ 进程级互斥
   //
@@ -1132,6 +1134,14 @@ export function makeDriver(cfg) {  const c = {
    * batch：把一个步骤序列交给单个 PowerShell 进程执行。
    * 每步结果与单步 drive 的返回字段保持一致（find→found/detail，read→count/lines，
    * shot→path/w/h，click/setvalue/key→output，expect→found/detail/ok）。
+   *
+   * ⚠️ 护栏警告——这是**不过任何门的裸引擎**：batch() 本身不做 allowSideEffects / 新鲜度
+   *    (validateSnapshot) / policy-deny / 急停(estop) 任何判定，会**原样执行**传入的副作用步骤。
+   *    今天唯一合法的调用点是 driveOnce() 与 flow()，二者都在调用 batch() **之前**先过了写侧门
+   *    （driveOnce → checkSideEffectGate；flow → 逐步 policy.check + 本地副作用护栏）。
+   *    任何**新增调用点**若可能承载副作用动作，都**必须自行先过 checkSideEffectGate**（见 W2 seam），
+   *    否则就是第二处「空接线」——正是 W2 集成刚堵掉的那类绕过口。外部消费者要执行副作用一律走
+   *    drive()/flow()，绝不要直接调 batch()。
    * @returns {Promise<{ok:boolean, steps:object[], elapsedMs:number, pid:number, window:string, error?:string}>}
    */
   async function batch({ steps = [], procId = 0, waitMs = c.defaultWaitMs, tmpDir = '' } = {}) {

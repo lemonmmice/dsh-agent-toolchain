@@ -66,6 +66,21 @@ function drv() {
   return driver
 }
 
+/**
+ * Does this action require allowSideEffects? Single source of truth: the driver's
+ * classifyAction owns the one action→kind table (read / effect / coord-effect /
+ * input; unknown verbs default to 'effect'). We reuse it instead of re-listing
+ * actions on the MCP surface — the previous pre-check hard-coded
+ * ['click','setvalue','key'] and DRIFTED, silently missing type/drag (and drag is
+ * a coordinate side effect, which is *more* dangerous, not less). By keying off
+ * classifyAction the MCP pre-check can never miss a verb the driver already treats
+ * as a side effect. We only name which *kinds* need auth here — a tiny, stable
+ * predicate — not the action list. Applies to the ui_drive/ui_act vocabularies;
+ * ui_flow adds read-only pseudo-actions (wait/expect) that classifyAction does not
+ * know, so it keeps its own list (see the note there).
+ */
+const needsSideEffectAuth = (action) => ['effect', 'coord-effect'].includes(drv().classifyAction(action))
+
 let memory = null
 function mem() {
   if (!memory) memory = new DshMemory({})
@@ -226,9 +241,13 @@ server.tool(
     describe: z.boolean().optional().describe('shot mode: also return a vision description of the screen'),
     waitMs: z.number().optional(),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true for click/setvalue/key/type/drag'),
+    snapshotId: z.string().optional().describe('W1 freshness token returned by a prior read/state. When set, a side-effect action is rejected if the snapshot is stale (a newer read happened: staleSnapshot) or expired (client/serve restarted: expiredSnapshot). Omit to skip the freshness gate (legacy, zero-regression).'),
+    diff: z.boolean().optional().describe('read only: return an incremental diff {added,removed,unchanged} vs the last full read instead of just the flat list'),
   },
   async (args) => {
-    if (['click', 'setvalue', 'key'].includes(args.action) && !args.allowSideEffects) {
+    // Pre-check reuses the driver's classifyAction (single source) so it can never
+    // drift from the write-side gate — this is what previously missed type/drag.
+    if (needsSideEffectAuth(args.action) && !args.allowSideEffects) {
       return text('Blocked: action "' + args.action + '" is a real side effect. Re-call with allowSideEffects=true after confirming with the user.')
     }
     const r = await drv().drive({
@@ -242,6 +261,11 @@ server.tool(
       describe: args.describe,
       waitMs: args.waitMs,
       allowSideEffects: args.allowSideEffects,
+      // W1 freshness token + read diff — forwarded so the driver's snapshot gate
+      // actually receives them (before this they were undeclared and dropped:
+      // the freshness gate was permanently no-snapshot on the MCP surface).
+      snapshotId: args.snapshotId,
+      diff: args.diff,
     })
     if (!r.ok) autoRecord('tool-error', 'ui_drive', `ui_drive ${args.action} failed: ${String(r.error ?? 'unknown error').slice(0, 200)}`)
     return jtext(r)
@@ -284,6 +308,12 @@ server.tool(
     allowSideEffects: z.boolean().optional().describe('REQUIRED true when the sequence contains click/setvalue/key/type/drag'),
   },
   async (args) => {
+    // Why this keeps its own list instead of reusing needsSideEffectAuth: flow's step
+    // vocabulary includes the read-only pseudo-actions `wait` and `expect`, which are NOT in
+    // the driver's classifyAction table — classifyAction would default them to 'effect' and so
+    // wrongly demand allowSideEffects for a read-only flow. The driver applies the same
+    // wait/expect exemption in flow()'s own gate. Keep this list in sync with the driver's real
+    // side-effect verbs (click/setvalue/key/type/drag); the driver's flow() is the enforcing gate.
     const hasSideEffects = (args.steps || []).some((s) => ['click', 'setvalue', 'key', 'type', 'drag'].includes(s.action))
     if (hasSideEffects && !args.allowSideEffects) {
       return text('Blocked: the sequence contains a real side effect (click/setvalue/key/type/drag). Re-call with allowSideEffects=true after confirming with the user.')
@@ -365,6 +395,7 @@ server.tool(
     observeMatch: z.string().optional(),
     waitMs: z.number().optional(),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true'),
+    snapshotId: z.string().optional().describe('W1 freshness token from a prior read/state. When set, the action is rejected if the snapshot is stale (staleSnapshot) or expired (expiredSnapshot). Omit to skip the freshness gate. (ui_act forwards all args to the driver, so this reaches the same write-side gate as ui_drive.)'),
   },
   async (args) => {
     if (args.allowSideEffects !== true) {
