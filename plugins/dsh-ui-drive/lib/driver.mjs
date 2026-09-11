@@ -667,12 +667,15 @@ export function makeDriver(cfg) {  const c = {
    * status 是一次性 PS 进程（~0.4s），**按 30s 缓存**，避免每个副作用动作都付这个代价；
    * 缓存失效时重新解析（客户端重启 → exe/句柄变化）。
    */
-  let identCache = { at: 0, value: null }
+  let identCache = { at: 0, gen: -1, value: null }
   async function resolveIdentity() {
-    if (identCache.value && Date.now() - identCache.at < 30000) return identCache.value
+    // 身份是**授权主键**，必须与 snapshot 挂同一个新鲜度信号：客户端/常驻进程重启（warmRestart → gen++）
+    // 后一律重解析。原实现只按 30s TTL，重启后最长 30s 内会用"重启前的身份"去授权"重启后的动作"
+    // （独立复核洞 #2：恰好在真正靠 policy 拦人的部署里最不稳）。
+    if (identCache.value && identCache.gen === currentGen && Date.now() - identCache.at < 30000) return identCache.value
     const st = await status({ timeoutMs: 8000 })
     const value = st && st.running && st.identity ? st.identity : null
-    if (value) identCache = { at: Date.now(), value: Object.assign({ handle: st.handle }, value) }
+    if (value) identCache = { at: Date.now(), gen: currentGen, value: Object.assign({ handle: st.handle }, value) }
     return identCache.value
   }
 
@@ -1262,18 +1265,23 @@ export function makeDriver(cfg) {  const c = {
       if (policy.requiresIdentity) {
         try {
           const st = await resolveIdentity()
-          identity = st ? { exe: st.exeCanonical || st.exe || '', windowHandle: st.handle, aid: sideEffectSteps[0].aid } : {}
+          identity = st ? { exe: st.exeCanonical || st.exe || '', windowHandle: st.handle } : {}
         } catch { /* 身份解析失败 → identity 留空，交给 policy 按 deny-first 处理（绝不放行） */ }
       }
-      const pol = policy.check({ action: sideEffectSteps[0].action, identity, allowSideEffects })
-      if (!pol.ok) {
-        w('flow blocked by policy: ' + pol.code)
-        const blocked = finish()
-        blocked.ok = false
-        blocked.policyCode = pol.code
-        blocked.error = (pol.error || '策略拒绝') + '（含副作用的 flow 整段未执行）'
-        blocked.transcript = [{ step: 0, action: 'policy', ok: false, error: blocked.error, policyCode: pol.code }]
-        return blocked
+      // **逐步**判定：身份（exe/窗口）对所有步相同、只有 aid 会变，而规则表支持按 aid/windowHandle 匹配。
+      // 只判 sideEffectSteps[0] 会让"命中后续步的 deny 规则"整体失效，且结果依赖步序
+      // （独立复核洞 #3：steps=[ok,sell] 放行、[sell,ok] 拒绝 —— 同一组规则顺序不同结论相反）。
+      for (const s of sideEffectSteps) {
+        const pol = policy.check({ action: s.action, identity: Object.assign({}, identity, { aid: s.aid }), allowSideEffects })
+        if (!pol.ok) {
+          w('flow blocked by policy: ' + pol.code + ' on step action=' + s.action + ' aid=' + (s.aid || ''))
+          const blocked = finish()
+          blocked.ok = false
+          blocked.policyCode = pol.code
+          blocked.error = (pol.error || '策略拒绝') + '（含副作用的 flow 整段未执行）'
+          blocked.transcript = [{ step: 0, action: 'policy', ok: false, error: blocked.error, policyCode: pol.code }]
+          return blocked
+        }
       }
     }
 
