@@ -1251,6 +1251,32 @@ export function makeDriver(cfg) {  const c = {
 
     w('flow start tag=' + tag + ' steps=' + steps.length + ' allowSideEffects=' + allowSideEffects)
 
+    // ---- W2：flow 级 policy / 急停门（与 driveOnce 共用同一个 policy 实例与同一套判定）----
+    // 集成时发现的**绕过口**：原 flow 只查 allowSideEffects，完全没有 policy/急停判定 ——
+    // 于是"配了 deny 规则"或"拉了急停哨兵"之后，ui_flow 仍能照常驱动副作用动作。
+    // 急停是外部总闸，绝不允许任何路径绕过；这里先做 flow 级判定，命中即整段不执行。
+    // （逐步的快照新鲜度门仍列 v2：flow 是预排序列、没有逐步 snapshotId。）
+    const sideEffectSteps = steps.filter((s) => s && isSideEffectKind(classifyAction(s.action)))
+    if (sideEffectSteps.length && policy.needsCheck && policy.needsCheck()) {
+      let identity = {}
+      if (policy.requiresIdentity) {
+        try {
+          const st = await resolveIdentity()
+          identity = st ? { exe: st.exeCanonical || st.exe || '', windowHandle: st.handle, aid: sideEffectSteps[0].aid } : {}
+        } catch { /* 身份解析失败 → identity 留空，交给 policy 按 deny-first 处理（绝不放行） */ }
+      }
+      const pol = policy.check({ action: sideEffectSteps[0].action, identity, allowSideEffects })
+      if (!pol.ok) {
+        w('flow blocked by policy: ' + pol.code)
+        const blocked = finish()
+        blocked.ok = false
+        blocked.policyCode = pol.code
+        blocked.error = (pol.error || '策略拒绝') + '（含副作用的 flow 整段未执行）'
+        blocked.transcript = [{ step: 0, action: 'policy', ok: false, error: blocked.error, policyCode: pol.code }]
+        return blocked
+      }
+    }
+
     // ---- 预校验：非法动作 / 副作用护栏（本地判定，不浪费进程）
     const runnable = []
     for (let i = 0; i < steps.length; i++) {
