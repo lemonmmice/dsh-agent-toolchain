@@ -412,6 +412,85 @@ delete process.env.DSH_UI_SERVE_IDLE_MS
   }
 }
 
+// ------------------------------------------------- 用例 14（W3 接线）：副作用动作落审查证据包
+// 证据必须是"可被读回来对账"的：写进证据目录的 JSONL、哈希自洽、且区分 executed 与 ok。
+{
+  const { readdirSync, statSync: stat2 } = await import('node:fs')
+  const { validateEnvelope, EVIDENCE_VERSION } = await import('../lib/evidence.mjs')
+  const findEvidence = () => {
+    const hits = []
+    const walk = (d) => {
+      let ents = []
+      try { ents = readdirSync(d) } catch { return }
+      for (const e of ents) {
+        const p = join(d, e)
+        let st = null
+        try { st = stat2(p) } catch { continue }
+        if (st.isDirectory()) walk(p)
+        else if (e === 'evidence.jsonl') hits.push(p)
+      }
+    }
+    walk(evidenceDir)
+    return hits
+  }
+  const readAll = () => findEvidence().flatMap((f) => readFileSync(f, 'utf8').split(/\r?\n/).filter((s) => s.trim()).map((s) => JSON.parse(s)))
+
+  clearEnv()
+  // A) 放行的副作用动作 → kind=action、executed=true
+  // 用 clickat（走批量引擎，假 batch 会回 ok:true）；click 走一次性脚本，假脚本返回 NOT_FOUND
+  {
+    resetSentinel()
+    const d = newDriver()
+    const before = readAll().length
+    const r = await d.drive({ action: 'clickat', name: '确定', aid: 'ok', x: 10, y: 20, allowSideEffects: true })
+    const all = readAll()
+    check('副作用动作结果带 evidenceId', typeof r.evidenceId === 'string' && r.evidenceId.startsWith('e'), String(r.evidenceId))
+    check('副作用动作结果带紧凑摘要 evidence', !!r.evidence && r.evidence.evidenceId === r.evidenceId, JSON.stringify(r.evidence))
+    check('证据已写进 evidence.jsonl（新增一行）', all.length === before + 1, `${before} -> ${all.length}`)
+    const env = all[all.length - 1]
+    check('证据版本号正确', env.v === EVIDENCE_VERSION)
+    check('证据哈希自洽（读回来仍能验签）', validateEnvelope(env).ok === true, JSON.stringify(validateEnvelope(env).problems))
+    check('执行成功 → kind=action 且 executed=true', env.kind === 'action' && env.result.executed === true, JSON.stringify(env.result))
+    check('证据里固化了门判定（allowSideEffects / 快照 / policy）',
+      env.gates.allowSideEffects === true && !!env.gates.snapshot && !!env.gates.policy, JSON.stringify(env.gates))
+    d.warmShutdown()
+  }
+  // B) 被 policy 拒的副作用动作 → kind=denied、executed=false（没执行 ≠ 执行失败）
+  {
+    clearEnv()
+    process.env.DSH_UI_APP_POLICY = writePolicy('deny-ev.json', [{ exe: 'C:/App/client.exe', effect: 'deny' }])
+    resetSentinel()
+    const d = newDriver()
+    const before = readAll().length
+    const r = await d.drive({ action: 'click', name: '确定', allowSideEffects: true })
+    const all = readAll()
+    check('被拒动作也落证据（拒绝同样要被追溯）', all.length === before + 1, `${before} -> ${all.length}`)
+    const env = all[all.length - 1]
+    check('被拒 → kind=denied 且 executed=false', env.kind === 'denied' && env.result.executed === false, JSON.stringify(env.result))
+    check('被拒 → 证据里带 policy 拒绝码', env.gates.policy.code === 'policy_unavailable' && env.gates.policy.decision === 'deny', JSON.stringify(env.gates.policy))
+    check('被拒 → 摘要里的 code 就是拒绝码', r.evidence.code === 'policy_unavailable', JSON.stringify(r.evidence))
+    d.warmShutdown()
+  }
+  // C) 只读动作不落证据（零开销）
+  {
+    clearEnv()
+    const d = newDriver()
+    const before = readAll().length
+    const r = await d.drive({ action: 'read', match: 'x' })
+    check('只读动作不落证据、结果不带 evidenceId', readAll().length === before && r.evidenceId === undefined, String(r.evidenceId))
+    d.warmShutdown()
+  }
+  // D) 敏感值不进证据
+  {
+    clearEnv()
+    const d = newDriver()
+    await d.drive({ action: 'setvalue', name: 'x', value: '${cred:acct}', allowSideEffects: true })
+    const env = readAll().slice(-1)[0]
+    check('凭据占位符在证据里被脱敏', env.params.value === '[redacted]', String(env.params.value))
+    d.warmShutdown()
+  }
+}
+
 clearEnv()
 try { rmSync(dir, { recursive: true, force: true }); rmSync(evidenceDir, { recursive: true, force: true }) } catch { }
 
