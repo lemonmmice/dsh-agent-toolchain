@@ -148,6 +148,8 @@ const tools = () => [
     description: '从 .etl 出**调用链**：最热函数排行（谁占 CPU）+ 蝶形视图（每个函数的**调用者 <-- 与 --> 被调用者**，带命中数）。' +
       'focus 可只保留名字匹配该正则的函数（例如 focus="SciChart|KLine|你怀疑的那层"），把几 MB 的报告压成一条可读的因果链。' +
       '注意：**符号未解析的比例会在结果首行如实给出** —— 若显示大量未解析，先确认符号路径（DSH_PERF_SYMBOL_PATH）再看结论，否则"没解析出来"会被误当成"没有这段代码"。' +
+      '出报告耗时的关键是**符号**：符号缓存跨运行共享（默认 evidenceDir/symbol-cache，DSH_PERF_SYMBOL_CACHE 可覆盖），所以同一个 etl 重跑通常快很多；' +
+      '首次分析某台机器会从微软公网下载 pdb（实测可达 1GB+、几十分钟）。若超时，症状是 xperf 长时间 ~0% CPU 且报告 0 字节 —— 这时**别调小 timeoutMs**，改为：加 process 过滤、用 focus 收窄、或先 offline:true 只拿原生帧。' +
       'Triggers: 出调用链 / 热点栈 / 谁调用了它 / hotstacks.',
     parameters: {
       etlPath: { type: 'string', required: true, description: 'perf_trace 产出的 .etl 绝对路径' },
@@ -157,6 +159,7 @@ const tools = () => [
       minHits: { type: 'number', description: '蝶形视图最小命中数，默认 5（调大更聚焦、调小更全）' },
       offline: { type: 'boolean', description: 'true = 不配符号服务器（快，但原生帧多为 unknown）' },
       timeoutMs: { type: 'number', description: '出报告超时毫秒，默认 900000；系统级 trace 需要调大或改用 process 过滤' },
+      debugSymbols: { type: 'boolean', description: 'true = 让 xperf 打印符号查找细节（结果 raw 里回带）。仅当怀疑「卡在符号解码」时用：症状是 xperf 长时间 ~0% CPU 且报告一直 0 字节' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderHotstacks(v) }] },
     timeoutMs: 30 * 60 * 1000,

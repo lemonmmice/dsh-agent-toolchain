@@ -28,7 +28,7 @@
  *   2. **绝不把原始 HTML 丢回去**：几 MB 的 HTML 对模型毫无价值，必须压缩成可读的调用链文本。
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -53,6 +53,8 @@ export function makeTrace(cfg = {}) {
     xperf: DEFAULT_XPERF,
     procName: process.env.DSH_UI_PROC_NAME || '',
     symbolPath: process.env.DSH_PERF_SYMBOL_PATH || process.env._NT_SYMBOL_PATH || '',
+    // 符号缓存根（跨运行共享）。空 = evidenceDir/symbol-cache。
+    symbolCacheDir: process.env.DSH_PERF_SYMBOL_CACHE || '',
   }, cfg)
   if (!c.evidenceDir) c.evidenceDir = join(homedir(), '.dsh-agent-toolchain', 'perf-evidence')
 
@@ -144,22 +146,40 @@ export function makeTrace(cfg = {}) {
     }
   }
 
-  /** 符号路径：显式配置 > 机器已有的 _NT_SYMBOL_PATH > 默认微软公网符号（带本地缓存）。 */
+  /**
+   * 符号缓存的**共享**位置。
+   *
+   * ⚠️ 端到端实测踩到的第四个坑（2026-09-11）：符号缓存原先挂在 `runDir()` 下，
+   * 而 `runDir()` 每次运行都带新的时间戳 —— 于是**第二次、第三次分析同一台机器上
+   * 同一批系统 DLL 时，符号全部从头再下一遍**。实测现场：第一次运行已在
+   * `.../e2e/symbols` 里存了 **1.15 GB** 的 pdb+symcache，第二次运行却开在
+   * `.../e2e2/symbols` 里从零下载，xperf 长时间 0% CPU 卡在公网符号服务器上。
+   *
+   * 缓存必须**跨运行共享**才有意义，所以放在 evidenceDir 根下的固定目录
+   * （而不是每次新建的 trace-<时间戳> 目录里；也和 perf-evidence 的
+   * "按秒建目录、无轮转" 脱钩，避免被证据清理顺手删掉）。
+   * 可用 DSH_PERF_SYMBOL_CACHE 覆盖。
+   */
+  function symbolCacheDir(sub) {
+    const root = c.symbolCacheDir || join(c.evidenceDir, 'symbol-cache')
+    const p = join(root, sub)
+    try { mkdirSync(p, { recursive: true }) } catch { /* ignore */ }
+    return p
+  }
+
+  /** 符号路径：显式配置 > 机器已有的 _NT_SYMBOL_PATH > 默认微软公网符号（带**共享**本地缓存）。 */
   function symbolEnv(offline) {
     const env = Object.assign({}, process.env)
     if (offline) { delete env._NT_SYMBOL_PATH; return env }
     if (c.symbolPath) { env._NT_SYMBOL_PATH = c.symbolPath }
     else if (process.env._NT_SYMBOL_PATH) { env._NT_SYMBOL_PATH = process.env._NT_SYMBOL_PATH }
     else {
-      const cache = join(c.evidenceDir, 'symbols')
-      try { mkdirSync(cache, { recursive: true }) } catch { /* ignore */ }
-      env._NT_SYMBOL_PATH = 'srv*' + cache + '*https://msdl.microsoft.com/download/symbols'
+      env._NT_SYMBOL_PATH = 'srv*' + symbolCacheDir('symbols') + '*https://msdl.microsoft.com/download/symbols'
     }
-    // symcache：xperf 的符号缓存（第二次出报告会快很多）
+    // symcache：xperf 的符号缓存（第二次出报告会快很多）—— 同样必须跨运行共享，
+    // 否则"第二次快"这句话只在同一条 trace 目录里成立，换个 tag 就失效。
     if (!env._NT_SYMCACHE_PATH) {
-      const sc = join(c.evidenceDir, 'symcache')
-      try { mkdirSync(sc, { recursive: true }) } catch { /* ignore */ }
-      env._NT_SYMCACHE_PATH = sc
+      env._NT_SYMCACHE_PATH = symbolCacheDir('symcache')
     }
     return env
   }
@@ -172,6 +192,7 @@ export function makeTrace(cfg = {}) {
    * @param args.topN      排行取前 N（默认 15）
    * @param args.minHits   蝶形视图最小命中数（默认 5）
    * @param args.offline   true = 不配符号服务器（快，但原生帧多为 unknown）
+   * @param args.debugSymbols true = 让 xperf 打印符号查找细节（卡在符号服务器时用来定位）
    */
   async function hotstacks(args = {}) {
     const etl = args.etlPath
@@ -186,7 +207,15 @@ export function makeTrace(cfg = {}) {
     // 漏了它，报告里全是 ***unknown***（我们实测踩过：不加时 2 秒出报告且全 unknown，
     // 加了之后 35 秒（含下载符号）并解出 ntdll.dll!RtlUserThreadStart 这类真实函数名）。
     const cmd = []
-    if (!args.offline) cmd.push('-symbols')
+    if (!args.offline) {
+      cmd.push('-symbols')
+      // ⚠️ 端到端实测踩到的第五个坑：xperf 会**静默卡在公网符号服务器**上
+      // （实测 0% CPU、无 stdout、报告 0 字节，一卡十几分钟，看不出它在等网络）。
+      // -symbols verbose 会把符号配置/查找过程打到 stdout，卡住时至少知道卡在哪。
+      // 注意：必须在 push('-symbols') 之后单独 push，别改成 push('-symbols','verbose')，
+      // 否则既有的源码级护栏断言（/cmd\.push\('-symbols'\)/）就失配了。
+      if (args.debugSymbols) cmd.push('verbose')
+    }
     cmd.push('-i', etl, '-o', outHtml, '-a', 'stack', '-butterfly', String(minHits))
     if (args.process || c.procName) cmd.push('-process', String(args.process || c.procName))
     if (args.focus) cmd.push('-symbol', String(args.focus))
@@ -195,10 +224,23 @@ export function makeTrace(cfg = {}) {
     // 端到端实测踩到的假成功：xperf 被超时杀掉后仍留了一个**空报告文件**，
     // 原实现只看"文件是否存在"就报 ok:true，返回一个空结果 —— 调用方会以为"没有热点"。
     if (r.timedOut) {
+      // xperf 被超时杀掉后会在 outHtml 留下一个 **0 字节报告**。留着它是个陷阱：
+      // 下一次有人（或另一个 agent）看到"报告文件在"就以为有结果。既然它是空的，就删掉。
+      let leftoverBytes = null
+      try {
+        if (existsSync(outHtml)) {
+          leftoverBytes = statSync(outHtml).size
+          if (leftoverBytes === 0) rmSync(outHtml, { force: true })
+        }
+      } catch { /* ignore */ }
       return {
-        ok: false, timedOut: true, etlPath: etl, reportPath: existsSync(outHtml) ? outHtml : null,
+        ok: false, timedOut: true, etlPath: etl, reportPath: leftoverBytes ? outHtml : null,
+        symbolCacheDir: !args.offline ? join(c.symbolCacheDir || join(c.evidenceDir, 'symbol-cache'), 'symbols') : null,
+        raw: (r.stdout + '\n' + r.stderr).trim().slice(0, 400),
         error: 'xperf 出报告超时（' + (Date.now() - t0) + 'ms）。系统级 trace 很慢，建议：① 加 process 过滤（只分析目标进程）；' +
           '② 用 focus 缩小 -symbol 范围；③ 调大 timeoutMs；④ 该 etl 是否过大（可用更短采集时长重采）',
+        hint: '若超时发生在符号解码阶段（症状：xperf 长时间 ~0% CPU、报告一直 0 字节），多半是公网符号服务器慢或被挡 —— ' +
+          '符号缓存会跨运行共享（见 symbolCacheDir），同一个 etl 重跑一次通常就快很多；也可用 offline:true 先只拿原生帧。',
       }
     }
     if (!existsSync(outHtml)) {
@@ -221,6 +263,7 @@ export function makeTrace(cfg = {}) {
       ok: true, etlPath: etl, reportPath: outHtml, reportBytes: statSync(outHtml).size,
       focus: args.focus || null, process: args.process || c.procName || null,
       symbols: !args.offline, elapsedMs: Date.now() - t0,
+      symbolCacheDir: !args.offline ? join(c.symbolCacheDir || join(c.evidenceDir, 'symbol-cache'), 'symbols') : null,
     }, s)
   }
 
