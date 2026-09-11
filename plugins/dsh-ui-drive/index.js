@@ -28,7 +28,7 @@ const GUIDANCE =
   '本机已安装 dsh-ui-drive 插件（DSH 的 UI 自验驱动）：通过 Windows UIA 程序化操作正在运行的目标桌面客户端并截图留证，支撑「改完代码 → 启动/驱动客户端到目标页面 → 截图 → 视觉复核」的自验闭环。' +
   '工具：ui_status 查客户端进程/主窗口状态（未运行先 ui_launch）；ui_launch 启动客户端（构建产物（DSH_UI_CLIENT_EXE 指定），可 extraArgs 传 --remote-debugging-port=9222 等）并等待主窗口；' +
   'ui_windows 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，动态界面第一步先看这个）；' +
-  'ui_drive(action=find|read|windows|shot|waitfor|click|setvalue|key|type|drag) 单步操作——find/read/windows/shot/waitfor 只读，click/setvalue/key/type/drag 是真实副作用操作，必须显式传 allowSideEffects=true 才执行；' +
+  'ui_drive(action=find|read|windows|shot|waitfor|click|setvalue|key|type|drag) 单步操作——find/read/windows/shot/waitfor 只读，click/setvalue/key/type/drag/clickat/doubleclick 是真实副作用操作，必须显式传 allowSideEffects=true 才执行；' +
   'ui_tree(maxDepth) 进程内视觉树 dump（真实类型+Name+AutomationId+DataContext 类型），只读深查；' +
   'ui_flow(steps, tag, failFast, allowSideEffects) 按步骤序列驱动并收集证据（find/click/setvalue/key/type/drag/read/windows/shot/wait/waitfor/expect），每步输出+截图写进证据目录 steps.json，返回 transcript。' +
   '动态界面（登录、验证码、按界面情况分支）必须「看一步再做下一步」：用 ui_drive 逐步走，先用 ui_windows/read/shot(describe=true) 看现状，再用 waitFor={ms,state:"appear|gone|enabled|disabled"} 等条件成立再点（别靠猜 sleep），同名控件用 index，容器内定位用 inAid/inName，回车提交用 type 的 {ENTER}，滑块验证码用 drag。' +
@@ -152,9 +152,9 @@ const tools = () => [
   defineTool({
     name: 'ui_drive',
     description: '对正在运行的目标客户端执行单步 UIA 操作（实时、有状态）。动作：find 定位控件；read 读可见控件（含输入框真实 value 与 #序号，序号可当 index 复用）；windows 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，动态界面先看这个）；shot 截主窗口 PNG（describe=true 直接返回视觉描述）；waitfor 等条件成立（state=appear|gone|enabled|disabled）；click 点击；setvalue ValuePattern 写值；key 键盘输入（中文走剪贴板粘贴）；type 键盘序列（{ENTER}/{TAB}/{ESC}/{DOWN}/^a 等，用于回车提交、Tab 跳转、下拉选择）；drag 鼠标拖拽（滑块验证码）。read/state 结果恒带 skipped=N（读不到状态被跳过的元素数），>0 时附 warn 提示「清单不完整」。' +
-      '动态界面三件套：waitFor={ms,interval,state,match,index} 让 click/setvalue/key/type/find/expect 先等条件成立再动手（不再靠猜 sleep）；index 取同名控件的第 N 个；inAid/inName 把查找限定在某个容器内。' + READ_ONLY_NOTE + '。click/setvalue/key/type/drag 必须传 allowSideEffects=true 才执行。截图一律写入证据目录（DSH_UI_EVIDENCE_DIR），不写仓库；需要视觉复核时用 describe_image 读返回的 path。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
+      '动态界面三件套：waitFor={ms,interval,state,match,index} 让 click/setvalue/key/type/find/expect 先等条件成立再动手（不再靠猜 sleep）；index 取同名控件的第 N 个；inAid/inName 把查找限定在某个容器内。' + READ_ONLY_NOTE + '。click/setvalue/key/type/drag/clickat/doubleclick 必须传 allowSideEffects=true 才执行。截图一律写入证据目录（DSH_UI_EVIDENCE_DIR），不写仓库；需要视觉复核时用 describe_image 读返回的 path。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
     parameters: {
-      action: { type: 'string', required: true, description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag | clickat | doubleclick | move | wheel | capture | state-live（clickat=按窗口客户区坐标点击、doubleclick=坐标双击，用于 UIA 拿不到稳定元素的表格行/图表点位——坐标脆弱，窗口一移动就失效；move/wheel=移动鼠标/滚轮，属只读白名单、不需 allowSideEffects；capture=抓一帧窗口内容；state-live=免前台状态采样）' },
+      action: { type: 'string', required: true, description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag | clickat | doubleclick | move | wheel | capture | state-live（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位——坐标脆弱，窗口一移动就失效；doubleclick=元素级双击（UIA GetClickablePoint，不是坐标）；move/wheel=移动鼠标/滚轮，只读白名单、不需 allowSideEffects；capture=抓一帧窗口内容；state-live=免前台状态采样）' },
       name: { type: 'string', description: '控件 Name（与 aid 二选一或都传）' },
       aid: { type: 'string', description: '控件 AutomationId' },
       value: { type: 'string', description: 'setvalue/key/type 的内容（type 支持 SendKeys 语法，如 1234{ENTER}）' },
@@ -174,7 +174,7 @@ const tools = () => [
       holdMs: { type: 'number', description: 'drag：按下/松开前的停留毫秒（默认 120）' },
       waitMs: { type: 'number', description: '动作后等待毫秒，默认 250' },
       procId: { type: 'number', description: '指定进程 PID（默认自动找）' },
-      allowSideEffects: { type: 'boolean', description: 'click/setvalue/key/type/drag 必须显式传 true 才执行' },
+      allowSideEffects: { type: 'boolean', description: 'click/setvalue/key/type/drag/clickat/doubleclick 必须显式传 true 才执行' },
       workspace: { type: 'string', description: '保留兼容（已废弃）：截图一律写证据目录（DSH_UI_EVIDENCE_DIR），不复制到仓库' },
       label: { type: 'string', description: '截图文件名标签（shot 用）' },
       describe: { type: 'boolean', description: 'shot 时顺带用视觉模型描述界面内容（视觉即返，一步拿到界面状态）' },
@@ -262,7 +262,7 @@ const tools = () => [
       '写输入后驱动会回读校验，值没进去直接报错（不再假成功）；密码/验证码类控件的值不回显、不落证据；买入/卖出/下单/委托/支付类控件被驱动层硬拒绝，传 true 也点不动。' +
       'observe=true 时动作后直接附带界面快照（窗口+焦点+交互控件），省一次往返。凭据用 ${cred:name} 占位符（驱动进程从环境变量 DSH_CRED_name 展开，模型看不到明文）。' + READ_ONLY_NOTE + '。Triggers: 点一下 / 输入 / 登录 / 拖滑块 / ui act.',
     parameters: {
-      action: { type: 'string', required: true, description: 'click | setvalue | key | type | drag | clickat | doubleclick | move | wheel（clickat/doubleclick 按窗口客户区坐标操作，用于 UIA 拿不到稳定元素的表格行/图表点位，坐标脆弱；move/wheel 只移动鼠标/滚轮，属只读白名单、无需副作用授权）' },
+      action: { type: 'string', required: true, description: 'click | setvalue | key | type | drag | clickat | doubleclick | move | wheel（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位，坐标脆弱；doubleclick=元素级双击；drag/clickat/doubleclick 都能致效，必须 allowSideEffects=true；move/wheel 只移动鼠标/滚轮，无需副作用授权）' },
       name: { type: 'string', description: '控件 Name' },
       aid: { type: 'string', description: '控件 AutomationId' },
       value: { type: 'string', description: 'setvalue/key/type 的内容；支持 ${cred:name} 占位符（凭据不经过模型）' },

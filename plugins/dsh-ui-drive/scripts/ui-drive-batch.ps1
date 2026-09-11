@@ -315,6 +315,7 @@ function Wait-ForCondition($main, [string]$aid, [string]$name, $spec, $scope = $
 
 # 键盘序列：SendKeys 语法（{ENTER}/{TAB}/{ESC}/{DOWN}/^a 等），$literal=$true 时转义 {}
 function Send-TypeTo($el, [string]$text, [bool]$literal) {
+  Assert-NotDenied $el   # 致效汇聚点守卫（W0）：本函数会先物理左键点元素中心，等于一次点击
   $b = $el.Current.BoundingRectangle
   [UiDriveBatchWin32]::SetCursorPos([int]($b.X + $b.Width / 2), [int]($b.Y + $b.Height / 2))
   Start-Sleep -Milliseconds 120
@@ -373,6 +374,7 @@ function Send-KeyAscii([string]$value) {
 # UIA 元素级双击：用 GetClickablePoint（物理像素）定位，绕开坐标口径问题。
 # 表格行双击必须走这条——实测按 BoundingRectangle 换算的坐标点击会偏。
 function Invoke-DoubleClickElement($el, $main) {
+  Assert-NotDenied $el   # 致效汇聚点守卫（W0）：双击有元素，按名硬拒（原先漏了这一条路径）
   # GetClickablePoint() 返回 System.Windows.Point（UIAutomationTypes 里就有），
   # 不要 New-Object System.Windows.Point —— 本进程没加载 PresentationCore，会编译失败。
   $sx = $null; $sy = $null
@@ -711,7 +713,18 @@ function Test-DenyTarget($el) {
   return $null
 }
 
+# 致效汇聚点守卫：凡能对具名元素产生效果的低层函数，入口统一调用本守卫。
+# 背景（2026-09-11 三方评审 P0）：Test-DenyTarget 原先只有 click 分支调用过，
+# 导致 type/key（两者都会先物理左键点元素中心）、setvalue、doubleclick 四条路径
+# 可以绕过硬拒 —— 即注释里"allowSideEffects 也解锁不了"的承诺在那些路径上是空的。
+# 把守卫放进低层函数入口，今后新增任何分支都无法绕过。
+function Assert-NotDenied($el) {
+  $deny = Test-DenyTarget $el
+  if ($deny) { throw (New-Object System.InvalidOperationException($deny)) }
+}
+
 function Invoke-Click($el, $main) {
+  Assert-NotDenied $el   # 致效汇聚点守卫（W0）：任何点击路径都不可能绕过硬拒
   # 按 pattern 分派：Button/MenuItem→Invoke，CheckBox/RadioButton→Toggle/SelectionItem，其余鼠标兜底。
   # 登录 Tab 是 RadioButton（没有 InvokePattern），必须走 SelectionItemPattern，否则会落到鼠标点击。
   $type = Get-ControlTypeName $el
@@ -749,6 +762,7 @@ function Invoke-Click($el, $main) {
 }
 
 function Set-ElementValue($el, [string]$value) {
+  Assert-NotDenied $el   # 致效汇聚点守卫（W0）：写值同样能改交易类控件的值
   try {
     $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
     # SetValue 直接写属性，绕过 PreviewKeyDown 的按键过滤（登录页手机号框只放行数字键）
@@ -760,6 +774,7 @@ function Set-ElementValue($el, [string]$value) {
 }
 
 function Send-KeyTo($el, [string]$value, [bool]$ascii, [int]$waitMs) {
+  Assert-NotDenied $el   # 致效汇聚点守卫（W0）：本函数会先物理左键点元素中心，等于一次点击
   $b = $el.Current.BoundingRectangle
   [UiDriveBatchWin32]::SetCursorPos([int]($b.X + $b.Width / 2), [int]($b.Y + $b.Height / 2))
   Start-Sleep -Milliseconds 150
