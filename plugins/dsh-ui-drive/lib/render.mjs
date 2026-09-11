@@ -21,6 +21,26 @@ function skipTail(v) {
   return parts.length ? '\n' + parts.join('\n') : ''
 }
 
+/**
+ * W1：read(diff=true) 的变化摘要尾巴。
+ *  · diffBaseline → 只说「基线已建立」，不出增减摘要（首读没有可比对象，出摘要就是幻影 diff）；
+ *  · diffSuppressed → 明说「本次读取不完整、已回落完整清单、不做比对」（skipped>0/空枚举时）；
+ *  · diff → 「新增 a / 移除 b / 不变 c」摘要 + 增/删逐行（agent 一眼看清界面变了什么）。
+ */
+function diffTail(v) {
+  if (!v) return ''
+  if (v.diffBaseline) return '\n（diff 基线已建立：首次读取，后续 read(diff=true) 才比对增减）'
+  if (v.diffSuppressed) return '\n（diff 已抑制：本次读取不完整，已回落完整清单，不做增减比对）'
+  if (v.diff) {
+    const d = v.diff
+    const head = '\n变化：新增 ' + d.added.length + ' / 移除 ' + d.removed.length + ' / 不变 ' + d.unchanged
+    const add = (d.added || []).map((l) => '\n  + ' + l).join('')
+    const rem = (d.removed || []).map((l) => '\n  - ' + l).join('')
+    return head + add + rem
+  }
+  return ''
+}
+
 export function renderState(v) {
   if (!v.ok) return '失败：' + (v.error || '未知错误')
   return '窗口=' + (v.window || '?') + ' 焦点=' + (v.focused || '无') +
@@ -31,7 +51,7 @@ export function renderDrive(v) {
   if (!v.ok) return '失败：' + (v.error || '未知错误')
   switch (v.action) {
     case 'find': return v.found ? ('找到：' + v.detail + (v.count > 1 ? '（共 ' + v.count + ' 个匹配，可用 index 指定第几个）' : '')) : '未找到目标控件'
-    case 'read': return '读到 ' + v.count + ' 个控件：\n' + (v.lines || []).join('\n') + skipTail(v)
+    case 'read': return '读到 ' + v.count + ' 个控件：\n' + (v.lines || []).join('\n') + skipTail(v) + diffTail(v)
     case 'state': return renderState(v)
     case 'windows': return v.count + ' 个顶层窗口：\n' + (v.lines || []).join('\n')
     case 'waitfor': return (v.found ? '条件已满足' : '条件已满足（目标已消失）') + '（等待 ' + (v.waitedMs || 0) + 'ms）' + (v.detail ? '：' + v.detail : '')
