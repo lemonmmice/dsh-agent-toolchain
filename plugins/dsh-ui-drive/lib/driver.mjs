@@ -268,6 +268,11 @@ export function makeDriver(cfg) {  const c = {
     lastStallReason: null,
   }
 
+  // 快照世代（W1 新鲜度门）：客户端/常驻进程重启（warmRestart）时 ++，
+  // 令重启前签发的 snapshotId 一律失效（expiredSnapshot）——B-2 绑定：
+  // 重启前解析出的元素/快照绝不能授权重启后的副作用动作。
+  let currentGen = 0
+
   function warmEnabled() {
     if (warm.disabled) return false
     if (process.env.DSH_UI_SERVE === '0') return false
@@ -471,6 +476,9 @@ export function makeDriver(cfg) {  const c = {
    */
   function warmRestart() {
     warm.disabled = false
+    // 世代 +1：重启前签发的 snapshotId 就此失效（写门判 expiredSnapshot），
+    // 不授权重启后的副作用动作。drive() 的瞬时失败重试也走这里——元素已被销毁/重建，旧快照本就该失效。
+    currentGen++
     warmStop('manual restart')
   }
 
@@ -512,6 +520,156 @@ export function makeDriver(cfg) {  const c = {
   /** 动作名归一化：waitFor / WaitFor / WAITFOR 都是 waitfor（模型大小写写法不一致）。 */
   function normAction(a) {
     return typeof a === 'string' ? a.trim().toLowerCase() : a
+  }
+
+  // ============================================================ W1：动作分类 + 新鲜度门 + diff
+  //
+  // 三件事共用同一处「写侧单点」checkSideEffectGate（见 driveOnce 开头），不新增第二处接线点：
+  //  1) 动作分类契约（W5a）：classifyAction → read / effect / coord-effect / input，未知动作按副作用处理；
+  //     写门只 key 在这张表上——W2 的 deny/急停、W5b 的新动词都复用它（表漏一个动词，门就漏一条路）。
+  //  2) 新鲜度门（W1）：snapshotId = {seq, gen, windowHandle}。写侧校验
+  //     seq==全局最新 ∧ gen==当前世代 ∧（动作若显式声明目标窗口）windowHandle==该窗口；不传则放行（零回归）。
+  //     权威 seq 只由 read/state 抬升；state-live 不抬升、不发权威 id。
+  //  3) read(diff=true)：与上一次「完整」读做增量；skipped>0 或空枚举时抑制 diff、回落完整清单。
+
+  // 坐标副作用：纯坐标、无具名元素（$DENY_RE 无从按名匹配）→ 快照门是它们的主护栏（W2 靠 estop/坐标策略）。
+  // doubleclick 虽走 GetClickablePoint，但解析到了具名 $el（可按名 deny）→ 归 'effect' 而非坐标类。
+  const COORD_EFFECT_ACTIONS = new Set(['clickat', 'drag'])
+
+  /**
+   * 动作分类契约（W5a）：把「只读 / 具名副作用 / 坐标副作用 / 纯输入」固化成一张表 + 一个函数。
+   * 未知动作一律按副作用处理（Codex X3 硬约束）——分类表漏一个动词，写门就漏一条路。
+   * @param {string} action
+   * @returns {'read'|'effect'|'coord-effect'|'input'}
+   */
+  function classifyAction(action) {
+    const a = normAction(action)
+    if (INPUT_ACTIONS.has(a)) return 'input'          // move/wheel：可逆、豁免副作用门
+    if (READ_ONLY_ACTIONS.has(a)) return 'read'       // find/read/state/shot/waitfor/... 只读
+    if (COORD_EFFECT_ACTIONS.has(a)) return 'coord-effect'
+    return 'effect'                                    // click/setvalue/key/type/doubleclick + 一切未知动词
+  }
+  const isSideEffectKind = (k) => k === 'effect' || k === 'coord-effect'
+
+  // ---- 新鲜度令牌 ----
+  // snap.seq   = 权威读的单调快照号；snap.latest = 最近一次权威读的 {seq,gen,windowHandle}。
+  // 只有 read/state（经 ui_observe/ui_state/ui_drive）抬升 snap.seq；state-live 不抬升
+  //   （否则 live 每 3s 采样一次就系统性作废 agent 的读快照）。currentGen 见上（warmRestart ++）。
+  const snap = { seq: 0, latest: null }
+  const diffState = { baseline: null } // 上一次「完整」读的 lines（供 diff）；不完整读绝不写它
+
+  /** snapshotId 编码：seq/gen 明文可读，windowHandle 走 base64url（窗口标题可含任意字符）。 */
+  function encodeSnapshotId({ seq, gen, windowHandle }) {
+    const wh = Buffer.from(String(windowHandle == null ? '' : windowHandle), 'utf8').toString('base64url')
+    return 's' + seq + '.g' + gen + '.w' + wh
+  }
+  /** snapshotId 解码 → {seq,gen,windowHandle}；非字符串/格式不符返回 null（→ unknownSnapshot）。 */
+  function decodeSnapshotId(str) {
+    if (typeof str !== 'string') return null
+    const m = str.match(/^s(\d+)\.g(\d+)\.w(.*)$/)
+    if (!m) return null
+    let windowHandle = ''
+    try { windowHandle = Buffer.from(m[3], 'base64url').toString('utf8') } catch { return null }
+    return { seq: Number(m[1]), gen: Number(m[2]), windowHandle }
+  }
+
+  /**
+   * 抬升权威 seq、记录 latest，返回 {snapshotId}。挂在每个读产出点的 skipInfo 兄弟位。
+   * 只对权威读（read/state）调用；state-live 走非权威标记（snapshotAuthoritative:false），不调这里。
+   */
+  function snapshotStamp(windowHandle) {
+    const id = { seq: ++snap.seq, gen: currentGen, windowHandle: String(windowHandle == null ? '' : windowHandle) }
+    snap.latest = id
+    return { snapshotId: encodeSnapshotId(id) }
+  }
+
+  /**
+   * 写侧新鲜度校验（W1 缝契约的一半，W2 复用）。纯函数：权威状态从 ctx 显式传入，便于单测/复用。
+   * @param {{snapshotId?:string}} args   动作参数（只看 snapshotId）
+   * @param {{currentGen:number, latest:(object|null), targetWindow?:string}} ctx  权威状态 + 本次目标窗口
+   * @returns {{allow:boolean, code:string, reason?:string}}
+   *   code: 'no-snapshot' | 'fresh' | 'staleSnapshot' | 'expiredSnapshot' | 'unknownSnapshot'
+   *   reason（仅 staleSnapshot）: 'newer-read-same-window' | 'newer-read-other-window'
+   */
+  function validateSnapshot(args, ctx) {
+    const raw = args ? args.snapshotId : undefined
+    if (raw === undefined || raw === null || raw === '') return { allow: true, code: 'no-snapshot' } // 不传 → 放行（零回归）
+    const parsed = decodeSnapshotId(String(raw))
+    if (!parsed) return { allow: false, code: 'unknownSnapshot' }
+    if (parsed.gen !== (ctx.currentGen | 0)) return { allow: false, code: 'expiredSnapshot' } // 重启世代不符
+    const latest = ctx.latest
+    if (!latest || parsed.seq > latest.seq) return { allow: false, code: 'unknownSnapshot' } // 从未签发（含尚无权威读）
+    if (parsed.seq < latest.seq) {
+      // 全局 seq 只有一个「最新」：windowHandle 仅用于把 stale 细分成「本窗口真变了」vs
+      // 「别的窗口读过、本窗口可能没变」——不建立 per-window latest（那是 v2 (procId,winHandle) 分桶）。
+      const reason = parsed.windowHandle === latest.windowHandle ? 'newer-read-same-window' : 'newer-read-other-window'
+      return { allow: false, code: 'staleSnapshot', reason }
+    }
+    // 新鲜（seq==最新 且 gen 一致）。若动作显式声明了目标窗口且与快照来源窗口不符 → 跨窗口复用，
+    // 落安全侧拒（v1 不支持「读弹窗后拿其快照点主窗」，多拒→重读；per-window 覆盖列 v2）。
+    const target = ctx.targetWindow ? String(ctx.targetWindow) : ''
+    if (target && parsed.windowHandle && target !== parsed.windowHandle) {
+      return { allow: false, code: 'staleSnapshot', reason: 'newer-read-other-window' }
+    }
+    return { allow: true, code: 'fresh' }
+  }
+
+  /**
+   * 写侧单点（唯一接线点）：副作用动作在此过 allowSideEffects + 新鲜度门。
+   * W2 的 deny/急停判定在同一函数内、snapshot 校验之后挂钩（见下方 seam 注释），不新增第二处接线点。
+   * @returns {{allow:true}|{allow:false, result:object}}
+   */
+  function checkSideEffectGate(action, allowSideEffects, gateArgs) {
+    if (!isSideEffectKind(classifyAction(action))) return { allow: true } // 只读 / 纯输入：放行
+    if (!allowSideEffects) {
+      return { allow: false, result: { ok: false, action, error: '动作 ' + action + ' 是真实副作用操作，必须显式传 allowSideEffects=true 才执行（安全护栏）' } }
+    }
+    const ctx = { currentGen, latest: snap.latest, targetWindow: gateArgs.winTitle || gateArgs.winHandle || c.windowName || '' }
+    const v = validateSnapshot(gateArgs, ctx)
+    if (!v.allow) {
+      const result = { ok: false, action }
+      if (v.code === 'staleSnapshot') {
+        result.staleSnapshot = v.reason
+        result.error = '快照已过期（' + v.reason + '）：此后已有更新的权威读，请重新 read/state 取最新 snapshotId 再操作'
+      } else if (v.code === 'expiredSnapshot') {
+        result.expiredSnapshot = true
+        result.error = '快照世代失效（客户端/常驻进程已重启）：请重新 read/state 取最新 snapshotId 再操作'
+      } else {
+        result.unknownSnapshot = true
+        result.error = '未知 snapshotId（无法解析或从未签发）：拒绝执行，请先 read/state 取 snapshotId'
+      }
+      return { allow: false, result }
+    }
+    // —— W2 seam：deny / 急停（estop）判定在此处挂钩（同一写侧单点、snapshot 校验之后）——
+    return { allow: true }
+  }
+
+  // ---- diff ----
+  /** 去掉行首 #序号（位置易变、每次重排都变，不参与语义 diff）。 */
+  const diffKey = (line) => String(line).replace(/^#\d+\s*/, '')
+  /**
+   * read(diff=true)：与上一次「完整」读做增量（B-1 同源护栏）。
+   *  · 首读（无基线）→ diffBaseline:true、完整 lines、无幻影 diff；
+   *  · skipped>0 或空枚举 → 抑制 diff、diffSuppressed:true、保留 warn、回落完整 lines，且不更新基线
+   *    （不完整读写进基线，元素复现时会谎报「新增」；拿它做 diff，会把没读到谎报成「移除」）；
+   *  · 否则 → diff:{added,removed,unchanged}，并把当前完整清单设为新基线。
+   */
+  function attachDiff(out) {
+    const incomplete = (typeof out.skipped === 'number' && out.skipped > 0) || out.observation === 'empty-enumeration'
+    if (incomplete) return { ...out, diffSuppressed: true }
+    const cur = Array.isArray(out.lines) ? out.lines : []
+    if (diffState.baseline === null) {
+      diffState.baseline = cur
+      return { ...out, diffBaseline: true }
+    }
+    const baseKeys = new Set(diffState.baseline.map(diffKey))
+    const curKeys = new Set(cur.map(diffKey))
+    const added = cur.filter((l) => !baseKeys.has(diffKey(l)))
+    const removed = diffState.baseline.filter((l) => !curKeys.has(diffKey(l)))
+    let unchanged = 0
+    for (const k of curKeys) if (baseKeys.has(k)) unchanged++
+    diffState.baseline = cur
+    return { ...out, diff: { added, removed, unchanged } }
   }
 
   /** 动作参数 → 批量步骤字段（两处共用，避免字段漏传）。 */
@@ -589,13 +747,16 @@ export function makeDriver(cfg) {  const c = {
   }
 
   async function driveOnce(args) {
-    const { action: rawAction, name = '', aid = '', value = '', ascii = false, match = '', waitMs = c.defaultWaitMs, procId = 0, allowSideEffects = false, workspace = '', label = '', shotsDir = '', index, inAid = '', inName = '', waitFor = null, state = '', keys = '', fromX, fromY, toX, toY, steps = 12, holdMs = 120, max, winTitle = '', winHandle, secret = false, expectValue, titleRe = '', textRe = '', gone = false, ms, interval, conds, stableCount, observe = false, observeMatch = '', observeMax = 15, x, y, delta, count, mods = '', double = false, button = '', focus = false } = args
+    const { action: rawAction, name = '', aid = '', value = '', ascii = false, match = '', waitMs = c.defaultWaitMs, procId = 0, allowSideEffects = false, workspace = '', label = '', shotsDir = '', index, inAid = '', inName = '', waitFor = null, state = '', keys = '', fromX, fromY, toX, toY, steps = 12, holdMs = 120, max, winTitle = '', winHandle, secret = false, expectValue, titleRe = '', textRe = '', gone = false, ms, interval, conds, stableCount, observe = false, observeMatch = '', observeMax = 15, x, y, delta, count, mods = '', double = false, button = '', focus = false, snapshotId, diff = false } = args
     const action = normAction(rawAction)
-    if (!READ_ONLY_ACTIONS.has(action) && !INPUT_ACTIONS.has(action)) {
-      if (!allowSideEffects) {
-        return { ok: false, action, error: '动作 ' + action + ' 是真实副作用操作，必须显式传 allowSideEffects=true 才执行（安全护栏）' }
-      }
-    }
+    // 写侧单点：副作用动作（含坐标副作用 clickat/drag）过 allowSideEffects + 新鲜度门；只读/纯输入放行。
+    // W2 的 deny/急停在 checkSideEffectGate 内挂钩（同一处），不新增第二处接线点。
+    const gate = checkSideEffectGate(action, allowSideEffects, { snapshotId, winTitle, winHandle })
+    if (!gate.allow) return gate.result
+
+    // read(diff=true) 是 Node 侧对返回 lines 的后处理（不下发 PS1）；仅对成功的 read 生效。
+    const wantDiff = diff === true
+    const maybeDiff = (out) => (wantDiff && out && out.ok === true && out.action === 'read') ? attachDiff(out) : out
 
     let shotPlan = null
     if (action === 'shot' || action === 'capture') {
@@ -666,7 +827,7 @@ export function makeDriver(cfg) {  const c = {
             else if (!res.killed && r2 && r2.error) res = r2
           }
         }
-        if (res) return await attachObserve(shapeResult(action, res, shotPlan, workspace))
+        if (res) return await attachObserve(maybeDiff(shapeResult(action, res, shotPlan, workspace)))
         // 只读动作：常驻进程不可用时回退一次性脚本路径是安全的
       }
     }
@@ -690,7 +851,7 @@ export function makeDriver(cfg) {  const c = {
       if (!b.ok || b.steps.length === 0) {
         return { ok: false, action, error: b.error || '批量单步执行失败' }
       }
-      return await attachObserve(shapeResult(action, b.steps[0], shotPlan, workspace))
+      return await attachObserve(maybeDiff(shapeResult(action, b.steps[0], shotPlan, workspace)))
     }
 
     // ---- 回退：一次性脚本进程
@@ -733,7 +894,8 @@ export function makeDriver(cfg) {  const c = {
       const raw = { skipped: sk ? Number(sk[1]) : null }
       if (scanned) raw.scanned = Number(scanned[1])
       if (reason) raw.skippedReasons = [reason[1].trim()]
-      return { ok: true, action, count: lines.length, lines: lines.slice(0, 200), truncated: text.length > LIMIT_READ, ...skipInfo(raw) }
+      // 一次性 read 无窗口信息 → windowHandle=''（不参与 target 校验，见 validateSnapshot）。
+      return maybeDiff({ ok: true, action, count: lines.length, lines: lines.slice(0, 200), truncated: text.length > LIMIT_READ, ...skipInfo(raw), ...snapshotStamp('') })
     }
     if (action === 'shot') {
       const m = text.match(/SHOT (.+) (\d+)x(\d+)/)
@@ -819,6 +981,7 @@ export function makeDriver(cfg) {  const c = {
         truncated: res.truncated === true,
         ...(res.truncated === true ? { returned: lines.length } : {}),
         ...skipInfo(res),
+        ...snapshotStamp(res.window ?? ''), // 权威读：抬升 seq，戳 snapshotId
       }
     }
     if (action === 'windows') return { ok: true, action, count: res.count || 0, lines: normLines(res.lines) }
@@ -832,6 +995,7 @@ export function makeDriver(cfg) {  const c = {
         count: res.count || 0,
         lines: normLines(res.lines),
         ...skipInfo(res),
+        ...snapshotStamp(res.window ?? ''), // 权威读：抬升 seq，戳 snapshotId
       }
     }
     if (action === 'state-live') {
@@ -847,6 +1011,8 @@ export function makeDriver(cfg) {  const c = {
         lines: normLines(res.lines),
         secretFocused: res.secretFocused === true,
         ...skipInfo(res),
+        // state-live 不抬升权威 seq、不发权威 snapshotId：live 每 3s 采样一次，若参与就系统性作废读快照。
+        snapshotAuthoritative: false,
       }
     }
     if (action === 'waitfor') return { ok: true, action, found: res.found === true, detail: res.detail ?? null, waitedMs: res.waitedMs ?? 0 }
@@ -1125,6 +1291,7 @@ export function makeDriver(cfg) {  const c = {
         entry.count = res.count || 0
         entry.lines = normLines(res.lines).slice(0, 50)
         Object.assign(entry, skipInfo(res)) // B-1：跳过数随每一步一起回报
+        Object.assign(entry, snapshotStamp(res.window ?? b.window ?? '')) // 权威读：戳 snapshotId
       } else if (action === 'windows') {
         entry.count = res.count || 0
         entry.lines = normLines(res.lines)
@@ -1135,6 +1302,7 @@ export function makeDriver(cfg) {  const c = {
         entry.count = res.count || 0
         entry.lines = normLines(res.lines)
         Object.assign(entry, skipInfo(res))
+        Object.assign(entry, snapshotStamp(res.window ?? b.window ?? '')) // 权威读：戳 snapshotId
       } else if (action === 'waitfor' || action === 'expectwindow' || action === 'expecttext' || action === 'waitany') {
         entry.found = res.found === true
         if (res.detail !== undefined) entry.detail = res.detail
@@ -1242,6 +1410,12 @@ export function makeDriver(cfg) {  const c = {
       HELD_LOCKS.delete(lockPath)
     },
     warmStatus,
+    // W1 缝契约（冻结）：写侧单点的两个纯函数 + snapshotId 编解码 + 权威状态诊断。W2 复用这些挂 deny/急停。
+    classifyAction,
+    validateSnapshot,
+    encodeSnapshotId,
+    decodeSnapshotId,
+    snapshotState: () => ({ seq: snap.seq, gen: currentGen, latest: snap.latest ? { ...snap.latest } : null }),
     evidenceDir: () => c.evidenceDir,
     scriptsDir: () => c.scriptsDir,
     clientExe: () => c.clientExe,

@@ -84,15 +84,33 @@ function extractFunction(src, name) {
 }
 
 // ------------------------------------------------- 5. 安全默认：未知动作仍按副作用处理（deny-first）
+// 注（2026-09-11）：W1 把"只读/输入/副作用"的判定从两集合表达式重写成了 classifyAction 语义函数，
+// 原先用源码正则匹配旧表达式会误报。这里改为**直接调用 driver 的分类函数验语义**——重构不再打红，
+// 但语义一旦变松（未知动词被当成只读）会立刻打红。
 {
-  check('driver 的只读集合不含新动词（避免被当成只读放行）',
-    !/READ_ONLY_ACTIONS\s*=\s*new Set\(\[[^\]]*'pattern'/.test(driver) &&
-    !/READ_ONLY_ACTIONS\s*=\s*new Set\(\[[^\]]*'selecttext'/.test(driver))
-  check('driver 的输入豁免集合不含新动词',
-    !/INPUT_ACTIONS\s*=\s*new Set\(\[[^\]]*'pattern'/.test(driver) &&
-    !/INPUT_ACTIONS\s*=\s*new Set\(\[[^\]]*'scroll'/.test(driver))
-  check('未知动作默认需要 allowSideEffects（候选集合判定）',
-    /!READ_ONLY_ACTIONS\.has\(action\) && !INPUT_ACTIONS\.has\(action\)/.test(driver))
+  const { makeDriver } = await import('../lib/driver.mjs')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const scriptsDir = mkdtempSync(join(tmpdir(), 'ui-drive-prims-'))
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'ui-drive-prims-ev-'))
+  process.env.DSH_UI_SERVE = '0'
+  const d = makeDriver({ scriptsDir, evidenceDir, procName: 'FakeProc' })
+  try {
+    check('未知动词按副作用（frobnicate→effect）', d.classifyAction('frobnicate') === 'effect', d.classifyAction('frobnicate'))
+    check('W5b 新动词 pattern 默认按副作用', d.classifyAction('pattern') === 'effect', d.classifyAction('pattern'))
+    check('W5b 新动词 selecttext 默认按副作用', d.classifyAction('selecttext') === 'effect', d.classifyAction('selecttext'))
+    check('W5b 新动词 scroll 默认按副作用', d.classifyAction('scroll') === 'effect', d.classifyAction('scroll'))
+    check('纯输入动作仍豁免（move→input）', d.classifyAction('move') === 'input', d.classifyAction('move'))
+    check('只读动作仍是 read（read→read）', d.classifyAction('read') === 'read', d.classifyAction('read'))
+    check('坐标副作用被单独归类（clickat→coord-effect）', d.classifyAction('clickat') === 'coord-effect', d.classifyAction('clickat'))
+    check('【硬约束】W5b 新动词尚未接 W2 policy 门时不得出现在批次路由里（保持禁用）',
+      !/\bBATCH_ONLY_ACTIONS\b[^\n]*'(pattern|selecttext)'/.test(driver),
+      '若已放行，必须在同一轮里确认 W2 的 policy/急停门已挂上同一写侧单点')
+  } finally {
+    try { d.warmShutdown() } catch { }
+    rmSync(scriptsDir, { recursive: true, force: true })
+    rmSync(evidenceDir, { recursive: true, force: true })
+  }
 }
 
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }
