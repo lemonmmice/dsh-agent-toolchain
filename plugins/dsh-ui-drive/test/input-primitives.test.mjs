@@ -50,6 +50,7 @@ function extractFunction(src, name) {
   check('入口过致效汇聚点守卫（W0）', /function Invoke-ElementPattern[\s\S]{0,120}Assert-NotDenied/.test(ps1))
 }
 
+// 以下源码匹配均为源码级契约断言，不代表真实 UI 行为覆盖。
 // ------------------------------------------------- 2. 语义滚动
 {
   const fn = extractFunction(ps1, 'Invoke-ElementScroll')
@@ -119,3 +120,4 @@ function extractFunction(src, name) {
 
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }
 console.log('\nPASS: dsh-ui-drive W5b input-primitives contract test')
+
