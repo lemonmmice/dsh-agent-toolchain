@@ -309,7 +309,17 @@ server.tool(
     'For flows that must look at the screen between steps (login, captcha, branch on UI state), use ui_drive step by step instead.',
   {
     steps: z.array(z.object({
-      action: z.enum(['find', 'click', 'setvalue', 'key', 'type', 'drag', 'read', 'state', 'windows', 'shot', 'wait', 'waitfor', 'expect']),
+      // Ground truth is the driver's FLOW_ACTIONS (driver.mjs) — every verb it can run must be
+      // listed here, or zod rejects the step before the driver ever sees it. Six verbs the driver
+      // implements were missing (pattern/scroll/selecttext/expectwindow/expecttext/waitany), so
+      // those capabilities were unreachable through ui_flow even after they became callable
+      // one step at a time via ui_act.
+      action: z.enum([
+        'find', 'click', 'setvalue', 'key', 'type', 'drag',
+        'pattern', 'scroll', 'selecttext',
+        'read', 'state', 'shot', 'windows',
+        'wait', 'waitfor', 'expect', 'expectwindow', 'expecttext', 'waitany',
+      ]),
       name: z.string().optional(),
       aid: z.string().optional(),
       value: z.string().optional(),
@@ -329,19 +339,37 @@ server.tool(
       label: z.string().optional(),
       expectEnabled: z.boolean().optional().describe('expect: assert enabled state'),
       expectMatch: z.string().optional().describe('expect: regex the control detail must match'),
+      count: z.number().optional().describe('scroll: number of pages/lines (default 1)'),
+      expectValue: z.string().optional().describe('type: read-back expectation; selecttext: the suffix'),
+      expectwindow: z.string().optional().describe('deprecated alias — use action=expectwindow with titleRe'),
+      titleRe: z.string().optional().describe('expectwindow / waitany(window): window title regex'),
+      textRe: z.string().optional().describe('expecttext / waitany(text): text regex'),
+      gone: z.boolean().optional().describe('expectwindow: true = wait until the window disappears'),
+      ms: z.number().optional().describe('wait/waitfor: timeout ms'),
+      interval: z.number().optional().describe('waitfor: poll interval ms'),
+      conds: z.array(z.record(z.string(), z.any())).optional().describe('waitany conditions'),
+      stableCount: z.number().optional().describe('waitany: consecutive confirmations before a hit counts'),
     })).describe('Step sequence'),
     tag: z.string().optional().describe('Evidence dir label (default flow)'),
     failFast: z.boolean().optional().describe('Stop at the first failed assertion'),
-    allowSideEffects: z.boolean().optional().describe('REQUIRED true when the sequence contains click/setvalue/key/type/drag'),
+    allowSideEffects: z.boolean().optional().describe('REQUIRED true when the sequence contains side-effect steps (click/setvalue/key/type/drag/pattern/scroll/selecttext/clickat/doubleclick)'),
   },
   async (args) => {
-    // Why this keeps its own list instead of reusing needsSideEffectAuth: flow's step
-    // vocabulary includes the read-only pseudo-actions `wait` and `expect`, which are NOT in
-    // the driver's classifyAction table — classifyAction would default them to 'effect' and so
-    // wrongly demand allowSideEffects for a read-only flow. The driver applies the same
-    // wait/expect exemption in flow()'s own gate. Keep this list in sync with the driver's real
-    // side-effect verbs (click/setvalue/key/type/drag); the driver's flow() is the enforcing gate.
-    const hasSideEffects = (args.steps || []).some((s) => ['click', 'setvalue', 'key', 'type', 'drag'].includes(s.action))
+    // Mirrors the driver's own flow() gate rather than re-listing verbs.
+    //
+    // The driver gates a step with: not read-only AND not wait/expect => needs allowSideEffects.
+    // This side previously hard-coded ['click','setvalue','key','type','drag'], which would have
+    // let pattern/scroll/selecttext/live-coordinate steps through the pre-check and produced
+    // per-step driver errors instead of one clear up-front message. Deriving it from the same
+    // predicates the driver uses means a new verb cannot silently escape the hint again.
+    //
+    // Unknown verbs are deliberately treated as NON-side-effect here: the driver rejects them as
+    // 非法动作 anyway, so demanding allowSideEffects for them would only bury the real error.
+    // The driver's gate remains the enforcing one; this is a UX pre-check.
+    const READ_ONLY = ['find', 'read', 'state', 'windows', 'shot', 'waitfor', 'state-live', 'expectwindow', 'expecttext', 'waitany', 'move', 'wheel', 'capture']
+    const PSEUDO_READ_ONLY = ['wait', 'expect']
+    const known = (a) => READ_ONLY.includes(a) || PSEUDO_READ_ONLY.includes(a) || ['click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext'].includes(a)
+    const hasSideEffects = (args.steps || []).some((s) => known(s.action) && !READ_ONLY.includes(s.action) && !PSEUDO_READ_ONLY.includes(s.action))
     if (hasSideEffects && !args.allowSideEffects) {
       return text('Blocked: the sequence contains a real side effect (click/setvalue/key/type/drag). Re-call with allowSideEffects=true after confirming with the user.')
     }
@@ -389,10 +417,10 @@ server.tool(
     max: z.number().optional(),
     label: z.string().optional(),
     describe: z.boolean().optional().describe('shot: also return a vision description'),
-    // move/wheel are reversible input primitives, so the DRIVER treats them as 'input' kind and
-    // requires its own side-effect flag. Without declaring it here the driver rejects them while
-    // the schema says they are available - the same silent mismatch this file keeps guarding against.
-    allowSideEffects: z.boolean().optional().describe('Required true for move/wheel (the driver gates input primitives even though they are reversible and read-only by nature).'),
+    // move/wheel are reversible input primitives: the driver classifies them as kind 'input' and
+    // checkSideEffectGate waves that kind through, so NO allowSideEffects is required (verified in
+    // driver.mjs — classifyAction returns 'input', and the gate returns allow:true for non-effect
+    // kinds). They are listed in the read-only whitelist for the same reason.
   },
   async (args) => {
     const r = await drv().drive({ ...args, action: args.action })

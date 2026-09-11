@@ -339,5 +339,33 @@ for (const t of TOOLS) {
     '未声明=' + JSON.stringify(missing.sort()) + '（未声明 = zod 会剥掉 = 模型传了也没用）')
 }
 
+// ------------------------------------------------- 10. ui_flow 的步骤 enum 必须覆盖驱动的 FLOW_ACTIONS
+// 第六处同类缺陷（独立 MCP/插件面对照审计发现）：驱动实现了 19 个 flow 动作，
+// 但 MCP 的 ui_flow 步骤 enum 只列了 13 个 —— `pattern`/`scroll`/`selecttext`/
+// `expectwindow`/`expecttext`/`waitany` 被 zod 在到达驱动前就拒掉（INVALID_ARGS），
+// 而插件面（裸 array，无 item schema）却能通过 ⇒ 同一能力两个面行为不一致。
+{
+  const driverSrc2 = readFileSync(join(here, '..', 'lib', 'driver.mjs'), 'utf8')
+  const fm = /const FLOW_ACTIONS = new Set\(\[([^\]]*)\]/.exec(driverSrc2)
+  const flowTruth = fm ? [...fm[1].matchAll(/'([a-z][a-z-]*)'/g)].map((x) => x[1]) : []
+  check('解析出驱动的 FLOW_ACTIONS', flowTruth.length > 0, JSON.stringify(flowTruth))
+
+  // MCP ui_flow 的步骤 action enum（多行，含注释）
+  const flowBlock = /server\.tool\(\s*'ui_flow'/.exec(serverSrc)
+  const flowRegion = flowBlock ? serverSrc.slice(flowBlock.index, serverSrc.indexOf('server.tool(', flowBlock.index + 1)) : ''
+  const em = /action:\s*z\.enum\(\[([\s\S]*?)\]\s*\)/.exec(flowRegion)
+  const flowEnum = em ? [...em[1].matchAll(/'([a-z][a-z-]*)'/g)].map((x) => x[1]) : []
+  check('解析出 MCP ui_flow 的步骤 enum', flowEnum.length > 0, JSON.stringify(flowEnum))
+
+  const missingFlow = flowTruth.filter((a) => !flowEnum.includes(a))
+  check('驱动能跑的每个 flow 动作都在 ui_flow 步骤 enum 里（否则被 zod 提前拒）', missingFlow.length === 0,
+    '缺失=' + JSON.stringify(missingFlow) + '（插件面却可通过 ⇒ 两个面行为不一致）')
+
+  // 反向：enum 里不该有驱动 flow 跑不了的动作（会变成"看着能跑其实必失败"）
+  const extraFlow = flowEnum.filter((a) => !flowTruth.includes(a))
+  check('ui_flow 步骤 enum 没有驱动跑不了的动作', extraFlow.length === 0,
+    '多余=' + JSON.stringify(extraFlow))
+}
+
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }
 console.log('\nPASS: dsh-ui-drive MCP toolface consistency test')
