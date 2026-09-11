@@ -722,15 +722,22 @@ function Mask-Value([string]$v, [bool]$secret) {
 # 「按名硬拒」：凡控件名/AutomationId 命中本正则的，驱动层一律拒绝，**任何参数都解锁不了**
 # （不是提示词约定，是驱动层强制；见下方 Assert-NotDenied 汇聚点）。
 #
-# 定位说明（2026-09-11 更正）：这是**通用机制**，不是交易专用 —— 目标客户端并没有交易模块。
-# 默认名单只是"一旦命中、后果很难挽回"的那类控件名的一个保守默认值（沿用历史配置）；
-# 不同部署应当用环境变量 DSH_UI_DENY_RE 按自己的界面覆盖它，而不是指望这份默认值正好合适。
-$DENY_RE = if ($env:DSH_UI_DENY_RE) { [string]$env:DSH_UI_DENY_RE } else { '买入|卖出|下单|委托|交易|支付|提现|申购|赎回|撤单|平仓|开仓' }
+# 定位说明（2026-09-11）：这是**通用机制**，不是交易专用。
+# **默认名单已清空**：原先的默认值是一串交易相关关键词
+# （买入|卖出|下单|委托|交易|支付|提现|申购|赎回|撤单|平仓|开仓）。
+# 目标客户端并没有交易模块，这份名单随之失去意义，而且还在**造成误伤**——
+# 匹配是**子串**匹配，界面上任何名字含这些字的控件（例如「交易时段」标签、
+# aid="TradeTime" 的面板）都会被无差别拦下。
+#
+# 现在的语义是：**默认不拦任何控件**；要拦什么，由部署方用 DSH_UI_DENY_RE 明确指定。
+# 机制一行没少（Test-DenyTarget / Assert-NotDenied / 各致效入口守卫都在），
+# 只是把"默认拦一批"改成"默认不拦，拦哪些由你说了算"。
+$DENY_RE = if ($env:DSH_UI_DENY_RE) { [string]$env:DSH_UI_DENY_RE } else { '(?!)' }
 function Test-DenyTarget($el) {
   $name = [string]$el.Current.Name
   $aid = [string]$el.Current.AutomationId
   if (($name -match $DENY_RE) -or ($aid -match $DENY_RE)) {
-    return ('该控件被驱动层按名硬拒绝（不可解锁）：name="' + $name + '" aid="' + $aid + '"（名单可由 DSH_UI_DENY_RE 覆盖）')
+    return ('该控件被驱动层按名硬拒绝（不可解锁）：name="' + $name + '" aid="' + $aid + '"；当前名单 DSH_UI_DENY_RE=' + $DENY_RE + '；若属误伤，请用更精确的 aid/name/inAid 定位，或调整该环境变量')
   }
   return $null
 }

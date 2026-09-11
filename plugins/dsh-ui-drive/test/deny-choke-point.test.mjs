@@ -107,10 +107,14 @@ const OK_PAYLOAD = { ok: true, elapsedMs: 4, steps: [{ step: 1, action: 'clickat
     check(`${fn} 入口调用 Assert-NotDenied`, body !== null && /Assert-NotDenied/.test(body), '缺守卫 = 该路径可绕过硬拒')
   }
   check('Assert-NotDenied 会抛（不是静默 return）', /function Assert-NotDenied[\s\S]{0,200}?throw/.test(ps1))
-  // 「按名硬拒」是**通用机制**（目标客户端没有交易模块），默认名单只是保守默认值，可由环境变量覆盖
+  // 「按名硬拒」是**通用机制**，且**默认名单已清空**（2026-09-11）：
+  // 原先默认一串交易相关关键词（买入|卖出|下单|…），而目标客户端并没有交易模块，
+  // 那份名单既失去意义又在误伤（匹配是子串匹配，界面上任何含这些字的控件都会被无差别拦下）。
+  // 现在默认是永不匹配的 `(?!)`：**默认不拦任何控件**，拦哪些由 DSH_UI_DENY_RE 说了算。
   check('「按名硬拒」名单可由 DSH_UI_DENY_RE 覆盖', /\$DENY_RE = if \(\$env:DSH_UI_DENY_RE\)/.test(ps1))
-  check('未设置环境变量时回落到默认名单', /else \{ '[^']*买入[^']*' \}/.test(ps1))
-  check('拒绝信息如实说明机制与可覆盖性（不再是"交易类"措辞）', /按名硬拒绝（不可解锁）/.test(ps1) && /DSH_UI_DENY_RE 覆盖/.test(ps1))
+  check('未设置环境变量时默认**不拦任何控件**（默认名单已清空）', /else \{ '\(\?\!\)' \}/.test(ps1))
+  check('默认值里不再残留交易类关键词', !/else \{ '[^']*买入[^']*' \}/.test(ps1))
+  check('拒绝信息带出控件名/aid 与当前名单（便于判误伤）', /name="' \+ \$name \+ '" aid="' \+ \$aid/.test(ps1) && /DSH_UI_DENY_RE=' \+ \$DENY_RE/.test(ps1))
   check('源码中不再用"误点会真下单"这类不实论证', !/误点会真下单/.test(ps1))
 }
 
@@ -145,11 +149,11 @@ function T([string]$n) { $el = New-Object PSObject -Property @{ Current = (New-O
     return kv
   }
   const d1 = run('')
-  check('默认名单：命中"买入"的控件被拒', d1.a === 'DENY', JSON.stringify(d1))
-  check('默认名单：普通控件放行', d1.b === 'ALLOW', JSON.stringify(d1))
-  const d2 = run('危险')
-  check('覆盖生效：自定义名单命中即拒', d2.c === 'DENY', JSON.stringify(d2))
-  check('覆盖生效：默认名单被替换（"买入"不再被拒）', d2.a === 'ALLOW', JSON.stringify(d2))
+  check('默认（未设 DSH_UI_DENY_RE）：不拦任何控件 —— 曾经的"买入按钮"也放行', d1.a === 'ALLOW', JSON.stringify(d1))
+  check('默认：普通控件放行', d1.b === 'ALLOW', JSON.stringify(d1))
+  const d2 = run('危险|买入')
+  check('设了 DSH_UI_DENY_RE：命中即拒（自定义名单真的生效）', d2.c === 'DENY', JSON.stringify(d2))
+  check('设了 DSH_UI_DENY_RE：按其内容同样拦下"买入按钮"（机制没丢，只是默认值空了）', d2.a === 'DENY', JSON.stringify(d2))
 }
 
 // ------------------------------------------------- 5. 文档与代码一致（原先 drag 的承诺没兑现）

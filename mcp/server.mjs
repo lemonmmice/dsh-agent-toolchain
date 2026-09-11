@@ -544,8 +544,8 @@ server.tool(
     'selecttext (TextPattern selection: text in value, prefix in match, suffix in expectValue, selectionType in state). ' +
     'Input is read back and verified — a value that did not land is ok:false, never a silent success. Password/captcha fields are never echoed. ' +
     'A name-based hard-deny list is enforced in the driver and allowSideEffects cannot unlock it: any control whose name/AutomationId matches ' +
-    'DSH_UI_DENY_RE (a conservative default list of "hard to undo once hit" control names) is refused. Override the list per deployment with ' +
-    'DSH_UI_DENY_RE to match your own UI. The refusal message always names the control and says the list is overridable. ' +
+    'DSH_UI_DENY_RE is refused. The list is EMPTY by default (nothing is denied unless the operator configures it), so the refusal always ' +
+    'names the control, prints the active list, and says how to fix a false positive. ' +
     'observe=true attaches a UI snapshot after the action. Credentials: pass ${cred:name}; the driver expands DSH_CRED_name from its own environment, ' +
     'so the secret never enters the model context or the evidence files.',
   {
