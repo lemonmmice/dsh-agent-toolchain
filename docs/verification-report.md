@@ -49,3 +49,10 @@ the mismatch, not the agent.
 - **MCP**: `verify_report { runId, task, claims: [{ statement, kind, ... }] }`
   (any MCP client).
 - Programmatic: `makeVerificationReport(...)` from `lib/verify/report.mjs`.
+## W5 原语真机验证（2026-09-11）
+- ui_status：运行中，PID 33420，主窗口标题已确认。
+- ui_observe(state)：成功返回 20 个控件，skipped=0，取得 snapshotId。
+- ui_act(scroll, count=2)：请求到达驱动，但因未指定 name/aid 返回“find 需要 -Aid 或 -Name”；证明原语路由与 count 参数已透传，尚未完成绑定具体滚动容器的行为验证。
+- pattern/selecttext：当前界面未提供已确认的无破坏性目标控件，未猜测目标。
+- 结论：本轮部分通过；未操作保存、删除、清空、导出或交易入口。
+

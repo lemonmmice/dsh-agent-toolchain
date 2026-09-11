@@ -27,6 +27,13 @@ function skipTail(v) {
  *  · diffSuppressed → 明说「本次读取不完整、已回落完整清单、不做比对」（skipped>0/空枚举时）；
  *  · diff → 「新增 a / 移除 b / 不变 c」摘要 + 增/删逐行（agent 一眼看清界面变了什么）。
  */
+function hintTail(v) {
+  if (v?.staleSnapshot) return '（下一步：界面已刷新，重新 ui_observe(state) 获取新 snapshotId）'
+  if (v?.denied) return '（下一步：该控件被驱动层拒绝；改用 find/read 做只读验证，或请用户手动确认）'
+  if (v?.requiresAllowSideEffects) return '（下一步：确认目标无误后重发，并带 allowSideEffects=true）'
+  return '（下一步：先用 ui_observe(state/read) 重新确认当前界面与目标控件）'
+}
+
 function diffTail(v) {
   if (!v) return ''
   if (v.diffBaseline) return '\n（diff 基线已建立：首次读取，后续 read(diff=true) 才比对增减）'
@@ -42,15 +49,15 @@ function diffTail(v) {
 }
 
 export function renderState(v) {
-  if (!v.ok) return '失败：' + (v.error || '未知错误')
+  if (!v.ok) return '失败：' + (v.error || '未知错误') + hintTail(v)
   return '窗口=' + (v.window || '?') + ' 焦点=' + (v.focused || '无') +
     '\n交互控件 ' + v.count + ' 个：\n' + (v.lines || []).join('\n') + skipTail(v)
 }
 
 export function renderDrive(v) {
-  if (!v.ok) return '失败：' + (v.error || '未知错误')
+  if (!v.ok) return '失败：' + (v.error || '未知错误') + hintTail(v)
   switch (v.action) {
-    case 'find': return v.found ? ('找到：' + v.detail + (v.count > 1 ? '（共 ' + v.count + ' 个匹配，可用 index 指定第几个）' : '')) : '未找到目标控件'
+    case 'find': return v.found ? ('找到：' + v.detail + (v.count > 1 ? '（共 ' + v.count + ' 个匹配，可用 index 指定第几个）' : '')) : '未找到目标控件（下一步：重新 ui_observe(state/read) 确认当前界面与控件名称）'
     case 'read': return '读到 ' + v.count + ' 个控件：\n' + (v.lines || []).join('\n') + skipTail(v) + diffTail(v)
     case 'state': return renderState(v)
     case 'windows': return v.count + ' 个顶层窗口：\n' + (v.lines || []).join('\n')
@@ -59,3 +66,4 @@ export function renderDrive(v) {
     default: return v.output || '完成'
   }
 }
+
