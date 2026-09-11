@@ -250,23 +250,18 @@ server.tool(
     if (needsSideEffectAuth(args.action) && !args.allowSideEffects) {
       return text('Blocked: action "' + args.action + '" is a real side effect. Re-call with allowSideEffects=true after confirming with the user.')
     }
-    const r = await drv().drive({
-      action: args.action,
-      name: args.name,
-      aid: args.aid,
-      value: args.value,
-      ascii: args.ascii,
-      match: args.match,
-      label: args.label,
-      describe: args.describe,
-      waitMs: args.waitMs,
-      allowSideEffects: args.allowSideEffects,
-      // W1 freshness token + read diff — forwarded so the driver's snapshot gate
-      // actually receives them (before this they were undeclared and dropped:
-      // the freshness gate was permanently no-snapshot on the MCP surface).
-      snapshotId: args.snapshotId,
-      diff: args.diff,
-    })
+    // Forward the WHOLE args object instead of an enumerated list.
+    //
+    // Why: the previous explicit list silently DROPPED every parameter added to
+    // the schema over time — index / inAid / inName / waitFor / state / keys /
+    // fromX / fromY / toX / toY / steps / holdMs were all declared to the model
+    // and documented in this tool's description ("use index for the Nth
+    // same-named control", "pass waitFor=… on click/setvalue/…", "drag: start X")
+    // yet never reached the driver. The model followed the description and the
+    // arguments evaporated — the same "advertised but not wired" failure as the
+    // snapshotId bug called out below. Spreading makes the schema the single
+    // source of truth, so this cannot drift again.
+    const r = await drv().drive({ ...args, action: args.action, allowSideEffects: args.allowSideEffects })
     if (!r.ok) autoRecord('tool-error', 'ui_drive', `ui_drive ${args.action} failed: ${String(r.error ?? 'unknown error').slice(0, 200)}`)
     return jtext(r)
   }

@@ -189,5 +189,62 @@ for (const t of TOOLS) {
   }
 }
 
+// ------------------------------------------------- 7. 声明的参数必须真的转发给驱动
+// 第三类同类缺陷（2026-09-11 发现）：`ui_drive` 的 handler 用**手写清单**转发参数，
+// 于是 schema 里后加的每一个参数都被静默丢掉——index / inAid / inName / waitFor / state /
+// keys / fromX / fromY / toX / toY / steps / holdMs 全部只对模型"可见"、到不了驱动。
+// 而**同一份描述**还在教模型 "use index for the Nth same-named control"、"pass waitFor=… on
+// click/setvalue/…"、"drag: start X"——模型照做，参数凭空蒸发。
+// 护栏：要么整个 `...args` 转发（推荐，schema 成为唯一真源），要么枚举清单必须覆盖全部声明。
+{
+  /** 取某个工具注册块（从 server.tool('name' 到下一个 server.tool(） */
+  function toolBlock(name) {
+    const re = new RegExp(`server\\.tool\\(\\s*'${name}'`)
+    const m = re.exec(serverSrc)
+    if (!m) return ''
+    const next = serverSrc.indexOf('server.tool(', m.index + 1)
+    return serverSrc.slice(m.index, next < 0 ? serverSrc.length : next)
+  }
+
+  /** 该工具 schema 里声明的参数名（zod 对象的键，缩进 4 空格）。 */
+  function declaredParams(block) {
+    const schemaStart = block.indexOf('{', block.indexOf('describe(') > 0 ? block.lastIndexOf('{\n    ', block.indexOf('async (')) : 0)
+    const body = block.slice(schemaStart)
+    return [...body.matchAll(/^\s{4}([A-Za-z_][A-Za-z0-9_]*)\s*:/gm)].map((m) => m[1])
+  }
+
+  // 只检查"声明了参数、且有 handler"的工具（ui_status/ui_windows 之类无参工具跳过）
+  const HANDLED = ['ui_drive', 'ui_observe', 'ui_act']
+  for (const t of HANDLED) {
+    const block = toolBlock(t)
+    const declared = declaredParams(block)
+    check(`${t}: 解析出声明的参数`, declared.length > 0, JSON.stringify(declared))
+
+    // handler 里对该工具驱动调用的转发形态
+    const usesSpread = /drv\(\)\.drive\(\{\s*\.\.\.args/.test(block) || /drv\(\)\.drive\(args\)/.test(block)
+    if (usesSpread) {
+      check(`${t}: 以 ...args 整体转发（schema 即唯一真源，不会再漂移）`, true)
+      continue
+    }
+    // 否则：枚举清单必须覆盖全部声明参数
+    const callM = /drv\(\)\.drive\(\{([\s\S]*?)\n\s*\}\)/.exec(block)
+    const forwarded = callM ? [...callM[1].matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*):/gm)].map((m) => m[1]) : []
+    check(`${t}: 解析出转发的参数`, forwarded.length > 0, JSON.stringify(forwarded))
+    const dropped = declared.filter((d) => !forwarded.includes(d))
+    check(`${t}: 声明的参数没有一个被静默丢掉`, dropped.length === 0,
+      '被丢掉=' + JSON.stringify(dropped) + '（改用 {...args} 即可根治）')
+  }
+
+  // 钉死"u_drive 曾经的具体受害者"，防止有人改回手写清单
+  const driveBlock = toolBlock('ui_drive')
+  const priorVictims = ['index', 'inAid', 'inName', 'waitFor', 'state', 'keys', 'fromX', 'fromY', 'toX', 'toY', 'steps', 'holdMs']
+  const stillSpread = /drv\(\)\.drive\(\{\s*\.\.\.args/.test(driveBlock)
+  check('ui_drive 仍以 ...args 转发（历史上 12 个参数被丢的那批）', stillSpread,
+    '否则 index/inAid/inName/waitFor/fromX… 会再次到不了驱动')
+  for (const v of priorVictims) {
+    check(`ui_drive 仍在 schema 里声明 ${v}`, new RegExp(`^\\s{4}${v}\\s*:`, 'm').test(driveBlock))
+  }
+}
+
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }
 console.log('\nPASS: dsh-ui-drive MCP toolface consistency test')
