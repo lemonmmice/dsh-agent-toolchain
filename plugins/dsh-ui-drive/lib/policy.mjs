@@ -40,8 +40,12 @@ export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY
   } catch { parsed = undefined }
   let stoppedSession = null
   const readOnly = action => typeof classifyAction === 'function' && classifyAction(action) === READ_ONLY
-  const stop = sessionId => { stoppedSession = sessionId == null ? null : String(sessionId) }
-  const reset = sessionId => { if (stoppedSession !== null && String(sessionId) === stoppedSession) stoppedSession = null }
+  // 无 session 一律归一到 '__default__'：stop/reset/check 三处语义必须对称
+  // （原实现里 `stop()` 不带参会把 stoppedSession 置 null = 解除急停，而 check() 把无 session 当
+  //   '__default__'，语义不对称 —— 谁把 stop() 当"停所有"用就恰好停了个寂寞。）
+  const normSession = (sessionId) => (sessionId == null ? '__default__' : String(sessionId))
+  const stop = sessionId => { stoppedSession = normSession(sessionId) }
+  const reset = sessionId => { if (stoppedSession !== null && normSession(sessionId) === stoppedSession) stoppedSession = null }
   return {
     diagnostics: { safetyPolicyText },
     // 门是否需要跑：配了规则表，或急停哨兵存在（急停是外部总闸，与是否配策略无关）。
@@ -54,8 +58,17 @@ export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY
     reset,
     check({ action, identity = {}, snapshot, targetWindowHandle, allowSideEffects = false, sessionId, onExecute } = {}) {
       if (readOnly(action)) return { ok: true, readOnly: true }
-      if (stoppedSession === null && estopFile && fs.existsSync(estopFile)) stoppedSession = sessionId == null ? '__default__' : String(sessionId)
-      if (stoppedSession !== null && String(sessionId == null ? '__default__' : sessionId) === stoppedSession) return { ok: false, code: 'stopped_by_user', error: '急停已生效' }
+      // 急停是**全局总闸**：只要哨兵文件在盘上，任何 session 一律拒 —— 与 per-session 锁存解耦。
+      // （原实现把文件存在性检查门在 `stoppedSession === null` 后面，于是"第一个锁存的 session"之后
+      //   文件是否还在再也不复查，换个 session 直接放行 —— 独立复核 repro 1 复现，与"总闸"语义冲突。）
+      if (estopFile && fs.existsSync(estopFile)) {
+        if (stoppedSession === null) stoppedSession = normSession(sessionId)
+        return { ok: false, code: 'stopped_by_user', error: '急停已生效（哨兵文件在盘上）' }
+      }
+      // 文件被删掉后仍保持**粘性**：已锁存的 session 继续拒（删文件 ≠ 复位，复位走显式 reset）。
+      if (stoppedSession !== null && normSession(sessionId) === stoppedSession) {
+        return { ok: false, code: 'stopped_by_user', error: '急停已生效（需显式复位，删除哨兵文件不构成复位）' }
+      }
       // 未配置规则表时保持既有行为；配置后严格 deny-first。
       if (!policyConfigured) return { ok: true, policyDisabled: true }
       if (parsed === undefined || !parsed) return { ok: false, code: 'policy_unavailable', error: '策略不可用' }

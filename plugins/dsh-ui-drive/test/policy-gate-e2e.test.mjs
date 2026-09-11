@@ -20,11 +20,13 @@ function check(name, cond, extra = '') {
 const dir = mkdtempSync(join(tmpdir(), 'ui-drive-w2e2e-'))
 const evidenceDir = mkdtempSync(join(tmpdir(), 'ui-drive-w2e2e-ev-'))
 const sentinel = join(dir, 'executed.log')
+const statusSentinel = join(dir, 'status.log')
 
 /** 假脚本：-Status 只回报身份（不写哨兵）；任何**真正执行**的路径都往哨兵追加一行。 */
 function installFakeScripts() {
   const batch = `param([string]$ProcName='',[string]$WindowName='',[int]$ProcId=0,[string]$StepsFile='',[string]$Out='',[int]$DefaultWaitMs=250,[switch]$Status,[switch]$Serve)
 if ($Status) {
+  if ($env:FAKE_STATUS_SENTINEL) { [System.IO.File]::AppendAllText($env:FAKE_STATUS_SENTINEL, 'status' + [Environment]::NewLine) }
   Write-Output 'RUNNING pid=4242 window=FakeWin'
   Write-Output 'HANDLE 777'
   $json = '{"exe":"C:/App/client.exe","exeCanonical":"c:/app/client.exe"}'
@@ -44,6 +46,7 @@ Write-Output 'NOT_FOUND'
   writeFileSync(join(dir, 'ui-drive.ps1'), oneShot, 'utf8')
   writeFileSync(join(dir, 'ui-probe.ps1'), '# stub\n', 'utf8')
   process.env.FAKE_SENTINEL = sentinel
+  process.env.FAKE_STATUS_SENTINEL = statusSentinel
   process.env.FAKE_BATCH_PAYLOAD = JSON.stringify({ ok: true, elapsedMs: 3, steps: [{ step: 1, action: 'click', ok: true, output: 'CLICKED "x"' }] })
 }
 
@@ -230,6 +233,55 @@ installFakeScripts()
   const d = newDriver()
   const r = await d.flow({ steps: [{ action: 'read', match: 'x' }], tag: 'w2e2e-read' })
   check('纯只读 ui_flow 不被 policy 门拦截', r.policyCode === undefined, JSON.stringify(r).slice(0, 140))
+  d.warmShutdown()
+}
+
+// ------------------------------------------------- 用例 11（洞 #3 回归）：flow **逐步**过门，按 aid 的规则不得漏
+// 复核复现的原缺陷：只判 sideEffectSteps[0] → steps=[ok,sell] 放行、[sell,ok] 拒绝（同一组规则顺序不同结论相反）。
+{
+  clearEnv()
+  // 规则只允许 aid="ok"：同一 exe 下，第二步 aid="sell" 没有任何规则匹配 → 必须整段拒
+  process.env.DSH_UI_APP_POLICY = writePolicy('per-aid.json', [{ exe: 'C:/App/client.exe', aid: 'ok', effect: 'allow' }])
+  resetSentinel()
+  const d = newDriver()
+  const r = await d.flow({
+    steps: [{ action: 'click', name: 'a', aid: 'ok' }, { action: 'click', name: 'b', aid: 'sell' }],
+    tag: 'w2e2e-peraid', allowSideEffects: true,
+  })
+  check('flow 逐步判定：后面的 aid 未获允许 → 整段拒（洞 #3 回归）',
+    r.ok === false && r.policyCode === 'policy_unavailable', JSON.stringify(r).slice(0, 160))
+  check('flow 逐步判定 → **执行器调用计数 = 0**（第一步虽获准也不得执行）', execCount() === 0, 'sentinel=' + execCount())
+  d.warmShutdown()
+}
+
+// ------------------------------------------------- 对照组 4：所有 aid 都获准 → flow 照常执行（不能误杀）
+{
+  clearEnv()
+  process.env.DSH_UI_APP_POLICY = writePolicy('per-aid-ok.json', [{ exe: 'C:/App/client.exe', aid: 'ok', effect: 'allow' }])
+  resetSentinel()
+  const d = newDriver()
+  await d.flow({ steps: [{ action: 'click', name: 'a', aid: 'ok' }], tag: 'w2e2e-peraid-ok', allowSideEffects: true })
+  check('【自检】aid 全部获准时 flow 照常执行（哨兵>0）', execCount() > 0, 'sentinel=' + execCount())
+  d.warmShutdown()
+}
+
+// ------------------------------------------------- 用例 12（洞 #2 回归）：身份缓存必须随 warmRestart（gen）失效
+{
+  clearEnv()
+  process.env.DSH_UI_APP_POLICY = writePolicy('ident.json', [{ exe: 'C:/App/client.exe', effect: 'allow' }])
+  if (existsSync(statusSentinel)) rmSync(statusSentinel)
+  resetSentinel()
+  const d = newDriver()
+  const statusCount = () => (existsSync(statusSentinel) ? readFileSync(statusSentinel, 'utf8').split(/\r?\n/).filter((s) => s.trim()).length : 0)
+  await d.drive({ action: 'click', name: 'a', allowSideEffects: true })
+  const c1 = statusCount()
+  await d.drive({ action: 'click', name: 'a', allowSideEffects: true })
+  const c2 = statusCount()
+  check('身份按缓存复用（连续动作不重复解析 status）', c2 === c1, `${c1} -> ${c2}`)
+  d.warmRestart()
+  await d.drive({ action: 'click', name: 'a', allowSideEffects: true })
+  const c3 = statusCount()
+  check('warmRestart（gen++）后身份缓存失效并重解析（洞 #2 回归）', c3 > c2, `${c2} -> ${c3}`)
   d.warmShutdown()
 }
 
