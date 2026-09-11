@@ -212,10 +212,10 @@ server.tool(
   'ui_drive',
   'Drive the running desktop client via Windows UIA (real-time, stateful). Actions: find (locate a control) / ' +
     'read (visible controls, with the real input value and a #index reusable as `index`) / windows (all top-level windows) / ' +
-    'shot (PNG; describe=true returns a vision description) / waitfor (wait until a condition holds: state=appear|gone|enabled|disabled) / ' +
+    'shot (PNG; describe=true returns a vision description) / waitfor (block until a condition holds: state=appear|gone|enabled|disabled) / ' +
     'click / setvalue (ValuePattern) / key (clipboard paste for CJK) / type (SendKeys sequence: {ENTER} {TAB} {ESC} {DOWN} ^a …) / ' +
     'drag (mouse drag, e.g. a slider captcha). ' +
-    'For dynamic UIs: pass waitFor={ms,interval,state,match,index} on click/setvalue/key/type/find/expect to wait for the condition ' +
+    'For dynamic UIs: pass waitFor={ms,interval,state,match,index} on click/setvalue/key/type/find to wait for the condition ' +
     'BEFORE acting (no more guessing sleeps); use index for the Nth same-named control and inAid/inName to scope the search to a container. ' +
     'find / read / windows / shot / waitfor are read-only; click / setvalue / key / type / drag are real side effects and REQUIRE allowSideEffects=true.',
   {
@@ -370,7 +370,9 @@ server.tool(
   'Real UI action (side effects; allowSideEffects=true required): click / setvalue (use this for key-filtered fields such as a phone box) / ' +
     'key / type ({ENTER} {TAB} sequences) / drag (slider captcha). ' +
     'Input is read back and verified — a value that did not land is ok:false, never a silent success. Password/captcha fields are never echoed. ' +
-    'Trading controls (buy/sell/order/pay) are hard-denied in the driver: allowSideEffects cannot unlock them. ' +
+    'A name-based hard-deny list is enforced in the driver and allowSideEffects cannot unlock it: any control whose name/AutomationId matches ' +
+    'DSH_UI_DENY_RE (a conservative default list of "hard to undo once hit" control names) is refused. Override the list per deployment with ' +
+    'DSH_UI_DENY_RE to match your own UI. The refusal message always names the control and says the list is overridable. ' +
     'observe=true attaches a UI snapshot after the action. Credentials: pass ${cred:name}; the driver expands DSH_CRED_name from its own environment, ' +
     'so the secret never enters the model context or the evidence files.',
   {
