@@ -93,5 +93,47 @@ const partialHtml = readFileSync(join(here, 'fixtures', 'stack-report-symresolve
   check('空报告不会崩', (() => { try { const r = parseStackReport(''); return r && Array.isArray(r.hotFunctions) && r.hotFunctions.length === 0 } catch { return false } })())
 }
 
+// ------------------------------------------------- 6. 端到端实测抓到的三个"假成功"回归
+// 实测现场：xperf 被 900s 超时杀掉 → 留下**空报告文件** → 原实现只看"文件存在"就报 ok:true，
+// 返回一个空结果并显示 "符号未解析比例: 0%" —— 读起来像"符号全解析了"，实际一个函数都没有。
+{
+  const { writeFileSync, rmSync, existsSync } = await import('node:fs')
+
+  // 6a. 空报告：summarize 必须说清"没有任何条目"，**不得**显示 0% 未解析
+  const emptyText = summarize(parseStackReport(''), { topN: 5 }).text
+  check('空报告：明确写"没有任何可解析的函数条目"', /没有任何可解析的函数条目/.test(emptyText), emptyText.split('\n').slice(0, 3).join(' | '))
+  check('空报告：**不出现**"0%"这种误导性读数', !/符号未解析比例: 0%/.test(emptyText), emptyText.split('\n')[1])
+  check('空报告：明说"不等于没有热点"', /不等于["“]?没有热点/.test(emptyText))
+
+  // 6b. 空报告 → hotstacks 必须返回 ok:false（不是假成功）
+  const fakeEtl = join(here, '.tmp-fake.etl')
+  const fakeReport = join(here, '.tmp-fake-report.html')
+  writeFileSync(fakeEtl, 'not a real etl', 'utf8')
+  writeFileSync(fakeReport, '', 'utf8')   // 预先放一个空报告，模拟"xperf 留下空文件"
+  try {
+    const t = makeTrace({ evidenceDir: join(here, '.tmp-trace-evidence'), xperf: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe') })
+    const r = await t.hotstacks({ etlPath: fakeEtl, outPath: fakeReport, timeoutMs: 30000 })
+    check('空报告 → ok:false（不当成"没有热点"）', r.ok === false, JSON.stringify({ ok: r.ok, error: String(r.error).slice(0, 80) }))
+    check('空报告 → 错误信息给出排查方向', /符号|focus|为空/.test(String(r.error)), String(r.error).slice(0, 120))
+  } finally {
+    try { rmSync(fakeEtl, { force: true }); rmSync(fakeReport, { force: true }) } catch { /* ignore */ }
+  }
+
+  // 6c. xperf 超时 → 必须 timedOut:true 且 ok:false，并给出"加 process 过滤"的建议
+  {
+    writeFileSync(fakeEtl, 'not a real etl', 'utf8')
+    try {
+      const xp = existsSync('C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\xperf.exe')
+        ? undefined : join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'timeout.exe')
+      const t = makeTrace({ evidenceDir: join(here, '.tmp-trace-evidence'), ...(xp ? { xperf: xp } : {}) })
+      // timeoutMs=1：任何真实 xperf 都会被立刻杀掉 —— 走的就是"超时"分支
+      const r = await t.hotstacks({ etlPath: fakeEtl, timeoutMs: 1, outPath: join(here, '.tmp-to.html') })
+      check('xperf 超时 → ok:false 且 timedOut:true', r.ok === false && r.timedOut === true, JSON.stringify({ ok: r.ok, timedOut: r.timedOut }))
+      check('超时 → 建议里含"加 process 过滤"/调大 timeoutMs', /process 过滤|timeoutMs/.test(String(r.error)), String(r.error).slice(0, 140))
+      try { rmSync(join(here, '.tmp-to.html'), { force: true }) } catch { /* ignore */ }
+    } finally { try { rmSync(fakeEtl, { force: true }) } catch { /* ignore */ } }
+  }
+}
+
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }
 console.log('\nPASS: dsh-perf ETW trace/hotstacks test')

@@ -192,17 +192,36 @@ export function makeTrace(cfg = {}) {
     if (args.focus) cmd.push('-symbol', String(args.focus))
     const t0 = Date.now()
     const r = await runExe(c.xperf, cmd, { timeoutMs: Number(args.timeoutMs) || 900000, env: symbolEnv(!!args.offline) })
+    // 端到端实测踩到的假成功：xperf 被超时杀掉后仍留了一个**空报告文件**，
+    // 原实现只看"文件是否存在"就报 ok:true，返回一个空结果 —— 调用方会以为"没有热点"。
+    if (r.timedOut) {
+      return {
+        ok: false, timedOut: true, etlPath: etl, reportPath: existsSync(outHtml) ? outHtml : null,
+        error: 'xperf 出报告超时（' + (Date.now() - t0) + 'ms）。系统级 trace 很慢，建议：① 加 process 过滤（只分析目标进程）；' +
+          '② 用 focus 缩小 -symbol 范围；③ 调大 timeoutMs；④ 该 etl 是否过大（可用更短采集时长重采）',
+      }
+    }
     if (!existsSync(outHtml)) {
       return { ok: false, error: 'xperf 未产出报告', raw: (r.stdout + r.stderr).slice(0, 600) }
     }
     const html = readFileSync(outHtml, 'utf8')
     const parsed = parseStackReport(html)
     parsed.__etl = etl
+    const s = summarize(parsed, { topN, focus: args.focus })
+    if (!s.hotCount && !s.chainCount) {
+      // 空报告 = 失败，不是"没有热点"（没读到 ≠ 没有）
+      return Object.assign({
+        ok: false, etlPath: etl, reportPath: outHtml, reportBytes: statSync(outHtml).size,
+        error: '报告里没有可解析的函数条目 —— 不要当成"没有热点"。可能原因：符号未解析（确认已装符号/网络可达）、' +
+          'focus 过滤太严、xperf 输出为空。可先去掉 focus 重跑一次看有没有内容。',
+        text: s.text,
+      }, s)
+    }
     return Object.assign({
       ok: true, etlPath: etl, reportPath: outHtml, reportBytes: statSync(outHtml).size,
       focus: args.focus || null, process: args.process || c.procName || null,
       symbols: !args.offline, elapsedMs: Date.now() - t0,
-    }, summarize(parsed, { topN, focus: args.focus }))
+    }, s)
   }
 
   return { trace, hotstacks, isElevated, parseStackReport, symbolEnv, config: () => c }
@@ -345,8 +364,13 @@ export function summarize(parsed, { topN = 15, focus = '' } = {}) {
 
   const lines = []
   lines.push('Etl: ' + (parsed.__etl || ''))
-  lines.push('符号未解析比例: ' + (parsed.unknownRatio * 100).toFixed(0) + '%' +
-    (parsed.unknownRatio > 0.5 ? '  ⚠️ 大量帧未解析 —— 先配好符号（DSH_PERF_SYMBOL_PATH）再看结论' : ''))
+  // 空报告必须显式说清 —— 否则 "0% 未解析" 会被读成"符号全解析了"，实际是一个函数都没解析出来
+  if (!hot.length && !chains.length) {
+    lines.push('符号/条目: 报告里没有任何可解析的函数条目（**不等于"没有热点"**）')
+  } else {
+    lines.push('符号未解析比例: ' + (parsed.unknownRatio * 100).toFixed(0) + '%' +
+      (parsed.unknownRatio > 0.5 ? '  ⚠️ 大量帧未解析 —— 先配好符号（DSH_PERF_SYMBOL_PATH）再看结论' : ''))
+  }
   lines.push('')
   lines.push('## 最热函数（按包含命中 inclusive）')
   for (const f of hot) lines.push('  ' + String(f.percent).padStart(7) + '  ' + f.name + '   (excl ' + f.exclusive + ')')
