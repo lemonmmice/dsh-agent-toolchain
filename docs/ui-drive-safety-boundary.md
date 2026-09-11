@@ -29,7 +29,7 @@
 
 | # | 边界 | 状态 | 证据（可运行） | 限制 / 未覆盖 |
 |---|---|---|---|---|
-| 1 | 交易类控件硬拒绝（驱动层，与授权无关） | ✅ 已实现 | `test/deny-choke-point.test.mjs`（27 断言） | 按**控件名/AutomationId**匹配；坐标动作无名，由 4/5 兜 |
+| 1 | 「按名硬拒」名单（驱动层，与授权无关；名单可用 `DSH_UI_DENY_RE` 覆盖） | ✅ 已实现 | `test/deny-choke-point.test.mjs`（27 断言） | 按**控件名/AutomationId**匹配；坐标动作无名，由 4/5 兜 |
 | 2 | 硬拒下沉到**每个致效汇聚点**（点击/双击/写值/键盘/输入） | ✅ 已实现 | 同上（结构不变量：五个函数入口都必须有守卫） | 新增致效路径时须同步加守卫，测试会打红 |
 | 3 | `allowSideEffects` 门（含坐标动作 `clickat`/`drag`/`doubleclick`） | ✅ 已实现 | `test/deny-choke-point.test.mjs` | 传 `allowSideEffects` 只过一次门，不等于任何授权 |
 | 4 | 快照新鲜度门（`seq ∧ gen ∧ windowHandle`，opt-in） | ✅ 已实现 | `test/read-diff.test.mjs` | **不传 snapshotId 则放行**（零回归）；跨窗口合法复用未覆盖（落安全侧，多拒→重读） |

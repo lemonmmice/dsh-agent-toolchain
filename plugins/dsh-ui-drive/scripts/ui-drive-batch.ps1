@@ -719,14 +719,18 @@ function Mask-Value([string]$v, [bool]$secret) {
   return ($v.Substring(0, 1) + '***' + $v.Substring($v.Length - 1, 1))
 }
 
-# 交易类硬 deny：买入/卖出/下单/委托/支付/提现等入口，任何参数都不能解锁。
-# 这是驱动层强制（不是提示词），因为误点会真下单。
-$DENY_RE = '买入|卖出|下单|委托|交易|支付|提现|申购|赎回|撤单|平仓|开仓'
+# 「按名硬拒」：凡控件名/AutomationId 命中本正则的，驱动层一律拒绝，**任何参数都解锁不了**
+# （不是提示词约定，是驱动层强制；见下方 Assert-NotDenied 汇聚点）。
+#
+# 定位说明（2026-09-11 更正）：这是**通用机制**，不是交易专用 —— 目标客户端并没有交易模块。
+# 默认名单只是"一旦命中、后果很难挽回"的那类控件名的一个保守默认值（沿用历史配置）；
+# 不同部署应当用环境变量 DSH_UI_DENY_RE 按自己的界面覆盖它，而不是指望这份默认值正好合适。
+$DENY_RE = if ($env:DSH_UI_DENY_RE) { [string]$env:DSH_UI_DENY_RE } else { '买入|卖出|下单|委托|交易|支付|提现|申购|赎回|撤单|平仓|开仓' }
 function Test-DenyTarget($el) {
   $name = [string]$el.Current.Name
   $aid = [string]$el.Current.AutomationId
   if (($name -match $DENY_RE) -or ($aid -match $DENY_RE)) {
-    return ('交易类控件被驱动层硬拒绝（不可解锁）：name="' + $name + '" aid="' + $aid + '"')
+    return ('该控件被驱动层按名硬拒绝（不可解锁）：name="' + $name + '" aid="' + $aid + '"（名单可由 DSH_UI_DENY_RE 覆盖）')
   }
   return $null
 }
@@ -780,7 +784,7 @@ function Invoke-Click($el, $main) {
 }
 
 function Set-ElementValue($el, [string]$value) {
-  Assert-NotDenied $el   # 致效汇聚点守卫（W0）：写值同样能改交易类控件的值
+  Assert-NotDenied $el   # 致效汇聚点守卫（W0）：写值同样能改控件的值（含「按名硬拒」名单里的）
   try {
     $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
     # SetValue 直接写属性，绕过 PreviewKeyDown 的按键过滤（登录页手机号框只放行数字键）
@@ -918,7 +922,7 @@ function Send-KeyTo($el, [string]$value, [bool]$ascii, [int]$waitMs) {
   } else {
     # 中文走剪贴板粘贴（keybd_event 发不出非 ASCII）。
     # W5b：必须先快照并在用完后**还原用户原来的剪贴板** —— 否则我们会静默清掉
-    # 用户刚复制的账号/金额（驱动交易客户端时尤其危险）。
+    # 用户刚复制的账号/金额（驱动客户端时尤其危险）。
     $snap = Get-ClipboardSnapshot
     try {
       Set-Clipboard -Value $value
@@ -1361,7 +1365,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
           $el = $w.el
-          # 交易类硬 deny：驱动层强制，allowSideEffects 也解锁不了
+          # 「按名硬拒」：驱动层强制，allowSideEffects 也解锁不了
           $deny = Test-DenyTarget $el
           if ($deny) { $res.error = $deny }
           else {

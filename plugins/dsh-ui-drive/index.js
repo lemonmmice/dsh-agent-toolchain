@@ -36,7 +36,7 @@ const GUIDANCE =
   '观测完整性（B-1）：read/state 结果恒带 skipped=N——本次枚举里「读不到状态」而被跳过的元素数（类型白名单/offscreen/match/去重这些正常过滤不算）；skipped>0 时同结果附带 warn，明确写出「本次清单不完整」。别把「没读到」当成「界面上没有」；skipped=null 表示该路径没回报（未知），不等于 0。' +
   '视觉即返（推荐）：ui_launch 启动完成会自动截图并用视觉模型描述当前界面（返回 uiState.description，一步知道在登录页还是主界面）；ui_drive action=shot 加 describe=true 同样直接返回界面描述——优先用这两个，不必再单独 describe_image。需要深度视觉复核时才用 describe_image 对该 png 细看（当前主模型不读图，必须走 describe_image）。' +
   '实时看见（agent 专用）：ui_live(action=start|stop|status|frame|wait) 后台循环抓「窗口内容」帧（1500ms 默认，不抢前台不恢复最小化）；frame 返回 latest.png 路径+帧 hash+控件状态，read_image(frame.path) 即看见当前画面；wait({fromHash}) 阻塞等画面变化；未 start 时 frame 退化为一次捕获。敏感帧（焦点=密码/验证码）默认不给 path（allowSensitive=true 才给）。截图一律在 E 盘证据目录。' +
-  '安全边界：点击=真实操作（保存/生成/跳转可能落库）；「保存/删除/清空/导出」类按钮点击前先把按钮名报给用户确认；「下单/交易」类入口一律不点；优先用 find/read/shot/expect 做只读验证；定位卡住三步就停止报告，不盲点轰炸。' +
+  '安全边界：点击=真实操作（保存/生成/跳转可能落库）；「保存/删除/清空/导出」类按钮点击前先把按钮名报给用户确认；命中「按名硬拒」名单的控件一律不点；优先用 find/read/shot/expect 做只读验证；定位卡住三步就停止报告，不盲点轰炸。' +
   '证据目录默认 ~/.dsh-agent-toolchain/ui-evidence（DSH_UI_EVIDENCE_DIR 可覆盖），目标进程名/窗口名/客户端 exe 分别由 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE 指定。' +
   '用户提到「UI 自验 / 驱动客户端 / 自动验证页面 / 截图验证 / 帮我点一下客户端」时即指本插件，请据此协作。'
 
@@ -117,7 +117,7 @@ async function shotWithVision({ workspace = '', label = 'state', waitBeforeMs = 
 }
 
 const OBJECT = { type: 'object', additionalProperties: true }
-const READ_ONLY_NOTE = '。注意：点击/输入是真实副作用操作（可能落库），必须先报按钮名给用户确认再执行；下单/交易类入口一律不点'
+const READ_ONLY_NOTE = '。注意：点击/输入是真实副作用操作（可能落库），必须先报按钮名给用户确认再执行；命中「按名硬拒」名单的控件一律不点'
 
 const tools = () => [
   defineTool({
@@ -262,7 +262,7 @@ const tools = () => [
   defineTool({
     name: 'ui_act',
     description: '真实操作客户端（副作用，必须 allowSideEffects=true）：click 点击 / setvalue 写值（受限输入框如手机号框走它，绕开按键过滤）/ key 键盘输入（中文走剪贴板）/ type 键盘序列（{ENTER}/{TAB}/{ESC}，回车提交、Tab 跳转）/ drag 鼠标拖拽（滑块验证码）。' +
-      '写输入后驱动会回读校验，值没进去直接报错（不再假成功）；密码/验证码类控件的值不回显、不落证据；买入/卖出/下单/委托/支付类控件被驱动层硬拒绝，传 true 也点不动。' +
+      '写输入后驱动会回读校验，值没进去直接报错（不再假成功）；密码/验证码类控件的值不回显、不落证据；命中「按名硬拒」名单的控件被驱动层直接拒绝，传 true 也点不动（名单默认沿用历史值，可用 DSH_UI_DENY_RE 覆盖）。' +
       'observe=true 时动作后直接附带界面快照（窗口+焦点+交互控件），省一次往返。凭据用 ${cred:name} 占位符（驱动进程从环境变量 DSH_CRED_name 展开，模型看不到明文）。' + READ_ONLY_NOTE + '。Triggers: 点一下 / 输入 / 登录 / 拖滑块 / ui act.',
     parameters: {
       action: { type: 'string', required: true, description: 'click | setvalue | key | type | drag | clickat | doubleclick | pattern | scroll | selecttext | move | wheel（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位，坐标脆弱；doubleclick=元素级双击；pattern=调用元素真正暴露的 UIA pattern，动作名放 value/keys（Expand/Collapse/Increment/Decrement/Select/ScrollIntoView/Toggle/Invoke/Focus/Minimize/Maximize/Restore 等）；scroll=语义滚动（方向 value、页数 count）；selecttext=精确选区（text=value、prefix=match、suffix=expectValue、selectionType=state）；drag/clickat/doubleclick/pattern/scroll/selecttext 都能致效，必须 allowSideEffects=true；move/wheel 只移动鼠标/滚轮，无需副作用授权）' },
