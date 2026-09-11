@@ -185,6 +185,54 @@ installFakeScripts()
   d.warmShutdown()
 }
 
+// ------------------------------------------------- 用例 8：ui_flow 的副作用步**不得绕过** policy 门
+// （集成时发现的绕过口：flow 原先只查 allowSideEffects，policy deny 与急停哨兵对它完全失效）
+{
+  clearEnv()
+  process.env.DSH_UI_APP_POLICY = writePolicy('deny-flow.json', [{ exe: 'C:/App/client.exe', effect: 'deny' }])
+  resetSentinel()
+  const d = newDriver()
+  const r = await d.flow({ steps: [{ action: 'click', name: '确定' }], tag: 'w2e2e-deny', allowSideEffects: true })
+  check('ui_flow + deny 规则 → 整段被拒', r.ok === false && r.policyCode === 'policy_unavailable', JSON.stringify(r).slice(0, 160))
+  check('ui_flow + deny 规则 → **执行器调用计数 = 0**', execCount() === 0, 'sentinel=' + execCount())
+  d.warmShutdown()
+}
+
+// ------------------------------------------------- 用例 9：ui_flow 也不得绕过急停（外部总闸）
+{
+  clearEnv()
+  const estop = join(dir, 'ESTOP2')
+  writeFileSync(estop, 'stop', 'utf8')
+  process.env.DSH_UI_ESTOP_FILE = estop
+  resetSentinel()
+  const d = newDriver()
+  const r = await d.flow({ steps: [{ action: 'click', name: '确定' }], tag: 'w2e2e-estop', allowSideEffects: true })
+  check('ui_flow + 急停 → stopped_by_user', r.policyCode === 'stopped_by_user', String(r.policyCode))
+  check('ui_flow + 急停 → 执行器调用计数 = 0', execCount() === 0, 'sentinel=' + execCount())
+  d.warmShutdown()
+}
+
+// ------------------------------------------------- 对照组 3：未配置策略时 ui_flow 照常执行（不能被误杀）
+{
+  clearEnv()
+  resetSentinel()
+  const d = newDriver()
+  const r = await d.flow({ steps: [{ action: 'click', name: '确定' }], tag: 'w2e2e-ok', allowSideEffects: true })
+  check('【自检】未配置策略时 ui_flow 仍会执行（哨兵>0）', execCount() > 0, 'sentinel=' + execCount() + ' r=' + JSON.stringify(r).slice(0, 120))
+  d.warmShutdown()
+}
+
+// ------------------------------------------------- 用例 10：纯只读 flow 不受 policy 门影响
+{
+  clearEnv()
+  process.env.DSH_UI_APP_POLICY = writePolicy('deny-flow2.json', [{ exe: 'C:/App/client.exe', effect: 'deny' }])
+  resetSentinel()
+  const d = newDriver()
+  const r = await d.flow({ steps: [{ action: 'read', match: 'x' }], tag: 'w2e2e-read' })
+  check('纯只读 ui_flow 不被 policy 门拦截', r.policyCode === undefined, JSON.stringify(r).slice(0, 140))
+  d.warmShutdown()
+}
+
 clearEnv()
 try { rmSync(dir, { recursive: true, force: true }); rmSync(evidenceDir, { recursive: true, force: true }) } catch { }
 
