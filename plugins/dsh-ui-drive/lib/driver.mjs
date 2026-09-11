@@ -188,7 +188,11 @@ export function makeDriver(cfg) {  const c = {
    */
   async function launch({ extraArgs = '', waitMs = 60000 } = {}) {
     const startedAt = Date.now()
-    const budget = Math.max(3000, Number(waitMs) || 60000)
+    // 复核（Codex 2026-09-11）指出：旧写法 `Math.max(3000, waitMs)` 会把调用方显式传的
+    // `waitMs=1000` 偷偷抬到 3s，违背「调用方显式优先」的既有约定。现在只挡非法值（<=0/NaN）
+    // 并给一个 500ms 下限，显式传入多少就是多少。
+    const requested = Number(waitMs)
+    const budget = requested > 0 ? Math.max(500, requested) : 60000
     const st0 = await status({ timeoutMs: Math.min(30000, budget) })
     if (st0.running && st0.title) {
       return { started: false, alreadyRunning: true, pid: st0.pid, title: st0.title, waitedMs: 0 }
@@ -316,7 +320,14 @@ export function makeDriver(cfg) {  const c = {
         return
       }
       const e = warm.pending.get(obj.id)
-      if (!e) return
+      if (!e) {
+        // 迟到响应：请求已超时（或已被看门狗判死）并出队，响应这时才回来。
+        // 复核（Codex 2026-09-11）指出旧实现直接丢弃、不留痕迹 —— 至少要把「结果未知」记下来，
+        // 否则事后无法判断「那次超时到底有没有被执行」。
+        warm.lateResponses = (warm.lateResponses || 0) + 1
+        warm.lastLateResponseAt = Date.now()
+        return
+      }
       warm.pending.delete(obj.id)
       clearTimeout(e.timer)
       warm.lastUsed = Date.now()
@@ -359,14 +370,22 @@ export function makeDriver(cfg) {  const c = {
       if (warm.proc !== child) { clearInterval(wd); return }
       if (warm.pending.size === 0) return // 空闲不算僵死，看门狗继续待命
       let oldest = Number.MAX_SAFE_INTEGER
-      for (const [, e] of warm.pending) { if (e.since && e.since < oldest) oldest = e.since }
+      let oldestTimeout = 0
+      for (const [, e] of warm.pending) {
+        if (e.since && e.since < oldest) { oldest = e.since; oldestTimeout = Number(e.timeoutMs) || 0 }
+      }
       const now = Date.now()
+      // 阈值必须**动作感知**：复核（Codex 2026-09-11）指出固定 stallMs 会误杀合法长动作
+      // （例如调用方给了 180s 超时的截图，跑 100s 就被 90s 阈值砍掉）。取
+      // max(stallMs, 最老请求自己的超时) —— 看门狗只可能「比请求自己的超时更晚」动手，
+      // 于是它只杀真僵死的进程，不会抢在请求还没到期之前替它判死。
+      const effStall = Math.max(stallMs, oldestTimeout)
       const idleOk = now - (warm.lastOkAt || warm.startedAt || now)
       const idleOldest = oldest === Number.MAX_SAFE_INTEGER ? 0 : now - oldest
-      if (idleOk > stallMs && idleOldest > stallMs) {
+      if (idleOk > effStall && idleOldest > effStall) {
         warm.stalls++
         warm.lastStallAt = now
-        warm.lastStallReason = 'watchdog: 排队 ' + warm.pending.size + ' 个请求、' + Math.round(idleOk / 1000) + 's 无成功响应 → 判僵死并重启常驻进程'
+        warm.lastStallReason = 'watchdog: 排队 ' + warm.pending.size + ' 个请求、' + Math.round(idleOk / 1000) + 's 无成功响应（阈值 ' + Math.round(effStall / 1000) + 's）→ 判僵死并重启常驻进程'
         warm.lastProtocolError = warm.lastStallReason
         warmStop('stall watchdog')
       }
@@ -407,6 +426,7 @@ export function makeDriver(cfg) {  const c = {
       warm.pending.set(id, {
         timer,
         since: Date.now(), // 看门狗用：这条请求已经等了多久
+        timeoutMs,         // 看门狗用：这条请求自己允许等多久（长动作不能被固定阈值误杀）
         resolve: (obj) => {
           // 脚本热改：常驻进程自报 STALE_SCRIPT 后退出，这里静默重试一次（换新进程）
           if (obj && obj.error === 'STALE_SCRIPT') {
@@ -466,6 +486,8 @@ export function makeDriver(cfg) {  const c = {
       stalls: warm.stalls,
       lastStallAt: warm.lastStallAt,
       lastStallReason: warm.lastStallReason,
+      lateResponses: warm.lateResponses || 0,
+      lastLateResponseAt: warm.lastLateResponseAt || null,
       disabled: warm.disabled,
     }
   }
@@ -628,11 +650,15 @@ export function makeDriver(cfg) {  const c = {
             }
           }
           // 只读动作：超时后常驻进程已被判僵死杀掉，**重试一次**（B-2 的「失败重试」）——
-          // 换新进程 + ready 握手 + 重新解析 PID/主窗口，且总时长受 20s 上限约束，
-          // 绝不无限等。只读重放没有副作用，重试是安全的。
+          // 换新进程 + ready 握手 + 重新解析 PID/主窗口。**只有重试这一腿**受 20s 上限约束；
+          // 整次调用最坏时长 = 首次超时（effMs，read 默认 90s）+ 握手（≤15s）+ 重试（≤20s）。
+          // （复核 Claude 2026-09-11 的 N2：旧注释把「重试腿上限」写成了「总时长上限」，名不副实。）
+          // 只读重放没有副作用，重试是安全的。
+          // killOnTimeout 与首次保持一致：`capture` 这类「宁可放弃这一帧也不杀进程」的动作
+          // 不能被重试偷偷变成「延迟 8s 后照杀」。
           const up = await warmStart()
           if (up) {
-            const r2 = await warmSend(payload, Math.min(effMs, 20000), { killOnTimeout: true })
+            const r2 = await warmSend(payload, Math.min(effMs, 20000), { killOnTimeout: action === 'capture' ? false : true })
             if (r2 && r2.ok === true) res = r2
             else if (!res.killed && r2 && r2.error) res = r2
           }
@@ -694,11 +720,15 @@ export function makeDriver(cfg) {  const c = {
     }
     if (action === 'read') {
       const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^\[(Button|Edit|Text|RadioButton|CheckBox|TabItem|ComboBox|ListItem|MenuItem|TreeItem|Hyperlink)\]/.test(l))
-      // 回退脚本（ui-drive.ps1）的 read 同样逐元素容错并回报 SKIPPED（B-1）；
-      // 老版本脚本没有这一行 → skipped=null（未知），不谎报 0
+      // 回退脚本（ui-drive.ps1）同样逐元素容错、并回报 SKIPPED / SKIPREASON / SCANNED（B-1）。
+      // 老版本脚本没有这些行 → skipped=null（未知）、scanned 缺失（不谎报 0）。
+      // 复核（Claude 2026-09-11 的 N3）指出：上一版一次**没有解析 SCANNED**，于是空枚举 warn
+      // 在这条回退路径上永不触发 —— 现在补上。
       const sk = text.match(/^SKIPPED\s+(\d+)\s*$/m)
+      const scanned = text.match(/^SCANNED\s+(\d+)\s*$/m)
       const reason = text.match(/^SKIPREASON\s+(.+)$/m)
       const raw = { skipped: sk ? Number(sk[1]) : null }
+      if (scanned) raw.scanned = Number(scanned[1])
       if (reason) raw.skippedReasons = [reason[1].trim()]
       return { ok: true, action, count: lines.length, lines: lines.slice(0, 200), truncated: text.length > LIMIT_READ, ...skipInfo(raw) }
     }
@@ -743,10 +773,16 @@ export function makeDriver(cfg) {  const c = {
         (reasons.length ? reasons.join('；') : '原因未回报') +
         '）——不要把「没读到」当成「界面上没有」'
     } else if (out.scanned === 0 && (res.count || 0) === 0) {
-      // 空枚举的显式提示：这不是「界面没有控件」，是「这次没看到」（重绘中/窗口刚切换/最小化）
+      // 空枚举：结构化标出来（调用方可据此决定是否重读），并用 warn 说清它不是「界面没有控件」。
+      // 复核（Codex 2026-09-11）指出「真实空窗口无法与重绘空枚举区分」—— 所以这里只声明
+      // 「这次没看到」，不声称界面一定有什么；重试已把最坏等待压到 150ms。
+      out.observation = 'empty-enumeration'
       out.warn = '⚠ 本次枚举返回 0 个元素（UIA 给了空集合，通常是界面正在重绘或窗口刚切换）：' +
         '这不等于「界面上没有控件」，请稍后重读或用 shot 复核'
     }
+    // 复核指出的第二个静默口子：skipped 缺失（老脚本/回退路径）时调用方看不到任何提示。
+    // 不冒充 skipped>0，而是明确标成「未知」，由调用方决定要不要重读。
+    if (n === null) out.observationWarning = '跳过计数未回报（引擎或脚本未提供），本次观测完整性未知'
     return out
   }
 
@@ -768,7 +804,19 @@ export function makeDriver(cfg) {  const c = {
       return out
     }
     if (action === 'read') {
-      return { ok: true, action, count: res.count || 0, lines: normLines(res.lines), truncated: false, ...skipInfo(res) }
+      // 复核（Codex 2026-09-11）指出：这里曾硬编码 `truncated:false`，而脚本明明在超过 300 行时
+      // 会截断并设 `$res.truncated=$true` —— 等于把「被截断的清单」当完整清单交给调用方。
+      // 现在如实透传，并在截断时补一个 returned=实际返回行数（count 是匹配总数，两者本就可以不同）。
+      const lines = normLines(res.lines)
+      return {
+        ok: true,
+        action,
+        count: res.count || 0,
+        lines,
+        truncated: res.truncated === true,
+        ...(res.truncated === true ? { returned: lines.length } : {}),
+        ...skipInfo(res),
+      }
     }
     if (action === 'windows') return { ok: true, action, count: res.count || 0, lines: normLines(res.lines) }
     if (action === 'state') {

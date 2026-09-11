@@ -237,12 +237,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File test\read-skips-live.ps1
 
 **现在**：
 
-- **僵死看门狗**：判据是「**最近一次成功响应的时间**」（`warm.lastOkAt` 由每个成功响应刷新），
-  不是退出码。只要「还有请求排队」且「超过 `DSH_UI_STALL_MS`（默认 90000ms）没有任何成功响应」，
-  即判僵死：杀进程 + `stalls++` + 记 `lastStallReason`，下一次请求重新 spawn 并重新解析 PID/主窗口。
-  排队中的请求会被明确拒绝为「已执行但结果未知」，**不会被静默当成没执行**。
+- **僵死看门狗（定位已澄清，见 2026-09-11 复核节）**：判据是「**最近一次成功响应的时间**」
+  （`warm.lastOkAt` 由每个成功响应刷新），不是退出码；阈值取
+  **`max(DSH_UI_STALL_MS, 最老排队请求自己的超时)`** —— 它只可能比请求自己的超时**更晚**动手。
+  也就是说：**卡住请求的主防线是「请求自身超时 + 只读重试」**，看门狗是「Node 侧定时器丢失」时的兜底，
+  并对外提供诊断（`stalls` / `lastStallReason` / `lateResponses`）。之所以不保留「固定阈值抢杀」，
+  是因为复核指出那会误杀合法长动作（例如调用方给了 180s 超时的截图）。
 - **失败重试（只读动作）**：`read`/`find`/`state`/`windows` 等只读动作超时后**自动重试一次**
-  （新进程 + ready 握手 + 重新解析窗口），重试总时长受 20s 上限约束；只读重放无副作用，安全。
+  （新进程 + ready 握手 + 重新解析窗口）；**只有重试这一腿**受 20s 上限约束，整次调用最坏
+  仍是「首次超时（默认 90s）+ 握手（≤15s）+ 重试（≤20s）」。只读重放无副作用，重试是安全的。
 - **副作用动作绝不重放**：`click`/`setvalue`/`key`/`type`/`drag` 在看门狗重启或请求超时时，
   一律返回 `{ok:false, unknown:true}` 并提示「先复核控件状态再决定」，绝不走回退路径重跑。
 - **`status` 超时 ≠ 未运行**：状态查询超时改为返回 `{running:false, unknown:true, error:'status 超时…'}`，
@@ -256,6 +259,39 @@ powershell -NoProfile -ExecutionPolicy Bypass -File test\read-skips-live.ps1
 
 **单测**：`test/restart-watchdog.test.mjs`（离线，假 serve 进程模拟「活着但不回请求」），
 15 项断言覆盖「看门狗判僵死 + 只读重试 + 副作用不重放 + status 未知语义 + launch 硬上限」。
+
+### 2026-09-11 跨模型独立复核修正（Codex + Claude 各出一份报告）
+
+两份独立复核报告（`reviews/review-codex-20260911.md` / `reviews/review-claude-20260911.md`，
+存于本机工作区、不随仓库分发）
+对 `354d65f`/`a8adb6f`/`7d03bef` 做只读复核后，确认成立并已修的项：
+
+1. **`truncated` 硬编码 `false`**（两方都判「对调用方撒谎」）→ 如实透传 `res.truncated`，
+   并在截断时补 `returned=`（实际返回行数）。补了零覆盖的单测。
+2. **看门狗固定阈值会误杀合法长动作** → 阈值改为 `max(DSH_UI_STALL_MS, 最老请求自身超时)`；
+   同时把 README/注释里「看门狗判僵死」的定位改准（主防线是请求超时 + 重试）。
+3. **`launch` 的 `Math.max(3000, waitMs)` 覆盖调用方显式值** → 改为只挡非法值（≤0/NaN），下限 500ms；
+   显式 `waitMs=1000` 现在就是 1s（有单测）。
+4. **read 的 `$cur.*` 属性访问未全包 try/catch**（异常会整步失败而不是记 skipped）→ 逐元素函数体
+   全包 try/catch，异常计入 `skipped` 并带原因；与 `state` 路径口径一致。
+5. **空枚举修复在**一次性回退路径（`DSH_UI_SERVE=0`）**缺失**（Claude 的 N3）→ `ui-drive.ps1` 的 read
+   补齐「缓冲输出 + 空枚举重试 ≤3 次 + 回报 `SCANNED n`」，driver 侧解析 `SCANNED` → 回退路径
+   同样会给出空枚举 warn（补了单测）。
+6. **两条路径对同一坏元素口径不一**（Claude 的 N4）→ `ControlType` 为 null 的瞬时元素在两条路径
+   都按「类型未知 → 白名单过滤」处理，**不计 skipped**。
+7. **重试的 `killOnTimeout` 与首次不一致** → 重试保持与首次相同的 `killOnTimeout`（避免把
+   「宁可放弃这一帧也不杀进程」偷偷变成「延迟若干秒后照杀」）。
+8. **注释把「重试腿 20s」写成「总时长 20s」**（Claude 的 N2）→ 措辞改正，并把「整次调用最坏时长」
+   的构成写清。
+
+复核中**未被采纳**的两条（附我的反证）：
+
+- Codex「`/T` 会连带杀 MSBuild/驱动」：Claude 给出反证并被我核实 —— `killClientProcess` 在
+  MSBuild `spawn` **之前** `await` 完成，且 MSBuild / UI 驱动 PowerShell 都不是客户端的子进程，
+  `/T` 够不到它们。红线命中点只有「按镜像名误杀同名实例」这一条（已修）。
+- Claude 的 N1「`capture` 会走 warm 路径并被重试破坏 `killOnTimeout:false` 护栏」：**路径不成立** ——
+  `capture` 在 `BATCH_ONLY_ACTIONS` 里（`lib/driver.mjs`），根本不走 warm 路径（实测 `seq` 不增长、
+  结果来自批量路径）。不过该条促成的第 7 项修正仍然保留（万一路由变化也不会踩）。
 
 ### 已知缺口（尚未修复，欢迎 PR）
 
