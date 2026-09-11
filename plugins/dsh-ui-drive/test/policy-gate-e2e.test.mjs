@@ -34,6 +34,39 @@ if ($Status) {
   Write-Output 'RECT 800x600 @0,0'
   exit 0
 }
+if ($Serve) {
+  # Fake resident (serve) impl mirroring the real ui-drive-batch.ps1 -Serve protocol:
+  #   ping -> {ok:true,pong:true} (handshake); any other request -> append one 'serve' line to the
+  #   sentinel and reply ok. The unique 'serve' marker proves execution really went through the
+  #   resident process (not a fallback to one-shot batch/oneshot). ASCII-only on purpose: this fake
+  #   is written UTF-8 without BOM, and PowerShell 5.1 on a CN-locale host would GBK-mangle non-ASCII.
+  $reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
+  $writer = New-Object System.IO.StreamWriter([Console]::OpenStandardOutput(), (New-Object System.Text.UTF8Encoding($false)))
+  $writer.AutoFlush = $true
+  $seq = 0
+  while ($true) {
+    $line = $reader.ReadLine()
+    if ($null -eq $line) { break }
+    if (-not $line.Trim()) { continue }
+    $seq++
+    try {
+      $req = $line | ConvertFrom-Json
+      $cmd = 'step'
+      if ($req.PSObject.Properties.Name -contains 'cmd' -and $req.cmd) { $cmd = [string]$req.cmd }
+      if ($cmd -eq 'ping') {
+        $writer.WriteLine('RESP_JSON={"id":' + $seq + ',"ok":true,"pong":true}')
+      } else {
+        if ($env:FAKE_SENTINEL) { [System.IO.File]::AppendAllText($env:FAKE_SENTINEL, 'serve' + [Environment]::NewLine) }
+        $act = 'step'
+        if ($req.PSObject.Properties.Name -contains 'action' -and $req.action) { $act = [string]$req.action }
+        $writer.WriteLine('RESP_JSON={"id":' + $seq + ',"ok":true,"action":"' + $act + '","output":"CLICKED"}')
+      }
+    } catch {
+      $writer.WriteLine('RESP_JSON={"id":' + $seq + ',"ok":false,"error":"parse"}')
+    }
+  }
+  exit 0
+}
 if ($env:FAKE_SENTINEL) { [System.IO.File]::AppendAllText($env:FAKE_SENTINEL, 'batch' + [Environment]::NewLine) }
 Write-Output ('RESULT_JSON=' + [string]$env:FAKE_BATCH_PAYLOAD)
 `
@@ -55,9 +88,18 @@ function execCount() {
   if (!existsSync(sentinel)) return 0
   return readFileSync(sentinel, 'utf8').split(/\r?\n/).filter((s) => s.trim()).length
 }
+/** 哨兵原文（用于区分执行走的是哪条路径：serve / batch / oneshot）。 */
+function sentinelText() { return existsSync(sentinel) ? readFileSync(sentinel, 'utf8') : '' }
 
 function newDriver() {
   process.env.DSH_UI_SERVE = '0'
+  return makeDriver({ scriptsDir: dir, evidenceDir, procName: 'FakeProc' })
+}
+
+/** 常驻 serve 路径的 driver（DSH_UI_SERVE=1）。用于证明门在 serve 路径同样先于执行生效。 */
+function newServeDriver() {
+  process.env.DSH_UI_SERVE = '1'
+  process.env.DSH_UI_SERVE_IDLE_MS = '60000'
   return makeDriver({ scriptsDir: dir, evidenceDir, procName: 'FakeProc' })
 }
 
@@ -284,6 +326,56 @@ installFakeScripts()
   check('warmRestart（gen++）后身份缓存失效并重解析（洞 #2 回归）', c3 > c2, `${c2} -> ${c3}`)
   d.warmShutdown()
 }
+
+// ============================================================ SERVE=1 常驻路径（复核盲区补齐）
+// 既有用例只走 DSH_UI_SERVE=0（一次性/batch 路径）。门在 driveOnce 最前面、结构上先于
+// serve / batch / oneshot 三条执行路径 —— 但"结构上先于"需要**证明**而不是推断：
+// 这里用 SERVE=1 起**真常驻进程**，先证明 serve 路径确实是本配置下的执行路径（对照组：哨兵标记=serve），
+// 再证明 deny/急停在同一配置下拦得住（执行器 0 次，且常驻进程**根本没被 warmStart** —— 门在启动常驻进程之前就短路了）。
+
+// 对照组（serve 自检）：未配策略 → 常驻进程照常执行；哨兵标记必须是 'serve'（证明没回退到 batch/oneshot）。
+// 若这条不过，说明常驻路径没真正跑起来，后面两条 deny/急停 的"0 次"就没有意义 —— 故必须先立住它。
+{
+  clearEnv()
+  resetSentinel()
+  const d = newServeDriver()
+  const r = await d.drive({ action: 'click', name: '确定', allowSideEffects: true })
+  check('【自检·serve】未配策略时常驻路径照常执行（哨兵>0）', execCount() > 0, 'sentinel=' + execCount() + ' r=' + JSON.stringify(r).slice(0, 120))
+  check('【自检·serve】执行确实走常驻进程（哨兵标记=serve，非 batch/oneshot）', /serve/.test(sentinelText()), 'text=' + JSON.stringify(sentinelText()))
+  check('【自检·serve】常驻进程确已起来（warmStatus.alive=true）', d.warmStatus().alive === true, JSON.stringify(d.warmStatus()))
+  d.warmShutdown()
+}
+
+// serve + deny → 拒绝 + 执行器 0 次 + 常驻进程未被启动（门先于 warmStart）
+{
+  clearEnv()
+  process.env.DSH_UI_APP_POLICY = writePolicy('serve-deny.json', [{ exe: 'C:/App/client.exe', effect: 'deny' }])
+  resetSentinel()
+  const d = newServeDriver()
+  const r = await d.drive({ action: 'click', name: '确定', allowSideEffects: true })
+  check('serve 路径 + deny → 拒绝（policy_unavailable）', r.ok === false && r.policyCode === 'policy_unavailable', JSON.stringify(r).slice(0, 160))
+  check('serve 路径 + deny → **执行器调用计数 = 0**', execCount() === 0, 'sentinel=' + execCount())
+  check('serve 路径 + deny → 常驻进程根本未启动（门在 warmStart 之前短路）', d.warmStatus().alive === false, JSON.stringify(d.warmStatus()))
+  d.warmShutdown()
+}
+
+// serve + 急停（外部总闸，不配策略也要拦）→ 拒绝 + 执行器 0 次 + 常驻进程未被启动
+{
+  clearEnv()
+  const estop = join(dir, 'ESTOP-SERVE')
+  writeFileSync(estop, 'stop', 'utf8')
+  process.env.DSH_UI_ESTOP_FILE = estop
+  resetSentinel()
+  const d = newServeDriver()
+  const r = await d.drive({ action: 'click', name: '确定', allowSideEffects: true })
+  check('serve 路径 + 急停 → stopped_by_user', r.policyCode === 'stopped_by_user', String(r.policyCode))
+  check('serve 路径 + 急停 → **执行器调用计数 = 0**', execCount() === 0, 'sentinel=' + execCount())
+  check('serve 路径 + 急停 → 常驻进程根本未启动', d.warmStatus().alive === false, JSON.stringify(d.warmStatus()))
+  d.warmShutdown()
+}
+// serve 收尾：恢复 SERVE=0（本文件已到末尾，纯为环境卫生）
+process.env.DSH_UI_SERVE = '0'
+delete process.env.DSH_UI_SERVE_IDLE_MS
 
 clearEnv()
 try { rmSync(dir, { recursive: true, force: true }); rmSync(evidenceDir, { recursive: true, force: true }) } catch { }
