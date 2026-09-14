@@ -226,6 +226,45 @@ if ($Action -eq 'find') { Write-Output ("FOUND [Button] name=" + $Name + " enabl
   d.warmShutdown()
 }
 
+// ---------------------------------------------------------------- 11. UD-03：动作步失败必须算失败
+//
+// 旧实现把非断言步的失败门在 `failFast` 里（`if (!ok && failFast) { failed++; break }`），
+// 而返回的 `ok` 是 `failed === 0` —— 于是一个**失败的 click** 会得到 `{ok:true, passed:0, failed:0}`，
+// 渲染成「0 通过 / 0 失败」。连带效应：失败语料库永不触发，这类错误从此不再被记录。
+{
+  // 11a. 失败的动作步 + 不启用 failFast → 必须 ok:false 且 stepFailures=1
+  installFakeBatch({ ok: true, elapsedMs: 9, steps: [
+    { step: 1, action: 'click', ok: false, error: '未找到目标控件', notFound: true },
+  ] })
+  process.env.DSH_UI_SERVE = '0'
+  let d = newDriver()
+  let v = await d.flow({ tag: 'unit-ud03a', steps: [{ action: 'click', name: '不存在' }], allowSideEffects: true })
+  check('UD-03 失败动作步 → ok 必须为 false（旧实现是 true）', v.ok === false, JSON.stringify({ ok: v.ok, passed: v.passed, failed: v.failed, sf: v.stepFailures }))
+  check('UD-03 失败动作步 → stepFailures=1', v.stepFailures === 1, JSON.stringify(v.stepFailures))
+  check('UD-03 失败动作步 → stepFailureNames 点名是哪一步', Array.isArray(v.stepFailureNames) && /1:click/.test(v.stepFailureNames[0]), JSON.stringify(v.stepFailureNames))
+  check('UD-03 断言计数仍为 0（动作失败不冒充断言失败）', v.passed === 0 && v.failed === 0, JSON.stringify({ p: v.passed, f: v.failed }))
+  d.warmShutdown()
+
+  // 11b. 全成功 → ok:true 且 stepFailures=0（不能把成功也判成失败）
+  installFakeBatch({ ok: true, elapsedMs: 5, steps: [
+    { step: 1, action: 'read', ok: true, count: 1, lines: ['[Button] "A"'] },
+  ] })
+  d = newDriver()
+  v = await d.flow({ tag: 'unit-ud03b', steps: [{ action: 'read' }] })
+  check('UD-03 全成功 → ok:true 且 stepFailures=0', v.ok === true && v.stepFailures === 0, JSON.stringify({ ok: v.ok, sf: v.stepFailures }))
+  d.warmShutdown()
+
+  // 11c. failFast 只控制"要不要中断"，不控制"算不算失败"
+  installFakeBatch({ ok: true, elapsedMs: 5, steps: [
+    { step: 1, action: 'click', ok: false, error: '未找到目标控件' },
+    { step: 2, action: 'read', ok: true, count: 1, lines: ['[Button] "A"'] },
+  ] })
+  d = newDriver()
+  v = await d.flow({ tag: 'unit-ud03c', steps: [{ action: 'click', name: 'X' }, { action: 'read' }], allowSideEffects: true, failFast: true })
+  check('UD-03 failFast=true 时同样计失败', v.ok === false && v.stepFailures === 1, JSON.stringify({ ok: v.ok, sf: v.stepFailures }))
+  d.warmShutdown()
+}
+
 rmSync(scriptsDir, { recursive: true, force: true })
 rmSync(evidenceDir, { recursive: true, force: true })
 delete process.env.FAKE_BATCH_PAYLOAD

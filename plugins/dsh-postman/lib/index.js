@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto'
 import { createProxyManager } from './proxy.mjs'
 import { listMethods as grpcListMethods, unaryCall as grpcUnaryCall } from './grpc.mjs'
 import { sendRequest, normalizeHeaders, MAX_RESP_BYTES, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS } from './http.mjs'
+import { renderHttp, toListItem } from './view.mjs'
 
 /** Stable cordis plugin name. */
 export const name = 'postman'
@@ -48,7 +49,7 @@ const GUIDANCE =
   '本机已安装 dsh-postman 插件（DSH Web GUI 的接口调试面板，类 Postman）：侧边栏「接口调试」入口，可视化构造并发送 HTTP 请求。' +
   '能力：面板里选方法 / 填 URL / 加请求头 / 写 body，点发送后由宿主进程服务端发起请求（绕过浏览器 CORS），展示状态码 / 耗时 / 大小 / 响应头 / 响应体（自动美化 JSON）；' +
   '历史存本地 JSONL 库（history.jsonl，追加写入，上限 2000 条），点击可回填复用。' +
-  'agent 可用 http_request 工具直接发请求（method/url 必填，headers/body/timeoutMs 可选），返回状态码 / 响应头 / 响应体，并同样计入面板历史。' +
+  'agent 可用 http_request 工具直接发请求（url 必填；method 省略时按 GET，headers/body/timeoutMs 可选），返回状态码 / 响应头 / 响应体，并同样计入面板历史。' +
   '限制：响应体保留上限 2MB（超出截断）；目标 URL 任意（本机开发调试工具），控制接口仅限本机回环。' +
   '面板 URL 用 ws:// 或 wss:// 开头会切到 WebSocket 客户端（浏览器直连：连接/断开、实时消息日志、发消息、可选子协议）；http_request 工具本身仅 HTTP/HTTPS。' +
   '用户提到「接口调试 / 发请求 / 调接口 / postman / 接口测试 / WebSocket」时即指本插件，请据此协作。'
@@ -117,20 +118,7 @@ function recordFor(spec, response) {
 }
 
 /** Light list projection (no bodies/headers) for the history table. */
-function toListItem(rec) {
-  const r = rec.response ?? {}
-  return {
-    id: rec.id,
-    ts: rec.ts,
-    method: rec.request?.method ?? 'GET',
-    url: rec.request?.url ?? '',
-    ok: r.ok === true,
-    status: Number.isInteger(r.status) ? r.status : null,
-    durationMs: Number.isFinite(r.durationMs) ? r.durationMs : null,
-    size: Number.isInteger(r.size) ? r.size : null,
-    error: r.ok === false ? r.error ?? '' : '',
-  }
-}
+// toListItem 已移到 lib/view.mjs（有损投影必须能离线单测，PM-03 教训）
 
 /** Loopback literal check plus browser same-origin markers (mirrors dsh-ssh's fence). */
 function isLoopbackRequest(request) {
@@ -391,9 +379,10 @@ function httpRequestTool() {
       'Send an HTTP request from the host (Postman-style, server-side so no browser CORS) and return the response ' +
       '(status / statusText / headers / body / duration). The call is also logged to the dsh-postman 「接口调试」 panel history. ' +
       'A non-2xx status is a normal result (ok:true); ok:false means the request could not be made (bad url / connection / timeout). ' +
-      'Triggers: 发请求 / 调接口 / 接口测试 / http request / call an API.',
+      '**本机回环路由**：插件各自注册了 `/api/dsh-<插件名>` 前缀（已核：dsh-ui-drive / dsh-perf / dsh-api-visualizer / dsh-hang-inspector / dsh-postman / dsh-build —— 子路径见各插件自己的面板/文档，本工具**不列**未核实的子路径），这些路由在**回环上无鉴权**，面板能做而工具面没暴露的操作就得靠它打（例如抓包启停、契约基线、源码定位）。⚠ 两条纪律：① 它们是**真实的副作用入口**（可能启停捕获、复位护栏、改本机状态），按副作用对待；② 只能打 `127.0.0.1`，别把它当外网请求工具。' +
+    'Triggers: 发请求 / 调接口 / 接口测试 / http request / call an API.',
     parameters: {
-      method: { type: 'string', required: true, description: 'HTTP method, e.g. GET/POST/PUT/DELETE/PATCH.' },
+      method: { type: 'string', description: 'HTTP method（省略时按 GET 发，与实现一致）, e.g. GET/POST/PUT/DELETE/PATCH.' },
       url: { type: 'string', required: true, description: 'Absolute request URL (http/https).' },
       headers: { type: 'object', additionalProperties: true, description: 'Request headers as a name→value map.' },
       body: { type: 'string', description: 'Request body (ignored for GET/HEAD). For JSON, set content-type and pass a JSON string.' },
@@ -414,12 +403,14 @@ function httpRequestTool() {
           headers: { type: 'object', additionalProperties: true },
           body: { type: 'string' },
           error: { type: 'string' },
+          // PM-03：跳转诚实性字段（schema 里不声明，读 schema 的调用方就不知道它们存在）
+          requestedUrl: { type: 'string' },
+          finalUrl: { type: 'string' },
+          redirected: { type: 'boolean' },
+          redirectNote: { type: 'string' },
         },
       },
-      render: (_args, value) =>
-        value.ok
-          ? [{ type: 'text', text: `${value.status} ${value.statusText ?? ''} · ${Math.round(value.durationMs)}ms · ${value.size} bytes` }]
-          : [{ type: 'text', text: `request failed: ${value.error}` }],
+      render: renderHttp,
     },
     async execute(args) {
       const response = await sendRequest(args)

@@ -24,10 +24,60 @@ import zlib from 'node:zlib'
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
+import { decodeConsole } from '../../../lib/env-fallback.mjs'
 
 const require = createRequire(import.meta.url)
-const forge = require('node-forge')
+
+/**
+ * node-forge **按需加载**（F-037 派生）。
+ *
+ * 原来这里是模块顶层的 `const forge = require('node-forge')` ⇒ 任何 node 进程只要 `import`
+ * 本模块，就必须能解析到 node-forge，否则**整个模块加载失败**。
+ * 而仓库里 node-forge 只装在**部署副本**的 node_modules 下 ⇒ 仓库自己的测试**根本 import 不进来**
+ *   （实测：`plugins/dsh-api-visualizer/test/` 里 **0 个**测试 import proxy-engine.mjs）。
+ * 后果不是"少测一点"：`setSystemProxy()` 这条**会写用户注册表**的路径**一条测试都没有**，
+ *   F-037（拿不可信备份去覆盖真实设置）就活在上面 —— 这是它能活到 r34 的直接原因。
+ * 改成按需加载后，本模块在没有 node-forge 的环境里也能被 import（只有真正要用 CA 时才需要它），
+ *   于是仓库测试可以直接覆盖代理引擎的逻辑路径。
+ */
+let _forge = null
+function forgeLib() {
+  if (_forge === null) _forge = require('node-forge')
+  return _forge
+}
+
+/**
+ * ⚠ 这里用 **Proxy 惰性转发**，而不是"在每个用到的地方写 `const forge = forgeLib()`"。
+ *
+ * 为什么（我第一版就是这么写错的，被真机验收当场抓住）：我数出全模块有 18 处 `forge.…`，
+ * 以为它们都在 `ensureCa()` / `hostCert()` / `exportCaDer()` 三个函数里，就往那三处各插了一行。
+ * 实际还有**第四处** —— `handleConnect()` 里 `tls.createSecureContext({ key: forge.pki… })`。
+ * 那处没有 `forge` 绑定 ⇒ 每次 HTTPS 解密都抛 `ReferenceError` ⇒ **CONNECT 被重置**。
+ * 症状是 `verify-proxy-live.mjs` 从 **47/47 掉到 43/47**（D 段全红、`counters.mitm=0`）——
+ * 幸好那条真机验收一直在跑，是它把这次回归当场抓出来的。
+ *
+ * 教训：**"我以为只有 N 处"不能靠数数，要靠不依赖位置的改法。**
+ * 用 Proxy 转发后，所有既有 `forge.xxx` 调用点**一行都不用改**，也就不存在"漏了第 4 处"。
+ */
+const forge = new Proxy({}, {
+  get(_target, prop) {
+    const real = forgeLib()
+    const v = real[prop]
+    return typeof v === 'function' ? v.bind(real) : v
+  },
+})
+
+/**
+ * 执行 `reg.exe` 并返回**原始 Buffer**（解码统一在 `readSystemProxy` 里做一次，见那里的注释）。
+ * 与 `lib/env-fallback.mjs` 的 `defaultExec` 同构 —— 同一个问题只允许有一份实现。
+ */
+function defaultRegExec(args) {
+  return execFileSync('reg.exe', args, {
+    windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+  })
+}
+
 
 /** Per-field body cap for stored records (2MB). */
 const BODY_CAP = 2 * 1024 * 1024
@@ -241,33 +291,64 @@ function bodyForStore(rawBuf, encoding, contentType) {
   return text
 }
 
-/** Read WinINET proxy settings (HKCU). */
-function readSystemProxy() {
-  const result = { enable: false, server: '', override: '' }
+/**
+ * Read WinINET proxy settings (HKCU).
+ *
+ * F-037（2026-09-12 r34，读代码查出 —— 这条**会写坏用户的机器设置**）：
+ *   原实现分三次 `reg query /v <name>`，全部包在**同一个** try/catch 里，
+ *   任何一步失败都 `catch {}` 后返回默认值 `{enable:false, server:'', override:''}` ——
+ *   也就是把"**没读到**"和"**读到就是没有**"压成了同一个返回值。
+ *   而它唯一的消费者 `setSystemProxy()` 拿这个返回值当**备份**：
+ *     · 备份记成"用户没开代理" ⇒ 恢复时写 `ProxyEnable=0` ⇒
+ *       **把用户真实的"代理开着"改成"关着"**，并且这份错备份还会 `sysproxy-backup.json` 落盘持久化；
+ *     · 更短的一条路：**从没备份过就调 `setSystemProxy(false)`**，原实现走 `backup === null`
+ *       分支直接写 `ProxyEnable=0` —— "我们没动过它，却把它关了"。
+ *   本机实测：用户当前 `ProxyEnable=1`、`ProxyServer=127.0.0.1:6518`（他自己的代理）。
+ *   所以这不是理论问题，是"一条命中就会关掉用户代理"的路径。
+ *
+ * 现在的做法：
+ *   ① **一次** `reg query <key>`（不按 /v 逐个查）⇒ "值不存在"与"reg 失败"不再混淆：
+ *      整键查到了 ⇒ 缺哪个值就是**真的没设**（`ok:true`）；整键都查不到 ⇒ `ok:false`。
+ *   ② 返回 **`ok`** 明说这次读是否可信；**部分失败不再丢弃已经读到的值**。
+ *   ③ 用**共享的 OEM 解码**读 stdout（`decodeConsole`）—— `reg.exe` 输出是控制台码页，
+ *      按 UTF-8 硬解会把 `ProxyOverride` 里可能的中文绕过条目弄成 U+FFFD，
+ *      而那串值**会被原样写回注册表**（见 F-036，同一个根因，后果更重：直接改坏用户设置）。
+ */
+export function readSystemProxy(options = {}) {
+  const run = options.exec || defaultRegExec
+  const KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
+  let text = null
   try {
-    const { execFileSync } = require('node:child_process')
-    const raw = execFileSync('reg.exe', [
-      'query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
-      '/v', 'ProxyEnable',
-    ], { encoding: 'utf8' })
-    const m = /0x([0-9a-fA-F]+)/.exec(raw)
-    result.enable = m !== null && Number.parseInt(m[1], 16) === 1
-    const raw2 = execFileSync('reg.exe', [
-      'query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
-      '/v', 'ProxyServer',
-    ], { encoding: 'utf8' })
-    const m2 = /REG_SZ\s+(.+)/.exec(raw2)
-    if (m2 !== null) result.server = m2[1].trim()
-    const raw3 = execFileSync('reg.exe', [
-      'query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
-      '/v', 'ProxyOverride',
-    ], { encoding: 'utf8' })
-    const m3 = /REG_SZ\s+(.+)/.exec(raw3)
-    if (m3 !== null) result.override = m3[1].trim()
+    text = run(['query', KEY])
   } catch {
-    // registry keys absent / reg.exe unavailable
+    text = null
   }
-  return result
+  // 与 `lib/env-fallback.mjs` 的 `readRegistryEnv` **同一契约**：exec 可以直接给 Buffer，
+  // Buffer 必须走 OEM 解码（`String(buf)` 等于按 UTF-8 硬解，中文值必坏）。
+  if (Buffer.isBuffer(text)) text = decodeConsole(text)
+  if (text === null || text === undefined) {
+    // ★ 读不到就是**读不到** —— 绝不伪装成"默认值"。调用方必须据此拒绝写注册表。
+    return {
+      ok: false, enable: false, server: '', override: '',
+      reason: 'reg-query-failed',
+      detail: '整键 reg query 失败（reg.exe 不可用 / 权限 / 编码异常）—— 本次读**不可信**，不得据此备份或恢复',
+    }
+  }
+  const readOne = (name, re) => {
+    const m = re.exec(text)
+    return m === null ? null : m[1].trim()
+  }
+  const enableRaw = readOne('ProxyEnable', /^\s*ProxyEnable\s+REG_DWORD\s+(0x[0-9a-fA-F]+)/m)
+  const server = readOne('ProxyServer', /^\s*ProxyServer\s+REG_SZ\s+(.*)$/m)
+  const override = readOne('ProxyOverride', /^\s*ProxyOverride\s+REG_SZ\s+(.*)$/m)
+  return {
+    ok: true,
+    enable: enableRaw !== null && Number.parseInt(enableRaw, 16) === 1,
+    server: server === null ? '' : server,
+    override: override === null ? '' : override,
+    // 值不存在 ≠ 读失败：整键已读到，所以缺项就是"真的没设"。
+    present: { enable: enableRaw !== null, server: server !== null, override: override !== null },
+  }
 }
 
 function writeSystemProxy({ enable, server, override }) {
@@ -458,11 +539,19 @@ class SecureForwardAgent extends https.Agent {
 
 export { matchRule, WsFrameParser }
 export class ProxyEngine {
-  constructor({ certDir, port = 8899, upstream = undefined, onRecord = () => {} } = {}) {
+  constructor({ certDir, port = 8899, upstream = undefined, onRecord = () => {}, regWriter = null, winInetRefresh = null, sysProxyReader = null } = {}) {
     this.certDir = certDir
     this.port = port
     this.upstream = upstream // {host,port} | null(=direct) | undefined(=auto: read system proxy)
     this.onRecord = onRecord
+    // F-037：注册表**写**与 WinINet 刷新的注入口。
+    //   为什么要开口子：`setSystemProxy()` 是**会改用户机器设置**的路径，而它的 bug 恰恰是
+    //   "备份不可信时仍然写"，所以必须能用注入在**不碰真实注册表**的前提下测出这个行为。
+    //   （原来这两个都是模块级自由函数，测试无从拦截 ⇒ 这条路径**一条测试都没有**，
+    //    这也是它能活到 r34 的原因之一。）
+    this.regWriter = typeof regWriter === 'function' ? regWriter : writeSystemProxy
+    this.winInetRefresh = typeof winInetRefresh === 'function' ? winInetRefresh : refreshWinInet
+    this.readSysProxy = typeof sysProxyReader === 'function' ? sysProxyReader : readSystemProxy
     this.server = null
     this.counters = { requests: 0, mitm: 0, errors: 0, ws: 0, rulesHits: 0, rulesMocks: 0 }
     this.ca = null
@@ -1195,6 +1284,83 @@ export class ProxyEngine {
       let settled = false
       let upBuf = Buffer.alloc(0)
 
+      /**
+       * 2026-09-12（r28 真机验证暴露）：WS 的帧统计/文本**只在 finish() 里写**，而 finish() 只挂在
+       * 'close'/'error' 上。偏偏 http server 交出来的 socket 是 `allowHalfOpen=true` ——
+       * 对端 FIN 只会派发 **'end'**，**'close' 永不触发**。实测（probe-ws-stats.mjs）：
+       * 客户端 destroy() 后 2.5 秒，`readableEnded=true` 而 `destroyed=false`，close 从没来过。
+       * 后果正中用户场景（客户端用 WebSocket 收行情）：
+       *   · 长连接**活着**的时候，面板上 msgCount 恒为 null、一个帧、一句报文都看不到；
+       *   · 客户端断开后，记录永远停在 complete:false，socket 半开挂着（泄漏）。
+       * 现在：① 显式处理 'end'（见下面 socket.once('end')）；② 存活期间按节流推**进行中**快照。
+       * 节流取 1000ms（不是 streamResponse 的 250ms）——WS 是**长连接**，按 250ms 推会持续写盘。
+       */
+      const WS_PROGRESS_MS = 1000
+      const WS_PROGRESS_TEXT_CAP = 2000
+      let lastWsUpdate = started
+      let wsPending = false
+      let wsFlushTimer = null
+      const wsFrameStats = () => ({
+        chunkCount: c2sParser.frameCount + s2cParser.frameCount,
+        frameCount: { c2s: c2sParser.frameCount, s2c: s2cParser.frameCount },
+        msgCount: { c2s: c2sParser.msgCount, s2c: s2cParser.msgCount },
+        // frames 列表在解析器里**封顶 300 条**（frameCount 仍在累加）—— 不标出来就是把
+        // "被截断的样本"当成"总共就这些"。本仓反复修的正是这一类。
+        framesTruncated: c2sParser.frames.length < c2sParser.frameCount
+          || s2cParser.frames.length < s2cParser.frameCount,
+      })
+      const wsTail = (s) => (s.length > WS_PROGRESS_TEXT_CAP ? s.slice(-WS_PROGRESS_TEXT_CAP) : s)
+      /** 真正发一次"进行中"快照（不发则已，发就用最新计数）。 */
+      const emitWsProgressNow = () => {
+        const now = Date.now()
+        lastWsUpdate = now
+        const f = wsFrameStats()
+        record.durationMs = now - started
+        record.bytesReq = bytesReq
+        record.bytesRes = bytesRes
+        record.chunkCount = f.chunkCount
+        record.streaming = true
+        record.ws.frameCount = f.frameCount
+        record.ws.msgCount = f.msgCount
+        record.ws.framesTruncated = f.framesTruncated
+        // 正文只给**尾部**并明说，避免长连接按秒把 2MB 正文写进库
+        if (reqText !== '') record.reqBody = wsTail(reqText)
+        if (resText !== '') record.resBody = wsTail(resText)
+        record.note = `WebSocket 捕获 · **进行中** ${f.chunkCount} 帧` +
+          ` (c2s ${f.frameCount.c2s} / s2c ${f.frameCount.s2c})` +
+          (reqText.length > WS_PROGRESS_TEXT_CAP || resText.length > WS_PROGRESS_TEXT_CAP
+            ? ` · 正文为尾部 ${WS_PROGRESS_TEXT_CAP} 字符（完整内容在连接结束时写入）` : '')
+        this.onRecord({ ...record })
+      }
+      /**
+       * 节流 + **补发**。
+       *
+       * Codex r29 证伪出的缺口：旧版只在"收到数据"时判断节流，被节流掉就**直接丢掉**了。
+       * 于是"**收到首帧之后就安静下来**"的长连接（行情推送很常见）永远发不出统计 ——
+       * 面板上 `msgCount` 一直是 `null`，而我在文档里写的是"存活期间每 1 秒推快照"⇒ 承诺过宽。
+       * 现在：节流期间只记一个 pending 标记，并在节流窗口结束时**补发一次**（trailing flush）。
+       * 代价可控：最多 1 次/秒，且**空闲时不会持续产生新快照**（没有 pending 就不发）。
+       */
+      const emitWsProgress = () => {
+        if (settled || provisionalSent !== true) return
+        const now = Date.now()
+        const wait = WS_PROGRESS_MS - (now - lastWsUpdate)
+        if (wait <= 0) {
+          if (wsFlushTimer !== null) { clearTimeout(wsFlushTimer); wsFlushTimer = null }
+          wsPending = false
+          emitWsProgressNow()
+          return
+        }
+        wsPending = true
+        if (wsFlushTimer === null) {
+          wsFlushTimer = setTimeout(() => {
+            wsFlushTimer = null
+            if (wsPending && !settled) { wsPending = false; emitWsProgressNow() }
+          }, wait + 5)
+          if (typeof wsFlushTimer.unref === 'function') wsFlushTimer.unref()
+        }
+      }
+
       // Node puts bytes received after the Upgrade headers in `head`.
       // They are already forwarded above, but must also enter capture metrics.
       if (head !== undefined && head.length > 0) {
@@ -1205,6 +1371,9 @@ export class ProxyEngine {
       const finish = (complete) => {
         if (settled) return
         settled = true
+        // 收尾时把待补发的进度定时器清掉（否则会在快照已终结后再推一次中间态）
+        if (wsFlushTimer !== null) { clearTimeout(wsFlushTimer); wsFlushTimer = null }
+        wsPending = false
         try {
           up.destroy()
         } catch {
@@ -1227,9 +1396,14 @@ export class ProxyEngine {
         record.ws.closeReason = s2cParser.closeReason || c2sParser.closeReason
         record.ws.frameCount = { c2s: c2sParser.frameCount, s2c: s2cParser.frameCount }
         record.ws.msgCount = { c2s: c2sParser.msgCount, s2c: s2cParser.msgCount }
+        // frames 列表封顶 300 条而 frameCount 仍在累加 ⇒ 必须标明"这只是样本"
+        record.ws.framesTruncated = c2sParser.frames.length < c2sParser.frameCount
+          || s2cParser.frames.length < s2cParser.frameCount
         if (reqText !== '') record.reqBody = reqText
         if (resText !== '') record.resBody = resText
-        record.note = `WebSocket 捕获 · ${record.chunkCount} 帧 (c2s ${c2sParser.frameCount} / s2c ${s2cParser.frameCount})` + (record.complete ? '' : ' · 连接中断')
+        record.note = `WebSocket 捕获 · ${record.chunkCount} 帧 (c2s ${c2sParser.frameCount} / s2c ${s2cParser.frameCount})` +
+          (record.ws.framesTruncated ? ' · 帧样本已截断（见 frameCount 为准）' : '') +
+          (record.complete ? '' : ' · 连接中断')
         this.onRecord({ ...record })
       }
       const sendUp = (buf) => {
@@ -1257,15 +1431,20 @@ export class ProxyEngine {
         bytesReq += d.length
         c2sParser.feed(d)
         sendUp(d)
+        emitWsProgress()
       })
       socket.once('close', () => finish(false))
       socket.once('error', () => finish(false))
+      // ★ 关键：http server 的 socket 是 allowHalfOpen=true ⇒ 对端 FIN 只派发 'end'，**不会**派发
+      //   'close'。只挂 'close' 时，客户端一断开，记录就永远停在 complete:false（实测见 emitWsProgress 注释）。
+      socket.once('end', () => finish(false))
 
       // server → client (unmasked); first chunk carries the 101 head
       const onServerData = (d) => {
         if (settled) return
         s2cParser.feed(d)
         sendClient(d)
+        emitWsProgress()
       }
       up.on('data', (d) => {
         if (settled) return
@@ -1357,7 +1536,19 @@ export class ProxyEngine {
     return this.status()
   }
 
-  stop() {
+  /**
+   * Stop the proxy.
+   *
+   * F-018（AV-06，2026-09-11 审计确证）：旧实现只关监听 + 销毁 agent，**不碰 WinINET**。
+   * 于是机器被留在「系统代理指向 127.0.0.1:8899，而那里已经没人应答」的状态 ——
+   * 后果是**整机网络连接被拒**；而 `status()` 此时若引擎为 null 还会硬编码
+   * `systemProxyActive:false`，等于"把用户的机器改坏，并宣称自己没动过"。
+   * 现在：停止前若系统代理正指向本引擎，就**先把它还回备份值**，并把结果记进 lastRestore。
+   *
+   * 改为 async：恢复系统代理要走注册表写入 + WinINet 刷新，必须能被 await 到，
+   * 否则进程一退，恢复动作就丢了。
+   */
+  async stop() {
     for (const id of [...this.paused.keys()]) this.releaseBreakpoint(id, 'continue', null) // 停代理前放行所有挂起
     if (this.rulesFlushTimer !== null) {
       clearTimeout(this.rulesFlushTimer)
@@ -1369,6 +1560,17 @@ export class ProxyEngine {
         } catch { /* best effort */ }
       }
     }
+    // 关键顺序：**先还系统代理，再关监听**。反过来会出现"代理已关、系统还指着它"的窗口。
+    let restore = null
+    if (this.systemProxyEnabled()) {
+      try {
+        restore = await this.setSystemProxy(false)
+      } catch (e) {
+        restore = { error: e && e.message ? String(e.message) : String(e) }
+        this.lastError = '停止时未能恢复系统代理：' + restore.error
+      }
+    }
+    this.lastRestore = restore
     if (this.server !== null) {
       this.server.close()
       this.server = null
@@ -1415,13 +1617,37 @@ export class ProxyEngine {
     return file
   }
 
-  /** Import the CA into CurrentUser\Root (no admin required). */
+  /**
+   * Import the CA into CurrentUser\Root (no admin required).
+   *
+   * F-019（AV-05，2026-09-11 审计确证）：旧判据是
+   *     `const ok = error === null || /成功|already|CertUtil/.test(stdout ?? '')`
+   * —— `CertUtil` 是 certutil 自己打在 stdout 里的**模块名，永远存在**
+   * （例如 "CertUtil: -addstore 命令成功完成。"，失败时也会打 "CertUtil: -addstore 命令 FAILED."）。
+   * 于是 `/CertUtil/` 恒真 → **任何失败都被回成 ok:true**，面板随即向用户宣布
+   * "根证书已导入本机信任"，而实际上没有导入 —— 后续所有 HTTPS 解密都会失败，
+   * 而用户被告知证书没问题（这类"装了但其实没装"最难排查）。
+   *
+   * 现在：**以退出码为准**（error === null 即 exit 0 = 真成功），
+   * 只有明确说"已存在"才在非 0 退出码下算成功；并把退出码与原始输出一并回给调用方。
+   */
   installCa() {
     return new Promise((resolve) => {
       const der = this.exportCaDer()
-      execFile('certutil.exe', ['-user', '-addstore', 'Root', der], { encoding: 'utf8' }, (error, stdout) => {
-        const ok = error === null || /成功|already|CertUtil/.test(stdout ?? '')
-        resolve({ ok: ok || String(stdout ?? '').includes('成功'), output: (stdout ?? '').trim().slice(0, 400) })
+      execFile('certutil.exe', ['-user', '-addstore', 'Root', der], { encoding: 'utf8' }, (error, stdout, stderr) => {
+        const text = String(stdout ?? '') + '\n' + String(stderr ?? '')
+        const already = /already|已存在|已经存在|in the store/i.test(text)
+        const ok = error === null || already
+        resolve({
+          ok,
+          exitCode: error ? (typeof error.code === 'number' ? error.code : null) : 0,
+          alreadyInstalled: already,
+          output: text.trim().slice(0, 600),
+          derPath: der,
+          hint: ok ? undefined
+            : '证书**没有**导入成功：请检查 certutil 是否存在/被拦截，或手动导入 ' + der +
+              '。未导入时 HTTPS 解密会失败（明文 HTTP 仍可抓）。',
+        })
       })
     })
   }
@@ -1431,22 +1657,41 @@ export class ProxyEngine {
     if (enable) {
       if (this.server === null) throw new Error('proxy not running')
       if (this.backupSystemProxy === null) {
-        this.backupSystemProxy = readSystemProxy()
+        const snapshot = this.readSysProxy()
+        // ★ F-037：**读不到就不许备份**。原实现无论读没读到都往下走，把"默认值"存成备份，
+        //   于是恢复时会把 ProxyEnable 写成 0 —— 关掉用户真实的代理。
+        //   宁可拒绝启用（用户自己还能改回来），也不能拿一份假备份去覆盖真实设置。
+        if (snapshot.ok !== true) {
+          return {
+            enabled: false, refused: true, reason: 'backup-unreadable',
+            error: '读不到当前系统代理设置（' + String(snapshot.reason || 'unknown') + '）⇒ **拒绝启用**：' +
+              '没有可信备份时改动系统代理，恢复阶段会写坏你自己的代理设置。' +
+              '请先确认 reg.exe 可用（或手工把 ProxyEnable/ProxyServer 记下来）再试。',
+            detail: snapshot.detail || '',
+          }
+        }
+        this.backupSystemProxy = snapshot
         const backupFile = path.join(this.certDir, 'sysproxy-backup.json')
         try {
           if (!fs.existsSync(backupFile)) {
             fs.writeFileSync(backupFile, JSON.stringify(this.backupSystemProxy), 'utf8')
           } else {
-            this.backupSystemProxy = JSON.parse(fs.readFileSync(backupFile, 'utf8'))
+            const fromDisk = JSON.parse(fs.readFileSync(backupFile, 'utf8'))
+            // 磁盘上的旧备份若本身就是"读失败"的产物，不许拿它当备份（否则会一直错下去）
+            if (fromDisk && fromDisk.ok === false) {
+              fs.writeFileSync(backupFile, JSON.stringify(this.backupSystemProxy), 'utf8')
+            } else {
+              this.backupSystemProxy = fromDisk
+            }
           }
         } catch {
           // best-effort
         }
       }
-      const override = this.backupSystemProxy.override ?? '<local>'
-      await writeSystemProxy({ enable: true, server: `127.0.0.1:${this.port}`, override })
-      await refreshWinInet()
-      return { enabled: true, server: `127.0.0.1:${this.port}` }
+      const override = this.backupSystemProxy.override || '<local>'
+      await this.regWriter({ enable: true, server: `127.0.0.1:${this.port}`, override })
+      await this.winInetRefresh()
+      return { enabled: true, server: `127.0.0.1:${this.port}`, backup: this.backupSystemProxy }
     }
     const backupFile = path.join(this.certDir, 'sysproxy-backup.json')
     let backup = this.backupSystemProxy
@@ -1457,12 +1702,19 @@ export class ProxyEngine {
         backup = null
       }
     }
-    if (backup === null || backup.server === '') {
-      await writeSystemProxy({ enable: false, server: '', override: '' })
-    } else {
-      await writeSystemProxy({ enable: backup.enable, server: backup.server, override: backup.override ?? '' })
+    // ★ F-037：**没有备份就不许"恢复"**。原实现在 backup===null 时写 `ProxyEnable=0` ——
+    //   也就是"我们从没动过它，却把它关了"（本机用户当前 ProxyEnable=1，这一条会直接生效）。
+    //   正确动作是**什么都不做**并如实说明：我们没有它原来的值，所以没法替它恢复。
+    if (backup === null || backup.ok === false) {
+      return {
+        enabled: false, restored: null, refused: true, reason: 'no-backup',
+        error: '没有可信的系统代理备份 ⇒ **未做任何修改**（原实现会在这里把 ProxyEnable 写成 0，' +
+          '等于关掉一个我们从没开过的代理）。如果系统代理现在指向本工具，请手工改回来。',
+        current: this.readSysProxy(),
+      }
     }
-    await refreshWinInet()
+    await this.regWriter({ enable: backup.enable, server: backup.server, override: backup.override || '' })
+    await this.winInetRefresh()
     return { enabled: false, restored: backup }
   }
 }

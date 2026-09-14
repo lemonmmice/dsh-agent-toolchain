@@ -1,4 +1,4 @@
-﻿// UiProbe — 经 Snoop 注入器打进目标桌面客户端进程内执行的只读诊断探针（net452，C#5）。
+// UiProbe — 经 Snoop 注入器打进目标桌面客户端进程内执行的只读诊断探针（net452，C#5）。
 // 被注入方法签名必须匹配 GenericInjector 约定：public static int <Method>(string arg)。
 // 载荷文件（UTF-8）格式：
 //   第0行 = 结果文件路径
@@ -135,6 +135,16 @@ namespace UiProbe
             StringBuilder sb = new StringBuilder();
             int count = 0;
             const int cap = 4000;
+            // 两个**隐性上限**必须自报（2026-09-11 自查，与 UD-01/Q1 同一类）：
+            //   · depth > maxDepth → 更深的节点静默消失；
+            //   · count >= cap（4000）→ 整棵树在中间被切断。
+            // 旧实现只把文本吐出来，调用方看到 `truncated:false` 就当成"这是完整视觉树"。
+            bool capHit = false;
+            bool depthHit = false;
+            int windows = 0;
+            // UIA 盲区在 WPF 树里同样存在：CEF/WebView 宿主（HwndHost/WebBrowser）在**视觉树**里是个
+            // 没有子节点的大元素，内容由 Chromium 画在子 HWND 上 —— 树里看不到，画面上却有一整页。
+            List<string> opaque = new List<string>();
             Application app = GetApplication();
             if (app == null) { File.WriteAllText(outFile, "NO_APPLICATION", Encoding.UTF8); return; }
             app.Dispatcher.Invoke(new Action(delegate()
@@ -143,18 +153,32 @@ namespace UiProbe
                 {
                     foreach (Window w in app.Windows)
                     {
-                        if (count >= cap) break;
-                        Walk(w, 0, maxDepth, sb, ref count, cap);
+                        windows++;
+                        if (count >= cap) { capHit = true; break; }
+                        Walk(w, 0, maxDepth, sb, ref count, cap, ref capHit, ref depthHit, opaque);
                     }
                 }
                 catch (Exception ex) { sb.AppendLine("DUMP_ERR " + ex.GetType().Name + ": " + ex.Message); }
             }));
+            // META 放在**第一行**：driver 会按 14000 字符从**头部**截断正文，放尾部会被截掉 →
+            // 那等于"截断的证据在截断中丢了"。driver 解析后会把它从正文里剥掉。
+            StringBuilder head = new StringBuilder();
+            head.Append("TREE_META nodes=").Append(count).Append(" cap=").Append(cap)
+                .Append(" capHit=").Append(capHit ? "true" : "false")
+                .Append(" depthHit=").Append(depthHit ? "true" : "false")
+                .Append(" maxDepth=").Append(maxDepth)
+                .Append(" windows=").Append(windows)
+                .Append(" opaque=").Append(opaque.Count).Append("\n");
+            // 盲区明细紧跟 META（同样放在头部，避免被正文截断丢掉）
+            foreach (string o in opaque) head.Append("TREE_OPAQUE ").Append(o).Append("\n");
+            sb.Insert(0, head.ToString());
             File.WriteAllText(outFile, sb.ToString(), Encoding.UTF8);
         }
 
-        private static void Walk(DependencyObject d, int depth, int maxDepth, StringBuilder sb, ref int count, int cap)
+        private static void Walk(DependencyObject d, int depth, int maxDepth, StringBuilder sb, ref int count, int cap, ref bool capHit, ref bool depthHit, List<string> opaque)
         {
-            if (count >= cap || depth > maxDepth) return;
+            if (count >= cap) { capHit = true; return; }
+            if (depth > maxDepth) { depthHit = true; return; }
             try
             {
                 string indent = new string(' ', depth * 2);
@@ -175,10 +199,31 @@ namespace UiProbe
                 catch { }
                 sb.AppendLine(indent + type + "|name=" + name + "|aid=" + aid + "|dc=" + dc);
                 count++;
-                if (depth >= maxDepth) return;
+                // 盲区判定（与 UIA 路径同一套口径）：**没有子节点的大元素** → 高度怀疑内容画在别的 HWND 上
+                if (opaque != null && opaque.Count < 10)
+                {
+                    try
+                    {
+                        FrameworkElement fe2 = d as FrameworkElement;
+                        if (fe2 != null && VisualTreeHelper.GetChildrenCount(d) == 0 && fe2.ActualWidth >= 300 && fe2.ActualHeight >= 300)
+                        {
+                            opaque.Add(type + "|name=" + name + "|aid=" + aid + "|" + (int)fe2.ActualWidth + "x" + (int)fe2.ActualHeight);
+                        }
+                    }
+                    catch { }
+                }
+                if (depth >= maxDepth)
+                {
+                    // 到了深度上限**且还有子节点** → 这棵树确实被深度切断了（否则不该报 depthHit）
+                    int kidsAtLimit = 0;
+                    try { kidsAtLimit = VisualTreeHelper.GetChildrenCount(d); } catch { }
+                    if (kidsAtLimit > 0) depthHit = true;
+                    return;
+                }
                 int n = VisualTreeHelper.GetChildrenCount(d);
                 for (int i = 0; i < n && count < cap; i++)
-                    Walk(VisualTreeHelper.GetChild(d, i), depth + 1, maxDepth, sb, ref count, cap);
+                    Walk(VisualTreeHelper.GetChild(d, i), depth + 1, maxDepth, sb, ref count, cap, ref capHit, ref depthHit, opaque);
+                if (count >= cap) capHit = true;
             }
             catch { }
         }
@@ -385,7 +430,7 @@ namespace UiProbe
         public override void ScrollBufferContents(System.Management.Automation.Host.Rectangle source, System.Management.Automation.Host.Coordinates destination, System.Management.Automation.Host.Rectangle clip, System.Management.Automation.Host.BufferCell fill) { }
         public override void SetBufferContents(System.Management.Automation.Host.Coordinates origin, System.Management.Automation.Host.BufferCell[,] contents) { }
         public override void SetBufferContents(System.Management.Automation.Host.Rectangle rect, System.Management.Automation.Host.BufferCell fill) { }
-    }
+    }
     // ============ 网络抓包（hook-net） ============
 
     internal static class NetCapture

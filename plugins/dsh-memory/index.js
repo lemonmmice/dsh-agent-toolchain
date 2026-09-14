@@ -14,10 +14,16 @@ const SECTION_ORDER = 152
 
 const GUIDANCE =
   '本机已安装 dsh-memory 插件（DSH 的长期记忆增强）：' +
-  '工具 memory_index(path) 把指定目录的文档/代码索引进本地向量库（增量、跳过 bin/obj/node_modules）；' +
+  '工具 memory_index(path) 把指定目录的文档/代码索引进向量库（增量、跳过 bin/obj/node_modules）；' +
   'memory_search(query, k) 做语义检索（MiniMax embo-01 向量；未配置 key 时自动降级为本地 bigram 关键词检索）；' +
   'memory_save / memory_recall / memory_forget 管理跨会话 KV 记忆（按 scope 隔离，如项目名）；memory_status 查看索引状态。' +
-  '数据全部存储在本地 ~/.dsh/memory/，不外传。' +
+  // BV-07（2026-09-11 审计确证）：这句话原来是"数据全部存储在本地 ~/.dsh/memory/，不外传" ——
+  // **假的**：配置了 MiniMax key 时，memory_index 会把文件分块发到**远程** api.minimax.chat 做向量。
+  // MCP 面的描述一直是对的（明写 indexed content leaves this machine），只有 DSH 面这句在撒谎 ——
+  // 而它正是 agent 向用户做隐私承诺时唯一的依据。**存储**与**embedding**是两件事，不能一句"本地"糊过去。
+  '数据（索引与 KV）存储在本地 ~/.dsh/memory/；但**embedding 走哪条路取决于配置**：' +
+  '配置了 MiniMax key 时，memory_index 会把文件分块**发到远程 api.minimax.chat**（内容离开本机），未配置 key 时才降级为本地 bigram 检索（不出本机）。' +
+  '**不要向用户承诺"数据不外传"——先调 memory_status 看 embedEndpoint/note 的真实取值再回答。**' +
   '卫生保证：索引按 mtime 增量（未变更文件跳过，文件更新自动淘汰旧分块，已删除文件的旧分块自动清理）；memory_save 会拒绝含 token/密钥等敏感字符串的内容（fail-closed）。' +
   '用户提到「记住这个约定 / 查一下项目里怎么做的 / 帮我记住」等需要跨会话记忆的场景时，优先使用这些工具。'
 
@@ -32,6 +38,10 @@ const tools = () => [
     name: 'memory_index',
     description:
       '把本地目录索引进长期记忆向量库（增量：按文件 mtime 跳过未变更文件）。之后可用 memory_search 语义检索。' +
+      // BV-07：隐私必须写在**模型真正会读的那份描述**里 —— GUIDANCE 只是系统提示的一段，
+      // 而模型决定"要不要索引这个目录"时看的是这条。原来这条一个字都没提 egress。
+      '隐私：数据落在本地 ~/.dsh/memory/，**但 embedding 可能出本机** —— 配置了 MiniMax key 时文件分块会发到远程 api.minimax.chat；未配置 key 时是本地 bigram、不出本机。' +
+      '要确认走哪条路请调 memory_status 看 embedEndpoint/note；**不要向用户承诺"不外传"**。' +
       'Triggers: 记住这个项目 / 索引代码库 / index the repo.',
     parameters: {
       path: { type: 'string', required: true, description: '要索引的目录绝对路径' },
@@ -41,13 +51,24 @@ const tools = () => [
         type: 'object', additionalProperties: true,
         properties: {
           files: { type: 'integer' }, chunks: { type: 'integer' }, embed: { type: 'string' },
+          embedEndpoint: { type: 'string' }, privacyNote: { type: 'string' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `索引完成：${value.files} 个文件 / ${value.chunks} 个分块（新增 ${value.indexed ?? '-'}，跳过 ${value.skipped ?? '-'}，清理 ${value.deleted ?? '-'}）` }],
+      render: (_args, value) => [{
+        type: 'text',
+        // BV-07：远端 embedding 必须在默认视图里看得见 —— 否则 agent 会照着"索引完成"向用户做错误隐私承诺
+        text: `索引完成：${value.files} 个文件 / ${value.chunks} 个分块（新增 ${value.indexed ?? '-'}，跳过 ${value.skipped ?? '-'}，清理 ${value.deleted ?? '-'}）` +
+          (String(value.embedEndpoint || '').startsWith('remote')
+            ? `\n⚠ **embedding 走的是远程 API**（${value.embedEndpoint}）：本次索引的文件内容已经离开本机，**不要向用户说"数据不外传"**。要改成纯本地请取消 MiniMax API key（会自动降级为本地 bigram 检索）。`
+            : `\n（embedding：${value.embedEndpoint || 'local'} —— 内容未离开本机）`),
+      }],
     },
     async execute(args) {
       const r = await mem().indexWorkspace(args.path)
-      return { ...r, embed: mem().embed.label }
+      // BV-07：把"这次索引有没有把内容发出去"直接放进**这次调用的返回值**里 ——
+      // 让 agent 不必先想到去查 memory_status 才知道文件分块是否离开了本机。
+      const st = mem().status()
+      return { ...r, embed: st.embed, embedEndpoint: st.embedEndpoint, privacyNote: st.note }
     },
   }),
   defineTool({
@@ -70,10 +91,13 @@ const tools = () => [
     },
     async execute(args) {
       const k = Math.min(Math.max(Math.round(args.k || 5), 1), 10)
-      const hits = await mem().search(args.query, k)
+      // 与 MCP 面同源：带上索引新鲜度（陈旧时明说"片段可能是旧内容"）。
+      const { hits, freshness } = await mem().searchDetailed(args.query, k)
       return {
         embed: mem().embed.label,
         hits: hits.map(h => ({ file: h.meta.file, chunk: h.meta.chunkIndex, score: +h.score.toFixed(3), text: String(h.meta.text).slice(0, 400) })),
+        freshness,
+        freshnessNote: freshness.note,
       }
     },
   }),
@@ -129,7 +153,17 @@ const tools = () => [
     description: '查看长期记忆状态（索引分块数、KV 条数、embedding 后端）。Triggers: 记忆状态 / memory status.',
     parameters: {},
     output: { schema: { type: 'object', additionalProperties: true, properties: { chunks: { type: 'integer' }, kvEntries: { type: 'integer' }, embed: { type: 'string' } } },
-      render: (_args, value) => [{ type: 'text', text: `记忆库：${value.chunks} 分块 / ${value.kvEntries} 条 KV（${value.embed}）` }] },
+      // BV-07：`embedEndpoint`/`note` 一直在数据层（MCP 面的 jtext 能看见），但 DSH 面的渲染
+      // 只印 `embed` 标签 —— 于是 agent 看到"（MiniMax embo-01）"，**无从判断内容有没有出本机**，
+      // 而它正是隐私承诺的唯一依据。远端必须在默认视图里写明。
+      render: (_args, value) => [{
+        type: 'text',
+        text: `记忆库：${value.chunks} 分块 / ${value.kvEntries} 条 KV（${value.embed}，embedding=${value.embedEndpoint || '未知'}）` +
+          (String(value.embedEndpoint || '').startsWith('remote')
+            ? `\n⚠ **索引内容会发到远程 API**（${value.embedEndpoint}）：文件分块会离开本机。` +
+              `\n**不要向用户承诺"数据不外传"。** 想改成纯本地请取消 MiniMax API key（自动降级为本地 bigram 检索）。`
+            : `\n（embedding 在本机完成：内容未离开本机）`),
+      }] },
     async execute() {
       const s = mem().status()
       return { chunks: s.chunks, kvEntries: s.kvEntries, embed: s.embed }

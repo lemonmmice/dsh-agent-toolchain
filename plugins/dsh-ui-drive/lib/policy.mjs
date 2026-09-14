@@ -1,5 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
+// 安全配置（急停哨兵 / 策略表）必须经 env-fallback（Codex r15 复核把它拓了出来）：
+// 这些是**运维会去配**的东西，而且配不上时的语义是"**以为有护栏、其实没有**"——
+// 例：运维把 DSH_UI_ESTOP_FILE 配在用户级环境变量里，长活宿主没继承 → 急停哨兵文件永远不被检查 →
+// 出事时按"急停"没有任何效果；这比一般配置漏读严重得多。
+import { envOr } from '../../../lib/env-fallback.mjs'
 
 function canonicalExe(value) {
   if (typeof value !== 'string' || !value.trim()) return null
@@ -28,7 +33,7 @@ function parseRules(value) {
   })
 }
 
-export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY, safetyPolicyFile = process.env.DSH_UI_SAFETY_POLICY_FILE, estopFile = process.env.DSH_UI_ESTOP_FILE } = {}) {
+export function createPolicy({ rules, policyFile = envOr('DSH_UI_APP_POLICY'), safetyPolicyFile = envOr('DSH_UI_SAFETY_POLICY_FILE'), estopFile = envOr('DSH_UI_ESTOP_FILE') } = {}) {
   let parsed
   const policyConfigured = rules !== undefined || Boolean(policyFile)
   let safetyPolicyText = null
@@ -44,7 +49,17 @@ export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY
   const stop = sessionId => { stoppedSession = normSession(sessionId) }
   const reset = sessionId => { if (stoppedSession !== null && normSession(sessionId) === stoppedSession) stoppedSession = null }
   return {
-    diagnostics: { safetyPolicyText },
+    // ⚠ 诚实标注（Claude r15 复核发现）：这份文本**只被读进来放着**，`check()` 从不看它 ——
+    //   也就是说"配了 DSH_UI_SAFETY_POLICY_FILE"**本身不拦任何动作**。原先它只静静躺在 diagnostics 里，
+    //   谁也没消费 ⇒ 运维以为配了一条安全策略、实际零效果（典型的"配置在说谎"）。
+    //   现在：① 状态查询会把"有没有加载、多长"报出来；② 描述里写清它**不参与判定**；
+    //   ③ 真要用它拦动作，请写进 DSH_UI_APP_POLICY（deny-first 规则表）或 DSH_UI_ESTOP_FILE（总闸）。
+    diagnostics: {
+      safetyPolicyText,
+      safetyPolicyFile: safetyPolicyFile || '',
+      safetyPolicyLoaded: !!safetyPolicyText,
+      safetyPolicyGatesActions: false,
+    },
     // 门是否需要跑：配了规则表，或急停哨兵存在（急停是外部总闸，与是否配策略无关）。
     // 两者都没有 → 调用方直接跳过，零开销（保持既有行为；这是显式的集成取舍，不是隐式默认）。
     needsCheck: () => policyConfigured || Boolean(estopFile && fs.existsSync(estopFile)),
@@ -53,6 +68,12 @@ export function createPolicy({ rules, policyFile = process.env.DSH_UI_APP_POLICY
     isConfigured: () => Boolean(policyConfigured),
     stop,
     reset,
+    /** 当前锁存的 session（null = 未锁）。用于把"为什么一直拒"解释清楚（Claude r15）。 */
+    latchedSession: () => stoppedSession,
+    // **本策略真正在用的路径**。状态查询必须问它、而不是重新去读环境变量 ——
+    // 否则注入的 policy（测试、或未来的多策略）与状态输出会各说各话（我第一版就踩了这个）。
+    estopFilePath: () => estopFile || '',
+    policyFilePath: () => policyFile || '',
     // 注：动作分类（只读 vs 副作用）由驱动层的 classifyAction 统一负责，写侧门只在**副作用动作**上调用本函数；
     // policy 不再自行判「只读放行」（原 readOnly() 判的 READ_ONLY Symbol 全代码无人返回，恒 false = 死契约，已删）。
     check({ action, identity = {}, allowSideEffects = false, sessionId, onExecute } = {}) {

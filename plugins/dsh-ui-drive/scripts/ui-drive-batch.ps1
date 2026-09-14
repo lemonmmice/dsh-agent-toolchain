@@ -245,6 +245,35 @@ function Find-Element($main, [string]$aid, [string]$name, $scope = $null) {
   return $list[0]
 }
 
+# UD-05（2026-09-11 真机确证）：只给 match 正则时的目标查找。
+#
+# `Find-Elements` 在 aid/name 皆空时直接 throw「find 需要 -Aid 或 -Name」，而工具 schema 里
+# waitFor 的 match 被描述成「控件名正则」——模型照文档写
+# `read` + `waitFor={ms:3000, state:'appear', match:'确定'}`（等列表刷出来再读，最常用的组合）
+# 会撞上这句对调用方毫无意义的内部断言，且错误信息里完全看不出「少给了目标」。
+#
+# 实现上退化为「一次整树 FindAll + Name/HelpText 正则过滤」：比 PropertyCondition 慢，
+# 所以 Wait-ForCondition 在 match-only 模式下把轮询间隔抬到 ≥250ms，不允许 150ms 空转整棵树。
+function Find-ElementsByMatch($main, [string]$re, $scope = $null) {
+  $out = New-Object System.Collections.ArrayList
+  if (-not $re) { return $out }
+  $root = $main
+  if ($null -ne $scope) { $root = $scope }
+  $all = $null
+  try { $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { return $out }
+  for ($i = 0; $i -lt $all.Count; $i++) {
+    try {
+      $el = $all.Item($i)
+      if ($null -eq $el) { continue }
+      if ($el.Current.IsOffscreen) { continue }
+      if (-not (Is-RectUsable $el.Current.BoundingRectangle)) { continue }
+      if (-not (Test-MatchText $el $re)) { continue }
+      [void]$out.Add($el)
+    } catch { continue }
+  }
+  return $out
+}
+
 # 元素当前值：ValuePattern 优先，其次 TextPattern / Name（Edit 输入框的真实内容）
 function Get-ElementValue($el) {
   try {
@@ -304,28 +333,68 @@ function Wait-ForCondition($main, [string]$aid, [string]$name, $spec, $scope = $
   if ($spec.PSObject.Properties.Name -contains 'match' -and $spec.match) { $matchRe = [string]$spec.match }
   $idx = 0
   if ($spec.PSObject.Properties.Name -contains 'index' -and $null -ne $spec.index) { $idx = [int]$spec.index }
+  # UD-05：目标（aid/name）也可以写在 waitFor 里；且允许**只给 match 正则**。
+  # 旧实现只拿 step 的 aid/name 去 Find-Elements —— 二者皆空时它 throw
+  # 「find 需要 -Aid 或 -Name」，于是 read/state 上的 waitFor 必然失败，而 schema 里
+  # match 明明被描述成「控件名正则」。这里把 target 的三条来源按优先级补齐。
+  if ((-not $aid) -and (-not $name)) {
+    if ($spec.PSObject.Properties.Name -contains 'aid' -and $spec.aid) { $aid = [string]$spec.aid }
+    if ($spec.PSObject.Properties.Name -contains 'name' -and $spec.name) { $name = [string]$spec.name }
+  }
+  $matchOnly = ((-not $aid) -and (-not $name) -and ($matchRe -ne ''))
+  if ((-not $aid) -and (-not $name) -and ($matchRe -eq '')) {
+    return @{ ok = $false; found = $false; elapsedMs = 0; error = 'waitFor 缺少目标：至少要给 name 或 aid（写在动作参数上），或在 waitFor 里给 match 正则。三者全空无法等任何条件。' }
+  }
+  if ($matchOnly -and $interval -lt 250) { $interval = 250 }
+  # Claude 第七轮 Q3（真机给数）：match-only 的**每轮**成本是整树 FindAll + 逐元素属性读 ——
+  # 实测 3331ms / 轮，而同一目标的 aid/name（PropertyCondition）只要 1087ms，约 **3×** 便宜。
+  # 且 `ms` **不是硬上限**：轮询中途不可中断，实测 ms=8000 → waitedMs=11054（溢出约一整轮）。
+  # 结论：代价 ≈ ceil(ms / 一轮耗时) × 一轮耗时，随 ms **线性**涨；
+  #       我原先把轮询间隔抬到 250ms 只占约 2.8% —— 钱花在"每轮那趟走"，不是睡。
+  #       所以真正该锁的杠杆是**总时长**，不是间隔。这里给 match-only 一个更低的 ms 上限，
+  #       并把 polls / 每轮耗时回报出去（代价必须可见，否则无从判断"这次等了多久、贵在哪"）。
+  $msCapped = $false
+  if ($matchOnly -and $ms -gt 15000) { $ms = 15000; $msCapped = $true }
+  $targetDesc = ('aid=' + $aid + ' name=' + $name)
+  if ($matchOnly) { $targetDesc = ('match=/' + $matchRe + '/（整树正则，无 aid/name）') }
+  $polls = 0
+  $lastPollMs = 0
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   while ($true) {
-    $list = Find-Elements $main $aid $name $scope
-    $el = $null
-    if ($list.Count -gt 0) {
+    $swPoll = [System.Diagnostics.Stopwatch]::StartNew()
+    if ($matchOnly) {
+      # 已经在 Find-ElementsByMatch 里按 match 过滤过，别再过滤一遍
+      $list = Find-ElementsByMatch $main $matchRe $scope
+      $picked = @($list)
+    } else {
+      $list = Find-Elements $main $aid $name $scope
       $picked = @($list)
       if ($matchRe) {
         $picked = @($picked | Where-Object { Test-MatchText $_ $matchRe })
       }
-      if ($picked.Count -gt $idx) { $el = $picked[$idx] }
     }
+    $el = $null
+    if ($picked.Count -gt $idx) { $el = $picked[$idx] }
     $ok = $false
     if ($state -eq 'gone') { $ok = ($null -eq $el) }
     elseif ($null -eq $el) { $ok = $false }
     elseif ($state -eq 'enabled') { $ok = ($el.Current.IsEnabled -eq $true) }
     elseif ($state -eq 'disabled') { $ok = ($el.Current.IsEnabled -eq $false) }
     else { $ok = $true }
-    if ($ok) { return @{ ok = $true; found = ($null -ne $el); elapsedMs = [int]$sw.ElapsedMilliseconds; el = $el } }
+    $polls++
+    $lastPollMs = [int]$swPoll.ElapsedMilliseconds
+    if ($ok) {
+      return @{ ok = $true; found = ($null -ne $el); elapsedMs = [int]$sw.ElapsedMilliseconds; el = $el;
+        polls = $polls; lastPollMs = $lastPollMs; matchOnly = $matchOnly; msCapped = $msCapped }
+    }
     if ($sw.ElapsedMilliseconds -ge $ms) {
-      $detail = '条件未满足: state=' + $state + ' target=' + ($aid + '/' + $name)
-      if ($matchRe -ne '') { $detail = $detail + ' match=/' + $matchRe + '/' }
-      return @{ ok = $false; found = ($null -ne $el); elapsedMs = [int]$sw.ElapsedMilliseconds; error = ($detail + ' 超时 ' + $ms + 'ms') }
+      $detail = '条件未满足: state=' + $state + ' target=' + $targetDesc
+      # 代价必须可见：polls × 每轮耗时 = 这次等待真正花掉的钱（Q3 的实测口径）
+      $cost = '（本轮询 ' + $polls + ' 次，最近一轮 ' + $lastPollMs + 'ms' + $(if ($matchOnly) { '，match-only 整树正则' } else { '' }) + '）'
+      $capNote = ''
+      if ($msCapped) { $capNote = '（match-only 的 ms 已按上限 15000 收紧；要等更久请给 aid/name —— 实测 aid/name 比 match-only 便宜约 3×）' }
+      return @{ ok = $false; found = ($null -ne $el); elapsedMs = [int]$sw.ElapsedMilliseconds;
+        error = ($detail + ' 超时 ' + $ms + 'ms' + $capNote + $cost); polls = $polls; lastPollMs = $lastPollMs; matchOnly = $matchOnly; msCapped = $msCapped }
     }
     Start-Sleep -Milliseconds $interval
   }
@@ -705,12 +774,31 @@ function Resolve-Value([string]$value) {
 
 # 回读校验：输入类动作写完后比对控件真实值，不一致就是「假成功」——必须报失败。
 # 注意：错误信息里绝不回显期望值/实际值（可能是密码）。
+#
+# ⚠ 调用方必须先排除**安全控件**（见下面 F-025）。
 function Assert-ValueWritten($el, [string]$want) {
   if ([string]::IsNullOrEmpty($want)) { return $null }
   $got = Get-ElementValue $el
   if ($got -eq $want) { return $null }
   return ('输入未生效（回读不一致）：控件="' + $el.Current.AutomationId + '" 期望长度=' + $want.Length + ' 实际长度=' + $got.Length + '（值不回显）')
 }
+
+# F-025（2026-09-12，r28 真机 e2e 实测）：**"读不到" 被当成了 "没写进去"**。
+# 安全控件（WPF PasswordBox 等）**按设计不可回读**：它的 UIA ValuePattern 永远返回空串。
+# 旧写法直接 `Assert-ValueWritten` ⇒ 读到 '' ⇒ 判"输入未生效" ⇒ **明明写进去了却报失败**。
+# 实测（verify-cred-wpf-live.mjs）：`${cred:…}` 写进 WPF PasswordBox 后，**窗口侧 sha256 与凭据逐字节相符**，
+# 而工具回的是 `ok:false, 期望长度=19 实际长度=0`。
+# 为什么这个假失败比"不报"更糟：agent 看到"输入未生效"会**重试**（把密码反复写进控件），
+# 甚至据此认定凭据机制坏了。所以这里把它标成第三态：**已提交、但无法回读校验**。
+function Get-WriteVerification($el, [string]$want) {
+  # 返回 @{ skipped=$true|$false; error=$null|'…' }
+  if (Is-SecretControl $el) { return @{ skipped = $true; error = $null } }
+  return @{ skipped = $false; error = (Assert-ValueWritten $el $want) }
+}
+
+# 安全控件写入后给调用方的统一说明（不出现任何明文）
+$SECURE_WRITE_NOTE = '（安全控件：写入**已提交**，但该类控件按设计不可回读 —— **无法用回读确认**。' +
+  '若要确认，请用别的可观测结果，例如"登录是否成功"）'
 
 # 证据/输出里打码
 function Mask-Value([string]$v, [bool]$secret) {
@@ -1076,6 +1164,50 @@ function Wait-Target($main, $step, $spec, [int]$procId) {
   return (Wait-ForCondition $root ([string]$step.aid) ([string]$step.name) $spec $scope)
 }
 
+# UD-04（2026-09-11 审计确证）：read/state 的**读取范围**解析（跨窗口 + 容器限定）。
+#
+# 为什么必须单独抽出来：read / state 两个分支都写死 `$main.FindAll(Descendants)`，
+# 于是三个参数被**静默吞掉** —— 参数收下了、行为没变、也不报错：
+#   · winTitle / winHandle：读的永远是主窗口 → 跨窗口（登录窗/弹窗）读法无效；
+#   · inAid / inName：读的永远是整棵树 → 而渲染层的截断提示还在教模型
+#     「用 match 正则过滤、或用 inAid/inName 限定容器后重读」（render.mjs 的 completenessTail），
+#     等于**文档教了一个实现里不存在的功能**；
+#   · waitFor：read 最常见的用法就是「等列表刷出来再读」，旧实现直接跳过等待。
+# 参数进得来、被吞掉、还不报错，就是工具在撒谎（验收判据 G2）。抽成一个函数是为了让
+# read / state 两条路径不再各自漂移 —— 这类「同一漏洞修一半」的教训本轮已经踩过三次。
+#
+# 语义选择：inAid/inName 找不到容器时**报错**，绝不静默退化成读整窗 ——
+# 否则调用方拿到一份整窗清单，却以为自己看的是那个容器里的东西。
+function Resolve-ReadScope($main, $step, [int]$procId) {
+  $out = @{ ok = $true; root = $main; win = $main; narrowed = $false; scopeNote = ''; error = '' }
+  $root = Resolve-Window $main $step $procId
+  if ($null -eq $root) {
+    $out.ok = $false
+    $out.error = '未找到目标窗口（winTitle/winHandle）'
+    return $out
+  }
+  $out.root = $root
+  # win 恒为「窗口」元素（root 在限定范围后会被换成容器元素）：state 的 window 字段与
+  # snapshotId 都要拿窗口名，拿成容器名会让「读的是哪个窗口」这一栏直接说谎。
+  $out.win = $root
+  $inAid = ''
+  $inName = ''
+  if ($step.PSObject.Properties.Name -contains 'inAid' -and $step.inAid) { $inAid = [string]$step.inAid }
+  if ($step.PSObject.Properties.Name -contains 'inName' -and $step.inName) { $inName = [string]$step.inName }
+  if ($inAid -or $inName) {
+    $scopeEl = Find-Element $root $inAid $inName
+    if ($null -eq $scopeEl) {
+      $out.ok = $false
+      $out.error = ('未找到容器控件（inAid=' + $inAid + ' inName=' + $inName + '）：read/state 的 inAid/inName 用来**限定读取范围**，容器不存在就没有可读范围（不会退化成读整窗，免得把整窗清单冒充成容器清单）。先不带 inAid 读一次确认容器名，或用 windows 看有哪些窗口。')
+      return $out
+    }
+    $out.root = $scopeEl
+    $out.narrowed = $true
+    $out.scopeNote = ('inAid=' + $inAid + ' inName=' + $inName)
+  }
+  return $out
+}
+
 function Invoke-Step($main, $step, [int]$index, [int]$procId) {
   # 动作名归一化：模型可能写 waitFor/WaitFor，统一小写
   $action = [string]$step.action
@@ -1090,6 +1222,91 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
     # $null = $(...) 吞掉 switch 分支里漏网的表达式输出：PS 5.1 会把它们拼进函数
     # 返回值，外层拿到 Object[] 就在 Remove/Keys 上崩（type 动作踩过一次）。
     $null = $(switch ($action) {
+      'tree' {
+        # 免注入的视觉树（UIA 递归层级）——2026-09-11 新增。
+        #
+        # 为什么需要它：ui_tree 走的是**注入探针**（Snoop 注入器）拿真实 WPF 类型 + DataContext，
+        # 而注入器是第三方二进制、本机压根不存在（DSH_SNOOP_DIR 未配置）→ 真机上 ui_tree 完全不可用，
+        # 报出来的还是"探针执行成功但一个节点都没拿到"（把配置缺失怪到客户端头上）。
+        # 这条分支只用 UIA（已在用的能力）：给出**带层级的**控件树（类型/Name/aid/位置/可见性），
+        # 覆盖"看结构、找容器、定位某个控件挂在哪"，代价是拿不到 DataContext/模板细节 —— 如实标注来源。
+        $treeMax = 8
+        if ($step.PSObject.Properties.Name -contains 'maxDepth' -and $null -ne $step.maxDepth) { $treeMax = [Math]::Min([Math]::Max([int]$step.maxDepth, 1), 20) }
+        $treeCap = 4000
+        if ($step.PSObject.Properties.Name -contains 'max' -and $null -ne $step.max -and [int]$step.max -gt 0) { $treeCap = [int]$step.max }
+        $sc = Resolve-ReadScope $main $step $procId
+        if (-not $sc.ok) { $res.ok = $false; $res.error = [string]$sc.error; break }
+        $lines = New-Object System.Collections.ArrayList
+        $script:TreeCapHit = $false
+        $script:TreeDepthHit = $false
+        $script:TreeCount = 0
+        # **UIA 看不见内容的区域**（Claude 第十轮真机反例，2026-09-11）：
+        #   CEF/WebView/自绘宿主在 UIA 里表现为"一个大矩形、没有任何子节点"，而截图里是满屏内容
+        #   （真机实例：广告窗的 `Chrome Legacy Window`、许可协议页）。工具只报 ok:true 的空叶子，
+        #   调用方会得出"这里什么都没有"——**这是本轮所有完整性工作都没覆盖的一类盲区**。
+        #   这里把"面积够大却没有子节点/没有可读内容"的窗口/面板/文档收集起来，明确告知"要看内容只能靠 shot"。
+        $opaque = New-Object System.Collections.ArrayList
+        function Walk-Uia([System.Windows.Automation.AutomationElement]$el, [int]$depth) {
+          if ($script:TreeCount -ge $treeCap) { $script:TreeCapHit = $true; return }
+          if ($depth -gt $treeMax) { $script:TreeDepthHit = $true; return }
+          $cur = $null
+          try { $cur = $el.Current } catch { Add-Skip ('tree: 元素已失效: ' + $_.Exception.Message); return }
+          if ($null -eq $cur) { Add-Skip 'tree: 元素状态为空'; return }
+          $name = ''; $aid = ''; $off = $false; $bx = 0; $by = 0; $bw = 0; $bh = 0; $en = $true
+          try {
+            $name = [string]$cur.Name
+            if ($name.Length -gt 60) { $name = $name.Substring(0, 60) }
+            $aid = [string]$cur.AutomationId
+            $off = [bool]$cur.IsOffscreen
+            $en = [bool]$cur.IsEnabled
+            $b = $cur.BoundingRectangle
+            $bx = Get-SafeInt $b.X; $by = Get-SafeInt $b.Y; $bw = Get-SafeInt $b.Width; $bh = Get-SafeInt $b.Height
+          } catch {
+            Add-Skip ('tree: 读元素属性失败: ' + $_.Exception.Message)
+            return
+          }
+          $t = Get-ControlTypeName $el
+          $line = ('  ' * $depth) + $t + '|name=' + $name + '|aid=' + $aid + '|enabled=' + $en + '|offscreen=' + $off + '|@' + $bx + ',' + $by + ' ' + $bw + 'x' + $bh
+          [void]$lines.Add($line)
+          $script:TreeCount++
+          if ($depth -ge $treeMax) {
+            # 到深度上限且**确实还有子节点** → 这棵树被深度切断了（否则不报 depthHit）
+            $kids = 0
+            try { $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition).Count } catch { $kids = 0 }
+            if ($kids -gt 0) { $script:TreeDepthHit = $true }
+            return
+          }
+          $children = $null
+          try { $children = $el.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition) } catch { Add-Skip ('tree: 子节点枚举失败: ' + $_.Exception.Message); return }
+          # 面积大却没有子节点、且类型属于容器类 → 高度怀疑是 CEF/自绘/WebView 宿主。
+          # 判据里**不看名字**：真机的 CEF 宿主叫 `Chrome Legacy Window`（有名字，但内部在 UIA 里全空），
+          # 第一版要求"无名字"会把最典型的例子漏掉。列表上限 10，避免噪音。
+          try {
+            if ($children.Count -eq 0 -and $bw -ge 300 -and $bh -ge 300 -and (@('Window', 'Pane', 'Document', 'Custom', 'Group') -contains $t) -and $opaque.Count -lt 10) {
+              [void]$opaque.Add($t + '|name=' + $name + '|aid=' + $aid + '|@' + $bx + ',' + $by + ' ' + $bw + 'x' + $bh)
+            }
+          } catch { }
+          for ($i = 0; $i -lt $children.Count; $i++) {
+            if ($script:TreeCount -ge $treeCap) { $script:TreeCapHit = $true; break }
+            Walk-Uia $children.Item($i) ($depth + 1)
+          }
+          if ($script:TreeCount -ge $treeCap) { $script:TreeCapHit = $true }
+        }
+        Walk-Uia $sc.root 0
+        $res.ok = $true
+        $res.source = 'uia'          # 与注入探针区分（那条能给 DataContext）
+        $res.count = $script:TreeCount
+        $res.lines = $lines
+        $res.maxDepthApplied = $treeMax
+        $res.nodeCap = $treeCap
+        $res.nodeCapHit = [bool]$script:TreeCapHit
+        $res.depthLimited = [bool]$script:TreeDepthHit
+        $res.scanned = $script:TreeCount
+        $res.skipped = $script:SkipCount
+        if ($script:SkipReasons.Count -gt 0) { $res.skippedReasons = @($script:SkipReasons) }
+        if ($opaque.Count -gt 0) { $res.opaqueRegions = @($opaque); $res.opaqueRegionsTotal = $opaque.Count }
+        if ($sc.narrowed) { $res.narrowed = $true; $res.scope = [string]$sc.scopeNote }
+      }
       'wait' {
         $ms = [Math]::Min([Math]::Max($waitMs, 50), 30000)
         Start-Sleep -Milliseconds $ms
@@ -1098,26 +1315,104 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       'windows' {
         $lines = Get-Windows $procId
         $res.ok = $true; $res.count = $lines.Count; $res.lines = $lines
+        # **嵌套窗口**（2026-09-11 真机自查）：UIA 只把进程的**顶层**窗口报为桌面元素，而 WPF 的
+        # 登录窗/许可协议/弹窗往往是**主窗口视觉树里的 Window 元素**。实测：客户端停在「用户许可协议」
+        # 对话框时，`ui_windows` 仍然只报 1 个窗口 —— agent 据此以为"只有一个窗口"，然后去被对话框
+        # 遮住的主界面上找控件（找不到，或点到错的东西）。这里把嵌套的 Window 元素一并报出来。
+        $nested = New-Object System.Collections.ArrayList
+        $nestedTotal = 0
+        try {
+          $condWin = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
+          $found = $null
+          $root = [System.Windows.Automation.AutomationElement]::RootElement
+          $condPid = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $procId)
+          $procEls = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $condPid)
+          for ($k = 0; $k -lt $procEls.Count; $k++) {
+            $one = $null
+            try { $one = $procEls.Item($k).FindAll([System.Windows.Automation.TreeScope]::Descendants, $condWin) } catch { $one = $null }
+            if ($null -ne $one) { $nestedTotal += $one.Count }
+          }
+          for ($k = 0; $k -lt $procEls.Count -and $nested.Count -lt 20; $k++) {
+            $one = $null
+            try { $one = $procEls.Item($k).FindAll([System.Windows.Automation.TreeScope]::Descendants, $condWin) } catch { continue }
+            if ($null -eq $one) { continue }
+            for ($i = 0; $i -lt $one.Count -and $nested.Count -lt 20; $i++) {
+              $el = $null
+              try { $el = $one.Item($i) } catch { Add-Skip ('嵌套窗口元素已失效: ' + $_.Exception.Message); continue }
+              if ($null -eq $el) { continue }
+              $cur = $null
+              try { $cur = $el.Current } catch { Add-Skip ('嵌套窗口读取失败: ' + $_.Exception.Message); continue }
+              $nm = [string]$cur.Name
+              if ($nm.Length -gt 60) { $nm = $nm.Substring(0, 60) }
+              $bb = $cur.BoundingRectangle
+              # 嵌套窗口本身常常**没有名字**（实测：许可协议对话框的 Window 元素 name 为空），
+              # 光给一个空名字等于没给。取它内部第一个有名字的后代当"这窗是什么"的提示。
+              $hint = ''
+              if (-not $nm) {
+                try {
+                  $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+                  for ($j = 0; $j -lt $kids.Count -and $j -lt 40; $j++) {
+                    $kn = [string]$kids.Item($j).Current.Name
+                    if ($kn) { $hint = $kn; break }
+                  }
+                } catch { $hint = '' }
+                if ($hint.Length -gt 40) { $hint = $hint.Substring(0, 40) }
+              }
+              $line = 'Window "' + $nm + '" aid="' + [string]$cur.AutomationId + '" offscreen=' + [bool]$cur.IsOffscreen + ' @' + (Get-SafeInt $bb.X) + ',' + (Get-SafeInt $bb.Y) + ' ' + (Get-SafeInt $bb.Width) + 'x' + (Get-SafeInt $bb.Height)
+              if ($hint) { $line = $line + ' 内含="' + $hint + '"' }
+              [void]$nested.Add($line)
+            }
+          }
+        } catch { Add-Skip ('嵌套窗口枚举失败: ' + $_.Exception.Message) }
+        if ($nestedTotal -gt 0) {
+          $res.nestedWindows = @($nested)
+          $res.nestedWindowsTotal = $nestedTotal
+          # 嵌套窗口也可能被 20 条上限截断 —— 同上，截断必须自报
+          if ($nestedTotal -gt $nested.Count) { $res.truncated = $true; $res.maxApplied = $nested.Count }
+        }
+        $res.skipped = $script:SkipCount
+        if ($script:SkipReasons.Count -gt 0) { $res.skippedReasons = @($script:SkipReasons) }
       }
       'state' {
         # 动作后/决策前的「界面快照」：当前窗口 + 焦点元素 + 交互控件清单
+        # UD-04：state 与 read 同源漏洞（写死 $main + 静默吞 inAid/inName/winTitle/waitFor），
+        # 用同一个 Resolve-ReadScope，避免两条路径再次漂移。
+        $sc = Resolve-ReadScope $main $step $procId
+        if ($sc.ok -and $hasWaitFor) {
+          $w = Wait-Target $main $step $waitSpec $procId
+          $res.waitedMs = [int]$w.elapsedMs
+          if (-not $w.ok) { $sc.ok = $false; $sc.error = ('waitFor 未满足：' + [string]$w.error) }
+        }
         $foc = Get-FocusedInfo
-        $res.ok = $true
-        $res.window = ''
-        if ($main) { $res.window = [string]$main.Current.Name }
         $res.focusedWindow = $foc.window
         $res.focused = $foc.detail
         $max = 40
         if ($step.PSObject.Properties.Name -contains 'max' -and $null -ne $step.max) { $max = [int]$step.max }
         $matchRe = ''
         if ($step.PSObject.Properties.Name -contains 'match' -and $step.match) { $matchRe = [string]$step.match }
+        if (-not $sc.ok) {
+          $res.ok = $false
+          $res.error = [string]$sc.error
+        } else {
+        $res.ok = $true
+        $res.window = ''
+        $winEl = $sc.win
+        if ($null -eq $winEl) { $winEl = $main }
+        if ($winEl) { $res.window = [string]$winEl.Current.Name }
+        if ($sc.narrowed) { $res.narrowed = $true; $res.scope = [string]$sc.scopeNote }
         # 逐元素容错 + 跳过计数（与 read / state-live 同一约定，B-1）
         Reset-SkipCounter
-        $lines = Get-InteractiveLines $main $matchRe $max
+        $lines = Get-InteractiveLines $sc.root $matchRe $max
         $res.count = $lines.Count; $res.lines = $lines
         $res.scanned = $script:LastScanned
         $res.skipped = $script:SkipCount
         if ($script:SkipReasons.Count -gt 0) { $res.skippedReasons = @($script:SkipReasons) }
+        # Claude 第八轮问的"state 的隐性 40 上限要不要标" —— 答案是要标：
+        # `Get-InteractiveLines` 到 max 就 break，而"被 max 截断"这件事**从来没有回报**，
+        # 调用方只能靠 `scanned > count` 自己推（隐式信号，跟 read 当初的毛病同源）。
+        # 与 read 的 300 行上限共用同一个 `truncated` 字段（语义统一：这份清单被上限截短了）。
+        if ($max -gt 0 -and $lines.Count -ge $max) { $res.truncated = $true; $res.maxApplied = $max }
+        }
       }
       'state-live' {
         # live 循环专用「免前台」界面快照：与 state 相同内容，但主窗口在分支内
@@ -1154,13 +1449,31 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           }
           if (-not $target -and $wins.Count -gt 0) { $target = $wins[0] }
         } catch { }
-        if ($target) {
+        # Claude 第七轮证伪（Q1，真机）：state-live 是**第四个**静默吞参数的读产出点 ——
+        # 同一个 bogus inAid：state 明确失败「未找到容器控件」，而 state-live 返回 ok:true、
+        # scanned=1962、无 narrowed/scope、无 error。参数收下了、行为没变、不报错 —— 就是 UD-04 的定义。
+        # 修法：与 read/state 走**同一个** Resolve-ReadScope（"免前台的局部读"本身有用、语义一致），
+        # 容器找不到时**明确失败**，绝不退化成读整窗。
+        # 敏感帧防线不受影响：secretFocused 取的是全局 FocusedElement，与读取范围无关。
+        $sc = Resolve-ReadScope $target $step $procId
+        if ($sc.ok -and $hasWaitFor) {
+          $w = Wait-Target $target $step $waitSpec $procId
+          $res.waitedMs = [int]$w.elapsedMs
+          if (-not $w.ok) { $sc.ok = $false; $sc.error = ('waitFor 未满足：' + [string]$w.error) }
+        }
+        if (-not $sc.ok) {
+          $res.ok = $false
+          $res.error = [string]$sc.error
+        } elseif ($target) {
+          if ($sc.narrowed) { $res.narrowed = $true; $res.scope = [string]$sc.scopeNote }
           Reset-SkipCounter
-          $lines = Get-InteractiveLines $target $matchRe $max
+          $lines = Get-InteractiveLines $sc.root $matchRe $max
           $res.count = $lines.Count; $res.lines = $lines
           $res.scanned = $script:LastScanned
           $res.skipped = $script:SkipCount
           if ($script:SkipReasons.Count -gt 0) { $res.skippedReasons = @($script:SkipReasons) }
+          # 与 state 同一约定：被 max 截短必须回报（不能只靠 scanned>count 让人自己推）
+          if ($max -gt 0 -and $lines.Count -ge $max) { $res.truncated = $true; $res.maxApplied = $max }
         } else {
           $res.count = 0; $res.lines = @()
         }
@@ -1193,7 +1506,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         $res.ok = ($w.ok -eq $true)
         $res.found = ($w.found -eq $true)
         $res.waitedMs = $w.elapsedMs
-        if ($w.el -and $w.el -isnot [bool]) { $res.detail = (Get-ElementDetail $w.el) }
+        # Q3：把"这次等待花了多少"一起回报（polls × 每轮耗时），否则 agent 无法判断该不该改用 aid/name
+        if ($null -ne $w.polls) { $res.polls = $w.polls }
+        if ($null -ne $w.lastPollMs) { $res.lastPollMs = $w.lastPollMs }
+        if ($w.matchOnly -eq $true) { $res.matchOnly = $true }
+        if ($null -ne $w.el -and $w.el -isnot [bool]) { $res.detail = (Get-ElementDetail $w.el) }
         if (-not $res.ok) { $res.error = [string]$w.error }
       }
       'expectwindow' {
@@ -1403,9 +1720,12 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $raw = Resolve-Value ([string]$step.value)
           $v = Set-ElementValue $el $raw
           Start-Sleep -Milliseconds $waitMs
-          $verify = Assert-ValueWritten $el $raw
-          if ($verify) { $res.error = $verify } else {
-            $res.ok = $true; $res.output = ('SET "' + (Mask-Value ([string]$step.value) $secret) + '" -> ' + (Mask-Value ([string]$v) $secret))
+          $vf = Get-WriteVerification $el $raw   # F-025：安全控件不做回读（不可回读 ≠ 没写进去）
+          if ($vf.error) { $res.error = $vf.error } else {
+            $res.ok = $true
+            if ($vf.skipped) { $res.verifySkipped = 'secure-control'; $res.verified = $false }
+            $res.output = ('SET "' + (Mask-Value ([string]$step.value) $secret) + '" -> ' + (Mask-Value ([string]$v) $secret)) +
+              $(if ($vf.skipped) { $SECURE_WRITE_NOTE } else { '（回读一致）' })
           }
         }
       }
@@ -1432,9 +1752,12 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $secret = (($step.PSObject.Properties.Name -contains 'secret') -and $step.secret)
           $raw = Resolve-Value ([string]$step.value)
           Send-KeyTo $el $raw ([bool]$step.ascii) $waitMs
-          $verify = Assert-ValueWritten $el $raw
-          if ($verify) { $res.error = $verify } else {
-            $res.ok = $true; $res.output = ('KEYED "' + (Mask-Value ([string]$step.value) $secret) + '" into ' + $el.Current.AutomationId)
+          $vf = Get-WriteVerification $el $raw   # F-025
+          if ($vf.error) { $res.error = $vf.error } else {
+            $res.ok = $true
+            if ($vf.skipped) { $res.verifySkipped = 'secure-control'; $res.verified = $false }
+            $res.output = ('KEYED "' + (Mask-Value ([string]$step.value) $secret) + '" into ' + $el.Current.AutomationId) +
+              $(if ($vf.skipped) { $SECURE_WRITE_NOTE } else { '（回读一致）' })
           }
         }
         }
@@ -1453,8 +1776,13 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           Start-Sleep -Milliseconds $waitMs
           # type 常见用途是回车/Tab 提交，不强制回读；给了 expectValue 才校验
           if (($step.PSObject.Properties.Name -contains 'expectValue') -and $null -ne $step.expectValue) {
-            $verify = Assert-ValueWritten $el ([string]$step.expectValue)
-            if ($verify) { $res.error = $verify } else { $res.ok = $true; $res.output = ('TYPED "' + $keys + '" into ' + $el.Current.AutomationId + '（回读一致）') }
+            $vf = Get-WriteVerification $el ([string]$step.expectValue)   # F-025
+            if ($vf.error) { $res.error = $vf.error } else {
+              $res.ok = $true
+              if ($vf.skipped) { $res.verifySkipped = 'secure-control'; $res.verified = $false }
+              $res.output = ('TYPED "' + $keys + '" into ' + $el.Current.AutomationId) +
+                $(if ($vf.skipped) { $SECURE_WRITE_NOTE } else { '（回读一致）' })
+            }
           } else {
             $res.ok = $true; $res.output = ('TYPED "' + $keys + '" into ' + $el.Current.AutomationId)
           }
@@ -1569,10 +1897,38 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       }
       'read' {
         $match = [string]$step.match
+        # UD-04：先解析「读哪儿」（winTitle/winHandle + inAid/inName），再决定是否等条件。
+        # 三步顺序不能换：容器解析失败时**不应**再去等 waitFor —— 那会白等一整个超时后
+        # 报一个「waitFor 未满足」的错，把真正的原因（容器名写错了）埋掉。
+        $sc = Resolve-ReadScope $main $step $procId
+        if ($sc.ok -and $hasWaitFor) {
+          $w = Wait-Target $main $step $waitSpec $procId
+          $res.waitedMs = [int]$w.elapsedMs
+          if (-not $w.ok) { $sc.ok = $false; $sc.error = ('waitFor 未满足：' + [string]$w.error) }
+        }
         $lines = New-Object System.Collections.ArrayList
         $attempt = 0
         $scanned = 0
         $offscreen = 0
+        if (-not $sc.ok) {
+          $res.ok = $false
+          $res.error = [string]$sc.error
+        } else {
+        if ($sc.narrowed) {
+          # 明确回报「这份清单被限定过」：不回报的话，一份容器内清单会被当成整个窗口的清单
+          $res.narrowed = $true
+          $res.scope = [string]$sc.scopeNote
+        }
+        $enumRoot = $sc.root
+        # read 的 max（Claude 第九轮 Q1 附带发现，2026-09-11 真机）：
+        #   `ui_observe(read, max=5)` 过去**静默忽略 max** —— 真机实测同一个 bogus 参数下
+        #   state/state-live 给 5 条并标 truncated，而 read 给了 320 条、无 truncated、无 maxApplied：
+        #   参数收下了、行为没变、还不报错（UD-04 家族的第三个成员）。
+        #   现在 read 与 state/state-live 用同一个契约：到 max 就停，并**显式回报** truncated/maxApplied。
+        $max = 0
+        if ($step.PSObject.Properties.Name -contains 'max' -and $null -ne $step.max) { $max = [int]$step.max }
+        $hardCap = 320
+        if ($max -gt 0 -and $max -lt $hardCap) { $hardCap = $max }
         while ($true) {
           $attempt++
           $lines = New-Object System.Collections.ArrayList
@@ -1582,7 +1938,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           # 每次尝试各自计数：回报的 skipped/scanned 必须与这一次真正返回的 lines 对得上
           Reset-SkipCounter
           $all = $null
-          try { $all = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { $all = $null; Add-Skip ('整次枚举失败: ' + $_.Exception.Message) }
+          try { $all = $enumRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } catch { $all = $null; Add-Skip ('整次枚举失败: ' + $_.Exception.Message) }
           if ($null -ne $all) {
           $scanned = $all.Count
           for ($i = 0; $i -lt $all.Count; $i++) {
@@ -1622,8 +1978,9 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
             Add-Skip ('元素属性读取失败: ' + $_.Exception.Message)
             continue
           }
-          # 已经够 300 行就停：继续遍历整棵树只为了截断，纯浪费（read 曾 22s）
-          if ($lines.Count -ge 320) { break }
+          # 已经够 N 行就停：继续遍历整棵树只为了截断，纯浪费（read 曾 22s）
+          # N = min(320, max)（有 max 时按调用方要求提前收手，并回报 truncated/maxApplied）
+          if ($lines.Count -ge $hardCap) { break }
           }
           }
           # 重试条件（缺一不可地「解释得了 0 行」）：
@@ -1656,6 +2013,13 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $res.truncated = $true
         } else {
           $res.lines = $lines
+        }
+        # 与 state/state-live 同一约定：被 max 截短必须**显式**回报（不能让人从 count 自己推）
+        if ($max -gt 0 -and $lines.Count -ge $max) {
+          $res.truncated = $true
+          $res.maxApplied = $max
+          if ($lines.Count -gt $max) { $res.lines = @($lines | Select-Object -First $max) }
+        }
         }
       }
       'shot' {

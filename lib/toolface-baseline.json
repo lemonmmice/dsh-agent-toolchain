@@ -1,0 +1,313 @@
+{
+  "version": 1,
+  "note": "工具**能力基线**：两面（DSH 插件面 / MCP 面）都必须至少提供这些参数。由 lib/toolface-params.test.mjs 维护；刷新须显式带 DSH_TOOLFACE_BASELINE_UPDATE=1 跑一次。删除条目 = 声明\"这个能力不要了\"，请在提交说明里写理由。",
+  "generatedAt": "2026-09-12T02:42:22.245Z",
+  "tools": {
+    "api_capture_append": [
+      "records",
+      "runId"
+    ],
+    "api_capture_query": [
+      "bodyQ",
+      "caller",
+      "errors",
+      "fromTs",
+      "host",
+      "includeBody",
+      "limit",
+      "maxBytes",
+      "method",
+      "minBytes",
+      "minDurationMs",
+      "noNoise",
+      "offset",
+      "q",
+      "runId",
+      "sessionId",
+      "source",
+      "status",
+      "toTs",
+      "traceId"
+    ],
+    "api_capture_start": [
+      "logPath",
+      "replay"
+    ],
+    "api_capture_stop": [],
+    "api_capture_status": [
+      "sampleSeconds"
+    ],
+    "build_run": [
+      "clientRoot",
+      "configuration",
+      "engine",
+      "killClient",
+      "platform",
+      "project",
+      "repoRoot",
+      "runId",
+      "target"
+    ],
+    "build_status": [],
+    "build_errors": [],
+    "build_compile_check": [
+      "file",
+      "project",
+      "repoRoot"
+    ],
+    "hang_status": [],
+    "hang_run": [
+      "maxSeconds"
+    ],
+    "hang_stop": [],
+    "hang_packs": [],
+    "hang_pack": [
+      "id"
+    ],
+    "hang_analyze": [
+      "id",
+      "refresh",
+      "wait",
+      "waitMs"
+    ],
+    "hang_delete": [
+      "all",
+      "confirm",
+      "id"
+    ],
+    "memory_index": [
+      "path"
+    ],
+    "memory_search": [
+      "k",
+      "query"
+    ],
+    "memory_save": [
+      "key",
+      "scope",
+      "value"
+    ],
+    "memory_recall": [
+      "key",
+      "scope"
+    ],
+    "memory_forget": [
+      "key",
+      "scope"
+    ],
+    "memory_status": [],
+    "perf_probe": [
+      "capture",
+      "intervalMs",
+      "seconds",
+      "thresholdMs"
+    ],
+    "perf_report": [],
+    "perf_dump": [
+      "note"
+    ],
+    "perf_analyze": [
+      "dumpPath"
+    ],
+    "perf_heap": [
+      "dumpPath",
+      "topN"
+    ],
+    "perf_trace": [
+      "action",
+      "etlPath",
+      "profile",
+      "seconds",
+      "tag"
+    ],
+    "perf_hotstacks": [
+      "debugSymbols",
+      "etlPath",
+      "focus",
+      "minHits",
+      "offline",
+      "process",
+      "timeoutMs",
+      "topN"
+    ],
+    "http_request": [
+      "body",
+      "headers",
+      "method",
+      "timeoutMs",
+      "url"
+    ],
+    "ui_status": [
+      "procId"
+    ],
+    "ui_launch": [
+      "allowSensitive",
+      "extraArgs",
+      "force",
+      "waitMs"
+    ],
+    "ui_drive": [
+      "action",
+      "aid",
+      "allowSensitive",
+      "allowSideEffects",
+      "ascii",
+      "button",
+      "count",
+      "delta",
+      "describe",
+      "diff",
+      "double",
+      "expectValue",
+      "focus",
+      "fromX",
+      "fromY",
+      "holdMs",
+      "inAid",
+      "inName",
+      "index",
+      "keys",
+      "label",
+      "match",
+      "mods",
+      "name",
+      "observeMax",
+      "procId",
+      "secret",
+      "shotsDir",
+      "snapshotId",
+      "state",
+      "steps",
+      "toX",
+      "toY",
+      "value",
+      "waitFor",
+      "waitMs",
+      "winHandle",
+      "x",
+      "y"
+    ],
+    "ui_windows": [
+      "procId"
+    ],
+    "ui_state": [
+      "match",
+      "max",
+      "procId",
+      "winHandle"
+    ],
+    "ui_observe": [
+      "action",
+      "aid",
+      "allowSensitive",
+      "conds",
+      "describe",
+      "diff",
+      "gone",
+      "inAid",
+      "inName",
+      "index",
+      "interval",
+      "label",
+      "match",
+      "max",
+      "ms",
+      "name",
+      "procId",
+      "stableCount",
+      "state",
+      "textRe",
+      "titleRe",
+      "waitFor",
+      "winHandle",
+      "winTitle"
+    ],
+    "ui_act": [
+      "action",
+      "aid",
+      "allowSideEffects",
+      "ascii",
+      "count",
+      "expectValue",
+      "fromX",
+      "fromY",
+      "inAid",
+      "inName",
+      "index",
+      "keys",
+      "match",
+      "mods",
+      "name",
+      "observe",
+      "observeMatch",
+      "observeMax",
+      "procId",
+      "secret",
+      "snapshotId",
+      "toX",
+      "toY",
+      "value",
+      "waitFor",
+      "waitMs",
+      "winHandle",
+      "winTitle",
+      "x",
+      "y"
+    ],
+    "ui_tree": [
+      "inAid",
+      "inName",
+      "maxDepth"
+    ],
+    "ui_flow": [
+      "allowSideEffects",
+      "failFast",
+      "steps",
+      "tag"
+    ],
+    "ui_live": [
+      "action",
+      "allowSensitive",
+      "fresh",
+      "fromHash",
+      "intervalMs",
+      "maxControls",
+      "stateIntervalMs",
+      "timeoutMs"
+    ],
+    "verify_report": [
+      "claims",
+      "context",
+      "runId",
+      "task"
+    ],
+    "toolchain_status": [
+      "deep"
+    ],
+    "failure_query": [
+      "failureClass",
+      "fromTs",
+      "includeRetracted",
+      "limit",
+      "offset",
+      "q",
+      "tag",
+      "toTs"
+    ],
+    "failure_stats": [],
+    "failure_record": [
+      "context",
+      "costMs",
+      "description",
+      "failureClass",
+      "resolution",
+      "tags",
+      "task"
+    ],
+    "failure_retract": [
+      "by",
+      "id",
+      "reason"
+    ]
+  }
+}

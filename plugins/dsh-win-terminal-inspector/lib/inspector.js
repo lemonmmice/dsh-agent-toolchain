@@ -200,6 +200,39 @@ export class WindowsProcessInspector {
     return buildProcessTree(this.processTable(), rootPid);
   }
 
+  /**
+   * Read the process table once and answer tree / session / liveness from that single observation.
+   *
+   * BV-02（2026-09-11 审计确证，Codex 第三轮复核确认为下一优先级）：
+   * 上游 `ProcessInspector` 契约把 `snapshot()` 列为**必选**
+   * （`dsh-subprocess-local/lib/types/process-inspector.d.ts` 的 `snapshot(): ProcessSnapshot`），
+   * 而 `LocalTerminalHandle` 构造函数第一件事就是 `inspector.snapshot().tree(...)`。
+   * 本插件过去**只有** processTree/processSession，**没有 snapshot()** →
+   * 由于本插件在 live profile 里覆盖了上游的原生实现（`runtime.terminalInspector`），
+   * **每一次终端 spawn 都会直接 TypeError**。
+   *
+   * 一直没被发现的原因：单测只测了旧接口（`processTree`），端到端 smoke 没在装好的那个 alpha 版本上跑过。
+   *
+   * 契约要求"一次轮询里多个问题共用同一次读表"（注释原文：read at most once… later questions never re-read it），
+   * 所以这里把表读一次、按 pid 建索引，三个问题都从这份观察里回答。
+   */
+  snapshot() {
+    const table = this.processTable();
+    const byPid = new Map(table.map((entry) => [entry.pid, entry]));
+    return {
+      // 契约：children before parents —— buildProcessTree 已是该顺序且做了环保护
+      tree: (rootPid) => buildProcessTree(table, rootPid),
+      // Windows 的 Toolhelp32 枚举拿不到 POSIX session id —— 如实返回空数组，
+      // 而不是编一个 id 出来（契约允许："empty where the platform's table omits session ids"）
+      session: () => [],
+      // 与 isAlive 同语义：必须匹配 pid **与** 启动标识，避免 PID 复用后误判
+      alive: (identity) => {
+        const found = byPid.get(identity.pid);
+        return found !== undefined && found.started === identity.started;
+      },
+    };
+  }
+
   processSession(_sessionId) {
     return [];
   }

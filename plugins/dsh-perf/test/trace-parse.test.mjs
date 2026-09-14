@@ -43,6 +43,59 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
   check('托管方法名带签名（含括号/泛型）', managed.some((m) => /\(/.test(m.name)), JSON.stringify(managed.slice(0, 2).map((m) => m.name)))
 
   check('未解析比例可计算且 < 1', p.unknownRatio >= 0 && p.unknownRatio < 1, String(p.unknownRatio))
+
+  // ---------------------------------------------------- 未解析比例的**口径**（Claude r12 方向 + 真报告实测确认）
+  // 原口径只有 `最热函数 + 蝶形根名`，**不含链上的调用者/被调用者**，而那份列表正是输出里最显眼的部分。
+  // 真报告（本 fixture）实测差额：上报 0.2%（1472 项）vs 显示出来 1578 个名字、6 个未解析（0.4%）。
+  // 未解析帧偏爱深层，所以低估在符号没配好的报告里会变成"报 0% 但链上全是 unknown"。
+  check('★未解析比例的分母覆盖**链上的名字**（否则链里的 unknown 一个都不进分母）',
+    !!p.unknownDetail && p.unknownDetail.total === p.hotFunctions.length + p.butterfly.length +
+      p.butterfly.reduce((a, b) => a + b.callers.length + b.callees.length, 0),
+    JSON.stringify(p.unknownDetail))
+  check('★分桶明细给到"链上未解析几个"（能看出未解析是否集中在深层）',
+    !!p.unknownDetail && Number.isInteger(p.unknownDetail.inChains) && Number.isInteger(p.unknownDetail.inHot),
+    JSON.stringify(p.unknownDetail))
+  {
+    const s2 = summarize(p, { topN: 10 })
+    check('★摘要里把口径写出来（不给光秃秃一个百分数）',
+      /口径：/.test(s2.text) && new RegExp(String(p.unknownDetail.total)).test(s2.text),
+      s2.text.split('\n').find((l) => l.includes('符号未解析')))
+    check('摘要返回结构化 unknownDetail 供程序消费', !!s2.unknownDetail, JSON.stringify(s2.unknownDetail).slice(0, 120))
+  }
+  {
+    // 这两条把"旧口径漏掉链上未解析"钉死，分两半测（各自测自己那一层，不互相遮掩）：
+    //   (a) **解析层**：在真报告上核对分母构成 —— 链上的名字必须进分母；且真报告里链上确实有未解析
+    //       （本 fixture：链上 2 个、最热 2 个、根 1 个）→ 旧口径算出来的比例必然偏低。
+    //   (b) **汇报层**：拿一个"未解析只在链上"的 parsed 对象喂 summarize，要求它把口径写出来并点名链上未解析。
+    //       （这半边是构造输入，明确标注：测的是**对外汇报契约**，不是解析。）
+    const oldDenom = p.hotFunctions.length + p.butterfly.length
+    check('★(a) 真报告：分母已包含链上名字（旧口径缺 ' + (p.unknownDetail.total - oldDenom) + ' 个）',
+      p.unknownDetail.total > oldDenom && p.unknownDetail.inChains > 0,
+      JSON.stringify({ newTotal: p.unknownDetail.total, oldTotal: oldDenom, chains: p.unknownDetail.inChains }))
+    const oldUnknown = p.hotFunctions.filter((f) => /\*\*\*unknown\*\*\*/.test(f.name)).length +
+      p.butterfly.filter((b) => /\*\*\*unknown\*\*\*/.test(b.name)).length
+    const oldRatio = oldDenom ? oldUnknown / oldDenom : 0
+    check('★(a) 旧口径比例**低于**新口径（链上的未解析被漏掉，方向必须一致）',
+      oldRatio < p.unknownRatio, 'old=' + oldRatio.toFixed(4) + ' new=' + p.unknownRatio.toFixed(4))
+
+    // (b) 汇报层：未解析只出现在链上（构造输入）
+    const chainOnly = {
+      __etl: 'X:\\lab\\trace.etl',
+      hotFunctions: [{ name: 'good.dll!ResolvedFn()', percent: '50%', exclusive: 1, inclusive: 1 }],
+      butterfly: [{ name: 'good.dll!ResolvedFn()', percent: '50%', itself: 1, callers: [{ name: '***unknown***!***unknown***', hits: 9 }], callees: [] }],
+      processes: [], modules: [],
+      unknownRatio: 1 / 3,
+      unknownDetail: { unknown: 1, total: 3, inHot: 0, inRoots: 0, inChains: 1 },
+    }
+    const cs = summarize(chainOnly, { topN: 5 })
+    check('★★(b) 口径写进摘要（不是光秃秃一个百分数；分母是"报告里解析到的"、不是"打印出来的"）',
+      /口径：/.test(cs.text) && /3 个名字/.test(cs.text) && /报告里解析到的/.test(cs.text),
+      cs.text.split('\n').find((l) => l.includes('符号未解析')))
+    check('★★(b) 链上有未解析帧时**点名**，且用 ℹ️ 而非最高级 ⚠️（低比例不该狼来了）',
+      /调用链里有 1 个未解析帧/.test(cs.text) && /ℹ️/.test(cs.text) && !/⚠️/.test(cs.text),
+      cs.text.split('\n').filter((l) => /未解析/.test(l)).join(' | '))
+    check('(b) unknownDetail 透传给程序消费', !!cs.unknownDetail && cs.unknownDetail.inChains === 1, JSON.stringify(cs.unknownDetail))
+  }
 }
 
 // ------------------------------------------------- 2. summarize：压缩成可读调用链，且**绝不回吐原始 HTML**
@@ -191,6 +244,239 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
   check('-symbols 仍是独立整串 push（verbose 不破坏既有护栏）', /cmd\.push\('-symbols'\)/.test(src))
   check('超时后会删掉 0 字节报告（不留"有报告"的假象）', /leftoverBytes === 0\) rmSync\(outHtml/.test(src))
   check('超时返回里带符号缓存目录（给出下一步）', /symbolCacheDir: !args\.offline \? join\(c\.symbolCacheDir/.test(src))
+}
+
+// ------------------------------------------------- 8. F-043/F-044：符号路径的语义 + "未知"里剩下的那层信息
+//
+// 现场（2026-09-11，真机三连测）：
+//   ① 客户端自己的 pdb **就在磁盘上**（Product\Bin，16 个），把它接进符号路径后，
+//      系统 DLL（mscorlib / WindowsBase / PresentationFramework）全出名字，
+//      **客户端自己的托管帧依然一条都不出**（unknownRatio 0.129，unknown=700/5416，
+//      其中最热列表里 159 条是 ***unknown***）。
+//   ② 探针里那条"看 xperf 符号日志提到哪个客户端模块"的检查**恒为空** ——
+//      因为 `hotstacks()` 只在失败路径回带 `raw`，成功路径没有这个字段 ⇒ **空洞检查**。
+//   ③ 探针里那条"客户端的模块在不在 trace 里"用的是 `hs.modules` ——
+//      `parseStackReport` 一直在解析模块表，但 `summarize` **把它丢了** ⇒ 同样恒为 undefined。
+// 也就是：**两次都查了答不上来的字段，而能答上来的那个字段根本到不了调用方手里。**
+{
+  const { composeSymbolPath, trimXperfRaw, moduleKey, SILENT_MODULE_MIN_HITS } = await import('../lib/trace.mjs')
+  const DFLT = 'srv*C:\\cache\\symbols*https://msdl.microsoft.com/download/symbols'
+
+  // 8a. 符号路径是**整串替换**：只写一个目录就会把系统符号全丢掉 —— 必须被接上，且必须**如实上报**
+  const empty = composeSymbolPath('', DFLT)
+  check('未配置 → 用默认公网链，composed=false', empty.value === DFLT && empty.composed === false, JSON.stringify(empty))
+  const plain = composeSymbolPath('C:\\client\\Product\\Bin', DFLT)
+  check('只写目录 → **接上**默认链（不是替换掉）', plain.value === 'C:\\client\\Product\\Bin;' + DFLT, plain.value)
+  check('只写目录 → composed=true（调用方必须转达给用户）', plain.composed === true)
+  const srv = composeSymbolPath('srv*C:\\c*https://msdl.microsoft.com/download/symbols;C:\\bin', DFLT)
+  check('自己写了 srv* → 原样使用（尊重"只用本地符号"的意图）', srv.value === 'srv*C:\\c*https://msdl.microsoft.com/download/symbols;C:\\bin' && srv.composed === false, JSON.stringify(srv))
+  const multi = composeSymbolPath('C:\\a;D:\\b;; ', DFLT)
+  check('多目录 + 结尾分号/空白 → 规范化后再接', multi.value === 'C:\\a;D:\\b;' + DFLT, multi.value)
+  check('接上后的串再进来不会重复接（幂等）', composeSymbolPath(plain.value, DFLT).value === plain.value)
+
+  // 8b. 成功路径也要能看见 xperf 原话（F-044）
+  const rawText = 'line1\nDBGHELP: ntdll.dll symbol loaded\nline3'
+  const shortRaw = trimXperfRaw(rawText)
+  check('raw 回带原文（成功路径也必须有）', /DBGHELP/.test(shortRaw.raw), shortRaw.raw)
+  check('rawBytes 是**真实总字节**（不是截断后的长度）', shortRaw.rawBytes === rawText.length, String(shortRaw.rawBytes))
+  check('未截断时 rawTruncated=false', shortRaw.rawTruncated === false)
+  const longRaw = trimXperfRaw('x'.repeat(9000), { maxChars: 100 })
+  check('超长被截断且有截断标记（不假装完整）', longRaw.raw.length === 100 && longRaw.rawTruncated === true, String(longRaw.raw.length))
+  check('截断后 rawBytes 仍是真实大小', longRaw.rawBytes === 9000, String(longRaw.rawBytes))
+  const filtered = trimXperfRaw('progress bar\nSYMCHK: foo.pdb matched\nother noise', { symbolOnly: true })
+  check('debugSymbols → 只留符号相关行（过滤说清楚）', /SYMCHK/.test(filtered.raw) && !/progress/.test(filtered.raw) && filtered.rawFiltered === true, filtered.raw)
+  const noSymLine = trimXperfRaw('a\nb', { symbolOnly: true })
+  check('没有符号行时**不强过滤**（否则 raw 会变成空的假象）', noSymLine.raw === 'a\nb', noSymLine.raw)
+
+  // 8c. 模块表 + "有命中却没函数名"的模块，必须**透到调用方**（F-043）
+  //     用真报告做变换：把模块表里 clr.dll 的名字换成一个**函数表里不存在**的模块名 ⇒
+  //     "该模块有独占命中却没有一条函数名"这个形态就出现了。
+  const renamed = managedHtml.replace(/(<a id='ME[0-9a-f]+' href='#MI[0-9a-f]+'>)clr\.dll(<\/a>)/i, '$1Acme.Trader.Presentation.ViewModels.dll$2')
+  check('夹具变换生效（确实换了模块名）', renamed !== managedHtml)
+  const p2 = parseStackReport(renamed)
+  check('模块名比较忽略 .dll/.ni 扩展名（否则永远匹配不上）',
+    moduleKey('mscorlib.dll') === moduleKey('mscorlib') && moduleKey('Foo.ni.dll') === moduleKey('foo'))
+  check('识别出"有独占命中却没有函数名"的模块', (p2.silentModules || []).some((m) => /Acme.Trader\.Presentation\.ViewModels/.test(m.module)),
+    JSON.stringify((p2.silentModules || []).map((m) => m.module)))
+  check('门槛必须真的按 hits/percent 过滤（噪声模块不入表）',
+    (p2.silentModules || []).every((m) => m.hits >= SILENT_MODULE_MIN_HITS && parseFloat(String(m.percent)) >= 1),
+    JSON.stringify(p2.silentModules))
+  const s2 = summarize(p2, { topN: 5 })
+  check('summarize 透出 modules（此前被丢掉 ⇒ 调用方拿不到模块表）', Array.isArray(s2.modules) && s2.modules.length > 0, 'count=' + (s2.modules || []).length)
+  check('summarize 透出 silentModules', Array.isArray(s2.silentModules), typeof s2.silentModules)
+  check('渲染文本里点名了那个"只有模块级线索"的模块', /Acme.Trader\.Presentation\.ViewModels\.dll/.test(s2.text), s2.text.slice(0, 200))
+  check('渲染文本同时给出"别当成没有热点"的告诫', /没有热点/.test(s2.text))
+  check('渲染文本指出 DSH_PERF_SYMBOL_PATH 是整串替换（把踩过的坑写进下一次的提示里）', /整串替换/.test(s2.text))
+
+  // 8d. 渲染层：agent 只看得见这段文本 —— 对象字段里的东西等于没说
+  const { renderHotstacks } = await import('../lib/render.mjs')
+  const rendered = renderHotstacks({
+    ok: true, text: 'T', reportPath: 'C:\\r.html', reportBytes: 1024, elapsedMs: 1000, symbols: true,
+    xperfRaw: 'DBGHELP: loaded Acme.Trader.Presentation.ViewModels.pdb', xperfRawBytes: 41666,
+    symbolPath: 'srv*C:\\c*https://msdl.microsoft.com/download/symbols;C:\\bin', symbolPathComposed: true,
+    symbolPathNote: '已接上默认公网链',
+  })
+  check('渲染里出现 xperfRaw 内容（否则 debugSymbols 对 agent 等于不存在）', /Acme.Trader\.Presentation\.ViewModels\.pdb/.test(rendered))
+  check('渲染里说明 raw 是截断的且给真实字节数', /41666/.test(rendered), rendered.slice(-200))
+  check('渲染里出现生效符号路径', /生效符号路径/.test(rendered))
+  check('渲染里出现"已接上默认公网链"这条事实', /已接上默认公网链/.test(rendered))
+  const rendered2 = renderHotstacks({ ok: true, text: 'T', reportPath: 'r', reportBytes: 1, elapsedMs: 1, symbols: true })
+  check('没有 raw / symbolPathNote 时不硬塞空块（不制造噪声）', !/xperf 原话/.test(rendered2) && !/符号路径/.test(rendered2), rendered2)
+
+  // 8e. 未解析帧"还剩多少信息"必须分桶（F-043 的核心可操作结论）
+  //     实测：客户端那次 871 个未解析帧**全部**是 `***unknown***!***unknown***`（连模块名都没有）。
+  //     两种形态的价值完全不同，混成一个数字就会被读成"unknown 里也许藏着客户端模块"。
+  const p3 = parseStackReport(managedHtml)
+  check('unknownDetail 拆分 withModule / withoutModule（两种形态价值不同）',
+    typeof p3.unknownDetail.withModule === 'number' && typeof p3.unknownDetail.withoutModule === 'number',
+    JSON.stringify(p3.unknownDetail))
+  check('两桶之和 = unknown 总数（不能漏账）',
+    p3.unknownDetail.withModule + p3.unknownDetail.withoutModule === p3.unknownDetail.unknown,
+    JSON.stringify(p3.unknownDetail))
+  const s3 = summarize(p3, { topN: 5 })
+  check('unknownDetail 带 byModule（"未知集中在谁身上"必须可算，而不是只能靠印象）',
+    Array.isArray(p3.unknownDetail.byModule), JSON.stringify(p3.unknownDetail.byModule))
+  check('渲染里出现最热模块表（独占命中 —— 真金白银的落点）', /最热模块/.test(s3.text), s3.text.slice(0, 200))
+  check('最热模块段自带"独占 ≠ 包含"的提醒（防止按链上名字多少下结论）', /独占 ≠ 包含/.test(s3.text))
+  if (p3.unknownDetail.unknown > 0) {
+    check('渲染文本说出"多少个连模块名都没有"', /连模块名都没有/.test(s3.text), s3.text.slice(0, 300))
+    check('渲染文本说出"多少个至少知道模块"（可归因的那部分）', /至少知道模块/.test(s3.text))
+    check('渲染文本警示"早就启动的 .NET 应用方法名可能整批点不出来"', /早就启动|整批/.test(s3.text))
+  } else {
+    check('（本夹具没有未解析帧，跳过该分支的文本断言）', true)
+  }
+
+  // 8f. 「这段窗口是空闲形态」必须由工具说出来（F-043 现场：我拿一段空闲采样去解释"慢在哪"）
+  const { waitingWindowHint } = await import('../lib/trace.mjs')
+  const idleReport = {
+    hotFunctions: [
+      { name: 'ntdll.dll!_RtlUserThreadStart', percent: '99.90%', exclusive: 0, inclusive: 100 },
+      { name: 'WindowsBase.dll!System.Windows.Threading.Dispatcher.PushFrameImpl(...)', percent: '20.00%', exclusive: 0, inclusive: 20 },
+      { name: 'WindowsBase.dll!DomainBoundILStubClass.IL_STUB_PInvoke(System.Windows.Interop.MSG ByRef)', percent: '48.00%', exclusive: 1, inclusive: 48 },
+      { name: 'user32.dll!GetMessageW', percent: '55.00%', exclusive: 2, inclusive: 55 },
+    ],
+    butterfly: [],
+  }
+  const hint = waitingWindowHint(idleReport)
+  check('识别出"空闲消息泵"窗口并给出百分比', hint && /GetMessage/.test(hint.frame) && hint.percent === '55.00%', JSON.stringify(hint))
+  check('提示里给出下一步（在卡顿窗口内重采）', hint && /perf_probe/.test(hint.note) && /窗口内/.test(hint.note))
+  check('提示里说清"这只否掉整体在烧 CPU，不能说一切正常"（旧写法"是**正常**读数"已删）',
+    hint && /不能\*\*断定/.test(hint.note) && !/是\*\*正常\*\*读数/.test(hint.note), hint && hint.note)
+  // 反向：卡死现场那种"在等锁/在 Invoke"**不该**触发这条提示（狼来了比漏报更坏）
+  const stallReport = {
+    hotFunctions: [
+      { name: 'mscorlib.dll!System.Threading.Monitor.Wait(System.Object, Int32)', percent: '88.00%', exclusive: 5, inclusive: 88 },
+      { name: 'System!System.Net.Sockets.Socket.Receive(...)', percent: '91.00%', exclusive: 3, inclusive: 91 },
+    ],
+    butterfly: [],
+  }
+  check('泛化的"等待/锁/IO"**不**触发空闲提示（否则真需要它时会乱响）', waitingWindowHint(stallReport) === null)
+  check('未达到阈值（30%）的消息泵帧也不触发', waitingWindowHint({ hotFunctions: [{ name: 'user32.dll!PeekMessageW', percent: '12.00%' }], butterfly: [] }) === null)
+  const s4 = summarize(idleReport, { topN: 4 })
+  check('渲染文本里出现空闲形态告警（新措辞：只描述"大部分时间在等消息"）',
+    /消息泵等待/.test(s4.text) && /GetMessage/.test(s4.text), s4.text.slice(0, 220))
+  check('结构化结果也带 waitingWindow（机器可读，不只是文本）',
+    s4.waitingWindow && /GetMessage/.test(s4.waitingWindow.frame), JSON.stringify(s4.waitingWindow))
+
+  // 8g. 真机那一段：**独占采样 91% 落在内核**，而第一版判定**没触发**
+  //     （消息泵帧只在链上深层出现、没有百分比）⇒ "工具不说"就等于让 agent
+  //     把"内核占比高"读成"内核有瓶颈"。这条分支就是为它加的。
+  const kernelReport = {
+    hotFunctions: [
+      { name: 'ntdll.dll!_RtlUserThreadStart', percent: '99.90%', exclusive: 0, inclusive: 100 },
+      { name: 'ntkrnlmp.exe!KiSystemServiceCopyEnd', percent: '91.21%', exclusive: 0, inclusive: 91 },
+    ],
+    butterfly: [],
+    modules: [{ module: 'ntkrnlmp.exe', hits: 26507, percent: '91.20%' }, { module: 'ntdll.dll', hits: 2373, percent: '8.16%' }],
+  }
+  const kw = waitingWindowHint(kernelReport)
+  check('内核独占占比高 → 必须出声（kind=kernel-dominant）', kw && kw.kind === 'kernel-dominant', JSON.stringify(kw))
+  check('内核分支**必须同时摆出"空闲等待"与"被阻塞"两种可能**（不许替读者选一个）',
+    kw && /空闲等待/.test(kw.note) && /被阻塞/.test(kw.note), kw && kw.note)
+  check('内核分支给出区分办法（perf_probe 定窗口 + perf_dump 看栈）',
+    kw && /perf_probe/.test(kw.note) && /perf_dump/.test(kw.note), kw && kw.note)
+  check('内核占比不到门槛（<60%）不触发',
+    waitingWindowHint({ hotFunctions: [], butterfly: [], modules: [{ module: 'ntkrnlmp.exe', hits: 5, percent: '12.00%' }] }) === null)
+  const s5 = summarize(kernelReport, { topN: 2 })
+  check('渲染文本里出现内核形态告警', /内核\/系统调用路径/.test(s5.text), s5.text.slice(0, 200))
+
+  // ------------------------------------------------ 8h. F-050：Codex r37 对抗性复核抓出的 12 条（逐条钉住）
+  // 每条都用复核报告里给的**可复现输入**当断言素材 —— 它们不是"可能有问题"，是"这些输入必然出错"。
+  const { isKernelSideModule, sortModulesByHits, isUnknownBucket } = await import('../lib/trace.mjs')
+
+  // ① P1：`GetMessageDigest` 不是消息泵（子串匹配把结论反过来过）
+  const digest = waitingWindowHint({
+    hotFunctions: [
+      { name: 'Client.dll!GetMessageDigest', percent: '30.00%', exclusive: 30, inclusive: 30 },
+      { name: 'Client.dll!BusyWork', percent: '70.00%', exclusive: 70, inclusive: 70 },
+    ], butterfly: [], modules: [],
+  })
+  check('★ `Client.dll!GetMessageDigest` **不**触发"空闲消息泵"（子串误判会让结论反过来）', digest === null, JSON.stringify(digest))
+  const realPump = waitingWindowHint({ hotFunctions: [{ name: 'user32.dll!GetMessageW', percent: '55.00%', exclusive: 0, inclusive: 55 }], butterfly: [], modules: [] })
+  check('真的消息泵 API（user32.dll!GetMessageW，55%）仍然触发', realPump && realPump.kind === 'idle-message-pump', JSON.stringify(realPump))
+  check('消息泵分支不再替读者下判语（旧写法"是**正常**读数"必须消失）',
+    realPump && !/是\*\*正常\*\*读数/.test(realPump.note) && /不能\*\*断定/.test(realPump.note), realPump && realPump.note)
+  check('消息泵分支要求**过半**（30% 不算主角）',
+    waitingWindowHint({ hotFunctions: [{ name: 'user32.dll!GetMessageW', percent: '30.00%' }], butterfly: [], modules: [] }) === null)
+
+  // ② P2：内核侧模块 —— 驱动要认出来，前缀猜测要禁掉（`nvlddmkm.sys` 反例 / `ntkrnlmp-helper.dll` 反例）
+  check('驱动 .sys 算内核侧（Codex 反例：nvlddmkm.sys 91% 原先什么都不报）', isKernelSideModule('nvlddmkm.sys'))
+  check('内核镜像精确匹配', isKernelSideModule('ntkrnlmp.exe') && isKernelSideModule('ntdll.dll'))
+  check('★ 前缀猜测被禁掉：`ntkrnlmp-helper.dll` **不算**内核镜像', !isKernelSideModule('ntkrnlmp-helper.dll'))
+  check('`ntdll.exe` 也不算（精确匹配而不是正则前缀）', !isKernelSideModule('ntdll.exe'))
+  const drv = waitingWindowHint({ hotFunctions: [], butterfly: [], modules: [{ module: 'nvlddmkm.sys', hits: 9120, percent: '91.20%' }, { module: 'Client.dll', hits: 880, percent: '8.80%' }] })
+  check('驱动占 91% 时必须出声', drv && drv.kind === 'kernel-dominant', JSON.stringify(drv))
+  check('内核分支摆出三种可能（空闲/被阻塞/内核自己在忙），不替读者选', drv && /空闲等待/.test(drv.note) && /被阻塞/.test(drv.note) && /内核自己在忙/.test(drv.note))
+
+  // ③ P2：模块表按命中排序（不能信报告行序）
+  check('★ 模块表按命中排序（Codex 反例：10 个 1 命中的模块排在前面会挤掉真正的第一名）',
+    sortModulesByHits([{ module: 'm1.dll', hits: 1, percent: '1%' }, { module: 'ntkrnlmp.exe', hits: 90, percent: '90%' }])[0].module === 'ntkrnlmp.exe')
+  const unsorted = { hotFunctions: [], butterfly: [], modules: [{ module: 'Client.dll', hits: 8, percent: '8.00%' }, { module: 'ntkrnlmp.exe', hits: 92, percent: '92.00%' }] }
+  check('未排序输入下内核判定仍然正确（不再依赖行序）', waitingWindowHint(unsorted) !== null)
+
+  // ④ P2：模块表被截断必须说明（"没列出"≠"不在报告里"）
+  const manyMods = { hotFunctions: [], butterfly: [], modules: Array.from({ length: 40 }, (_, i) => ({ module: 'm' + i + '.dll', hits: 40 - i, percent: '2%' })) }
+  const sMany = summarize(manyMods, { topN: 1 })
+  check('★ 模块表截断时给出总数与截断标记（Codex 反例：第 31 个模块"看起来不存在"）',
+    sMany.modules.length === 30 && sMany.modulesTotal === 40 && sMany.modulesTruncated === true,
+    JSON.stringify({ n: sMany.modules.length, total: sMany.modulesTotal, trunc: sMany.modulesTruncated }))
+
+  // ⑤ P2：`***unknown***` 是一个**未归因的桶**，不是模块身份
+  check('`***unknown***` 被识别为"桶"而不是模块名', isUnknownBucket('***unknown***') && !isUnknownBucket('Client.dll'))
+  const unknownRow = parseStackReport("<h2>Modules by Exclusive Hits</h2><table><tr><td>***unknown***</td><td>754</td><td>8.59%</td><td>0</td><td>0</td></tr></table><h2>Functions by UniInclusive Hits</h2><table><tr><td>***unknown***!***unknown***</td><td>754</td><td>8.59%</td><td>754</td></tr></table>")
+  check('★ `***unknown***` **不**进"有命中却没函数名的模块"（那是编出来的身份）',
+    !(unknownRow.silentModules || []).some((m) => isUnknownBucket(m.module)), JSON.stringify(unknownRow.silentModules))
+  check('但它作为"未归因桶"被单独带出来（信息不丢）',
+    unknownRow.unassignedModuleBucket && unknownRow.unassignedModuleBucket.hits === 754, JSON.stringify(unknownRow.unassignedModuleBucket))
+
+  // ⑥ P2：未解析比例的口径 —— 分母是"报告里解析到的"，不是"打印出来的"
+  const denom = summarize(parseStackReport("<h2>Functions by UniInclusive Hits</h2><table><tr><td>Client.dll!Run</td><td>99</td><td>99%</td><td>99</td></tr><tr><td>foo!***unknown***</td><td>1</td><td>1%</td><td>1</td></tr></table>"), { topN: 1 })
+  check('★ 口径不说"本次打印的 N 个"（topN 会让分母与眼前所见不一致）',
+    /报告里解析到的/.test(denom.text) && !/本次打印的/.test(denom.text), denom.text.slice(0, 160))
+
+  // ⑦ P3：`!***unknown***`（空前缀）不能既算"模块已知"又被 byModule 归到"(模块未知)"
+  const bareUnknown = parseStackReport("<h2>Functions by UniInclusive Hits</h2><table><tr><td>!***unknown***</td><td>1</td><td>100%</td><td>1</td></tr></table>")
+  check('★ 空前缀不会被算成"已知模块"（两个字段不许互相矛盾）',
+    bareUnknown.unknownDetail.withModule === 0 && bareUnknown.unknownDetail.withoutModule === 1,
+    JSON.stringify(bareUnknown.unknownDetail))
+
+  // ⑧ P3：rawBytes 必须是**字节**（不是 UTF-16 码元数）
+  const cn = trimXperfRaw('符号')
+  check('★ rawBytes 按 UTF-8 字节算（Codex 反例：`符号` 原报 2"字节"，真值 6）', cn.rawBytes === 6 && cn.rawChars === 2,
+    JSON.stringify({ rawBytes: cn.rawBytes, rawChars: cn.rawChars }))
+
+  // ⑨ P2：符号行过滤必须**保留续行/失败原因**（反例：Access is denied. / HTTP 403 被丢掉）
+  const ctx = trimXperfRaw('DBGHELP: loading Client.pdb\n  Access is denied.\n  HTTP status: 403', { symbolOnly: true })
+  check('★ 过滤后仍保留失败原因（缩进续行）', /Access is denied/.test(ctx.raw) && /403/.test(ctx.raw), ctx.raw)
+  const lost = trimXperfRaw('DBGHELP: ok\n6728 Events were lost in this trace.', { symbolOnly: true })
+  check('★ 过滤后仍保留"丢事件"这类关键行', /Events were lost/.test(lost.raw), lost.raw)
+
+  // ⑩ P1：渲染层不得把"超时"直接说成"卡在符号解码"
+  const toRender = renderHotstacks({ ok: false, timedOut: true, error: 'xperf 出报告超时', hint: '若症状是 ~0% CPU 且报告 0 字节，才更像卡在符号解码' })
+  check('★ 超时不再被断言为"卡在符号解码"（只说"到点了 + 生产者给的**可能性**"）',
+    /可能性不是诊断/.test(toRender) && !/卡在符号解码。别调小/.test(toRender), toRender.slice(0, 240))
+  const toRender2 = renderHotstacks({ ok: false, timedOut: true, error: 'xperf 出报告超时' })
+  check('生产者没给 hint 时也不自己编诊断', !/卡在符号解码$/.test(toRender2) && /先别急着调小 timeoutMs/.test(toRender2), toRender2.slice(0, 200))
 }
 
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }

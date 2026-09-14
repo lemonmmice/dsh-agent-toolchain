@@ -298,6 +298,18 @@ for (const t of TOOLS) {
   const NOT_ACTIONS = new Set([
     'alt', 'ctrl', 'shift', // 键盘修饰键**子标签**（Get-ModVk 的 switch 分支），不是可调用动作
   ])
+  // **由专用工具暴露**的动作：`tree` 是 ui_tree 工具背后的批量动作，模型通过 ui_tree(maxDepth) 调到它
+  // （不是 ui_drive 的 action 取值）。这里不做豁免，而是**建立映射**：只有在对应工具真的注册时才认它可达 ——
+  // 若哪天 ui_tree 从 MCP 面消失，这条会立刻变红（比"加进豁免名单"诚实）。
+  const TOOL_BACKED_ACTIONS = { tree: 'ui_tree' }
+  for (const [a, tool] of Object.entries(TOOL_BACKED_ACTIONS)) {
+    if (new RegExp(`server\\.tool\\(\\s*'${tool}'`).test(serverSrc)) {
+      reachable.add(a)
+      check(`动作 ${a} 由专用工具 ${tool} 暴露（已验证该工具在 MCP 面上）`, true)
+    } else {
+      check(`动作 ${a} 的专用工具 ${tool} 不在 MCP 面上 → ${a} 对模型不可达`, false)
+    }
+  }
   const unreachable = [...new Set([...batchOnly, ...readOnly, ...DRIVER])]
     .filter((a) => !INTERNAL.has(a) && !NOT_ACTIONS.has(a) && !reachable.has(a))
   check('没有"驱动支持却对模型不可达"的动作（除已登记的非动作/内部名）', unreachable.length === 0,
@@ -320,8 +332,9 @@ for (const t of TOOLS) {
   // MCP 三个工具声明的参数并集
   const declaredOnMcp = new Set()
   for (const t of TOOLS) for (const p of declaredParams(toolBlock(t))) declaredOnMcp.add(p)
-  // ui_drive/ui_observe/ui_act 之外，ui_state 也接受 max 等
-  for (const t of ['ui_state', 'ui_windows']) for (const p of declaredParams(toolBlock(t))) declaredOnMcp.add(p)
+  // ui_drive/ui_observe/ui_act 之外，ui_state 也接受 max 等；ui_tree 声明 maxDepth（专用工具持有该能力，
+  // 就像 tree 动作由它暴露一样 —— 不把这些工具算进来，"谁声明了 maxDepth"就会被误判成没人声明）
+  for (const t of ['ui_state', 'ui_windows', 'ui_tree', 'ui_launch', 'ui_live']) for (const p of declaredParams(toolBlock(t))) declaredOnMcp.add(p)
 
   // 这三个是**坐实过的受害者**，单独钉死（避免有人"清理"掉它们）
   for (const f of ['count', 'expectValue']) {
@@ -329,14 +342,46 @@ for (const t of TOOLS) {
       '已声明=' + JSON.stringify([...declaredOnMcp].sort()))
   }
 
+  // ★ r42：**流程步骤的字段也算声明**。
+  //   起因：r42 把 MCP 面 ui_drive 的 expectEnabled/expectMatch 删掉了（ui_drive 的 action 枚举里没有
+  //   'expect' ⇒ 传给它永远没人读 = 幽灵参数），本节随即变红。复核后的正确口径是：
+  //   这两个字段的**唯一可达路径是 `ui_flow` 的 expect 步**，而 MCP 面在 ui_flow 的步骤 schema 里
+  //   确实声明了它们（另一个守卫 param-forwarding-completeness.test.mjs 的 EXEMPT_FROM_WARM
+  //   早就把这条理由写在案上：「expect 是 flow 步骤类型，单动作 ui_drive 不收」）。
+  //   所以这里把步骤字段并进 declaredOnMcp —— 否则"谁声明了它"会被误判成"没人声明"。
+  const flowAt9 = serverSrc.indexOf("'ui_flow'")
+  const flowSrc9 = flowAt9 >= 0 ? serverSrc.slice(flowAt9, serverSrc.indexOf('server.tool(', flowAt9 + 1)) : ''
+  const stepObj9 = /steps:\s*z\.array\(z\.object\(\{([\s\S]*?)\n\s*\}\)/.exec(flowSrc9)
+  const flowStepFields = new Set(stepObj9 ? [...stepObj9[1].matchAll(/(?:^|\n)\s*([A-Za-z_][A-Za-z0-9_]*)\s*:/g)].map((m) => m[1]) : [])
+  check('解析出 MCP ui_flow 步骤 schema 的字段（>20 个）', flowStepFields.size > 20, 'n=' + flowStepFields.size)
+  for (const f of flowStepFields) declaredOnMcp.add(f)
+  for (const f of ['expectEnabled', 'expectMatch']) {
+    check(`流程步骤字段 ${f} 在 MCP 的 ui_flow 步骤 schema 里有声明（它只能通过 ui_flow 的 expect 步到达）`,
+      flowStepFields.has(f), '解析到的步骤字段=' + JSON.stringify([...flowStepFields].sort()).slice(0, 300))
+  }
+
   // 通用护栏：凡驱动交给执行器的字段，MCP 面必须至少有一个工具声明它；
   // 未声明的要么补上，要么登记为"不经 MCP 面暴露"并写明理由。
   const NOT_EXPOSED = new Set([
     'out', // 截图落盘路径，由驱动内部计算，不是模型该传的
+    // r42：`workspace` 被驱动**明确忽略**（driver.mjs 的 shapeShot 注释：「workspace 参数保留兼容，忽略」，
+    //   返回的 workspacePath 恒为 null）。描述里写"已废弃、忽略"不算撒谎，但**声明一个什么都不做的参数**
+    //   会让模型真的以为截图会落到那个目录 —— 两个面现在都不声明它（ui_flow 的步骤 schema 也不声明，
+    //   param-forwarding-completeness 已把它登记为豁免）。下面有哨兵保证它不会被悄悄加回来。
+    'workspace',
   ])
   const missing = executorFields.filter((f) => !declaredOnMcp.has(f) && !NOT_EXPOSED.has(f))
   check('没有"驱动接受但 MCP 面未声明"的字段（除已登记的非模型参数）', missing.length === 0,
     '未声明=' + JSON.stringify(missing.sort()) + '（未声明 = zod 会剥掉 = 模型传了也没用）')
+  // 哨兵一：登记为"不暴露"的字段必须**真的没被声明**，否则这条登记已过时（豁免名单只会越攒越大）
+  for (const f of NOT_EXPOSED) {
+    check(`登记为"不暴露"的字段 ${f} 确实没被声明（过时的登记要删掉）`, !declaredOnMcp.has(f),
+      '它现在被声明了 ⇒ 这条豁免已无用，应删除')
+  }
+  // 哨兵二：`workspace` 不许在任何一面重新出现（no-op 参数声明即误导）
+  check('`workspace` 没有被任何一面重新声明（no-op 参数禁止回归）',
+    !declaredOnMcp.has('workspace') && !/workspace:\s*\{/.test(readFileSync(join(here, '..', 'index.js'), 'utf8')),
+    'DSH 面或 MCP 面又声明了 workspace')
 }
 
 // ------------------------------------------------- 10. ui_flow 的步骤 enum 必须覆盖驱动的 FLOW_ACTIONS
@@ -363,8 +408,83 @@ for (const t of TOOLS) {
 
   // 反向：enum 里不该有驱动 flow 跑不了的动作（会变成"看着能跑其实必失败"）
   const extraFlow = flowEnum.filter((a) => !flowTruth.includes(a))
-  check('ui_flow 步骤 enum 没有驱动跑不了的动作', extraFlow.length === 0,
+  check('ui_flow 步骤 enum 没有驱动 flow 跑不了的动作', extraFlow.length === 0,
     '多余=' + JSON.stringify(extraFlow))
+}
+
+// ---------------------------------------------------------------- 安全语义必须在两个面**说法一致**
+// 真实事故（2026-09-12 核对）：`DSH_UI_DENY_RE` 的默认值在脚本里是 `(?!)`（**什么都不拦**），
+// MCP 面的描述写对了（"list is EMPTY by default (nothing is denied unless the operator configures it)"），
+// 而 **DSH 面**（index.js 的 GUIDANCE / ui_act 描述 / READ_ONLY_NOTE）写的是
+// 「命中「按名硬拒」名单的控件一律不点」+「名单**默认沿用历史值**」—— 后半句是**假的**。
+// 后果很具体：agent 会以为"我尽管试，拦得住就自动拒绝了"，而实际上**没有任何名单在拦**，
+// 唯一的护栏是"先报名字给用户确认"这条纪律。安全描述不实 = 比没有描述更危险。
+{
+  const fs = await import('node:fs')
+  const { join: pjoin } = await import('node:path')
+  const dshSrc = fs.readFileSync(pjoin(import.meta.dirname, '..', 'index.js'), 'utf8')
+  const scriptSrc = fs.readFileSync(pjoin(import.meta.dirname, '..', 'scripts', 'ui-drive-batch.ps1'), 'utf8')
+
+  const emptyByDefault = /else \{ '\(\?!\)' \}/.test(scriptSrc)
+  check('脚本里 deny 的默认值是"什么都不匹配"（(?!)）', emptyByDefault, '默认值不是 (?!) —— deny 语义变了，下面的断言要重看')
+
+  // DSH 面不得再声称"有一批默认被拦的控件"
+  check('DSH 面不再声称「名单默认沿用历史值」', !/名单默认沿用历史值/.test(dshSrc), '仍在声称默认有名单')
+  check('DSH 面不再无条件说「命中名单的控件一律不点」（会让人以为有兜底）',
+    !/命中「按名硬拒」名单的控件一律不点/.test(dshSrc), '仍在无条件声称硬拒')
+  // 而且必须**明确写出**"默认为空、不能当兜底"
+  const saysEmpty = (dshSrc.match(/默认为空/g) || []).length
+  check('DSH 面明确写出"按名硬拒名单默认为空"（≥2 处：GUIDANCE + ui_act/READ_ONLY_NOTE）', saysEmpty >= 2,
+    '出现次数=' + saysEmpty)
+  check('DSH 面提醒"不能拿它当兜底/别当护栏"', /不能拿它当兜底|别把它当护栏|别拿它当兜底/.test(dshSrc))
+
+  // ---- 镜像缺陷（Claude r15 复核）：**实现有、描述无** —— 最强的两条护栏对 agent 完全不可见 ----
+  // 原状：`DSH_UI_ESTOP_FILE` / `DSH_UI_APP_POLICY` 在全仓**只**出现在 policy.mjs 的默认参数里，
+  // 两个面的描述一个字都没提；而 `policy.reset()` **全仓无调用点** ⇒ 急停一旦锁存，
+  // 除了重启宿主没有任何恢复手段（agent 只会看到"策略拒绝"，既不知护栏存在、也不知怎么恢复）。
+  check('★ 描述里写出了急停哨兵变量名（护栏对 agent 可见）', /DSH_UI_ESTOP_FILE/.test(dshSrc))
+  check('★ 描述里写出了策略表变量名', /DSH_UI_APP_POLICY/.test(dshSrc))
+  check('★ 描述里给出了**可执行的复位路径**（回环路由），而不是只说"被拒了"',
+    /\/estop\/reset/.test(dshSrc) && /\/estop\b/.test(dshSrc))
+  check('★ 复位**不是** agent 工具（模型不能解除自己的护栏）',
+    !/name:\s*'ui_estop'|name:\s*'estop_reset'/.test(dshSrc) && !/name:\s*'ui_estop'/.test(serverSrc))
+}
+
+// 复位必须真的可达：`policy.reset()` 过去**全仓无调用点**（死代码），这里从**驱动 API** 这一层验证。
+// ⚠ 不调 `drive()`：那会真的 spawn PowerShell 并去抢**进程级文件锁**（默认等 5 分钟）——
+//   第一版就是这么写的，结果这个本来 68ms 的测试变成 361s（一次实测，教训记在此）。
+//   这里用**注入的 policy** 走同一套代码路径（check → 锁存 → 复位），零进程、零锁。
+{
+  const { makeDriver } = await import('../lib/driver.mjs')
+  const { createPolicy } = await import('../lib/policy.mjs')
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join: pjoin } = await import('node:path')
+  const work = mkdtempSync(pjoin(tmpdir(), 'estop-reset-'))
+  const sentinel = pjoin(work, 'ESTOP')
+  try {
+    writeFileSync(sentinel, 'stop', 'utf8')
+    const pol = createPolicy({ estopFile: sentinel })
+    const d = makeDriver({ policy: pol, procName: 'estop-probe-not-real', scriptsDir: pjoin(import.meta.dirname, '..', 'scripts'), evidenceDir: work })
+
+    const st = d.estopStatus()
+    check('★ 急停状态可读（哨兵在盘上、且说明"删文件≠复位"）',
+      st.sentinelExists === true && /删文件/.test(st.note), JSON.stringify(st).slice(0, 160))
+    // 触发一次拒绝 → 锁存（与写侧门走的同一个 check）
+    const blocked = pol.check({ action: 'click', allowSideEffects: true })
+    check('急停生效时副作用动作被拒（fail closed）', blocked.ok === false && blocked.code === 'stopped_by_user', JSON.stringify(blocked))
+    check('★ 拒绝后进入**锁存**状态（并且这个状态本身可被看见）', d.estopStatus().latched === true, JSON.stringify(d.estopStatus()).slice(0, 160))
+    // 删掉哨兵：仍必须拒（粘性）—— 既有语义不能被这次改动破坏
+    rmSync(sentinel, { force: true })
+    const stillBlocked = pol.check({ action: 'click', allowSideEffects: true })
+    check('删掉哨兵后**仍拒**（粘性语义未被破坏）', stillBlocked.ok === false && stillBlocked.code === 'stopped_by_user', JSON.stringify(stillBlocked))
+    // 运维复位：必须真的解锁（修复前 reset 无调用点 ⇒ 这里无路可走）
+    const r = d.estopReset()
+    check('★ 运维复位可达且真的解锁', r.ok === true && r.latched === false, JSON.stringify(r))
+    check('复位后急停放行（不再锁存）', pol.check({ action: 'click', allowSideEffects: false }).code !== 'stopped_by_user', JSON.stringify(pol.check({ action: 'click', allowSideEffects: false })))
+  } finally {
+    try { rmSync(work, { recursive: true, force: true }) } catch { /* ignore */ }
+  }
 }
 
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }

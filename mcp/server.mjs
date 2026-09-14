@@ -11,21 +11,35 @@
  *   DSH_MEMORY_DIR (memory data dir, default ~/.dsh/memory)
  *   DSH_FAILURE_CORPUS_DIR (failure corpus, default ~/.dsh-agent-toolchain/failure-corpus)
  */
+import { envOr } from '../lib/env-fallback.mjs'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { join, dirname } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 import { makeBuilder } from '../plugins/dsh-build/lib/builder.mjs'
+import { checkCompileMembership } from '../lib/compile-membership.mjs'
 import { makeDriver } from '../plugins/dsh-ui-drive/lib/driver.mjs'
 import { makeLive } from '../plugins/dsh-ui-drive/lib/live.mjs'
+import { sanitizeLive } from '../plugins/dsh-ui-drive/lib/render.mjs'
 import { makePerf } from '../plugins/dsh-perf/lib/perf.mjs'
+import { makeTrace } from '../plugins/dsh-perf/lib/trace.mjs'
+import { cleanEvidence } from '../plugins/dsh-perf/lib/evidence-clean.mjs'
 import { makeHangInspector } from '../plugins/dsh-hang-inspector/lib/hang.mjs'
 import { sendRequest } from '../plugins/dsh-postman/lib/http.mjs'
 import { DshMemory } from '../plugins/dsh-memory/lib/memory.mjs'
 import { makeFailureCorpus, FAILURE_CLASSES } from '../lib/failure-corpus.mjs'
-import { queryPage, appendRecords } from '../lib/capture-store.mjs'
+// 捕获控制面的"人话总结"：**与 DSH 工具 / 面板路由共用同一份实现**（本仓第 38 类：同一逻辑许两份必然漂移）。
+// 之所以要在这里算而不是只信路由返回：**运行中的宿主不会热加载**，旧宿主的路由里没有 summary 字段，
+// 于是"新工具 + 旧宿主"这个组合下 MCP 面会拿不到那句关键提示（实测过：summary=undefined）。
+import { captureStatusSummary as summarizeCapture, doubleWriteVerdict, sampleDeltaVerdict } from '../plugins/dsh-api-visualizer/lib/capture-control.mjs'
+// E3 / F-042：环境自检（toolchain_status）—— **与 DSH 面共用同一条实现**（lib/），
+// 不在这里再写一份（第 24 类缺陷：同一件事不许有第二份实现）。
+import { buildToolchainStatus } from '../lib/toolchain-status.mjs'
+import { queryPage, appendRecords, readAll, readRetention } from '../lib/capture-store.mjs'
+import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote } from '../plugins/dsh-api-visualizer/lib/query-view.mjs'
 import { makeVerificationReport } from '../lib/verify/report.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -58,10 +72,10 @@ function drv() {
   if (!driver) {
     driver = makeDriver({
       scriptsDir: join(root, 'plugins', 'dsh-ui-drive', 'scripts'),
-      procName: process.env.DSH_UI_PROC_NAME || '',
-      windowName: process.env.DSH_UI_WINDOW_NAME || '',
-      clientExe: process.env.DSH_UI_CLIENT_EXE || '',
-      evidenceDir: process.env.DSH_UI_EVIDENCE_DIR || '',
+      procName: envOr('DSH_UI_PROC_NAME'),
+      windowName: envOr('DSH_UI_WINDOW_NAME'),
+      clientExe: envOr('DSH_UI_CLIENT_EXE'),
+      evidenceDir: envOr('DSH_UI_EVIDENCE_DIR'),
     })
   }
   return driver
@@ -153,10 +167,10 @@ function prf() {
   if (!perf) {
     perf = makePerf({
       scriptsDir: join(root, 'plugins', 'dsh-perf', 'scripts'),
-      procName: process.env.DSH_UI_PROC_NAME || '',
-      windowName: process.env.DSH_UI_WINDOW_NAME || '',
-      evidenceDir: process.env.DSH_PERF_EVIDENCE_DIR || '',
-      srcRoot: process.env.DSH_PERF_SRC_ROOT || '',
+      procName: envOr('DSH_UI_PROC_NAME'),
+      windowName: envOr('DSH_UI_WINDOW_NAME'),
+      evidenceDir: envOr('DSH_PERF_EVIDENCE_DIR'),
+      srcRoot: envOr('DSH_PERF_SRC_ROOT'),
     })
   }
   return perf
@@ -166,6 +180,21 @@ let corpus = null
 function fc() {
   if (!corpus) corpus = makeFailureCorpus({})
   return corpus
+}
+
+/**
+ * ETW tracer（F-003 / E4：DSH 面早就有 perf_trace/perf_hotstacks，MCP 面此前没有）。
+ * 与 `plugins/dsh-perf/index.js` 的 `trc()` **同参构造** —— 两面的行为必须一致（E4 的判据）。
+ */
+let tracer = null
+function trc() {
+  if (!tracer) {
+    tracer = makeTrace({
+      evidenceDir: envOr('DSH_PERF_EVIDENCE_DIR') || join(homedir(), '.dsh-agent-toolchain', 'perf-evidence'),
+      procName: envOr('DSH_UI_PROC_NAME'),
+    })
+  }
+  return tracer
 }
 
 let hang = null
@@ -200,11 +229,12 @@ let builder = null
 function bld() {
   if (!builder) {
     builder = makeBuilder({
-      clientRoot: process.env.DSH_BUILD_CLIENT_ROOT || '',
-      repoRoot: process.env.DSH_BUILD_REPO_ROOT || '',
-      msbuild: process.env.DSH_BUILD_MSBUILD || '',
+      clientRoot: envOr('DSH_BUILD_CLIENT_ROOT'),
+      repoRoot: envOr('DSH_BUILD_REPO_ROOT'),
+      msbuild: envOr('DSH_BUILD_MSBUILD'),
       engine: process.env.DSH_BUILD_ENGINE || 'msbuild',
-      logsDir: process.env.DSH_BUILD_LOGS_DIR || '',
+      // 注意：这里**不能**用 '' 当默认值去覆盖 —— 传空串会让 makeBuilder 内部的默认/推导被顶掉。
+      logsDir: envOr('DSH_BUILD_LOGS_DIR'),
     })
   }
   return builder
@@ -213,7 +243,7 @@ function bld() {
 server.tool(
   'build_run',
   'Run a build (incremental Build or full Rebuild) and return structured errors. ' +
-    'Use after changing code to verify it compiles. Requires DSH_BUILD_CLIENT_ROOT/DSH_BUILD_REPO_ROOT (solution dir) or the clientRoot/repoRoot argument. ' +
+    'Use after changing code to verify it compiles. WARNING: zero errors does NOT prove that a newly added file was actually compiled (a legacy .csproj needs an explicit <Compile Include>; the build passes while the file is never compiled), and an empty project argument auto-detects a solution that may not contain your change — always check the returned target / log path. Requires DSH_BUILD_CLIENT_ROOT/DSH_BUILD_REPO_ROOT (solution dir) or the clientRoot/repoRoot argument. ' +
     'Both engines auto-detect the default solution when project is empty: a repo containing WholeSolution.sln keeps the legacy client defaults (WholeSolution.sln + platform x86); otherwise the .sln/.slnx is detected (repo root, then one level deep) and the platform comes from the solution (Any CPU preferred) — ambiguity is an explicit error asking for project. engine=msbuild (default) uses VS MSBuild; engine=dotnet builds with `dotnet build` (restores by default) — prefer it for modern .NET repos. (dotnet only: a repo with no solution at all falls back to the cwd default.)',
   {
     target: z.enum(['Build', 'Rebuild']).default('Build').describe('Build (incremental, fast) or Rebuild (full)'),
@@ -223,7 +253,9 @@ server.tool(
     engine: z.enum(['msbuild', 'dotnet']).optional().describe('Build engine; env DSH_BUILD_ENGINE sets the default'),
     clientRoot: z.string().optional().describe('Solution root dir (env DSH_BUILD_CLIENT_ROOT)'),
     repoRoot: z.string().optional().describe('Repository root dir (env DSH_BUILD_REPO_ROOT)'),
-    killClient: z.boolean().optional().describe('Kill the running client process before building (breaks the user UI — confirm first)'),
+    killClient: z.boolean().optional().describe('Kill the running client process before building (breaks the user UI — confirm first). ' +
+      'WARNING: like ui_launch(force=true) this DESTROYS the only crime scene — if the client is hung or stuttering, capture evidence first ' +
+      '(perf_dump / hang_run), otherwise the dump, thread stacks and evidence bundle are gone.'),
     runId: z.string().optional().describe('Optional run id: the build log and the per-run record (run-<runId>.json) are named with it — the evidence-pack spine'),
   },
   async (args) => {
@@ -231,11 +263,11 @@ server.tool(
     // supplies the env-derived defaults. build() does no I/O at construction, so reusing it is safe.
     const b = args.clientRoot || args.repoRoot || args.engine
       ? makeBuilder({
-        clientRoot: args.clientRoot || process.env.DSH_BUILD_CLIENT_ROOT || '',
-        repoRoot: args.repoRoot || process.env.DSH_BUILD_REPO_ROOT || '',
-        msbuild: process.env.DSH_BUILD_MSBUILD || '',
+        clientRoot: args.clientRoot || envOr('DSH_BUILD_CLIENT_ROOT'),
+        repoRoot: args.repoRoot || envOr('DSH_BUILD_REPO_ROOT'),
+        msbuild: envOr('DSH_BUILD_MSBUILD'),
         engine: args.engine || process.env.DSH_BUILD_ENGINE || 'msbuild',
-        logsDir: process.env.DSH_BUILD_LOGS_DIR || '',
+        logsDir: envOr('DSH_BUILD_LOGS_DIR'),
       })
       : bld()
     const r = await b.build({
@@ -262,9 +294,12 @@ server.tool(
 
 server.tool(
   'ui_status',
-  'Check the target desktop client process / main-window status (read-only). Configure the client via DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE.',
-  {},
-  async () => jtext(await drv().status())
+  'Report ONLY the existence/geometry of the target client process and main window (running? PID? title? bounds?) — read-only. It does NOT show what is on screen and does NOT tell whether the client is hung; for content/focus use ui_state or ui_observe(action="state"). Configure the client via DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE.',
+  {
+    // R42：DSH 面 ui_status 有 procId 而这里没有 —— 同名多进程时 MCP 侧无法消歧。
+    procId: z.number().optional().describe('Target process PID (disambiguate when several instances are running)'),
+  },
+  async (args) => jtext(await drv().status(args.procId ? { procId: args.procId } : {}))
 )
 
 const uiAction = z.enum([
@@ -291,17 +326,21 @@ server.tool(
   {
     match: z.string().optional().describe('Regex filter on control names (e.g. 登录|验证码)'),
     max: z.number().optional().describe('Max controls returned, default 40'),
+    procId: z.number().optional().describe('Target process PID (disambiguate when several instances are running)'),
+    winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows)'),
   },
-  async (args) => jtext(await drv().drive({ action: 'state', match: args.match || '', max: args.max || 40 }))
+  async (args) => jtext(await drv().drive({ action: 'state', match: args.match || '', max: args.max || 40, ...(args.procId ? { procId: args.procId } : {}), ...(args.winHandle ? { winHandle: args.winHandle } : {}) }))
 )
 
 server.tool(
   'ui_windows',
-  'List every top-level window of the target client process (type / title / handle / position / offscreen). ' +
-    'Read-only. The login window, a captcha popup or a modal dialog is often NOT the "main window" — check this first ' +
-    'when driving a dynamic UI (login, page switch, popup), then decide where to act.',
-  {},
-  async () => jtext(await drv().drive({ action: 'windows' }))
+  'List every top-level window of the target client process (type / title / handle / position / offscreen) **plus nested window elements ' +
+    'inside the main window** (a login pane / licence dialog / modal is usually nested and does NOT show up as a top-level window). ' +
+    'Read-only. Check this first when driving a dynamic UI, then decide where to act.',
+  {
+    procId: z.number().optional().describe('Target process PID (disambiguate when several instances are running)'),
+  },
+  async (args) => jtext(await drv().drive({ action: 'windows', ...(args.procId ? { procId: args.procId } : {}) }))
 )
 
 server.tool(
@@ -313,6 +352,8 @@ server.tool(
     'drag (mouse drag, e.g. a slider captcha). ' +
     'For dynamic UIs: pass waitFor={ms,interval,state,match,index} on click/setvalue/key/type/find to wait for the condition ' +
     'BEFORE acting (no more guessing sleeps); use index for the Nth same-named control and inAid/inName to scope the search to a container. ' +
+    'read/state also honour inAid/inName (container scope), winTitle (cross-window) and waitFor (wait for the list to render before reading); ' +
+    'a scoped listing is labelled narrowed+scope — an unlabelled listing covers the whole window. ' +
     'find / read / windows / shot / waitfor are read-only; click / setvalue / key / type / drag are real side effects and REQUIRE allowSideEffects=true.',
   {
     action: uiAction,
@@ -322,9 +363,9 @@ server.tool(
     ascii: z.boolean().optional().describe('key: send ASCII directly instead of clipboard paste; type: treat {}^%~() as literal'),
     match: z.string().optional().describe('read: regex filter; on find/click: regex the control name matches (with index)'),
     index: z.number().optional().describe('Which match to use (0-based; reuse the #index from read)'),
-    inAid: z.string().optional().describe('Scope the search to the subtree of this AutomationId container'),
-    inName: z.string().optional().describe('Scope the search to the subtree of this Name container'),
-    waitFor: z.record(z.string(), z.any()).optional().describe('Wait before acting: {ms?:5000, interval?:150, state?:"appear"|"gone"|"enabled"|"disabled", match?, index?}'),
+    inAid: z.string().optional().describe('Scope the search/read to the subtree of this AutomationId container (read/state set narrowed+scope; a wrong container name fails loudly instead of silently reading the whole window)'),
+    inName: z.string().optional().describe('Scope the search/read to the subtree of this Name container'),
+    waitFor: z.record(z.string(), z.any()).optional().describe('Wait before acting: {ms?:5000, interval?:150, state?:"appear"|"gone"|"enabled"|"disabled", match?, index?}. Target = name/aid on the action, else name/aid inside waitFor, else match alone (tree-wide regex); all three empty is reported as missing target. read and state accept it too. COST: match-only walks the whole tree each poll (~3x the cost of aid/name; ms is not a hard bound since a poll cannot be interrupted) - give aid/name for loops or time-sensitive waits; match-only ms is capped at 15000.'),
     state: z.string().optional().describe('waitfor: appear (default) | gone | enabled | disabled'),
     keys: z.string().optional().describe('type: key sequence (same as value, clearer intent)'),
     fromX: z.number().optional().describe('drag: start X (client-area coords)'),
@@ -334,7 +375,9 @@ server.tool(
     steps: z.number().optional().describe('drag: interpolation steps (default 12)'),
     holdMs: z.number().optional().describe('drag: pause before press/release (default 120)'),
     label: z.string().optional().describe('Screenshot file label (shot mode)'),
-    describe: z.boolean().optional().describe('shot mode: also return a vision description of the screen'),
+    describe: z.boolean().optional().describe('shot mode: also return a vision description of the screen (uses the plugin vision config in ~/.dsh/settings.yaml). ' +
+      'If the focused control is a password/captcha/token field the description is REFUSED by default (pixels cannot be redacted) — pass allowSensitive=true to override'),
+    allowSensitive: z.boolean().optional().describe('Override the secret-focus guard on describe=true (only when you have confirmed the screen holds no sensitive content)'),
     waitMs: z.number().optional(),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true for click/setvalue/key/type/drag'),
     snapshotId: z.string().optional().describe('W1 freshness token returned by a prior read/state. When set, a side-effect action is rejected if the snapshot is stale (a newer read happened: staleSnapshot) or expired (client/serve restarted: expiredSnapshot). Omit to skip the freshness gate (legacy, zero-regression).'),
@@ -350,13 +393,18 @@ server.tool(
     x: z.number().optional().describe('move/clickat: client-area X'),
     y: z.number().optional().describe('move/clickat: client-area Y'),
     delta: z.number().optional().describe('wheel: scroll delta'),
+    observeMax: z.number().optional().describe('observe=true: how many controls the post-action snapshot lists (default 15). Only affects the snapshot, not the action result.'),
+    shotsDir: z.string().optional().describe('Directory to copy the screenshot into (absolute). Evidence always also lands in the evidence dir.'),
     mods: z.string().optional().describe('held modifier keys for drag/key, e.g. "shift" | "ctrl" | "alt"'),
     button: z.string().optional().describe('mouse button for coordinate actions (default left)'),
     double: z.boolean().optional().describe('true = double click at the coordinate instead of a single click'),
     focus: z.boolean().optional().describe('true = also set keyboard focus to the target'),
     winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows) instead of the main window'),
-    expectEnabled: z.boolean().optional().describe('expect: assert the control is enabled'),
-    expectMatch: z.string().optional().describe('expect: assert the control name matches this regex'),
+    secret: z.boolean().optional().describe('Mask the value in output/evidence (password-like controls are masked automatically; this covers inputs that do not look like password fields)'),
+    allowSensitive: z.boolean().optional().describe('describe=true: override the secret-focus guard (see describe)'),
+    procId: z.number().optional().describe('Target process PID (disambiguate when several instances are running)'),
+    // R42：这里原来声明了 expectEnabled/expectMatch，但 ui_drive 的 action 枚举里**没有** 'expect'，
+    // 而这两个字段只有流程里的 expect 步骤会读 ⇒ 传进来永远没人看（幽灵参数）。真要断言请用 ui_flow 的 expect 步。
   },
   async (args) => {
     // Pre-check reuses the driver's classifyAction (single source) so it can never
@@ -377,6 +425,9 @@ server.tool(
     // source of truth, so this cannot drift again.
     const r = await drv().drive({ ...args, action: args.action, allowSideEffects: args.allowSideEffects })
     if (!r.ok) autoRecord('tool-error', 'ui_drive', `ui_drive ${args.action} failed: ${String(r.error ?? 'unknown error').slice(0, 200)}`)
+    // r44：`describe=true` 以前是**幽灵参数**（声明了、handler 从不实现 ⇒ 模型以为拿到了描述，其实没有）。
+    // 现在真的接上：vision 模块是自包含的（读 ~/.dsh/settings.yaml + .credentials.yaml），不需要宿主 API。
+    await attachVision(r, args)
     return jtext(withHint(r))
   }
 )
@@ -431,6 +482,19 @@ server.tool(
       interval: z.number().optional().describe('waitfor: poll interval ms'),
       conds: z.array(z.record(z.string(), z.any())).optional().describe('waitany conditions'),
       stableCount: z.number().optional().describe('waitany: consecutive confirmations before a hit counts'),
+      // 2026-09-11（Claude 第十轮真机发现）：驱动的 cleanSteps **认** max/maxDepth，但这份步骤 schema 没声明
+      // → zod 在到达驱动前就把它们剥掉，于是 `steps:[{action:'state',max:5}]` 真机返回 count=40（max 被静默丢弃）。
+      // 又一次"驱动修了、schema 没暴露"。凡是 cleanSteps 会转发的字段，这里都必须有声明的归宿
+      // （守卫见 plugins/dsh-ui-drive/test/param-forwarding-completeness.test.mjs 的 flow-schema 检查）。
+      max: z.number().optional().describe('read/state/tree steps: cap the number of lines/nodes returned'),
+      maxDepth: z.number().optional().describe('tree steps: maximum depth'),
+      // 同一类漏网（守卫 param-forwarding-completeness 抓出来的第二批）：drag 的插值参数、窗口定位、修饰键
+      steps: z.number().optional().describe('drag: interpolation steps (default 12)'),
+      holdMs: z.number().optional().describe('drag: pause before press/release (default 120)'),
+      mods: z.string().optional().describe('drag/key: held modifier keys, e.g. "shift" | "ctrl" | "alt"'),
+      focus: z.boolean().optional().describe('also set keyboard focus to the target before acting'),
+      winTitle: z.string().optional().describe('Target a specific top-level window by title instead of the main window'),
+      winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows)'),
     })).describe('Step sequence'),
     tag: z.string().optional().describe('Evidence dir label (default flow)'),
     failFast: z.boolean().optional().describe('Stop at the first failed assertion'),
@@ -461,7 +525,13 @@ server.tool(
       failFast: args.failFast === true,
       allowSideEffects: args.allowSideEffects === true,
     })
-    if (r.failed > 0) autoRecord('verification-failure', 'ui_flow', `ui_flow assertion failure: ${r.failed}/${r.totalSteps} steps failed (evidence: ${r.stepsJson || r.evidenceDir || '?'})`)
+    // UD-03：与 DSH 面同一个洞——只认 `r.failed`（断言步），动作步失败不进语料库。
+    // 两面必须一致，否则同一段流程在 MCP 面被记为"失败"、在 DSH 面被记为"通过"。
+    const stepFailures = typeof r.stepFailures === 'number' ? r.stepFailures : 0
+    if (r.failed > 0 || stepFailures > 0) {
+      autoRecord('verification-failure', 'ui_flow',
+        `ui_flow failure: assertions=${r.failed}, actionSteps=${stepFailures}/${r.totalSteps} steps failed (evidence: ${r.stepsJson || r.evidenceDir || '?'})`)
+    }
     return jtext(r)
   }
 )
@@ -473,6 +543,8 @@ server.tool(
   'Read-only UI observation (recommended entry point; no allowSideEffects needed). Actions: find / read (controls + real input values) / ' +
     'state (snapshot: window + focus + interactive controls) / windows / waitfor / expectwindow / expecttext / waitany / shot. ' +
     'The dynamic-UI loop is: ui_observe -> decide -> ui_act -> ui_observe. ' +
+    'read/state also honour inAid/inName (container scope), winTitle (cross-window) and waitFor (e.g. wait for a list to render before reading); ' +
+    'a scoped listing is labelled narrowed+scope — an unlabelled listing covers the whole window. ' +
     'waitany is how you adjudicate a login: bet on "main window appeared", "error text appeared" and "login window still there" at once ' +
     'and get back which one hit (with stableCount confirmation to avoid transient states).',
   {
@@ -490,7 +562,7 @@ server.tool(
     ms: z.number().optional().describe('Timeout ms (default 5000; waitany 15000)'),
     interval: z.number().optional(),
     state: z.string().optional().describe('waitfor condition: appear|gone|enabled|disabled'),
-    waitFor: z.record(z.string(), z.any()).optional(),
+    waitFor: z.record(z.string(), z.any()).optional().describe('Wait before reading/acting: {ms?, interval?, state?, match?, index?}. Target = name/aid on the action, else name/aid inside waitFor, else match alone (tree-wide regex). read, state and state-live accept it too. match-only costs ~3x (whole-tree walk per poll) and its ms is capped at 15000 - give aid/name for loops.'),
     conds: z.array(z.record(z.string(), z.any())).optional().describe('waitany conditions: [{kind:"window"|"text"|"appear"|"gone"|"enabled"|"disabled", titleRe?, textRe?, name?, aid?, label?}]'),
     stableCount: z.number().optional().describe('waitany: consecutive confirmations before a hit counts (default 2)'),
     // Declared for the same reason as the fields in ui_drive: the driver accepts these, but zod
@@ -499,13 +571,15 @@ server.tool(
     // client: passing diff=true returned no diff field at all, silently degrading to a full list).
     diff: z.boolean().optional().describe('read only: return an incremental diff {added,removed,unchanged} against the previous full read (first read returns a diffBaseline marker; an incomplete read suppresses the diff instead of reporting a phantom one)'),
     procId: z.number().optional().describe('Target a specific process id (default: auto-detected)'),
-    workspace: z.string().optional().describe('Deprecated and ignored: screenshots always go to the evidence dir'),
     index: z.number().optional(),
-    inAid: z.string().optional(),
-    winTitle: z.string().optional().describe('Scope the search to the window whose title matches'),
+    inAid: z.string().optional().describe('Scope the search/read to the subtree of this AutomationId container (read/state set narrowed+scope)'),
+    inName: z.string().optional().describe('Scope the search/read to the subtree of this Name container'),
+    winTitle: z.string().optional().describe('Scope the search/read to the window whose title matches'),
     max: z.number().optional(),
     label: z.string().optional(),
-    describe: z.boolean().optional().describe('shot: also return a vision description'),
+    describe: z.boolean().optional().describe('shot: also return a vision description (refused by default when the focused control is a password/captcha/token field; allowSensitive=true overrides)'),
+    allowSensitive: z.boolean().optional().describe('Override the secret-focus guard on describe=true'),
+    winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows) — steadier than winTitle'),
     // move/wheel are reversible input primitives: the driver classifies them as kind 'input' and
     // checkSideEffectGate waves that kind through, so NO allowSideEffects is required (verified in
     // driver.mjs — classifyAction returns 'input', and the gate returns allow:true for non-effect
@@ -528,12 +602,46 @@ server.tool(
   'Start the target desktop client (the exe named by DSH_UI_CLIENT_EXE) and wait for its main window; ' +
     'if it is already running the existing process is returned. extraArgs passes extra command-line ' +
     'arguments (e.g. --remote-debugging-port=9222 for CEF debugging). ' +
+    'WARNING: if the client has just hung, do NOT reach for force first - force=true kills the process and ' +
+    'destroys the only crime scene (no dump / no thread stacks / no evidence bundle). Capture evidence FIRST ' +
+    '(perf_dump for a snapshot, or hang_run to watch for a recurrence), then force=true to restart. ' +
+    'force=true is the ONLY restart path: it kills the running target process first ' +
+    'and reports exactly which PIDs were killed and how long it waited; it REFUSES when several same-named processes exist ' +
+    'and DSH_UI_CLIENT_EXE does not disambiguate (never kills the wrong session). ' +
     'Use this when ui_status reports the client is not running - every other ui_* tool needs a live window.',
   {
     extraArgs: z.string().optional().describe('Extra command-line arguments, space separated'),
     waitMs: z.number().optional().describe('How long to wait for the main window (default 60000)'),
+    allowSensitive: z.boolean().optional().describe('The post-launch screenshot is described by a vision model; if the focused control is a password/captcha field the description is refused by default — set true to override'),
+    force: z.boolean().optional().describe('DESTRUCTIVE: kill the running target client first, then start it (restart a hung client). Confirm with the user before using.'),
   },
-  async (args) => jtext(await drv().launch({ extraArgs: args.extraArgs || '', waitMs: args.waitMs || 60000 }))
+  async (args) => {
+    const l = await drv().launch({ extraArgs: args.extraArgs || '', waitMs: args.waitMs || 60000, force: args.force === true })
+    // r44：与 DSH 面同一件事（视觉即返）——启动成功就顺带截一张并交给视觉模型，
+    // 让「我现在到底在哪个页面」一步可答，省掉 shot + 读图两轮往返。
+    // 只在窗口真的可用（ok===true）时才做：半成功时没有主窗口，截到的可能是闪屏或别的进程。
+    if (l && l.ok === true) {
+      try {
+        const s = await drv().drive({ action: 'shot', label: 'launch-state' })
+        if (s && s.ok === true) {
+          const shot = { ...s }
+          await attachVision(shot, { describe: true, allowSensitive: args.allowSensitive === true })
+          l.uiState = {
+            screenshot: shot.workspacePath || shot.path,
+            size: shot.w + 'x' + shot.h,
+            description: shot.description || null,
+            describeSkipped: shot.describeSkipped || null,
+            visionError: shot.visionError || null,
+            note: shot.warning || null,
+          }
+        }
+      } catch (e) {
+        // 截图/描述失败**不影响**启动结论（启动本身成功了），但必须让调用方看得见
+        l.uiState = { error: String((e && e.message) || e) }
+      }
+    }
+    return jtext(l)
+  }
 )
 
 server.tool(
@@ -541,11 +649,18 @@ server.tool(
   'Dump the in-process visual tree: a read-only probe is injected into the target client and ' +
     'reports real control types + Name + AutomationId + DataContext type. Richer than UIA, for ' +
     'diagnosing bindings / templates. Read-only, no popups. Prefer ui_observe for ordinary ' +
-    'interaction - use this only when UIA detail is insufficient.',
+    'interaction - use this only when UIA detail is insufficient. ' +
+    'When the injector is unavailable (no Snoop / DSH_SNOOP_DIR unset) it AUTOMATICALLY FALLS BACK to a ' +
+    'UIA hierarchy tree and returns source:"uia" - that one has types/Name/AutomationId/enabled/offscreen/' +
+    'bounds/hierarchy but NO DataContext and NO real WPF type names, so do not treat it as the richest tree. ' +
+    'Both hidden caps (maxDepth cut-off, node-count cap) and body truncation are reported explicitly ' +
+    '(truncated/depthLimited/nodeCapHit) - a maxDepth value does NOT mean you got the whole tree.',
   {
-    maxDepth: z.number().optional().describe('Maximum depth (default 8, capped at 20)'),
+    maxDepth: z.number().optional().describe('Maximum depth (default 8, capped at 20). When it cuts the tree off the result carries depthLimited=true - that is NOT a complete tree'),
+    inAid: z.string().optional().describe('Scope the dump to one container (AutomationId): only its subtree is returned. The whole-window tree blows past the 14000-char body cap - narrowing first (ui_observe read/state to find a container aid, then ui_tree inAid=...) is the only way to get a COMPLETE subtree. The result reports narrowed/scope. Note: with a scope the UIA path is used (the injector cannot scope).'),
+    inName: z.string().optional().describe('Scope the dump to one container by Name (same as inAid)'),
   },
-  async (args) => jtext(await drv().tree({ maxDepth: args.maxDepth || 8 }))
+  async (args) => jtext(await drv().tree({ maxDepth: args.maxDepth || 8, inAid: args.inAid || '', inName: args.inName || '' }))
 )
 
 server.tool(
@@ -573,11 +688,18 @@ server.tool(
   async (args) => {
     const ctl = liveCtl()
     const action = String(args.action || '').toLowerCase()
-    if (action === 'start') return jtext(await ctl.start({ intervalMs: args.intervalMs, stateIntervalMs: args.stateIntervalMs, maxControls: args.maxControls }))
-    if (action === 'stop') return jtext(ctl.stop())
-    if (action === 'status') return jtext(ctl.status())
-    if (action === 'frame') return jtext(await ctl.frame({ fresh: args.fresh, allowSensitive: args.allowSensitive }))
-    if (action === 'wait') return jtext(await ctl.wait({ fromHash: args.fromHash, timeoutMs: args.timeoutMs }))
+    // F-021 卷土重来（Claude 第八轮真机抓到）：live 的快照脱敏 `sanitizeLive` **只被 DSH 面用**，
+    // 这里的 `jtext(ctl.status())` 直接把原始快照 dump 出去 —— 敏感帧（焦点=密码/验证码）的
+    // `path`/`pathAbs` 在 MCP 面**照出**，`allowSensitive` 传下去也只是个死参数
+    // （live.frame 只认 opts.fresh）。于是 UD-05 的脱敏只活在半个世界里。
+    // 修法：与 DSH 面走**同一个** sanitizeLive（一处修、两面生效），并把 allowSensitive 真接上。
+    const allow = args.allowSensitive === true
+    const j = (v) => jtext(sanitizeLive(v, allow))
+    if (action === 'start') return j(await ctl.start({ intervalMs: args.intervalMs, stateIntervalMs: args.stateIntervalMs, maxControls: args.maxControls }))
+    if (action === 'stop') return j(ctl.stop())
+    if (action === 'status') return j(ctl.status())
+    if (action === 'frame') return j(await ctl.frame({ fresh: args.fresh, allowSensitive: allow }))
+    if (action === 'wait') return j(await ctl.wait({ fromHash: args.fromHash, timeoutMs: args.timeoutMs }))
     return text('Unknown ui_live action "' + args.action + '". Use start | stop | status | frame | wait.')
   }
 )
@@ -602,6 +724,9 @@ server.tool(
       'click', 'setvalue', 'key', 'type', 'drag',
       // 原先漏在 enum 之外：驱动均已实现（坐标类副作用 + W5 原语），但模型调不到
       'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext',
+      // r44：`move`/`wheel` 在驱动 INPUT_ACTIONS 里是真实现的（且无需授权），描述里也写着它们 ——
+      // enum 漏了就等于「描述可达、schema 拒绝」。G1 黑盒 #2 正是按描述去调、然后卡在这里。
+      'move', 'wheel',
     ]),
     name: z.string().optional(),
     aid: z.string().optional(),
@@ -614,13 +739,15 @@ server.tool(
     winTitle: z.string().optional(),
     waitFor: z.record(z.string(), z.any()).optional(),
     expectValue: z.string().optional().describe('type: expected value for the read-back check'),
-    secret: z.boolean().optional().describe('Mask the value in output/evidence'),
+    secret: z.boolean().optional().describe('Mask the value in output and evidence. NOTE: password/captcha controls are masked AUTOMATICALLY (reads return <secret:Nchars>) — use this flag for sensitive inputs that do not look like password fields'),
     fromX: z.number().optional(),
     fromY: z.number().optional(),
     toX: z.number().optional(),
     toY: z.number().optional(),
     observe: z.boolean().optional(),
     observeMatch: z.string().optional(),
+    observeMax: z.number().optional().describe('observe=true: how many controls the post-action snapshot lists (default 15)'),
+    // R42：删掉 shotsDir —— ui_act 的动作枚举里没有 shot/capture，截图目录对它毫无作用（幽灵参数）。
     waitMs: z.number().optional(),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true'),
     snapshotId: z.string().optional().describe('W1 freshness token from a prior read/state. When set, the action is rejected if the snapshot is stale (staleSnapshot) or expired (expiredSnapshot). Omit to skip the freshness gate. (ui_act forwards all args to the driver, so this reaches the same write-side gate as ui_drive.)'),
@@ -630,7 +757,9 @@ server.tool(
     x: z.number().optional().describe('clickat: client-area X'),
     y: z.number().optional().describe('clickat: client-area Y'),
     mods: z.string().optional().describe('held modifier keys for drag, e.g. "shift" | "ctrl" | "alt"'),
+    winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows) — steadier than winTitle'),
     inName: z.string().optional().describe('Scope the search to the subtree of this Name container'),
+    procId: z.number().optional().describe('Target process PID (disambiguate when several instances are running)'),
   },
   async (args) => {
     if (args.allowSideEffects !== true) {
@@ -650,18 +779,58 @@ server.tool(
   }
 )
 
+/**
+ * r44：给 `shot` + `describe=true` 接上视觉描述（MCP 面此前声明了 describe 却从不实现 = 幽灵参数）。
+ *
+ * 两道前置：① 敏感把关 —— 焦点在密码/验证码/token 控件上时**默认拒**（像素无法脱敏，复用驱动侧的
+ * secretFocusNow，fail-closed）；② 视觉模块拿不到时如实报 `visionError`，绝不假装拿到了描述。
+ */
+async function attachVision(r, args) {
+  if (!r || r.ok !== true || r.action !== 'shot' || args.describe !== true) return
+  const sens = await drv().secretFocusNow({ procId: args.procId || 0 })
+  if (args.allowSensitive !== true && (sens.secret === true || sens.unknown === true)) {
+    r.describeSkipped = sens.unknown ? 'sensitivity-unknown' : 'secretFocused'
+    r.warning = sens.unknown
+      ? 'Vision description refused: the focused control could not be read (' + sens.reason + ') — fail-closed. The PNG is still on disk: ' + (r.workspacePath || r.path)
+      : 'Vision description refused: the focused control is a password/captcha/token field (' + (sens.focused || 'unknown') + ') — pixels cannot be redacted. The PNG is still on disk: ' + (r.workspacePath || r.path)
+    return
+  }
+  try {
+    const mod = await import('../plugins/dsh-ui-drive/lib/vision.mjs')
+    // 注意：vision.mjs 导出的是**工厂** makeVision(cfg) → { describeImage, … }，不是裸函数
+    const vision = mod.makeVision({})
+    const v = await vision.describeImage(r.workspacePath || r.path, mod.UI_STATE_PROMPT)
+    if (v && v.ok) { r.description = v.text; r.visionModel = v.model || null } else r.visionError = (v && v.error) || 'vision module returned no result'
+  } catch (e) {
+    r.visionError = 'vision module unavailable in this process: ' + String((e && e.message) || e)
+  }
+}
+
 // ---------------------------------------------------------------- perf
 
 server.tool(
   'perf_probe',
-  'Measure UI stutter: loops a window-message round trip against the target client main window, ' +
+  // F-041（2026-09-12 r35，G1 黑盒测试抓出）：路由句必须放在**第一句**。
+  //   黑盒测试的原话：这是三题里唯一"按名字与 Triggers 选、但会选错"的工具，
+  //   而且误用**不报错** —— 它会返回"0 stalls"，让 agent 拿假阴性去下"客户端不卡"的结论。
+  '**UI-thread stutter DETECTOR (produces no call chain).** To answer "**which code / which call chain** ' +
+    'causes the stutter", do NOT use this tool — go straight to `perf_trace` then `perf_hotstacks`. ' +
+    'What this tool does: loops a window-message round trip against the target client main window, ' +
     'reports P50/P95/P99 and every event over the threshold. capture=log (default) only records; ' +
-    'capture=shot screenshots the stall; capture=dump grabs a full dump on the first stall (hundreds of MB).',
+    'capture=shot screenshots the stall; capture=dump grabs a full dump on the first stall (hundreds of MB). ' +
+    'MEASUREMENT SCOPE (calibrated on this machine 2026-09-11 — read before concluding): it only measures the ' +
+    'UI-thread message pump, so (a) non-UI-thread stalls (GC / IO / worker / background threads) are structurally ' +
+    'invisible (calibration: background thread blocked 2000ms every 3s -> 0 hits over 110-191 samples, max 8-9ms, ' +
+    'indistinguishable from idle); (b) a block falling entirely between two samples is missed (120ms block with ' +
+    '100ms sampling -> 1/5 hits); (c) P50 is normally 0ms even while stalling - judge by max and hit count; ' +
+    '(d) "0 stutters" only means no UI-thread block above the threshold, NOT that the client is smooth. ' +
+    'Tuning: to catch >=500ms stalls use thresholdMs 200-300 (a 500ms block measures ~492ms, so a 500 threshold ' +
+    'can reject it) and intervalMs 100-150. The JSON result carries measurementScope with these limits.',
   {
     seconds: z.number().default(60).describe('Sampling duration in seconds'),
-    thresholdMs: z.number().default(500).describe('Stutter threshold in ms'),
+    thresholdMs: z.number().default(500).describe('Stutter threshold in ms. 500 can miss a ~500ms block (measures 492-513ms) - use 200-300 to catch those'),
     capture: z.enum(['log', 'shot', 'dump']).default('log'),
-    intervalMs: z.number().default(300).describe('Sampling interval in ms'),
+    intervalMs: z.number().default(300).describe('Sampling interval in ms. Hit rate collapses when the block is the same order as the interval (120ms block + 100ms sampling -> 1/5)'),
   },
   async (args) => {
     const r = await prf().probe(args)
@@ -684,8 +853,10 @@ server.tool(
   'perf_dump',
   'Capture a full memory dump of the running client (procdump -ma — this SUSPENDS the process for ' +
     'a few seconds, so the user sees a brief freeze) and immediately analyse it: UI thread managed ' +
-    'stack + top lock-holding threads. Dumps are hundreds of MB and land in the perf evidence dir; ' +
-    'ask the user before deleting.',
+    'stack + top lock-holding threads, and returns dumpPath (absolute dump path — feed it to perf_analyze / perf_heap). It answers only "who is on the stack RIGHT NOW", NOT "who keeps calling it": for intermittent freezes / repaint storms use perf_trace then perf_hotstacks; if the client is frozen right now, capture BEFORE ui_launch(force=true) destroys the scene. Dumps are hundreds of MB and land in the perf evidence dir; ' +
+    'ask the user before deleting. SOURCE LINES come from THIS path: dump analysis also maps frames to source ' +
+    '(with DSH_PERF_SRC_ROOT configured it prints "← relative/path.cs:line") — that is where a file:line answer comes from. ' +
+    'The ETW path (perf_hotstacks) resolves symbols to module!type.method only and does NOT map to source lines.',
   {
     note: z.string().optional().describe('Scenario note written alongside the evidence'),
   },
@@ -703,13 +874,62 @@ server.tool(
 
 server.tool(
   'perf_heap',
-  'Managed heap type census (object count / total bytes per type, Top N) — the first cut of a memory ' +
-    'leak hunt: take two dumps and compare the same type across them.',
+  '**Managed** heap type census (object count / total bytes per type, Top N) — the first cut of a memory ' +
+    'leak hunt: take two dumps and compare the same type across them. MEASUREMENT SCOPE (read before concluding): ' +
+    '(a) MANAGED heap only — a WPF client\'s growth is often UNMANAGED (bitmaps, font handles, COM, native buffers) or ' +
+    'address-space fragmentation, none of which this can see, so "the managed heap did not grow" does NOT prove "no leak"; ' +
+    '(b) garbage not yet collected between the two samples reads as growth (let the client settle / force a GC, or widen the interval); ' +
+    '(c) the output has types and byte counts only — NO retention paths / GC roots — so it cannot answer "which code leaks"; ' +
+    '(d) when the user says "memory", they usually mean the working set in Task Manager, which is a different measurement — report both separately.',
   {
     dumpPath: z.string().describe('Absolute path to the .dmp file'),
     topN: z.number().optional().describe('Top N types (default 30)'),
   },
   async (args) => jtext(await prf().heapStats(args.dumpPath, args.topN))
+)
+
+// F-003 / E4（2026-09-12 r35）：这两个工具原先**只有 DSH 面**有（plugins/dsh-perf/index.js），
+//   MCP 面拿不到 —— 也就是说「谁在反复重绘」这条**间歇性卡顿唯一有效的通路**，
+//   对 MCP 连接的 agent 是关着的（而 perf_dump 那种"抓一个瞬间"的反而开着，
+//   恰好把 agent 推向"猜"）。清单里 E4 是 P0：**DSH 有的，MCP 也要到**。
+server.tool(
+  'perf_trace',
+  'ETW sampling profiler — **use this to get from "the UI stutters" to a full call chain** instead of guessing. ' +
+    'action=start begins sampling (you reproduce the problem), action=stop produces the .etl, action=run does start→wait seconds→stop. ' +
+    'Difference from perf_dump: a dump is ONE instant and can only say "who was on the stack"; this samples continuously, so it can say ' +
+    '**who keeps calling what** — which is what intermittent stutter / repaint storms need. ' +
+    'Captures CPU + DotNet presets together (without DotNet, managed method names will not resolve). ' +
+    'Requires DSH to run as ADMIN (ETW kernel session). The .etl can be hundreds of MB. ' +
+    'Then call perf_hotstacks on the .etl to get the chains.',
+  {
+    action: z.enum(['start', 'stop', 'run', 'cancel', 'status']).optional().describe('start | stop | run (default) | cancel | status = is a session running (running comes from our own session marker, not from querying xperf; samplerProcessFound is corroborating and null means unknown)'),
+    seconds: z.number().optional().describe('For action=run: how long to sample (default 20)'),
+    profile: z.enum(['cpu', 'dotnet', 'general']).optional().describe('cpu (default: CPU+DotNet, resolves managed names) | dotnet | general'),
+    tag: z.string().optional().describe('Evidence-dir suffix tag, e.g. repaint-storm'),
+    etlPath: z.string().optional().describe('For action=stop: which .etl to stop into (the etlPath returned by start)'),
+  },
+  async (args) => jtext(await trc().trace(args))
+)
+
+server.tool(
+  'perf_hotstacks',
+  'Turn a .etl into a **call chain**: hottest-function ranking (who burns CPU) + butterfly view ' +
+    '(each function\'s **callers <-- and --> callees**, with hit counts). ' +
+    'focus keeps only functions whose name matches the regex (e.g. "SciChart|KLine|<your suspect layer>"), ' +
+    'compressing a multi-MB report into one readable causal chain. ' +
+    'NOTE: the **unresolved-symbol ratio is reported on the first line** — if it is high, fix symbols ' +
+    '(DSH_PERF_SYMBOL_PATH) before drawing conclusions, otherwise "symbols did not resolve" gets misread as "that code was never called".',
+  {
+    etlPath: z.string().describe('Absolute path to the .etl produced by perf_trace'),
+    focus: z.string().optional().describe('Regex: keep only matching functions (module or method fragment)'),
+    process: z.string().optional().describe('Process name regex (recommended; defaults to DSH_UI_PROC_NAME)'),
+    topN: z.number().optional().describe('Ranking/chain count, default 15'),
+    minHits: z.number().optional().describe('Butterfly-view minimum hits, default 5'),
+    offline: z.boolean().optional().describe('true = skip the symbol server (fast, but native frames stay unknown)'),
+    timeoutMs: z.number().optional().describe('Report timeout in ms, default 900000'),
+    debugSymbols: z.boolean().optional().describe('true = let xperf print symbol-lookup details (returned in xperfRaw on success and failure alike)'),
+  },
+  async (args) => jtext(await trc().hotstacks(args))
 )
 
 // ---------------------------------------------------------------- hang inspector
@@ -728,7 +948,7 @@ server.tool(
 
 server.tool(
   'hang_run',
-  'Start the hang monitor (hang-loop.ps1): it watches the target client main-window responsiveness WITHOUT clicking anything — ' +
+  'Start the hang MONITOR — this does NOT capture a freeze that already happened: if the client is frozen RIGHT NOW call perf_dump first (restarting destroys the scene); this tool is for intermittent freezes you still have to reproduce. It watches the target client main-window responsiveness WITHOUT clicking anything — ' +
     'the user reproduces the freeze and the monitor collects an evidence pack on detection (frozen screenshot, timeline, process info, ' +
     'net-trace tail, probe/procdump logs, full dump). Returns immediately; poll hang_status / hang_packs. ' +
     'Set maxSeconds>0 to auto-stop (0 = run until hang_stop or the script exits).',
@@ -772,14 +992,17 @@ server.tool(
   'Run the ClrMD (DumpStack) analysis on a pack frozen.dmp: managed thread stacks, the suspect/UI thread, a diagnosis line, ' +
     'and the suspect method mapped to project source (DSH_HANG_SRC_ROOT) with line numbers. ' +
     'wait=true blocks until the analysis finishes (up to waitMs) and returns the report — the usual choice for an agent; ' +
-    'wait=false returns immediately and the panel/poller reads the cached analysis.',
+    'wait=false returns immediately and the panel/poller reads the cached analysis. ' +
+    'A finished analysis is REUSED (not recomputed) unless refresh=true — so passing refresh=true only when you just ' +
+    'changed DSH_HANG_SRC_ROOT or the pack changed; re-running with a worse config used to silently overwrite a good result.',
   {
     id: z.string().describe('Pack id from hang_packs (must contain frozen.dmp)'),
     wait: z.boolean().optional().describe('Wait for the analysis to finish (default true)'),
     waitMs: z.number().optional().describe('Max wait in ms when wait=true (default 300000)'),
+    refresh: z.boolean().optional().describe('Re-run even if a finished analysis is cached (use after changing DSH_HANG_SRC_ROOT)'),
   },
   async (args) => {
-    const r = await hng().analyze(args.id, { wait: args.wait !== false, waitMs: args.waitMs ?? 300000 })
+    const r = await hng().analyze(args.id, { wait: args.wait !== false, waitMs: args.waitMs ?? 300000, refresh: args.refresh === true })
     if (r.ok === false && r.status === 'error') {
       autoRecord('tool-error', 'hang_analyze', `hang analysis failed: ${String(r.error ?? 'unknown').slice(0, 200)}`)
     }
@@ -813,7 +1036,13 @@ server.tool(
 server.tool(
   'http_request',
   'Send an HTTP request from the host (server-side, no browser CORS) and return status / headers / body. ' +
-    'A non-2xx status is a normal result; ok:false means the request could not be made.',
+    'A non-2xx status is a normal result; ok:false means the request could not be made. ' +
+    'LOOPBACK ROUTES: each plugin also exposes a `/api/dsh-<plugin>` prefix (verified prefixes: dsh-ui-drive, dsh-perf, ' +
+  'dsh-api-visualizer, dsh-hang-inspector, dsh-postman, dsh-build — sub-paths live in each plugin, this tool does NOT list ' +
+  'unverified sub-paths). These routes have NO auth on loopback, and panel-only capabilities (capture start/stop, contract ' +
+  'baselines, source locate) are reachable only that way. Treat them as REAL side effects, and only ever call 127.0.0.1. ' +
+  'Redirects are followed automatically, so read redirected/finalUrl/requestedUrl in the result: a 302 to a login page ' +
+    'otherwise looks exactly like a 200 from the API you asked for (status/headers/body all belong to the FINAL url).',
   {
     method: z.string().default('GET').describe('HTTP method'),
     url: z.string().describe('Absolute http(s) URL'),
@@ -852,10 +1081,14 @@ server.tool(
   { query: z.string(), k: z.number().default(5).describe('Results count, max 10') },
   async (args) => {
     const k = Math.min(Math.max(Math.round(args.k || 5), 1), 10)
-    const hits = await mem().search(args.query, k)
+    // 用带**索引新鲜度**的版本：命中可能来自索引快照，而源文件可能已变
+    // （否则过期内容会被当成现状引用 —— 比"没命中"更危险）。与 DSH 面同源。
+    const { hits, freshness } = await mem().searchDetailed(args.query, k)
     return jtext({
       embed: mem().embed.label,
       hits: hits.map((h) => ({ file: h.meta.file, chunk: h.meta.chunkIndex, score: +h.score.toFixed(3), text: String(h.meta.text).slice(0, 400) })),
+      freshness,
+      freshnessNote: freshness.note,
     })
   }
 )
@@ -921,9 +1154,30 @@ server.tool(
 server.tool(
   'build_errors',
   'Re-parse the structured error/warning list (file / line / column / code / message) out of the ' +
-    'last build log. Use after build_run reports errors, or to re-read them later without rebuilding.',
+    'last build log. Use after build_run reports errors, or to re-read them later without rebuilding. ' +
+    'WARNING: it reads the LAST log, which is not guaranteed to be from YOUR run (a concurrent agent may have overwritten it) - an empty list is NOT proof there were no errors.',
   {},
   async () => jtext(bld().errorsOfLast())
+)
+
+server.tool(
+  'build_compile_check',
+  'Check whether ONE source file is actually part of a project\'s compile set (read-only) - the question "zero build errors" cannot answer. ' +
+    'KNOWN TRAP: a legacy .csproj does NOT auto-include .cs files, so a newly added file without a <Compile Include> builds fine while never being compiled ' +
+    '("zero errors" and "my change is in" are different claims). verdict=(kind="file") only proves the file EXISTS and can give a false pass. ' +
+    'Rules: legacy project requires an explicit compile item (wildcards supported); SDK-style includes .cs by default unless EnableDefaultCompileItems is false; <Compile Remove> beats Include. ' +
+    'THREE-STATE HONESTY: it says "included" only when provable, "not included" only when provable, and returns ok:false with the reason when it cannot tell ' +
+    '(file/project missing, several projects in one directory, unparsable) - never silently "not included". MSBuild Condition attributes are NOT evaluated, and the count is reported.',
+  {
+    file: z.string().describe('Source file path (absolute, or relative to repoRoot/cwd)'),
+    project: z.string().optional().describe('Optional: the project file (*.csproj). Omitted = search upward from the file; several candidates return an ambiguity error instead of guessing'),
+    repoRoot: z.string().optional().describe('Optional boundary for the upward search (defaults to the build client/repo root)'),
+  },
+  async (args) => {
+    const cfg = bld().config ? bld().config() : {}
+    const root = args.repoRoot || cfg.clientRoot || cfg.repoRoot || undefined
+    return jtext(checkCompileMembership(args.file, { projectPath: args.project, repoRoot: root }))
+  }
 )
 
 // ---------------------------------------------------------------- failure corpus
@@ -952,7 +1206,9 @@ server.tool(
 
 server.tool(
   'failure_query',
-  'Query the local failure corpus: substring q (task/description/resolution), failureClass, tag, time range. Returns newest-first records.',
+  'Query the local failure corpus: substring q (task/description/resolution), failureClass, tag, time range. Returns newest-first records. ' +
+    'Records that were later shown to be recorded wrongly are EXCLUDED by default (see `retractedExcluded` in the response); ' +
+    'pass includeRetracted=true to see them with their retraction reason. Reads ALL shards (active + rotated archives).',
   {
     q: z.string().optional(),
     failureClass: z.enum(FAILURE_CLASSES).optional(),
@@ -961,15 +1217,49 @@ server.tool(
     toTs: z.number().optional().describe('Latest ts (epoch ms)'),
     limit: z.number().optional().describe('Max records, default 50, max 500'),
     offset: z.number().optional(),
+    includeRetracted: z.boolean().optional().describe('Include records that were retracted (each carries retractedReason). Default false.'),
   },
   async (args) => jtext(fc().query(args))
 )
 
 server.tool(
   'failure_stats',
-  'Failure corpus stats: total, last 7/30 days, per-class counts, corpus dir.',
+  'Failure corpus stats: total/last 7-30 days/per-class counts (ACTIVE shard only — the corpus contract), plus totalAllShards / ' +
+    'archivedRecords / filesScanned so a shrinking `total` is explainable, and `retracted` so withdrawn records are visible rather than silently dropped.',
   {},
   async () => jtext(fc().stats())
+)
+
+// E3 / F-042（2026-09-12 r36）：**"统一 health 工具"是一个 P0 能力缺口**，不是"测试没找到"。
+//   两个互相隔离的黑盒 agent 独立要过同一个东西：工具描述里散落着 DSH_HANG_SRC_ROOT /
+//   DSH_PERF_SYMBOL_PATH / DSH_UI_CLIENT_EXE / "需管理员"等硬前提，**却没有任何工具能查其当前值**。
+//   后果很具体：源码根没配 ⇒ 只能给方法名、给不出 文件:行号 —— 而用户最想要的就是那一行。
+server.tool(
+  'toolchain_status',
+  '**Run this first.** One call that answers "can I actually get code-level evidence right now?", and tells you what each missing ' +
+    'precondition is and how to fix it. Checks: is the target client running (pid) / source roots (DSH_HANG_SRC_ROOT, DSH_PERF_SRC_ROOT — ' +
+    'these decide whether you get `file:line`) / the dump trio (procdump + DumpStack + DAC — decides whether a hang yields a thread stack) / ' +
+    'symbol path / **admin rights** (required for ETW sampling) / evidence dirs. ' +
+    'Every value carries its **source** (process env / user registry / not configured), so "configured but not inherited" and "never configured" ' +
+    'are two different statements; anything that cannot be checked says so instead of pretending to pass. ' +
+    'Typical use: when hang_analyze gives you a method name but no line number, check here for a missing source root — do not guess by trial and error.',
+  {
+    deep: z.boolean().optional().describe('true = also do the heavier work (count .cs files under the source root, count evidence-dir entries). Default false: existence checks only, returns immediately.'),
+  },
+  async (args) => jtext(await buildToolchainStatus({ deep: args && args.deep === true }))
+)
+
+server.tool(
+  'failure_retract',
+  'Mark a failure-corpus record as WRONGLY recorded (append-only: the original line stays on disk for audit; query/stats then stop counting it). ' +
+    'Use when evidence later proves a recorded failure was itself a false positive (e.g. a verification tool that misjudged a true claim). ' +
+    'A reason is REQUIRED. Retracting a non-existent id is refused.',
+  {
+    id: z.string().describe('The record id to retract, e.g. fc-20260911-5729'),
+    reason: z.string().describe('Why this record is wrong. Required — a retraction without a reason is not auditable.'),
+    by: z.string().optional().describe('Who retracts it (free text).'),
+  },
+  async (args) => jtext(fc().retract(args))
 )
 
 // ---------------------------------------------------------------- api capture
@@ -978,7 +1268,12 @@ server.tool(
   'capture_query',
   'Query the local API-capture store (the same day-shard JSONL the dsh-api-visualizer capture panel writes): ' +
     'method/url/status/duration plus caller attribution (which ViewModel/API fired each request). ' +
-    'Use to analyze captured client traffic: slow calls, errors, one host, or requests fired by one ViewModel.',
+    'Use to analyze captured client traffic: slow calls, errors, one host, or requests fired by one ViewModel. ' +
+    'ALWAYS read the accompanying honesty fields: `freshness` (captureRunning / newestAgeMs / engineNote) tells you ' +
+    'whether the capture engine is live or you are looking at HISTORICAL data, and `callerAttribution` tells you ' +
+    'whether caller data exists AT ALL - when it is unavailable the reason is stated there (today the client-side ' +
+    'producer does not exist, so "no caller" must NOT be read as "no caller happened"). Both are also summarized ' +
+    'in `freshnessNote` / `callerAttributionNote`.',
   {
     limit: z.number().optional().describe('Max records (default 50, max 500)'),
     offset: z.number().optional(),
@@ -999,19 +1294,156 @@ server.tool(
     noNoise: z.boolean().optional().describe('Hide static-resource/heartbeat noise'),
     bodyQ: z.string().optional().describe('Substring inside request/response bodies/headers'),
     caller: z.string().optional().describe('Caller attribution substring (viewModel / apiMethod / stack frame)'),
-    includeBody: z.boolean().optional().describe('Include bodies (off by default)'),
+    includeBody: z.boolean().optional().describe('Include bodies (off by default). WARNING: bodies and headers routinely carry real tokens / cookies / identity data — enabling this pulls that plaintext into your context (and into anything you write afterwards).'),
   },
-  async (args) => jtext(queryPage(args))
+  async (args) => {
+    // **新鲜度 + 调用方归因必须一起给**（2026-09-11 第十轮自查）：
+    //   这段诚实性逻辑原来只写在 DSH 插件的 api_capture_query 里，MCP 面（agent 最常用的那个）
+    //   只回 total/returned/items —— 于是"引擎没在跑 = 你看到的是历史数据"和
+    //   "调用方归因根本没有生产者（F-004）"这两件事，在 MCP 面上完全不可见。
+    //   现在三个面（插件工具 / 面板路由 / MCP）共用同一个 lib/query-view.mjs。
+    const page = queryPage(args)
+    // 捕获引擎跑在**宿主进程**里，MCP 进程看不到它 —— 但宿主开了回环路由，可以直接问。
+    // 问不到就保持 null（"未知"），绝不猜成"没在跑"或"在跑"。
+    let status = null
+    try {
+      const r = await fetch('http://127.0.0.1:3080/api/dsh-api-visualizer/capture/status', { signal: AbortSignal.timeout(3000) })
+      if (r.ok) status = await r.json()
+    } catch { status = null }
+    const view = buildQueryView({ records: page && page.items, all: readAll(), status, callerFilter: String(args.caller ?? ''), retention: readRetention() })
+    return jtext({
+      ...page,
+      ...view,
+      freshnessNote: freshnessNote(view.freshness),
+      callerAttributionNote: callerAttributionNote(view.callerAttribution),
+      // 「没读到」≠「没有」：库被裁剪过时必须说清，否则 0 条会被读成"这段时间没这种调用"。
+      retentionNote: retentionNote(view.retention),
+    })
+  }
+)
+
+/**
+ * 捕获控制面：MCP 面**跑在另一个进程**里，引擎在**宿主进程**，所以只能走宿主开在回环上的路由。
+ *
+ * 为什么不自己起一个引擎：那会变成**第二个引擎同时 tail 同一个日志** ⇒ 每条记录进库两次，
+ * 而面板上的"重复请求/调用次数"会整体翻倍（这正是 r38 里我差点误判成"客户端重复发请求"的形态）。
+ * 所以这里只做**转发**，并如实区分"宿主没应答"与"宿主动手失败"。
+ */
+async function hostCapture(method, path, body) {
+  const url = 'http://127.0.0.1:3080/api/dsh-api-visualizer' + path
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: body === null ? undefined : { 'content-type': 'application/json' },
+      body: body === null ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(method === 'GET' ? 5000 : 20000),
+    })
+    const data = await res.json().catch(() => null)
+    if (data === null) {
+      return { ok: false, error: '宿主路由 ' + path + ' 返回了非 JSON（HTTP ' + res.status + '）', httpStatus: res.status, hint: '宿主可能没加载 dsh-api-visualizer 插件。' }
+    }
+    // HTTP 状态如实带出去：409/500 是**宿主拒绝**，不是"调不通"。
+    // 成功但路由没给 ok 时补一个（2xx 就是 ok）；失败一律 ok:false —— 别让上游看到 undefined 当成功。
+    return { ...data, httpStatus: res.status, ...(res.ok ? (data.ok === undefined ? { ok: true } : {}) : { ok: false }) }
+  } catch (e) {
+    return {
+      ok: false,
+      error: '连不上宿主回环路由 ' + url + '：' + String(e && e.message ? e.message : e),
+      hint: 'DSH 宿主没在跑或不是这个端口？这只说明"问不到宿主"，**不等于**捕获没在跑。',
+    }
+  }
+}
+
+server.tool(
+  'capture_start',
+  'Start LIVE capture (the same thing the panel\'s "开始实时捕获" button does): tail the client\'s System.Net trace log and ingest records into the store. ' +
+    'Use the capture_start tool (do NOT hand-roll a POST) before analysing "traffic happening right now" - otherwise capture_query only sees historical data. ' +
+    'The host process owns the engine, so this goes through the loopback route (http://127.0.0.1:3080/api/dsh-api-visualizer/capture/start). ' +
+    'The result carries `warnings` when the trace log does not exist (capture would read nothing) or when the caller-attribution side log is missing (caller will then be empty - that does NOT mean "no caller happened").',
+  {
+    logPath: z.string().optional().describe('Optional: switch to this trace-log path (REJECTED while capture is running, with the next step).'),
+    replay: z.boolean().optional().describe('true = re-read the whole log from the start (to backfill history); default false = only new lines'),
+  },
+  async (args) => {
+    const r = await hostCapture('POST', '/capture/start', { logPath: args.logPath, replay: args.replay === true })
+    return jtext(r)
+  }
+)
+
+server.tool(
+  'capture_stop',
+  'Stop LIVE capture (the panel\'s stop button). After this, capture_query sees historical data again - the summary says so explicitly.',
+  {},
+  async () => jtext(await hostCapture('POST', '/capture/stop', {}))
+)
+
+server.tool(
+  'capture_status',
+  'Read the live-capture engine state (read-only): running?, trace log present and how big, how many records parsed this session, ' +
+    'and whether the caller-attribution side log exists (when it does not, caller is empty - that does NOT mean no caller happened). ' +
+    'Ask this first when unsure whether capture can actually see anything right now. ' +
+    'DOUBLE-WRITE SELF-CHECK: the returned `integrity` compares what the engine says it emitted against how many realtime rows the store gained - ' +
+    'a ratio >= 1.5 means every call count you read in the panel is inflated (do NOT draw "repeated request / timer storm" conclusions from those numbers until it is fixed). ' +
+    'Against an older host that cannot supply a same-interval basis, pass sampleSeconds (e.g. 90) to sample twice in the SAME window; it blocks for that long.',
+  {
+    sampleSeconds: z.number().optional().describe('When > 0, sample twice this many seconds apart in the SAME window and compare the deltas (needed against an older host). Blocks for that long (max 600).'),
+  },
+  async (args) => {
+    const sampleSeconds = Math.min(Math.max(Number(args?.sampleSeconds) || 0, 0), 600)
+    const snap = async () => {
+      const s = await hostCapture('GET', '/capture/status', null)
+      let realtimeCount = null
+      try { realtimeCount = readAll().filter((x) => (x.source ?? '') === 'realtime').length } catch { /* null = 拿不到 */ }
+      return { ts: Date.now(), emitted: Number(s.counters?.emitted) || 0, startedAt: Number(s.startedAt) || null, realtimeCount }
+    }
+    let integrityFromSample
+    if (sampleSeconds > 0) {
+      const before = await snap()
+      await new Promise((r) => setTimeout(r, sampleSeconds * 1000))
+      const after = await snap()
+      integrityFromSample = sampleDeltaVerdict(before, after)
+    }
+    const r = await hostCapture('GET', '/capture/status', null)
+    // summary 与 integrity 都**自己算一遍**：宿主可能是**旧代码**（不热加载），它的路由里没有这两项。
+    // integrity（"引擎说 emit N 条，库里却多了 2N 行"）尤其重要 —— 它决定"面板里的调用次数能不能信"。
+    let integrity = r.integrity
+    if (integrity === undefined && Number(r.startedAt) > 0) {
+      try {
+        const startedAt = Number(r.startedAt)
+        const realtimeSinceStart = readAll().filter((x) => (x.source ?? '') === 'realtime' && (Number(x.ts) || 0) >= startedAt - 1000).length
+        integrity = doubleWriteVerdict({ emitted: Number(r.counters?.emitted) || 0, realtimeSinceStart })
+      } catch { integrity = undefined }
+    }
+    const merged = { ...r, ...(integrity !== undefined ? { integrity } : {}) }
+    const out = { ...merged, ...(integrityFromSample !== undefined ? { integrity: integrityFromSample, sampledSeconds: sampleSeconds } : {}) }
+    const note = out.integrity && out.integrity.note ? '\n' + out.integrity.note : ''
+    return jtext({ ...out, summary: summarizeCapture(out) + note })
+  }
 )
 
 server.tool(
   'capture_append',
   'Append captured API-call records into the local API-capture store (the same store the capture panel reads; appears live in the GUI).',
   {
-    records: z.array(z.object({ method: z.string(), url: z.string() }).passthrough()).describe('Records: method+url required; status/durationMs/reqBody/resBody/note/caller optional. Bodies ≤ 2MB.'),
+    records: z.array(z.object({ method: z.string(), url: z.string(), ts: z.number().optional() }).passthrough()).describe('Records: method+url required; ts/status/durationMs/reqBody/resBody/note/caller optional. Bodies ≤ 2MB. ts = when the call happened (epoch ms) — required in practice when importing/replaying HISTORICAL traffic, otherwise it is stored as NOW and the timeline shifts.'),
     runId: z.string().optional().describe('Attach this run id to every appended record (evidence-pack spine)'),
   },
   async (args) => jtext(appendRecords(args.records, { runId: args.runId }))
+)
+
+server.tool(
+  'perf_clean',
+  'Clean the perf evidence dir (the .dmp / .etl heavy files). Why it exists: a memory or perf investigation leaves hundreds of MB ' +
+    'and nothing in the toolchain could remove them (G1 black-box finding). DRY-RUN by default (it lists what would go and the total ' +
+    'bytes) and only deletes when confirm=true; only .dmp/.etl are touched, never recursively, never the directory itself; while a trace ' +
+    'session marker (trace-session.json) is present it skips .etl because that may be the file being written. ' +
+    'what=dumps|etls|all (default all), keepDays=N keeps anything newer than N days.',
+  {
+    confirm: z.boolean().optional().describe('REQUIRED true to actually delete. Omit/false = list only (dry run). Deletion is not recoverable'),
+    what: z.enum(['dumps', 'etls', 'all']).optional().describe('Which files: dumps = .dmp only, etls = .etl only, all = both (default)'),
+    keepDays: z.number().optional().describe('Only delete files older than N days (default: no age filter)'),
+  },
+  async (args) => jtext(cleanEvidence({ dir: prf().evidenceDir(), confirm: args.confirm === true, what: args.what, keepDays: args.keepDays }))
 )
 
 // ---------------------------------------------------------------- verification report
@@ -1019,8 +1451,17 @@ server.tool(
 server.tool(
   'verify_report',
   'Assemble the verification report for one runId and adjudicate each claim FROM EVIDENCE, not self-rating: ' +
-    'kind=build reads the per-run build record (run-<runId>.json), kind=api queries the capture store (filter + expect.min/all2xx), ' +
-    'kind=file checks path existence, kind=manual is an explicit agent-supplied status. ' +
+    'kind=build reads the per-run build record (run-<runId>.json); kind=api queries the **dsh-api-visualizer capture store** ' +
+  '(NOT the dsh-postman panel history — two different stores); ' +
+    'kind=file checks path existence (⚠ existence only — a file nobody compiles still passes), kind=compiled checks project compile membership, ' +
+  'kind=gate runs a command (exit 0 = pass), kind=git checks repo state, kind=manual is an explicit agent-supplied status ' +
+  '(SELF-RATING: verdict=pass means the claim matched the status you supplied, NOT that the fact was independently verified). ' +
+  'Per-kind fields: build {statement, runId?} / api {statement, filter?, expect?} / file {statement, path} / compiled {statement, path, project?, repoRoot?} / ' +
+  'gate {statement, cmd, cwd?} / git {statement, ref?, gitConfig?} / manual {statement, evidence?}. ' +
+  'Pick ONE runId first and reuse it verbatim in build_run / capture_append / verify_report — a mismatch fails the claim and is recorded as agent-misjudge. ' +
+    'An api claim is automatically bound to this runId (BV-01: another run traffic must not certify this one), so filter alone still only ' +
+    'matches THIS run; to claim "interfaces were exercised", record evidence first with capture_append({runId}). ' +
+    'Prefer kind=gate (a real command) whenever one exists. ' +
     'Verdict: pass / incomplete / fail. Evidence-contradicted claims auto-record as agent-misjudge in the failure corpus. ' +
     'This is the physical carrier of "evidence over claims" — call it before declaring a task done.',
   {
@@ -1028,12 +1469,14 @@ server.tool(
     task: z.string().describe('One-line task name'),
     claims: z.array(z.object({
       statement: z.string().describe('The claim being made'),
-      kind: z.enum(['build', 'api', 'file', 'git', 'gate', 'manual']).optional().describe('Adjudication rule; defaults to manual'),
+      kind: z.enum(['build', 'api', 'file', 'git', 'gate', 'manual', 'compiled']).optional().describe('Adjudication rule; defaults to manual. compiled = does this source file actually belong to a project compile set (legacy .csproj does NOT auto-include .cs, so a forgotten <Compile Include> builds fine while never being compiled - kind=file cannot catch that); unreadable input yields unverified, never fail'),
       runId: z.string().optional().describe('For kind=build/api: which run the evidence belongs to'),
-      path: z.string().optional().describe('For kind=file: path to check'),
+      path: z.string().optional().describe('For kind=file: path to check. For kind=compiled: source file whose compile membership is checked'),
       filter: z.record(z.string(), z.any()).optional().describe('For kind=api: capture-store filter (q/method/host/status/...)'),
       expect: z.object({ min: z.number().optional(), all2xx: z.boolean().optional() }).optional().describe('For kind=api: pass criteria (default min=1)'),
-      repo: z.string().optional().describe('For kind=git: repo dir (default cwd)'),
+      project: z.string().optional().describe('For kind=compiled: explicit project file (*.csproj). Omitted = search upward from the file'),
+    repoRoot: z.string().optional().describe('For kind=compiled: boundary for the upward project search'),
+    repo: z.string().optional().describe('For kind=git: repo dir (default cwd); for kind=compiled it is used as a base for relative paths'),
       check: z.string().optional().describe("For kind=git: 'clean' (working tree) or 'pushed' (ls-remote, authoritative)"),
       ref: z.string().optional().describe("For kind=git check=pushed: ref to compare (default HEAD)"),
       gitConfig: z.array(z.string()).optional().describe("For kind=git: extra git -c flags (e.g. ['-c','http.sslBackend=openssl'])"),
