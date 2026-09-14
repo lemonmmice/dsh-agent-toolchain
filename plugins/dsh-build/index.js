@@ -8,7 +8,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
-import { renderBuild, renderStatus } from './lib/render.mjs'
+import { renderBuild, renderErrors, renderStatus } from './lib/render.mjs'
 import { makeBuilder } from './lib/builder.mjs'
 import { checkCompileMembership, renderMembership } from '../../lib/compile-membership.mjs'
 import { envOr } from '../../lib/env-fallback.mjs'
@@ -110,7 +110,7 @@ const tools = () => [
     name: 'build_errors',
     description: '从**最近一次**构建日志重新解析错误/警告列表（结构化 file/line/col/code/message）。⚠ 它读的是"最近一次日志"、**不保证是本次 run**（多 agent 并发时会读到别人的）：空 ≠ 没有错误，先看返回值里的日志路径/时间是不是你要的那次；要绑定本次请用 build_run 的 runId + verify_report(kind="build")。Triggers: 解析编译错误 / 查看编译错误.',
     parameters: {},
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.hasRun ? (v.errors.length + ' 错误 / ' + v.warnings.length + ' 警告（日志 ' + v.logPath + '）') : '没有构建记录' }] },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderErrors(v) }] },
     async execute() {
       return bld().errorsOfLast()
     },
