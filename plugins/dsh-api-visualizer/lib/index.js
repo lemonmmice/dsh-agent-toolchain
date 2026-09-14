@@ -1847,6 +1847,20 @@ function apiQueryTool(capture) {
           items: { type: 'array', items: { type: 'object', additionalProperties: true } },
           freshness: { type: 'object', additionalProperties: true, description: '新鲜度：最新记录年龄 + 捕获引擎是否在跑' },
           callerAttribution: { type: 'object', additionalProperties: true, description: '调用方归因是否真的有数据' },
+          // ⚠ F-055（2026-09-14 真机实测抓到）：`execute` 的返回里一直带着 `retention` / `retentionNote`
+          //   （见本工具末尾 `return { ...obj, retention, retentionNote: … }`），但**schema 里从没声明**，
+          //   而本 schema 是 `additionalProperties: false` ⇒ **宿主判"非法输出"，整个工具直接不可用**：
+          //     Error: tool "api_capture_query" returned invalid output:
+          //       "value.retention" is not a declared property (additionalProperties: false)
+          //   ⇒ 调用方拿不到任何数据。**这比"少一个字段"严重得多：它让整个工具死了。**
+          retention: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], description: '保留期：被裁剪/丢弃的统计与最早保留记录时间（生产者可能返回 null）' },
+          // ⚠ 两个字段都必须是**可空**的：`retentionNote` 在"没有发生裁剪"时是 **null**。
+          //   第一版我写的是 `type: 'string'` / `type: 'object'` —— **宿主照样会拒**
+          //   （`"value.retentionNote" must be a string`），**修复只做了一半**。
+          //   是新加的输出校验关（拿宿主自己的校验器跑真实返回值）把它抓出来的。
+          //   本方言里可空只能写 `oneOf`（`type` 与 `oneOf` **不能同时出现**，
+          //   且 `oneOf` 旁边不许有 properties/required/additionalProperties/items/enum/const）。
+          retentionNote: { oneOf: [{ type: 'string' }, { type: 'null' }], description: '保留期的人话说明（被裁剪过就必须出声；没裁剪时为 null）' },
         },
       },
       // 渲染逻辑在可测的 lib/query-view.mjs 里（本文件依赖 dsh-tools，普通 node 进程 import 不到）。
