@@ -31,7 +31,7 @@ import { dirname as dirNameOf } from 'node:path'
 /** 本插件目录（仓库与 profile 两种布局下都成立）。 */
 const AV_PLUGIN_DIR = dirNameOf(dirNameOf(fileURLToPath(import.meta.url)))
 import { ProxyEngine, readSystemProxy } from './proxy-engine.mjs'
-import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote } from './query-view.mjs'
+import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote, renderQuery } from './query-view.mjs'
 import { envOr } from '../../../lib/env-fallback.mjs'
 
 /** Stable cordis plugin name. */
@@ -1980,11 +1980,9 @@ function retentionInfo() {
   }
 }
 
-function fmtMs(ms) {
-  if (!Number.isFinite(ms)) return '-'
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(2)}s`
-}
+// ⚠ 这里原来有一份 `fmtMs`。它是**死代码**：唯一的使用者是 `api_capture_query` 那段内联 render，
+//   而 0fad407 把那段换成了 `renderQuery(...)`（见 lib/query-view.mjs）⇒ 本函数再没人调。
+//   按第 24 类（同一件事不许两份实现）把它删掉，格式化统一走 `query-view.mjs` 导出的 `fmtMs`。
 
 /**
  * Host-managed realtime capture: CaptureEngine -> batched store append.

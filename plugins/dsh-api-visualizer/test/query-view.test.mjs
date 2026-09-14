@@ -167,5 +167,59 @@ const repoRoot = join(here, '..', '..', '..')
     '时间线仍在静默丢空桶')
 }
 
+// ================================================================
+// 5. `renderQuery` —— **渲染层是 agent 唯一看得见的东西**（2026-09-14 真机撞出来的）
+//
+// 现场：`api_capture_query` 在 0fad407 里被改成 `render: (args, value) => renderQuery(args, value)`，
+//   **而 `renderQuery` 从来没被写出来**。宿主每次都抛
+//     `output.render failed: renderQuery is not defined`
+//   ⇒ 整支工具不可用；而 parity（工具名/参数）、1a–1d（输入参数集）、1e（只调 execute）
+//   全都看不见 —— **没有一关调过 render**。它此前被 F-055 的 schema 错挡在前面，
+//   修好 schema、重启宿主之后才露头（两个 bug 叠在同一支工具上）。
+// 本节的判据（第 51/56 类的口径：渲染层不许丢字段、不许把拿不到的量算成 0）：
+//   ① execute 产出的**每一个**提示字段都要被渲染出来（新鲜度 / 归因 / 保留期 / 被过滤排除）；
+//   ② 0 条**不许**渲染成空列表（必须写出"别读成没有发生"+下一步）；
+//   ③ 拿不到的量写 `-`，**不许**参与算术后变成 `0ms`；
+//   ④ 真的执行一次 execute，把它**真实**返回值喂进去。
+{
+  const { renderQuery, fmtMs } = await import('../lib/query-view.mjs')
+
+  const ts = new Date(2026, 8, 14, 14, 31, 5).getTime()   // fmtClock 走本地时间，断言不写死时区
+  check('fmtMs：拿不到就写 `-`，绝不变成 0ms（第 51 类：null→0 属于编造量）',
+    fmtMs(null) === '-' && fmtMs(undefined) === '-' && fmtMs(NaN) === '-' && fmtMs(0) === '0ms' && fmtMs(1500) === '1.50s',
+    [fmtMs(null), fmtMs(0), fmtMs(1500)].join(' / '))
+
+  const v = renderQuery({}, {
+    total: 2, returned: 2, hasMore: true,
+    items: [
+      { ts, method: 'POST', status: 200, durationMs: 123, url: 'https://a/x', caller: { viewModel: 'KLineVM', apiMethod: 'GetK' } },
+      { ts: null, method: 'GET', status: null, durationMs: null, url: 'https://b/y' },   // 缺字段的一条
+    ],
+    freshness: { captureRunning: false, newestAgeMs: 65000, logExists: true },
+    callerAttribution: { available: false, reason: '旁路日志不存在' },
+    retention: { droppedTotal: 767, lastDroppedAt: ts, truncatedBy: 'physical-bytes' },
+    excludedNoFieldNote: '有记录因缺少被过滤的那个字段被排除',
+  })
+  const text = v.map((c) => c.text).join('\n')
+  check('★ renderQuery 返回宿主认的形状 [{type:"text",text}]',
+    Array.isArray(v) && v.every((c) => c.type === 'text' && typeof c.text === 'string'), JSON.stringify(v).slice(0, 120))
+  check('★ 四类提示**全部**渲染出来（新鲜度 / 归因 / 保留期 / 被过滤排除）—— 少一个就是把"可疑"洗成"正常"',
+    /历史数据/.test(text) && /归因不可用/.test(text) && /已按上限裁剪过/.test(text) && /缺少被过滤的那个字段/.test(text),
+    text.slice(0, 300))
+  check('★ 记录行：时间 + 方法 + 状态 + 耗时 + 调用方 + URL 都在',
+    /14:31:05 POST 200 123ms \[KLineVM ← GetK\] https:\/\/a\/x/.test(text), text.slice(0, 300))
+  check('★ 拿不到的字段写 `-`（时间/状态/耗时），**不许**编成 0',
+    /- GET - - https:\/\/b\/y/.test(text), text.slice(0, 400))
+  check('★ 有下一页要说出来', /还有更多/.test(text), text.slice(0, 120))
+
+  const empty = renderQuery({}, { total: 0, returned: 0, hasMore: false, items: [] }).map((c) => c.text).join('\n')
+  check('★★ 0 条必须写出"别直接读成没有发生"+下一步（不许只给一个 0 或空列表）',
+    /别把这个 0 直接读成/.test(empty) && /去掉 minDurationMs/.test(empty), empty.slice(0, 200))
+
+  // "真的 execute 一次 → 把它**真实**返回值喂给 render" 这一环由 `lib/toolface-params.test.mjs` 的
+  // 1e 节负责（只有那边装了裸包名解析钩子；本文件直接 import lib/index.js 会因为
+  // `@deepseek-ai/dsh-tools` 解析不到而炸）。这里只钉**渲染语义**，两边不重复。
+}
+
 console.log(failures === 0 ? '\nPASS: dsh-api-visualizer 查询诚实性视图（三面共用）' : '\nFAIL: ' + failures + ' check(s)')
 process.exit(failures === 0 ? 0 : 1)

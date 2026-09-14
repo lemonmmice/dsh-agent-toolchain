@@ -125,3 +125,91 @@ export function callerAttributionNote(callerAttribution) {
   return 'ℹ 调用方归因不可用：' + (callerAttribution.reason || '原因未回报') +
     '（因此"某接口由哪个 ViewModel 发出"这类结论**目前拿不到** —— 不要把它读成"没有调用方"。）'
 }
+
+/**
+ * "拿不到"归一成 `null`。
+ *
+ * ⚠ 这里踩过一次坑（写完 renderQuery 的第一版就被自己的单测抓住了）：
+ *   `Number(null)` **等于 0**、`Number(undefined)` 是 NaN —— 所以
+ *     `if (!Number.isFinite(Number(ms))) return '-'`
+ *   对 `null` **判不出来**，会一路走到 `0 < 1000` ⇒ 渲染出 **`0ms`**：
+ *   一条"耗时未知"的记录被写成了"耗时 0 毫秒"。时间戳同理（`Number(null)=0` ⇒ 1970 或本地 08:00:00）。
+ *   这正是第 51 / 56 类点名的 `null → 0` **编造量**，而且是我**在修别人同一个病的时候**写出来的。
+ */
+function numOrNull(x) {
+  if (x === null || x === undefined || x === '') return null
+  const n = Number(x)
+  return Number.isFinite(n) ? n : null
+}
+
+/** 毫秒人话（拿不到就写 `-`，**不许**把 null/undefined 算成 0ms）。 */
+export function fmtMs(ms) {
+  const n = numOrNull(ms)
+  if (n === null) return '-'
+  if (n < 1000) return Math.round(n) + 'ms'
+  return (n / 1000).toFixed(2) + 's'
+}
+
+/** 本地 `HH:mm:ss`（确定性输出，不依赖 locale；时间戳坏掉就写 `-`）。 */
+function fmtClock(ts) {
+  const t = numOrNull(ts)
+  if (t === null) return '-'
+  const d = new Date(t)
+  const p = (n) => String(n).padStart(2, '0')
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+}
+
+/** 一条记录一行（调用方归因有就带上）。 */
+function recordLine(r) {
+  const rec = r && typeof r === 'object' ? r : {}
+  const c = rec.caller && typeof rec.caller === 'object' ? rec.caller : {}
+  const who = [c.viewModel, c.apiMethod].filter(Boolean).join(' ← ')
+  return fmtClock(rec.ts) + ' ' + (rec.method ?? '?') + ' ' + (rec.status ?? '-') + ' ' +
+    fmtMs(rec.durationMs) + ' ' + (who !== '' ? '[' + who + '] ' : '') + (rec.url ?? '')
+}
+
+/**
+ * `api_capture_query` 的**渲染层**（三个面共用一份实现里"给人看"的那一份）。
+ *
+ * ⚠ 为什么这个函数必须存在（2026-09-14 真机抓到，F-056 同类）：
+ *   0fad407（"prove callee read-points per function"）把 `index.js` 里那段内联 render 换成了
+ *     `render: (args, value) => renderQuery(args, value)`
+ *   —— 注释还写着"渲染逻辑在可测的 lib/query-view.mjs 里"，**可那个导出从来没被写出来**。
+ *   于是宿主每次把结果交给 agent 时都抛
+ *     `output.render failed: renderQuery is not defined`
+ *   ⇒ **整支工具在真机上不可用**。它此前被 F-055 的 schema 错**挡在前面**（校验先于渲染），
+ *   所以修好 schema、重启宿主之后才露出来。
+ *   而**没有一关调过 output.render**（parity 比工具名/参数、1e 只调 execute）—— 见 `1f` 节新增的闸。
+ *
+ * 渲染口径（照本仓"生产者加字段，渲染层必须跟上"的纪律）：
+ *   ① 先给"数据可不可信"（新鲜度 / 归因），再给"漏了什么"（被裁剪、被过滤排除），最后才是记录本身；
+ *   ② **0 条不许渲染成一个空列表** —— 必须写出"别直接读成没有发生"及其下一步；
+ *   ③ 拿不到的量写 `-`，**绝不**参与算术后变成 0。
+ */
+export function renderQuery(args, value) {
+  const v = value && typeof value === 'object' ? value : {}
+  const items = Array.isArray(v.items) ? v.items : []
+  // ⚠ `Number(null)` 是 0 —— 必须走 numOrNull，否则"总数未知"会被写成"命中 0 条"
+  const totalN = numOrNull(v.total)
+  const returnedN = numOrNull(v.returned)
+  const total = totalN === null ? '?' : totalN
+  const returned = returnedN === null ? items.length : returnedN
+  const lines = ['命中 ' + total + ' 条，本次返回 ' + returned + ' 条' +
+    (v.hasMore === true ? '（还有更多：用 offset 翻页）' : '')]
+
+  // 顺序有意：可不可信 → 漏了什么 → 记录
+  const retentionHint = typeof v.retentionNote === 'string' && v.retentionNote !== ''
+    ? v.retentionNote
+    : retentionNote(v.retention)
+  for (const note of [freshnessNote(v.freshness), callerAttributionNote(v.callerAttribution), retentionHint, v.excludedNoFieldNote]) {
+    if (typeof note === 'string' && note.trim() !== '') lines.push(note)
+  }
+
+  if (items.length === 0) {
+    lines.push('（本次 0 条）—— **别把这个 0 直接读成"没有发生"**：先看上面有没有"被过滤排除 / 已被裁剪 / 归因不可用"的提示；' +
+      '也可以用更宽的条件再查一次（去掉 minDurationMs / minBytes / maxBytes / status / errors），两次条数之差就是被那些条件挡掉的量。')
+  } else {
+    for (const r of items) lines.push(recordLine(r))
+  }
+  return [{ type: 'text', text: lines.join('\n') }]
+}
