@@ -1174,7 +1174,11 @@ server.tool(
     repoRoot: z.string().optional().describe('Optional boundary for the upward search (defaults to the build client/repo root)'),
   },
   async (args) => {
-    const cfg = bld().config ? bld().config() : {}
+    // ⚠ F-051：`bld().config` 是**对象**（`makeBuilder` 返回 `{ config: c, … }`），不是函数。
+    //   这里原来的写法是 `bld().config ? bld().config() : {}` —— 守卫判的是**真值**而不是**是不是函数**，
+    //   对象恒为真 ⇒ 照样抛 `TypeError`。**守卫必须判类型**：`typeof x === 'function'`。
+    const c = bld().config
+    const cfg = typeof c === 'function' ? c() : (c || {})
     const root = args.repoRoot || cfg.clientRoot || cfg.repoRoot || undefined
     return jtext(checkCompileMembership(args.file, { projectPath: args.project, repoRoot: root }))
   }

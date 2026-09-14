@@ -131,7 +131,12 @@ const tools = () => [
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderMembership(v) }] },
     async execute(args) {
-      const root = args.repoRoot || bld().config().clientRoot || bld().config().repoRoot || undefined
+      // ⚠ F-051：`makeBuilder()` 返回的是 `{ config: c, … }` —— **`config` 是对象，不是函数**。
+      //   这里原来写的是 `bld().config().clientRoot` ⇒ 只要调用方**没显式传 repoRoot** 就必定抛
+      //   `TypeError: bld(...).config is not a function`。也就是说这个工具的"默认推导"路径
+      //   **从 r43 加进来的那天起就没工作过**，而它当时"通过"的只是注册与参数级的闸。
+      const cfg = bld().config || {}
+      const root = args.repoRoot || cfg.clientRoot || cfg.repoRoot || undefined
       return checkCompileMembership(args.file, { projectPath: args.project, repoRoot: root })
     },
   }),
