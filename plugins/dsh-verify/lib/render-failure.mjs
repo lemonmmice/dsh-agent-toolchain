@@ -15,10 +15,30 @@
  *   这与 F-052（`memory_search` 只印"找到 N 条"）**是同一个病**：算出来了、也返回了，渲染层把它丢了。
  */
 
+/**
+ * 把库里的 `ts` 解析成毫秒。**两种形态都要认** —— 这一条是现场踩出来的：
+ *
+ *   `lib/failure-corpus.mjs` 写的是 **ISO 字符串**（`ts: now.toISOString()` ⇒ `"2026-09-14T06:58:35.908Z"`），
+ *   而我的第一版 `fmtWhen` 是 `Number(ts)` —— 对 ISO 串得到 **NaN** ⇒ 渲染成 **`-`**，
+ *   也就是**一条真实存在的时间被印成了"拿不到"**。当时的单测喂的是 epoch 数字
+ *   （**我以为的形状，不是生产者写的形状**）⇒ 单测全绿、而现网每条记录的 `ts` 都是 `-`。
+ *   ★ 这是第 60 类（"算出来了没印出来"）的镜像：**印了，但印成了"没有"**。
+ *   教训：**测试夹具必须来自生产者**（本文件的单测现在直接用 `makeFailureCorpus` 造记录）。
+ */
+function parseWhen(ts) {
+  if (ts === null || ts === undefined || ts === '') return null
+  if (typeof ts === 'number') return Number.isFinite(ts) ? ts : null
+  const s = String(ts).trim()
+  if (s === '') return null
+  if (/^\d+$/.test(s)) { const n = Number(s); return Number.isFinite(n) ? n : null }   // epoch 的字符串形态
+  const t = Date.parse(s)                                                              // ISO 8601 / RFC 3339
+  return Number.isFinite(t) ? t : null                                                 // 认不出来就如实写 '-'
+}
+
 /** 毫秒人话（拿不到写 `-`；**不许**把 null 算成 0 —— `Number(null) === 0`）。 */
 function fmtWhen(ts) {
-  const n = ts === null || ts === undefined || ts === '' ? null : Number(ts)
-  if (n === null || !Number.isFinite(n)) return '-'
+  const n = parseWhen(ts)
+  if (n === null) return '-'
   const d = new Date(n)
   const p = (x) => String(x).padStart(2, '0')
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
