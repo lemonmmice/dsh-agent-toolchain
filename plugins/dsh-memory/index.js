@@ -84,7 +84,16 @@ const tools = () => [
       schema: {
         type: 'object', additionalProperties: true,
         properties: {
-          hits: { type: 'array' }, embed: { type: 'string' },
+          // ⚠ 元素形状**必须声明**（2026-09-14 新加的 render 闸抓出来的）：
+          //   `{ type: 'array' }` 在 JSON Schema 语义下**允许元素是任何东西（含 null）**，
+          //   而下面这个 render 是**按元素是对象**写的（读 `h.file`）——
+          //   于是"符合自己 schema 的值"能把它打崩：
+          //     Cannot read properties of null (reading 'file')
+          //   真实生产者（execute）永远给对象，所以这**不是线上已发生的崩溃**，
+          //   而是**契约比实现宽**：哪天返回里混进一个 null，崩的就是渲染层，且没有任何一关会先红。
+          //   声明成"对象"既写实、又让"合成值"这一关能把它验住。
+          hits: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          embed: { type: 'string' },
         },
       },
       // ⚠ F-052：这里原来只打印「找到 N 条相关记忆（backend）」—— `execute` 明明返回了 hits
