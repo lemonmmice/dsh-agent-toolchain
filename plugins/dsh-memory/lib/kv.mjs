@@ -2,6 +2,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
+// 原子写（F-053）：KV 原来也是 `writeFileSync` 原地覆盖 —— 与向量库**同病**，
+// 只是它文件小（几十 KB）、窗口短，所以还没炸过。同一条修法，共用一处实现。
+import { writeJsonlAtomic } from "./atomic-write.mjs";
+
 export class KvMemory {
   constructor(dir) {
     this.dir = dir;
@@ -14,7 +18,7 @@ export class KvMemory {
     return fs.readFileSync(this.file, "utf-8").split("\n").filter(Boolean).map(l => JSON.parse(l));
   }
 
-  _write(rows) { fs.writeFileSync(this.file, rows.map(r => JSON.stringify(r)).join("\n") + "\n"); }
+  _write(rows) { return writeJsonlAtomic(this.file, rows); }
 
   save(key, value, scope = "global") {
     const rows = this._read();

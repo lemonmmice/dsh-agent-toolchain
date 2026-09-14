@@ -87,7 +87,25 @@ const tools = () => [
           hits: { type: 'array' }, embed: { type: 'string' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `找到 ${value.hits?.length ?? 0} 条相关记忆（${value.embed}）` }],
+      // ⚠ F-052：这里原来只打印「找到 N 条相关记忆（backend）」—— `execute` 明明返回了 hits
+      //   （file/chunk/score/text），**渲染层却把它们整个丢掉**，于是 agent 看到的是
+      //   「找到 3 条」后面**一个字都没有**。⇒ 记忆库的**读路径在 DSH 面等于坏的**：
+      //   我能知道"有几条"，但拿不到任何一条的内容（MCP 面是 jtext 整个对象，所以只有这一面坏）。
+      //   同族：F-049（渲染层没跟上分支）。这一族的判据都是同一条 —— **渲染层是 agent 唯一看得见的东西**。
+      render: (_args, value) => {
+        const hits = Array.isArray(value.hits) ? value.hits : []
+        const head = '找到 ' + hits.length + ' 条相关记忆（' + (value.embed || '未知后端') + '）'
+        if (!hits.length) {
+          // 空结果必须说清"是没命中"还是"没索引/没命中该目录"，别只给一个 0
+          return [{ type: 'text', text: head + '\n（没有命中片段。若你预期这里该有内容，先 memory_status 看索引里到底收了哪些目录。）' }]
+        }
+        const lines = hits.map((h, i) =>
+          '\n[' + (i + 1) + '] ' + (h.file || '(未知文件)') + (h.chunk != null ? ' #' + h.chunk : '') +
+          (h.score != null ? '  score=' + h.score : '') + '\n    ' +
+          String(h.text || '').replace(/\s*\n\s*/g, ' ').slice(0, 300))
+        const fnote = value.freshnessNote ? '\n\n⚠ ' + value.freshnessNote : ''
+        return [{ type: 'text', text: head + lines.join('') + fnote }]
+      },
     },
     async execute(args) {
       const k = Math.min(Math.max(Math.round(args.k || 5), 1), 10)
@@ -152,21 +170,38 @@ const tools = () => [
     name: 'memory_status',
     description: '查看长期记忆状态（索引分块数、KV 条数、embedding 后端）。Triggers: 记忆状态 / memory status.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: true, properties: { chunks: { type: 'integer' }, kvEntries: { type: 'integer' }, embed: { type: 'string' } } },
+    output: { schema: { type: 'object', additionalProperties: true, properties: { chunks: { type: 'integer' }, kvEntries: { type: 'integer' }, embed: { type: 'string' }, embedEndpoint: { type: 'string' }, note: { type: 'string' } } },
       // BV-07：`embedEndpoint`/`note` 一直在数据层（MCP 面的 jtext 能看见），但 DSH 面的渲染
       // 只印 `embed` 标签 —— 于是 agent 看到"（MiniMax embo-01）"，**无从判断内容有没有出本机**，
       // 而它正是隐私承诺的唯一依据。远端必须在默认视图里写明。
-      render: (_args, value) => [{
-        type: 'text',
-        text: `记忆库：${value.chunks} 分块 / ${value.kvEntries} 条 KV（${value.embed}，embedding=${value.embedEndpoint || '未知'}）` +
-          (String(value.embedEndpoint || '').startsWith('remote')
-            ? `\n⚠ **索引内容会发到远程 API**（${value.embedEndpoint}）：文件分块会离开本机。` +
-              `\n**不要向用户承诺"数据不外传"。** 想改成纯本地请取消 MiniMax API key（自动降级为本地 bigram 检索）。`
-            : `\n（embedding 在本机完成：内容未离开本机）`),
-      }] },
+      render: (_args, value) => {
+        // ⚠ F-054（2026-09-14 在真机上撞见）：**渲染层判 remote 靠 `value.embedEndpoint`，
+        //   而 `execute` 根本没返回这个字段** ⇒ 永远走 else 分支，对用户说
+        //   「embedding **在本机完成：内容未离开本机**」。而当时 embedding 实际走的是远程 API，
+        //   我刚把 2578 个分块发到 api.minimax.chat。**一条关于隐私的假承诺。**
+        //   根因与 F-049/F-051 同族：**改了一半** —— 当初只修了渲染，忘了从 execute 把字段带出来。
+        //   现在渲染层对"字段缺失"**不再当成本地**：缺字段就明说"判不了"，绝不替它下"没出本机"的结论。
+        const ep = value.embedEndpoint
+        const head = `记忆库：${value.chunks} 分块 / ${value.kvEntries} 条 KV（${value.embed}，embedding=${ep || '**判不了（本工具没回报该字段）**'}）`
+        if (ep === undefined || ep === null || ep === '') {
+          return [{ type: 'text', text: head + `\n⚠ **无法判断 embedding 有没有出本机**（工具没回报 embedEndpoint）。` +
+            `\n**不要向用户承诺"数据不外传"**；要判断请直接看 \`memory.status().embedEndpoint\`，或检查有没有配 MiniMax key。` }]
+        }
+        return [{
+          type: 'text',
+          text: head +
+            (String(ep).startsWith('remote')
+              ? `\n⚠ **索引内容会发到远程 API**（${ep}）：文件分块会离开本机。` +
+                `\n**不要向用户承诺"数据不外传"。** 想改成纯本地请取消 MiniMax API key（自动降级为本地 bigram 检索）。`
+              : `\n（embedding 在本机完成：内容未离开本机）`) +
+            (value.note ? `\n（${value.note}）` : ''),
+        }]
+      } },
     async execute() {
       const s = mem().status()
-      return { chunks: s.chunks, kvEntries: s.kvEntries, embed: s.embed }
+      // ⚠ F-054：**必须把渲染层要用的字段一起带出来**。少了 `embedEndpoint`，渲染就只能瞎猜，
+      //   而它猜的方向是"本地/安全" —— 一个字段漏传 = 一句隐私假承诺。
+      return { chunks: s.chunks, kvEntries: s.kvEntries, embed: s.embed, embedEndpoint: s.embedEndpoint, note: s.note }
     },
   }),
 ]
