@@ -54,11 +54,35 @@ export class EmbedProvider {
       const cp = path.join(this.cacheDir, "emb-" + (h >>> 0).toString(36) + ".json");
       if (fs.existsSync(cp)) return JSON.parse(fs.readFileSync(cp, "utf-8")).vector;
     }
-    const res = await fetch(this.baseURL + "/embeddings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + this.apiKey },
-      body: JSON.stringify({ model: this.model, texts: [String(text).slice(0, 8000)], type: "query" })
-    });
+    // ⚠ F-053：这个 fetch 原来**没有超时**。embedding 走的是**远程** api.minimax.chat，
+    //   网络一慢/不通，`memory_index` 就**永远挂着**（2026-09-14 真事故：我的调用因此挂死、
+    //   最后被打断，而被打断又撞上"非原子的原地写"，把 43.9MB 的向量索引清成 0 字节）。
+    //   ⇒ 远程调用必须有**上界**；超时要给**可执行的下一步**，而不是让调用方干等。
+    //   ⚠ 用 `AbortController` + **ref 的 `setTimeout`**，而不是 `AbortSignal.timeout()`：
+    //     后者内部的定时器是 **unref** 的，在"没有别的活动"的进程里**可能根本不触发**
+    //     （本仓实测：单测里它就没触发，进程带着未 settle 的 await 退出）。
+    //     保活与否不该决定"超时生不生效"。
+    const timeoutMs = Math.max(1000, Number(process.env.DSH_MEMORY_EMBED_TIMEOUT_MS) || 20000);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error('embedding timeout')), timeoutMs);
+    let res;
+    try {
+      res = await fetch(this.baseURL + "/embeddings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + this.apiKey },
+        body: JSON.stringify({ model: this.model, texts: [String(text).slice(0, 8000)], type: "query" }),
+        signal: ctrl.signal
+      });
+    } catch (e) {
+      const timedOut = ctrl.signal.aborted;
+      const why = timedOut ? ('远程 embedding **超时 ' + timeoutMs + 'ms**') : ('远程 embedding 失败：' + (e && e.message ? e.message : String(e)));
+      throw new Error(why + '（' + this.baseURL + '）。' +
+        '下一步：① 换更长的超时 DSH_MEMORY_EMBED_TIMEOUT_MS=60000 再试；' +
+        '② 或者清掉 MINIMAX_CN_API_KEY 走**本地 bigram** 降级（不外传、不需网络）；' +
+        '③ 已写入的分块是完整的（原子写），不会因为这次失败丢历史。');
+    } finally {
+      clearTimeout(timer);
+    }
     const data = await res.json();
     if (!res.ok || !data.vectors?.[0]) throw new Error("embedding 失败: " + res.status + " " + JSON.stringify(data).slice(0, 200));
     const vector = data.vectors[0];

@@ -64,16 +64,28 @@ export class DshMemory {
       }
     }
     let total = 0, indexed = 0, skipped = 0, sensitiveSkipped = 0;
-    for (const f of files) {
-      const rel = path.relative(rootDir, f);
-      const st = fs.statSync(f);
-      if (this.store.countPrefix("file:" + f + ":" + st.mtimeMs) > 0) { skipped++; continue; } // mtime 未变 → 增量跳过
-      try {
-        const r = await this.indexFile(f, rel, rootDir);
-        if (r.sensitive.length) sensitiveSkipped++;
-        else { total += r.chunks; indexed++; }
+    // ⚠ F-053：整段索引放进**批量模式**。原来每插一块都会"全量解析 + 重写整个 43MB 文件"，
+    //   2182 块 ⇒ 约 95GB I/O —— 这才是"慢到会被打断"的根因；而被打断又撞上非原子写 ⇒ 一次全清。
+    //   现在：只读一次、每 200 块原子落盘一次、结束时收尾。**中断最多丢最后一批，不会丢历史。**
+    this.store.beginBatch({ flushEvery: 200 });
+    let batchDone = false;
+    try {
+      for (const f of files) {
+        const rel = path.relative(rootDir, f);
+        const st = fs.statSync(f);
+        if (this.store.countPrefix("file:" + f + ":" + st.mtimeMs) > 0) { skipped++; continue; } // mtime 未变 → 增量跳过
+        try {
+          const r = await this.indexFile(f, rel, rootDir);
+          if (r.sensitive.length) sensitiveSkipped++;
+          else { total += r.chunks; indexed++; }
+        }
+        catch { /* skip unreadable */ }
       }
-      catch { /* skip unreadable */ }
+      batchDone = true;
+    } finally {
+      // 无论成功、抛错还是被中断，**已 flush 的分块都在盘上**（每次都原子）；
+      // 这里再收尾一次，把最后不足一批的部分落下去。
+      try { this.store.endBatch(); } catch { /* 收尾落盘失败不改变已落盘部分 */ }
     }
     // 清理已从磁盘删除的文件的陈旧分块。判定只看"磁盘上文件是否还存在"，
     // 与当前索引的根无关——索引 B 仓库不再清掉 A 仓库的块。
