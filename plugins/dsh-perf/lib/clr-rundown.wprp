@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  dsh-perf 的补充采集档：**CLR rundown**（给"已经在跑"的 .NET 进程补方法映射）。
+
+  为什么需要它（F-043，2026-09-12 真机查出）：
+    `wpr -start CPU -start DotNet` 打开的是 `Microsoft-Windows-DotNETRuntime`
+    （GUID E13C0D23-…），它只在**采集窗口内**发出方法加载事件。于是：
+      · 框架程序集（mscorlib / PresentationFramework …）**是 NGen 镜像**（`.ni.dll`），
+        pdb 就躺在镜像旁边，dbghelp 自己就找得到 ⇒ 报告里它们的方法名能出来；
+      · **客户端自己**的程序集没有 NGen 镜像，代码是**运行时 JIT** 出来的 ⇒
+        采集开始前就编译好的方法**没有任何映射事件**，地址解不回来，报告里就是 `***unknown***`。
+        实测本机客户端（pid 26868，6 秒、100% 采样落在该进程）：
+        报告里 20 个模块有名字、**客户端自己的模块/方法出现 0 次**；
+        进程模块表里 26 个 `.ni.dll` 全是框架的，`ClientApp*.dll` 一个都没有（NIC 里也没有它们的镜像）。
+    `Microsoft-Windows-DotNETRuntimeRundown`（GUID A669021C-…）的用途正是"给已经跑起来的进程
+    补发方法加载事件"。实测 `wpr -start DotNet` 的会话里**没有**这个 provider（logman 查过），
+    所以这条线一直缺着。
+
+  ⚠️⚠️ **本档实测是失败的，别默认开它**（2026-09-12 真机，客户端 pid 26868，8 秒）：
+     · 客户端自己的方法名**依然一个都解不出来**（报告里 `ClientApp` 出现 0 次，和不带 rundown 时一样）；
+     · **采样数崩了**：同样 8 秒，内置 CPU 档拿到 ~28833 次独占命中，本档只有 **539** 次
+       （≈67 次/秒 ≈ 15ms 一次），说明这份自定义 profile 的采样设置与内置档不等价；
+     · **观测者效应实锤**：本次采样里 **46% 的包含命中落在 ETW 投递帧上**
+       （`ntdll!EtwpNotificationThread`/`EtwpEventApiCallback`/`EtwDeliverDataBlock`/`clr.dll!McGenControlCallbackV2`），
+       而**同一时刻的对照档（内置 CPU+DotNet，不带 rundown）前 15 名里一条这种帧都没有**
+       ⇒ 是**我们的 rundown** 让被观测进程的 ETW 投递线程变热，**测量本身污染了被测量的东西**。
+     结论：这条线（"靠 ETW 拿客户端自己的方法名"）在本机**行不通**，原因不是"没符号"，
+     而是**非 NGen 的托管程序集对剖析器不可见**（进程模块表里 26 个 `.ni.dll` 全是框架的，
+     `ClientApp*.dll` 一个都没有，NIC 里也没有它们的镜像）——详见 PROGRESS §29 / F-043。
+     要拿客户端自己的方法名，走 **dump + ClrMD**（`perf_dump`/`hang_analyze` 那条线，它给的是真方法名 + 源码行）。
+
+  保留此文件的原因：**把"试过了、不行、为什么不行"钉在代码里**，免得下一个人再花一轮重做同一个实验。
+-->
+<WindowsPerformanceRecorder Version="1.0" Author="dsh-agent-toolchain">
+  <Profiles>
+    <SystemCollector Id="DshSystemCollector" Name="NT Kernel Logger">
+      <BufferSize Value="1024" />
+      <Buffers Value="128" />
+    </SystemCollector>
+
+    <EventCollector Id="DshEventCollector" Name="DshClrRundownCollector">
+      <BufferSize Value="1024" />
+      <Buffers Value="128" />
+    </EventCollector>
+
+    <SystemProvider Id="DshSystemProvider">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+        <Keyword Value="SampledProfile" />
+      </Keywords>
+      <Stacks>
+        <Stack Value="SampledProfile" />
+      </Stacks>
+    </SystemProvider>
+
+    <EventProvider Id="DshClrProvider" Name="E13C0D23-CCBC-4E12-931B-D9CC2EEE27E4" Level="5">
+      <Keywords>
+        <Keyword Value="0x4007ccbd" />
+      </Keywords>
+    </EventProvider>
+
+    <EventProvider Id="DshClrRundownProvider" Name="A669021C-C450-4609-A035-5AF59AF4DF18" Level="5">
+      <Keywords>
+        <Keyword Value="0xFFFFFFFFFFFFFFFF" />
+      </Keywords>
+    </EventProvider>
+
+    <Profile Id="DshClrRundown.Verbose.File" Name="DshClrRundown" DetailLevel="Verbose" LoggingMode="File" Description="CPU sampling + DotNET runtime + CLR rundown">
+      <Collectors>
+        <SystemCollectorId Value="DshSystemCollector">
+          <SystemProviderId Value="DshSystemProvider" />
+        </SystemCollectorId>
+        <EventCollectorId Value="DshEventCollector">
+          <EventProviders>
+            <EventProviderId Value="DshClrProvider" />
+            <EventProviderId Value="DshClrRundownProvider" />
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

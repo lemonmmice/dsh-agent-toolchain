@@ -2,11 +2,18 @@
  * dsh-build builder — MSBuild 进程封装 + 错误结构化解析。
  * 不依赖 DSH API，可独立单测。
  */
+import { envOr } from '../../../lib/env-fallback.mjs'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { join, basename, dirname as dirNameOf } from 'node:path'
 import { homedir } from 'node:os'
 import { decodeBuffer } from '../../../lib/decode.mjs'
+// F-007：宿主不热加载插件代码 —— 让 build_status / build_errors 自己说出"我跑的是旧代码"。
+import { staleCodeInfo, moduleRoots } from '../../../lib/code-freshness.mjs'
+import { fileURLToPath as fileUrlToPath } from 'node:url'
+
+/** 本插件目录（仓库与 profile 两种布局下都成立）。 */
+const BUILD_PLUGIN_DIR = dirNameOf(dirNameOf(fileUrlToPath(import.meta.url)))
 import {
   isSolutionPath,
   isProjectPath,
@@ -19,10 +26,80 @@ import {
 const VS_MSBUILD = 'C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe'
 const VSWITCH = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe'
 
+/**
+ * 统一的**失败返回形状**。
+ *
+ * BV-03（2026-09-11 审计确证）：`build()` 的 6 条早返回过去只写 `{ ok: false, error }`，
+ * 而 DSH 面的 `renderBuild` 无条件读 `v.errors.length` → TypeError → 宿主把它换成
+ * `INVALID_TOOL_OUTPUT: output.render failed`，那句**唯一能自救**的
+ * 「传 repoRoot 或设置 DSH_BUILD_REPO_ROOT」被整个吃掉。
+ * 最常见的触发路径恰恰是"没传 repoRoot"—— 也就是最需要看懂错误的那种情况。
+ *
+ * 现在所有失败路径走这里，保证形状一致：计数为 0、数组为空，而不是"没有这个字段"。
+ * 调用方（DSH 与 MCP 两面）因此可以无条件读 errors/warnings/errorCount。
+ */
+function failResult(error, extra = {}) {
+  return {
+    ok: false,
+    // BV-05 配套：显式的"这次构建**没有开始执行**"标记。
+    // 不能靠 `errorCount===undefined` 或 `durationMs===null` 之类的间接特征去猜 ——
+    // failResult 会把 errorCount 补成 0（有限值），于是"没跑"与"跑了但 0 错误"在数据上长得一样，
+    // 渲染层只能猜错。（我第一版就是靠猜，结果那个分支永远不触发。）
+    didNotRun: true,
+    error,
+    target: null,
+    logPath: null,
+    durationMs: null,
+    errors: [],
+    warnings: [],
+    envErrors: [],
+    errorCount: 0,
+    warningCount: 0,
+    envErrorCount: 0,
+    truncated: false,
+    ...extra,
+  }
+}
+
+/**
+ * 由「pid 归属明细」推导强杀终态（**纯函数**，F-038）。
+ *
+ * 抽出来的理由（就是 F-037 的教训）：这段判决此前埋在 `killClientProcess()` 里，
+ * 而那个函数的输入要靠**真实进程**才能构造 ⇒ 竞态窗口**没法单测** ⇒ 缺陷活到 r34 被独立复核查出。
+ * 现在它是纯函数：给一组明细就能精确模拟「判活与判占用之间进程刚好退出」那个窗口。
+ *
+ * 判决规则（关键：**判决只从这份明细推导**，因此判决与证据永远不可能互相矛盾）：
+ *   · `owner === null`（这个号彻底没了）      ⇒ **不算没杀掉**（本来就已经结束了）→ `goneWhileChecking`
+ *   · `owner !== null` 但不是我们的进程       ⇒ **不算没杀掉**（pid 被复用）        → `pidReused`
+ *   · `owner !== null` 且仍是我们的进程        ⇒ **才算没杀掉**                    → `remaining`
+ * `killed` = `remaining.length === 0`。
+ *
+ * @param {{detail: Array<{pid:number,owner:string|null}> , isReused: (pid:number)=>boolean}} args
+ */
+export function killOutcome({ detail, isReused, waitMs = 0 }) {
+  const rows = Array.isArray(detail) ? detail : []
+  const reusedOf = typeof isReused === 'function' ? isReused : () => false
+  const pidReused = rows.filter((d) => d.owner !== null && reusedOf(d.pid)).map((d) => d.pid)
+  const goneWhileChecking = rows.filter((d) => d.owner === null).map((d) => d.pid)
+  const remaining = rows.filter((d) => d.owner !== null && !pidReused.includes(d.pid)).map((d) => d.pid)
+  const killed = remaining.length === 0
+  let note
+  if (!killed) {
+    note = '等待 ' + waitMs + 'ms 后目标进程仍在（见 remainingDetail）。'
+  } else if (pidReused.length > 0 || goneWhileChecking.length > 0) {
+    note = '目标已结束（'
+      + (goneWhileChecking.length > 0 ? goneWhileChecking.length + ' 个 pid 号在核对窗口内消失' : '')
+      + (goneWhileChecking.length > 0 && pidReused.length > 0 ? '；' : '')
+      + (pidReused.length > 0 ? pidReused.length + ' 个 pid 号已被别的进程占用（pid 复用）' : '')
+      + '）—— 这不算"没杀掉"。'
+  }
+  return { killed, remaining, pidReused, goneWhileChecking, ...(note ? { note } : {}) }
+}
+
 export function makeBuilder(cfg) {
   const c = {
-    clientRoot: process.env.DSH_BUILD_CLIENT_ROOT || '',
-    repoRoot: process.env.DSH_BUILD_REPO_ROOT || '',
+    clientRoot: envOr('DSH_BUILD_CLIENT_ROOT'),
+    repoRoot: envOr('DSH_BUILD_REPO_ROOT'),
     msbuild: VS_MSBUILD,
     engine: process.env.DSH_BUILD_ENGINE || 'msbuild',
     logsDir: join(homedir(), '.dsh-agent-toolchain', 'build-logs'),
@@ -35,8 +112,8 @@ export function makeBuilder(cfg) {
   // 空值统一回落到默认，避免这类「传空即崩」的坑。
   if (!c.logsDir) c.logsDir = join(homedir(), '.dsh-agent-toolchain', 'build-logs')
   if (!c.msbuild) c.msbuild = VS_MSBUILD
-  if (!c.clientRoot) c.clientRoot = process.env.DSH_BUILD_CLIENT_ROOT || ''
-  if (!c.repoRoot) c.repoRoot = process.env.DSH_BUILD_REPO_ROOT || ''
+  if (!c.clientRoot) c.clientRoot = envOr('DSH_BUILD_CLIENT_ROOT')
+  if (!c.repoRoot) c.repoRoot = envOr('DSH_BUILD_REPO_ROOT')
 
   // ------------------------------------------------------------ 编码
   // 双解码收敛到 lib/decode.mjs（builder / driver / perf 共用）
@@ -82,6 +159,43 @@ export function makeBuilder(cfg) {
   }
 
   /**
+   * 这个 pid 现在**是不是我们的目标进程**（防 pid 复用）。
+   *
+   * F-028（2026-09-12，r29 真机整套并发跑时抓到）：`kill-client.test.mjs` 偶发报
+   * `{"killed":false, "scope":"single-instance", "pids":[30960], …}` —— **而紧随其后的断言
+   * "进程确实没了（按 PID 判定）"却是通过的**（按**进程名**枚举已经找不到它了）。
+   * 两个判据同时成立只有一种解释：**pid 被复用了** —— 我们那个 `ping` 已经死了，但那个**号**
+   * 被另一个无关进程（名字不同）接手，于是 `isPidAlive(pid)` 一直为真，`killed` 被判成 false。
+   * 整套并发跑时进程创建/销毁极密集，15 秒窗口内 pid 被复用完全可能 —— 这解释了它为什么**偶发**。
+   *
+   * 后果与 F-024 同类：**做成了的事被回报成没做成**，而且这个 `killed` 会被带进构建结果与渲染文本
+   * （`clientKill.killed` / `clientWasKilled`），让用户以为"客户端还在跑，所以构建可能不可信"。
+   *
+   * 判据：pid 在 **且** 该 pid 当前的镜像名仍是目标名 —— 否则视为"已消失（pid 被复用）"。
+   */
+  function isTargetAlive(pid, name) {
+    if (!pid) return false
+    const owner = pidOwner(pid)
+    if (owner === null) return false                   // 号都不在了
+    // name 可能给的是**全路径**、也可能是不带扩展名的镜像名 —— 统一取 basename 比，
+    // 否则"配了 exe 全路径"的用户会被判成"进程已消失"（那是把没杀掉的报成杀掉了，比原缺陷更糟）。
+    const want = basename(String(name ?? '')).toLowerCase()
+    if (want === '') return true                       // 没给名字就退回按号判定
+    const img = owner.image.toLowerCase()
+    return img === want || img + '.exe' === want || img === want + '.exe'
+  }
+
+  /** 这个 pid 现在被**谁**占着（用于把"pid 复用"这件事说出来，而不是只报一个 false）。 */
+  function pidOwner(pid) {
+    try {
+      const out = execFileSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
+      const line = out.trim().split(/\r?\n/)[0] ?? ''
+      const m = /^"([^"]+)","(\d+)",/.exec(line)
+      return m === null ? null : { pid: Number(m[2]), image: m[1] }
+    } catch { return null }
+  }
+
+  /**
    * 同名进程的**实例明细**（PID + 可执行文件全路径），用于「按目标实例定位」。
    *
    * 为什么不能只看镜像名：`tasklist /FI IMAGENAME eq X.exe` 会把**所有**同名实例找出来 ——
@@ -110,7 +224,7 @@ export function makeBuilder(cfg) {
   }
 
   function clientProcess() {
-    const proc = process.env.DSH_BUILD_CLIENT_PROC || process.env.DSH_UI_PROC_NAME || ''
+    const proc = envOr('DSH_BUILD_CLIENT_PROC') || envOr('DSH_UI_PROC_NAME')
     if (!proc) return { running: false, pid: null, pids: [], unconfigured: true }
     const pids = listClientPids(proc)
     if (pids.length) return { running: true, pid: pids[0], pids, name: proc }
@@ -136,7 +250,7 @@ export function makeBuilder(cfg) {
   async function killClientProcess(client) {
     const startedAt = Date.now()
     const name = (client && client.name) || ''
-    const wanted = String(process.env.DSH_BUILD_CLIENT_EXE || process.env.DSH_UI_CLIENT_EXE || '').trim()
+    const wanted = String(envOr('DSH_BUILD_CLIENT_EXE') || envOr('DSH_UI_CLIENT_EXE')).trim()
     const instances = clientInstances(name)
     let targets = []
     let scope = ''
@@ -174,12 +288,54 @@ export function makeBuilder(cfg) {
     }
     const waitMs = Number(process.env.DSH_BUILD_KILL_WAIT_MS || 15000)
     const deadline = Date.now() + waitMs
-    let remaining = pids.filter((p) => isPidAlive(p))
+    // F-028：等待"我们的进程"消失，而不是"这个号"消失（pid 复用会让后者永远为真）
+    let remaining = pids.filter((p) => isTargetAlive(p, name))
     while (remaining.length > 0 && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 250))
-      remaining = pids.filter((p) => isPidAlive(p))
+      remaining = pids.filter((p) => isTargetAlive(p, name))
     }
-    return { killed: remaining.length === 0, name, scope, pids, instances, remaining, waitedMs: Date.now() - startedAt }
+    // 把"这个号现在被谁占着"一并带出去：`killed:false` 时否则无法区分
+    // 「进程赖着不走」与「pid 被复用」—— 前者要重试，后者其实已经成功了。
+    //
+    // ★ F-038（2026-09-12 r34，@claude 独立复核查出，**症状是"把做成的事说成没做成"**）：
+    //   上面那个循环的最后一次 `isTargetAlive()` 与这里 `pidOwner()` 的**第二次**测量之间存在时间差。
+    //   旧实现只处理了 `owner !== null` 那一支（pid 被**别人**占用 ⇒ `pidReused`），
+    //   **"这个号彻底没了"（owner === null）那一支没被处理** —— 于是它仍留在 `remaining` 里：
+    //     返回值一边说 `killed:false` + note「等待 Nms 后目标进程仍在」，
+    //     一边在自己的 `remainingDetail` 里写「该 pid 当前不存在」 —— **同一份返回值自相矛盾**。
+    //   @claude 抓到的实据（负载下的真机原文）：
+    //     {"killed":false,"remaining":[33108],
+    //      "remainingDetail":[{"pid":33108,"owner":null,"note":"该 pid 当前不存在（判活与判占用之间发生了变化）"}],
+    //      "waitedMs":20416,"note":"等待 10000ms 后目标进程仍在（见 remainingDetail）。"}
+    //   这不只是文案问题：**负载下它会把"已经停掉的客户端"报成"没停掉"**，
+    //   与 `build_run(killClient=true)` 的调用方判断直接冲突（会谎报"文件锁仍在"）。
+    //
+    //   修法（关键点：**判定必须从同一份证据里推导出来**，这样二者不可能再互相矛盾）：
+    //     · `owner === null`（号没了）⇒ **不算 remaining**（不是"赖着不走"，是"已经走了"）；
+    //     · `owner !== null` 但不是我们的进程 ⇒ **不算 remaining**（原 `pidReused` 逻辑，保留）；
+    //     · 只有"既存在、又还是我们的进程"才算 remaining。
+    //   `killed` 一律由 `remainingDetail` 推导，**不再用更早那次判活的快照**。
+    //   残余 TOCTOU 如实声明：`pidReused` 那一步仍会再判一次活，极端窗口下仍有抖动 ——
+    //   但现在**报出来的判决与报出来的证据一定一致**，不会出现上面那种自相矛盾。
+    const remainingDetail = remaining.map((p) => {
+      const owner = pidOwner(p)
+      return owner === null
+        ? { pid: p, owner: null, note: '该 pid 当前不存在（判活与判占用之间发生了变化）—— 视为已结束' }
+        : { pid: p, owner: owner.image, note: 'pid 仍被占用，占用者镜像=' + owner.image }
+    })
+    // ★ 判决走**纯函数**（同上 F-038）：判决与它引用的明细由同一份输入推出，不可能互相矛盾。
+    const outcome = killOutcome({
+      detail: remainingDetail,
+      isReused: (pid) => !isTargetAlive(pid, name),
+      waitMs,
+    })
+    return {
+      killed: outcome.killed, name, scope, pids, instances,
+      remaining: outcome.remaining, remainingDetail,
+      pidReused: outcome.pidReused, goneWhileChecking: outcome.goneWhileChecking,
+      waitedMs: Date.now() - startedAt,
+      ...(outcome.note ? { note: outcome.note } : {}),
+    }
   }
 
   /** 从 MSB3021/3027 报文里挖出被锁文件（报文形如：无法将文件"源"复制到"目标"。…）。 */
@@ -293,12 +449,42 @@ export function makeBuilder(cfg) {
     const isDotnet = engine === 'dotnet'
     const project = opts.project || ''
 
+    // UD-02（Codex 第四轮指出我的第一版不完整）：runId 要在**所有**返回路径上都存在，
+    // 包括"还没跑到 MSBuild 就早返回"的那些（最常见的是没传 repoRoot）。
+    // 否则调用方拿着一次失败去 verify_report 时既没有 runId、也找不到任何记录，
+    // 只能得到含糊的 unverified —— 而事实是"这次构建压根没跑"，那是个**确定**的结论。
+    // 所以：runId 在这里就先算好，早返回也**落一条 per-run 记录**（ok:false），
+    // 让 verify_report(kind=build) 能给出 fail（有证据的否定）而不是 unverified（没证据）。
+    const suppliedRunId = String(opts.runId ?? '').replace(/[^\w.-]+/g, '_').slice(0, 60)
+    const runId = suppliedRunId || ('auto-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14))
+    const runIdAuto = suppliedRunId === ''
+    // 日志目录不存在会让**全部构建证据**（last.json / run-<id>.json / 日志文件）静默写失败，
+    // 而 verify_report 只看到"找不到记录"——又是一次"证据缺失但没有信号"。
+    // 所以在任何写入之前先把目录建好（mkdir -p 语义）。
+    try { mkdirSync(c.logsDir, { recursive: true }) } catch { /* 建不了就让后续写入如实报错 */ }
+    const earlyFail = (error, extra = {}) => {
+      const r = failResult(error, { runId, runIdAutoGenerated: runIdAuto, target, configuration, ...extra })
+      // BV-05（2026-09-11 审计确证）：早返回过去**不写 last.json**（persistLast 只在成功路径调用），
+      // 于是被挡下的那次构建之后，`build_status` 报的还是**上一次成功** ——
+      // 又是一个"陈旧数据被当成当前状态"，而且这次是 agent 自己刚触发的失败被藏起来了。
+      // 现在：失败也写 last.json，让 build_status 如实显示"最近一次尝试"的结果。
+      persistLast(r)
+      try {
+        writeFileSync(join(c.logsDir, 'run-' + runId + '.json'), JSON.stringify({ at: new Date().toISOString(), ...r }, null, 2), 'utf8')
+      } catch (e) {
+        r.evidenceWriteError = 'per-run 构建记录写入失败：' + (e && e.message ? e.message : String(e))
+      }
+      return r
+    }
+
     // Repository root: explicit param > DSH_BUILD_REPO_ROOT > client root
     // (DSH_BUILD_CLIENT_ROOT). Fail closed when unset — never build some
     // accidental cwd.
-    const repoRoot = opts.repoRoot || c.repoRoot || c.clientRoot
+    // R42：opts.clientRoot 之前**不被读取** —— 参数声明了、build() 却只认 opts.repoRoot，
+  // 那样加参数等于加了个幽灵。两者语义相同（谁给用谁），顺序：本次调用 > 环境/配置。
+  const repoRoot = opts.repoRoot || opts.clientRoot || c.repoRoot || c.clientRoot
     if (!repoRoot || !existsSync(repoRoot)) {
-      return { ok: false, error: '仓库根目录不存在：' + (repoRoot || '(未配置)') + '（传 repoRoot 或设置 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT）' }
+      return earlyFail('仓库根目录不存在：' + (repoRoot || '(未配置)') + '（传 repoRoot 或设置 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT）')
     }
 
     // Target: an explicit project/sln wins. Without one, both engines
@@ -312,9 +498,9 @@ export function makeBuilder(cfg) {
     let targetDisplay = ''
     if (project) {
       const p = resolveTargetPath(repoRoot, project)
-      if (!existsSync(p)) return { ok: false, error: '构建目标不存在：' + p }
+      if (!existsSync(p)) return earlyFail('构建目标不存在：' + p)
       if (!isSolutionPath(p) && !isProjectPath(p)) {
-        return { ok: false, error: 'project 必须是 .sln/.slnx/.csproj/.vbproj/.fsproj：' + project }
+        return earlyFail('project 必须是 .sln/.slnx/.csproj/.vbproj/.fsproj：' + project)
       }
       targetArg = p
       targetDisplay = project
@@ -324,7 +510,7 @@ export function makeBuilder(cfg) {
         targetArg = found.path
         targetDisplay = found.display
       } else if (!isDotnet || found.kind === 'multiple') {
-        return { ok: false, error: found.error + '（project 可定向 .sln/.csproj，repoRoot 指向仓库根）' }
+        return earlyFail(found.error + '（project 可定向 .sln/.csproj，repoRoot 指向仓库根）')
       }
     }
 
@@ -341,13 +527,13 @@ export function makeBuilder(cfg) {
     }
 
     const msbuild = isDotnet ? 'dotnet' : findMsbuild()
-    if (!msbuild) return { ok: false, error: '未找到 MSBuild（可用 DSH_BUILD_MSBUILD 指定）' }
+    if (!msbuild) return earlyFail('未找到 MSBuild（可用 DSH_BUILD_MSBUILD 指定）')
     if (isDotnet) {
       // Verify the dotnet executable is resolvable via PATH.
       try {
         execFileSync('dotnet', ['--version'], { encoding: 'utf8', windowsHide: true })
       } catch {
-        return { ok: false, error: 'dotnet 引擎需要 PATH 上有 dotnet SDK（或设置 DOTNET_ROOT）' }
+        return earlyFail('dotnet 引擎需要 PATH 上有 dotnet SDK（或设置 DOTNET_ROOT）')
       }
     }
 
@@ -358,6 +544,30 @@ export function makeBuilder(cfg) {
     const client = clientProcess()
     let clientRunningWarning = null
     let clientKill = null
+    // BV-04（2026-09-11，Codex 独立只读复核确认）：`clientProcess()` 是三态，旧代码只读 client.running，
+    // 于是「**进程名没配置**」被压成「running:false」= 「客户端没在跑」：
+    //   · killClient=true → 静默跳过 killClientProcess() → 继续构建（调用方以为锁已经解除，
+    //     实际锁还在，最后以 MSB3021/3027 的形式爆出来），并被归因成「参数没生效 / 客户端未运行」；
+    //   · 非 killClient 路径同样不提示，诊断把它引向"去启动客户端"这个完全错误的方向。
+    // 红线：宁可这次构建明确失败并说清怎么配，也不要一个"我以为锁没了"的构建。
+    const clientUnconfigured = client.unconfigured === true
+    let clientUnconfiguredNote = null
+    const clientCfgHint = '客户端进程名未配置（DSH_BUILD_CLIENT_PROC 与 DSH_UI_PROC_NAME 都没设），无法探测客户端是否在运行'
+    if (clientUnconfigured && opts.killClient) {
+      return earlyFail(clientCfgHint + '，所以 killClient=true **无法生效** —— 这不是「客户端未运行」，是「根本没配」。' +
+        '请设 DSH_BUILD_CLIENT_PROC=<进程名>（或 DSH_UI_PROC_NAME）后重试，或先手工关闭目标客户端再构建。', {
+        clientUnconfigured: true,
+        clientKillRequested: true,
+        clientKillSkipped: true,
+        hint: 'killClient=true 被拒绝执行：没有进程名就无法判断"要杀谁"，也无从确认"是否还需要杀"。',
+      })
+    }
+    if (clientUnconfigured) {
+      // 非 killClient 路径：不阻断（无从判断是否真的在跑），但必须**明说这是"未知"而不是"没在跑"**。
+      // 用独立的 clientUnconfiguredNote 而不是复用 clientRunningWarning：后者是"确实在跑但与目标无关"，
+      // 两者语义不同，挤在同一个字段里会让渲染层只能挑一种说法。
+      clientUnconfiguredNote = clientCfgHint + '，本次构建按「未知」继续；若出现 MSB3021/3027 文件锁，先配好进程名再传 killClient=true。'
+    }
     const targetAssembly = targetArg ? basename(targetArg).replace(/\.(cs|vb|fs)proj$/i, '').replace(/\.(sln|slnx)$/i, '') : ''
     const clientName = client.name ? client.name.toLowerCase() : ''
     const touchesClientOutput = clientName !== '' && targetAssembly !== '' && targetAssembly.toLowerCase() === clientName
@@ -406,8 +616,8 @@ export function makeBuilder(cfg) {
       : [targetArg, '/t:' + target, '/p:Configuration=' + configuration, ...(platformArg ? ['/p:Platform=' + platformArg] : []), '/m', '/v:m', '/nologo', '/restore', '/nodeReuse:false', '/clp:Summary']
     const timeoutMs = target === 'Rebuild' ? c.rebuildTimeoutMs : c.incrementalTimeoutMs
     const startedAt = Date.now()
-    // Evidence-pack spine: an optional runId names the log and the per-run record.
-    const runId = String(opts.runId ?? '').replace(/[^\w.-]+/g, '_').slice(0, 60)
+    // Evidence-pack spine: runId 已在函数开头算好（见上面 earlyFail 的说明），
+    // 这里只用它命名日志与 per-run 记录。
 
     const run = await new Promise((resolve) => {
       let child
@@ -489,7 +699,9 @@ export function makeBuilder(cfg) {
       configuration,
       platform: platformArg || (isDotnet ? 'Any CPU' : '(auto)'),
       durationMs,
-      runId: runId || null,
+      runId,
+      // UD-02：让调用方一眼看出这个 runId 是自动生成的（否则它会以为是自己传的）。
+      runIdAutoGenerated: runIdAuto,
       errorCount: errors.length,
       codeErrorCount: codeErrors.length,
       envErrorCount: envErrors.length,
@@ -504,6 +716,10 @@ export function makeBuilder(cfg) {
         ? { clientKillFailed: true, error: 'killClient=true 但目标客户端进程仍未退出（PID ' + clientKill.remaining.join(',') + '，等待 ' + clientKill.waitedMs + 'ms）：文件锁大概率仍在，构建会继续报 MSB3021/3027。' }
         : {}),
       ...(clientRunningWarning ? { clientRunningWarning } : {}),
+      // BV-04：三态中的第三态必须随结果一起回报 —— 只印在 warning 文本里，
+      // 读 JSON 的调用方（MCP/脚本）仍然分不出「没配」和「没在跑」。
+      ...(clientUnconfigured ? { clientUnconfigured: true } : {}),
+      ...(clientUnconfiguredNote ? { clientUnconfiguredNote } : {}),
       ...(lockDiagnosis ? { lockDiagnosis } : {}),
       // A failed build with zero code errors is a blocked-by-environment
       // situation (missing targeting packs, restore failures, locked
@@ -529,9 +745,13 @@ export function makeBuilder(cfg) {
         : (extractSummary(text) ?? `${errors.length} error(s), ${warnings.length} warning(s) (parsed)`),
     }
     persistLast(result)
-    if (runId) {
-      // Per-run record: the evidence pack's build leg, looked up by verify_report kind=build.
-      try { writeFileSync(join(c.logsDir, 'run-' + runId + '.json'), JSON.stringify({ at: new Date().toISOString(), ...result }, null, 2), 'utf8') } catch { /* ignore */ }
+    // UD-02：runId 现在总是有值（缺省自动生成），所以 per-run 记录**总是**会写 ——
+    // 证据永远存在可被 verify_report(kind=build) 串联，不再取决于 agent 记不记得传参。
+    // 写失败也不能静默：那是"证据缺失"的另一种来源，必须让调用方看见。
+    try {
+      writeFileSync(join(c.logsDir, 'run-' + runId + '.json'), JSON.stringify({ at: new Date().toISOString(), ...result }, null, 2), 'utf8')
+    } catch (e) {
+      result.evidenceWriteError = 'per-run 构建记录写入失败（verify_report 将找不到本次证据）：' + (e && e.message ? e.message : String(e))
     }
     return result
   }
@@ -554,16 +774,50 @@ export function makeBuilder(cfg) {
   function status() {
     try {
       const r = JSON.parse(readFileSync(lastPath(), 'utf8'))
-      return { hasRun: true, ...r }
+      // F-007：宿主不热加载 —— 每次读"最近一次构建"都顺带说清"这份结论是不是用旧代码读的"。
+      return { hasRun: true, ...r, ...(staleCodeInfo(moduleRoots(BUILD_PLUGIN_DIR)) || {}) }
     } catch {
-      return { hasRun: false }
+      return { hasRun: false, ...(staleCodeInfo(moduleRoots(BUILD_PLUGIN_DIR)) || {}) }
     }
   }
 
+  /**
+   * 从**最近一次**构建日志重新解析错误/警告。
+   *
+   * BV-05/BV-04 连带暴露的一处（2026-09-11，被 `lib/mcp-newtools.test.mjs` 抓到）：
+   * 早返回的 `last.json` 里 `logPath` 是 **null**（那次构建压根没跑），而这里直接
+   * `readFileSync(s.logPath, …)` → `TypeError: path must be of type string...` →
+   * 宿主把 build_errors 变成裸异常。**偏偏是在最需要日志的那一刻**（构建被挡下），
+   * agent 拿到的是宿主崩溃而不是"没有日志，因为这次没跑"。
+   */
   function errorsOfLast() {
     const s = status()
     if (!s.hasRun) return { hasRun: false }
-    const text = readFileSync(s.logPath, 'utf8')
+    if (typeof s.logPath !== 'string' || s.logPath === '') {
+      return {
+        hasRun: true,
+        logPath: null,
+        errors: [],
+        warnings: [],
+        didNotRun: s.didNotRun === true,
+        note: s.didNotRun === true
+          ? '最近一次构建**没有执行**（' + (s.error || '原因未回报') + '），所以没有任何构建日志可解析 —— 这不等于"0 个错误"。'
+          : '最近一次记录里没有日志路径（可能是老版本记录），无法解析历史错误。',
+      }
+    }
+    let text = ''
+    try {
+      text = readFileSync(s.logPath, 'utf8')
+    } catch (e) {
+      return {
+        hasRun: true,
+        logPath: s.logPath,
+        errors: [],
+        warnings: [],
+        readError: '日志文件读不到：' + (e && e.message ? e.message : String(e)),
+        note: '日志路径存在但读不到（可能被轮转/删除）—— 不要把它读成"0 个错误"。',
+      }
+    }
     const { errors, warnings } = parseErrors(text)
     return { hasRun: true, logPath: s.logPath, errors, warnings }
   }

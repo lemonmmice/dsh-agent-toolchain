@@ -13,9 +13,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node
 import { basename, join, extname } from 'node:path'
 import { homedir } from 'node:os'
 import { makeDriver } from './lib/driver.mjs'
-import { renderDrive, renderState } from './lib/render.mjs'
+import { renderDrive, renderState, renderFlow, sanitizeLive, launchText, renderLive, framePathText } from './lib/render.mjs'
 import { makeVision, UI_STATE_PROMPT } from './lib/vision.mjs'
 import { makeLive } from './lib/live.mjs'
+import { envOr } from '../../lib/env-fallback.mjs'
 
 export const name = 'dsh-ui-drive'
 
@@ -35,8 +36,17 @@ const GUIDANCE =
   '实时性：ui_drive 走常驻 PowerShell 进程（启动成本只付一次，实测单动作 p50 30ms）；ui_flow 整段序列进一个进程批量执行（13 步实测 1.6s）。DSH_UI_SERVE=0 可退回一次性进程路径。' +
   '观测完整性（B-1）：read/state 结果恒带 skipped=N——本次枚举里「读不到状态」而被跳过的元素数（类型白名单/offscreen/match/去重这些正常过滤不算）；skipped>0 时同结果附带 warn，明确写出「本次清单不完整」。别把「没读到」当成「界面上没有」；skipped=null 表示该路径没回报（未知），不等于 0。' +
   '视觉即返（推荐）：ui_launch 启动完成会自动截图并用视觉模型描述当前界面（返回 uiState.description，一步知道在登录页还是主界面）；ui_drive action=shot 加 describe=true 同样直接返回界面描述——优先用这两个，不必再单独 describe_image。需要深度视觉复核时才用 describe_image 对该 png 细看（当前主模型不读图，必须走 describe_image）。' +
-  '实时看见（agent 专用）：ui_live(action=start|stop|status|frame|wait) 后台循环抓「窗口内容」帧（1500ms 默认，不抢前台不恢复最小化）；frame 返回 latest.png 路径+帧 hash+控件状态，read_image(frame.path) 即看见当前画面；wait({fromHash}) 阻塞等画面变化；未 start 时 frame 退化为一次捕获。敏感帧（焦点=密码/验证码）默认不给 path（allowSensitive=true 才给）。截图一律在 E 盘证据目录。' +
-  '安全边界：点击=真实操作（保存/生成/跳转可能落库）；「保存/删除/清空/导出」类按钮点击前先把按钮名报给用户确认；命中「按名硬拒」名单的控件一律不点；优先用 find/read/shot/expect 做只读验证；定位卡住三步就停止报告，不盲点轰炸。' +
+  '实时看见（agent 专用）：ui_live(action=start|stop|status|frame|wait) 后台循环抓「窗口内容」帧（1500ms 默认，不抢前台不恢复最小化）；frame 返回帧 hash+控件状态+**绝对路径 frame.pathAbs**，read_image(frame.pathAbs) 即看见当前画面（frame.path 只是文件名，别直接喂给 read_image）；wait({fromHash}) 阻塞等画面变化；未 start 时 frame 退化为一次捕获。敏感帧（焦点=密码/验证码）默认不给路径（allowSensitive=true 才给）。截图一律在 E 盘证据目录。' +
+  '安全边界：点击=真实操作（保存/生成/跳转可能落库）；「保存/删除/清空/导出」类按钮点击前先把按钮名报给用户确认；' +
+  '「按名硬拒」名单**只有运维显式配置 DSH_UI_DENY_RE 后才存在**——**默认为空 = 什么都不拦**，所以**不能拿它当兜底**，' +
+  '真正的护栏是"先报按钮名给用户确认"这条纪律本身；' +
+  '**运维级护栏**（实现早就有，描述里原本一个字没提 —— Claude r15 复核补上）：外部急停总闸 DSH_UI_ESTOP_FILE（哨兵在盘上时**任何**副作用动作一律拒，' +
+  '且删掉哨兵**不等于**复位）、deny-first 策略表 DSH_UI_APP_POLICY。被它们拦住时返回带 `policyCode`（stopped_by_user / policy_unavailable）；' +
+  '**复位只有运维能做**：本机回环 `GET /api/dsh-ui-drive/estop` 看状态、`POST /api/dsh-ui-drive/estop/reset` 复位 —— ' +
+  '刻意不做成 agent 工具（让模型能解除自己的护栏等于没有护栏）；' +
+  '注意 DSH_UI_SAFETY_POLICY_FILE 只是**声明性文本**（会被读进来但不参与判定），它**不拦任何动作** ——' +
+  '真要拦请用 DSH_UI_APP_POLICY（规则表）或 DSH_UI_ESTOP_FILE（总闸）；' +
+  '优先用 find/read/shot/expect 做只读验证；定位卡住三步就停止报告，不盲点轰炸。' +
   '证据目录默认 ~/.dsh-agent-toolchain/ui-evidence（DSH_UI_EVIDENCE_DIR 可覆盖），目标进程名/窗口名/客户端 exe 分别由 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE 指定。' +
   '用户提到「UI 自验 / 驱动客户端 / 自动验证页面 / 截图验证 / 帮我点一下客户端」时即指本插件，请据此协作。'
 
@@ -46,10 +56,14 @@ function drv() {
   if (!driver) {
     driver = makeDriver({
       scriptsDir: join(import.meta.dirname, 'scripts'),
-      procName: process.env.DSH_UI_PROC_NAME || '',
-      windowName: process.env.DSH_UI_WINDOW_NAME || '',
-      clientExe: process.env.DSH_UI_CLIENT_EXE || '',
-      evidenceDir: process.env.DSH_UI_EVIDENCE_DIR || join(homedir(), '.dsh-agent-toolchain', 'ui-evidence'),
+      // **必须走 env-fallback**：这里是 DSH 面的配置入口，而 `makeDriver` 内部虽然也读环境变量，
+      // 但**显式传入的值会覆盖它** —— 传空串进去等于把内部那层正确的回退给屏蔽了。
+      // 真机后果：DSH 面（面板/DSH 工具）看不到用户配的进程名/客户端路径，而 MCP 面正常
+      // → 同一个工具两个面行为不同，症状还像"没做这个功能"（F-003 同族）。
+      procName: envOr('DSH_UI_PROC_NAME'),
+      windowName: envOr('DSH_UI_WINDOW_NAME'),
+      clientExe: envOr('DSH_UI_CLIENT_EXE'),
+      evidenceDir: envOr('DSH_UI_EVIDENCE_DIR') || join(homedir(), '.dsh-agent-toolchain', 'ui-evidence'),
     })
   }
   return driver
@@ -91,11 +105,24 @@ function autoRecord(failureClass, task, description, extra = {}) {
 }
 
 /** 截图 + 视觉描述（视觉即返）：失败不阻断，返回 null；黑屏/空白自动等渲染重试。 */
-async function shotWithVision({ workspace = '', label = 'state', waitBeforeMs = 0, maxRetries = 2 } = {}) {
+async function shotWithVision({ workspace = '', label = 'state', waitBeforeMs = 0, maxRetries = 2, procId = 0, allowSensitive = false } = {}) {
   if (waitBeforeMs > 0) await sleep(waitBeforeMs)
   for (let i = 0; i <= maxRetries; i++) {
-    const s = await drv().drive({ action: 'shot', label: i === 0 ? label : label + '-retry' + i, workspace })
+    const s = await drv().drive({ action: 'shot', label: i === 0 ? label : label + '-retry' + i, workspace, procId })
     if (!s.ok) return null
+    // r44：交给视觉模型之前先问一句「焦点在密码框上吗」。像素无法脱敏 ⇒ 默认拒，只留 allowSensitive 这个显式出口。
+    // 截图文件本身照常落盘（本地证据目录，不出网）。
+    const sens = await drv().secretFocusNow({ procId })
+    if (!allowSensitive && (sens.secret === true || sens.unknown === true)) {
+      return {
+        screenshot: s.workspacePath || s.path, size: s.w + 'x' + s.h,
+        description: null, visionModel: null, visionError: null,
+        describeSkipped: sens.unknown ? 'sensitivity-unknown' : 'secretFocused',
+        note: sens.unknown
+          ? '**没有把这张截图交给视觉模型**：查不到当前焦点（' + sens.reason + '），而密码输入那一刻查不到正是常态 —— 按 fail-closed 拒了。截图已落证据目录：' + (s.workspacePath || s.path) + '；确认画面无敏感内容后可传 allowSensitive=true 解锁。'
+          : '**没有把这张截图交给视觉模型**：当前焦点在密码/验证码/token 类控件上（' + (sens.focused || '未知控件') + '），像素无法脱敏。截图已落证据目录：' + (s.workspacePath || s.path) + '；确认画面无敏感内容后可传 allowSensitive=true 解锁。',
+      }
+    }
     const v = await vsn().describeImage(s.workspacePath || s.path, UI_STATE_PROMPT)
     if (!v.ok) {
       return {
@@ -117,33 +144,41 @@ async function shotWithVision({ workspace = '', label = 'state', waitBeforeMs = 
 }
 
 const OBJECT = { type: 'object', additionalProperties: true }
-const READ_ONLY_NOTE = '。注意：点击/输入是真实副作用操作（可能落库），必须先报按钮名给用户确认再执行；命中「按名硬拒」名单的控件一律不点'
+const READ_ONLY_NOTE = '。注意：点击/输入是真实副作用操作（可能落库），必须先报按钮名给用户确认再执行；「按名硬拒」名单默认为空（未配 DSH_UI_DENY_RE 时什么都不拦），别拿它当兜底；运维若配了急停（DSH_UI_ESTOP_FILE）或策略表（DSH_UI_APP_POLICY），被拦时返回带 policyCode，复位走运维路径 /api/dsh-ui-drive/estop/reset'
 
 const tools = () => [
   defineTool({
     name: 'ui_status',
-    description: '查目标桌面客户端的进程与主窗口状态（是否运行/PID/窗口标题/位置大小）。只读。未运行时用 ui_launch 拉起。Triggers: 客户端状态 / 客户端开着吗 / client status.',
-    parameters: {},
+    description: '只报**进程与窗口的存在性**（是否运行/PID/窗口标题/位置大小）——**它不反映界面里有什么、也不反映是否卡死**；要看界面内容/焦点请用 ui_state 或 ui_observe(action="state")。只读。未运行时用 ui_launch 拉起。Triggers: 客户端状态 / 客户端开着吗 / client status.',
+    parameters: {
+      // G1 黑盒 #1：ui_status 原**无参数**，多实例时无法消歧（而 ui_launch 会因多实例拒绝执行 ⇒ 口径不一致）。
+      procId: { type: 'number', description: '指定进程 PID（多实例消歧；默认自动找）' },
+    },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.running ? ('客户端运行中 pid=' + v.pid + ' 窗口=' + v.title) : (v.unknown ? ('客户端状态未知：' + (v.error || '查询超时')) : '客户端未运行') }] },
-    async execute() {
-      return await drv().status()
+    async execute(args) {
+      // 传下去才算真的支持（参数存在但被忽略 = 最坏的一种）
+      return await drv().status(args?.procId ? { procId: args.procId } : {})
     },
   }),
   defineTool({
     name: 'ui_launch',
-    description: '启动目标桌面客户端（构建产物（DSH_UI_CLIENT_EXE 指定））并等待主窗口出现；已运行则直接返回现有进程。extraArgs 可传额外启动参数（如 --remote-debugging-port=9222 --remote-allow-origins=* 用于 CEF 内嵌页调试）。Triggers: 启动客户端 / 重启客户端 / launch client.',
+    description: '启动目标桌面客户端（构建产物（DSH_UI_CLIENT_EXE 指定））并等待主窗口出现；已运行则直接返回现有进程。⚠ **客户端刚卡死时先别用 force**：`force=true` 会**杀掉进程、销毁唯一现场**（dump / 线程栈 / 证据包都没了）。正确顺序是先取证（`perf_dump` 抓快照，或 `hang_run` 挂监测等复现）→ 证据到手 → 再 `force=true` 重启。extraArgs 可传额外启动参数（如 --remote-debugging-port=9222 --remote-allow-origins=* 用于 CEF 内嵌页调试）。**force=true 是唯一的"重启"通道**：先结束正在运行的目标进程再启动，会如实回报杀了哪些 PID、等了多久；同名进程有多个且未配 DSH_UI_CLIENT_EXE 时**拒绝执行**（不误杀）。Triggers: 启动客户端 / 重启客户端 / launch client.',
     parameters: {
       extraArgs: { type: 'string', description: '额外启动参数（空格分隔），可为空' },
       waitMs: { type: 'number', description: '等待主窗口超时毫秒，默认 60000' },
-      workspace: { type: 'string', description: '保留兼容（已废弃）：截图一律写入证据目录（DSH_UI_EVIDENCE_DIR，默认 ~/.dsh-agent-toolchain/ui-evidence），不再复制到 workspace/仓库' },
+      force: { type: 'boolean', description: 'true = 先结束正在运行的目标客户端再启动（卡死重启用）。破坏性操作：会真的杀掉客户端进程，先跟用户确认。' },
+      allowSensitive: { type: 'boolean', description: '启动后那张界面截图默认会做视觉描述；若焦点在密码/验证码控件上则**默认拒绝**描述（像素无法脱敏），需要时传 true' },
+
     },
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: (v.started ? ('已启动 pid=' + v.pid + ' 窗口=' + v.title) : (v.alreadyRunning ? '客户端已在运行（' + v.pid + '）' : '启动失败：' + (v.error || v.warning || ''))) + (v.uiState && v.uiState.description ? '\n当前界面：' + v.uiState.description : '') }] },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: launchText(v) + (v.uiState && v.uiState.description ? '\n当前界面：' + v.uiState.description : '') }] },
     timeoutMs: 120000,
     async execute(args) {
-      const l = await drv().launch({ extraArgs: args.extraArgs || '', waitMs: args.waitMs || 60000 })
-      // 视觉即返：等窗口渲染 3.5s 再截图描述（带黑屏重试），agent 一步知道当前在哪个页面
-      if (l.started || l.alreadyRunning) {
-        const st = await shotWithVision({ workspace: args.workspace || '', label: 'launch-state', waitBeforeMs: l.started ? 3500 : 0 })
+      const l = await drv().launch({ extraArgs: args.extraArgs || '', waitMs: args.waitMs || 60000, force: args.force === true })
+      // 视觉即返：等窗口渲染 3.5s 再截图描述（带黑屏重试），agent 一步知道当前在哪个页面。
+      // UD-06：只在**窗口真的可用**（ok）时才截图 —— 半成功时没有主窗口，
+      // 截图要么失败、要么抓到别的窗口（闪屏/其它进程），把一张不相干的画面当成"客户端界面"。
+      if (l.ok === true) {
+        const st = await shotWithVision({ workspace: args.workspace || '', label: 'launch-state', waitBeforeMs: l.started ? 3500 : 0, allowSensitive: args.allowSensitive === true })
         if (st) l.uiState = st
       }
       return l
@@ -151,19 +186,19 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_drive',
-    description: '对正在运行的目标客户端执行单步 UIA 操作（实时、有状态）。动作：find 定位控件；read 读可见控件（含输入框真实 value 与 #序号，序号可当 index 复用）；windows 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，动态界面先看这个）；shot 截主窗口 PNG（describe=true 直接返回视觉描述）；waitfor 等条件成立（state=appear|gone|enabled|disabled）；click 点击；setvalue ValuePattern 写值；key 键盘输入（中文走剪贴板粘贴）；type 键盘序列（{ENTER}/{TAB}/{ESC}/{DOWN}/^a 等，用于回车提交、Tab 跳转、下拉选择）；drag 鼠标拖拽（滑块验证码）。read/state 结果恒带 skipped=N（读不到状态被跳过的元素数），>0 时附 warn 提示「清单不完整」。' +
-      '动态界面三件套：waitFor={ms,interval,state,match,index} 让 click/setvalue/key/type/find/expect 先等条件成立再动手（不再靠猜 sleep）；index 取同名控件的第 N 个；inAid/inName 把查找限定在某个容器内。' + READ_ONLY_NOTE + '。click/setvalue/key/type/drag/clickat/doubleclick 必须传 allowSideEffects=true 才执行。截图一律写入证据目录（DSH_UI_EVIDENCE_DIR），不写仓库；需要视觉复核时用 describe_image 读返回的 path。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
+    description: '对正在运行的目标客户端执行单步 UIA 操作（实时、有状态）。动作：find 定位控件；read 读可见控件（含输入框真实 value 与 #序号，序号可当 index 复用）；windows 列出该进程所有顶层窗口（**顶层窗口**各自一行；⚠ 登录窗/许可协议/模态框常常是主窗口**内部的嵌套窗口元素**、**不在顶层清单里** —— 那种情况用 ui_windows，它会额外列出来）；shot 截主窗口 PNG（describe=true 直接返回视觉描述）；waitfor 等条件成立（state=appear|gone|enabled|disabled）；click 点击；setvalue ValuePattern 写值；key 键盘输入（中文走剪贴板粘贴）；type 键盘序列（{ENTER}/{TAB}/{ESC}/{DOWN}/^a 等，用于回车提交、Tab 跳转、下拉选择）；drag 鼠标拖拽（滑块验证码）。read/state 结果恒带 skipped=N（读不到状态被跳过的元素数），>0 时附 warn 提示「清单不完整」。' +
+      '动态界面三件套：waitFor={ms,interval,state,match,index} 让 click/setvalue/key/type/find/expect/read/state 先等条件成立再动手（不再靠猜 sleep）；index 取同名控件的第 N 个；inAid/inName 把查找限定在某个容器内（read/state 同样生效，结果会标 范围=…，**没标就是整个窗口**）。' + READ_ONLY_NOTE + '。click/setvalue/key/type/drag/clickat/doubleclick 必须传 allowSideEffects=true 才执行。截图一律写入证据目录（DSH_UI_EVIDENCE_DIR），不写仓库；需要视觉复核时用 describe_image 读返回的 path。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
     parameters: {
-      action: { type: 'string', required: true, description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag | clickat | doubleclick | pattern | scroll | selecttext | move | wheel | capture | state-live（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位——坐标脆弱，窗口一移动就失效；doubleclick=元素级双击（UIA GetClickablePoint，不是坐标）；pattern=调用元素**真正暴露**的 UIA pattern：动作名放 value/keys，支持 Expand|Collapse|Increment|Decrement|Select|AddToSelection|RemoveFromSelection|ScrollIntoView|Toggle|Invoke|Focus|Close|Minimize|Maximize|Restore（展开树节点/自增数字/多选/最大化窗口——比盲点击稳得多，元素不支持会明确报错而不是回退成点击）；scroll=语义滚动，对元素或最近可滚动祖先调 ScrollPattern，方向放 value（up/down/left/right），页数放 count；selecttext=TextPattern 精确选区，text 放 value、prefix 放 match、suffix 放 expectValue、selectionType 放 state（text|cursor_before|cursor_after）；move/wheel=移动鼠标/滚轮，只读白名单、不需 allowSideEffects；capture=抓一帧窗口内容；state-live=免前台状态采样）' },
+      action: { type: 'string', required: true, enum: ['find', 'read', 'state', 'windows', 'shot', 'waitfor', 'click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext', 'move', 'wheel', 'capture', 'state-live'], description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag | clickat | doubleclick | pattern | scroll | selecttext | move | wheel | capture | state-live（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位——坐标脆弱，窗口一移动就失效；doubleclick=元素级双击（UIA GetClickablePoint，不是坐标）；pattern=调用元素**真正暴露**的 UIA pattern：动作名放 value/keys，支持 Expand|Collapse|Increment|Decrement|Select|AddToSelection|RemoveFromSelection|ScrollIntoView|Toggle|Invoke|Focus|Close|Minimize|Maximize|Restore（展开树节点/自增数字/多选/最大化窗口——比盲点击稳得多，元素不支持会明确报错而不是回退成点击）；scroll=语义滚动，对元素或最近可滚动祖先调 ScrollPattern，方向放 value（up/down/left/right），页数放 count；selecttext=TextPattern 精确选区，text 放 value、prefix 放 match、suffix 放 expectValue、selectionType 放 state（text|cursor_before|cursor_after）；move/wheel=移动鼠标/滚轮，只读白名单、不需 allowSideEffects；capture=抓一帧窗口内容；state-live=免前台状态采样）' },
       name: { type: 'string', description: '控件 Name（与 aid 二选一或都传）' },
       aid: { type: 'string', description: '控件 AutomationId' },
-      value: { type: 'string', description: 'setvalue/key/type 的内容（type 支持 SendKeys 语法，如 1234{ENTER}）' },
+      value: { type: 'string', description: 'setvalue/key/type 的内容（type 支持 SendKeys 语法，如 1234{ENTER}）；**支持 ${cred:name} 占位符** —— 驱动进程从环境变量 DSH_CRED_name 展开，密码不经过模型、不进证据' },
       ascii: { type: 'boolean', description: 'key 模式用 ASCII 直发（纯代码/数字）；type 模式下 true=把 { } + ^ % ~ ( ) 当普通字符' },
       match: { type: 'string', description: 'read 的正则过滤；find/click 等传 match 时按控件名正则挑（配合 index）' },
       index: { type: 'number', description: '同名控件的序号（0 起；read 输出的 #序号 可直接复用）' },
-      inAid: { type: 'string', description: '限定在该 AutomationId 的容器子树内查找' },
-      inName: { type: 'string', description: '限定在该 Name 的容器子树内查找' },
-      waitFor: { type: 'object', additionalProperties: true, description: '先等条件成立再执行：{ms?:5000, interval?:150, state?:"appear"|"gone"|"enabled"|"disabled", match?:控件名正则, index?}' },
+      inAid: { type: 'string', description: '限定在该 AutomationId 的容器子树内查找/读取（read/state 也生效，结果标 narrowed+scope；容器名写错会明确失败，不会退化成读整窗）' },
+      inName: { type: 'string', description: '限定在该 Name 的容器子树内查找/读取（read/state 也生效，结果标 narrowed+scope）' },
+      waitFor: { type: 'object', additionalProperties: true, description: '先等条件成立再执行：{ms?:5000, interval?:150, state?:"appear"|"gone"|"enabled"|"disabled", match?:控件名正则, index?}。目标取「动作自身的 name/aid」→「waitFor 里的 name/aid」→「只给 match（整树正则）」三者之一；三者全空会明确报「缺少目标」。read/state 也支持（等列表刷出来再读；state-live 请走 ui_observe/ui_act —— 不在本动作枚举里）。**代价**：match-only 每轮要整树枚举（真机实测 3331ms/轮 vs aid/name 的 1087ms，约 3×），且 `ms` 不是硬上限（轮询中途不可中断，实测 ms=8000 → 实际 11054ms）——所以 match-only 的 ms 上限被收紧到 15000；循环等待/时间敏感场景请**给 aid 或 name**。失败时会回报 polls/lastPollMs 让你看清代价花在哪。' },
       state: { type: 'string', description: 'waitfor 动作的等待条件：appear(默认) | gone | enabled | disabled' },
       keys: { type: 'string', description: 'type 模式的按键序列（等价 value，语义更清楚）' },
       fromX: { type: 'number', description: 'drag：起点 X（窗口客户区坐标）' },
@@ -175,15 +210,26 @@ const tools = () => [
       waitMs: { type: 'number', description: '动作后等待毫秒，默认 250' },
       procId: { type: 'number', description: '指定进程 PID（默认自动找）' },
       allowSideEffects: { type: 'boolean', description: 'click/setvalue/key/type/drag/clickat/doubleclick 必须显式传 true 才执行' },
-      workspace: { type: 'string', description: '保留兼容（已废弃）：截图一律写证据目录（DSH_UI_EVIDENCE_DIR），不复制到仓库' },
+      secret: { type: 'boolean', description: 'true = 输出与证据里对该值打码（默认 false）。**密码/验证码类控件本来就自动掩码**（读回来是 <secret:Nchars>）；secret 是给「长得不像密码框的敏感输入」（例如令牌框）用的 —— 两者取或' },
+      allowSensitive: { type: 'boolean', description: 'describe=true 时的显式解锁：焦点在密码/验证码/token 控件上时**默认拒绝**把截图交给视觉模型（像素无法脱敏）。确认画面无敏感内容才传 true' },
+
       label: { type: 'string', description: '截图文件名标签（shot 用）' },
       describe: { type: 'boolean', description: 'shot 时顺带用视觉模型描述界面内容（视觉即返，一步拿到界面状态）' },
       snapshotId: { type: 'string', description: '副作用动作可选：绑定某次 read/state 返回的 snapshotId。若自那次读之后界面已被更新的权威读刷新（staleSnapshot）或客户端已重启（expiredSnapshot），本次动作被拒不执行；不传则不校验（零回归）' },
       count: { type: 'number', description: 'scroll 页数' },
-      x: { type: 'number' },
-      y: { type: 'number' },
+      x: { type: 'number', description: 'clickat：客户区 X。⚠ 坐标点击**可能落到相邻控件**（登录页旁边就是「注册/忘记密码」），点前先把目标报给用户确认' },
+      y: { type: 'number', description: 'clickat：客户区 Y（同样：坐标脆弱、可能点到邻近控件）' },
       delta: { type: 'number' },
-      mods: { type: 'array', items: { type: 'string' }, description: 'click/type 的修饰键数组（如 ["ctrl","shift","alt","win"]）' },
+      mods: { type: 'string', description: 'click/type 的修饰键（如 "ctrl" / "ctrl,shift" / "ctrl+alt" —— 逗号、加号、空格都当分隔符）。⚠ 本参数驱动按**字符串**处理：写数组虽然实测也能用（PowerShell 会拼成 "ctrl shift"），但两面对它的声明必须一致，所以这里规范成字符串' },
+      // R42：以下 7 个参数**驱动层早就实现了**（ui-drive-batch.ps1 / driver.mjs 里逐个有实现点），
+      // 却只在 MCP 面声明过 —— 也就是说 DSH 侧的 agent 按名字选 ui_drive 时这些能力根本调不到。
+      winHandle: { type: 'number', description: '按顶层窗口 handle 定位（ui_windows 返回的 handle 直接用），比 winTitle 更稳；不给就用主窗口' },
+      focus: { type: 'boolean', description: 'true = 动作前把键盘焦点设到目标上（对「不响应无焦点点击」的控件有用）' },
+      double: { type: 'boolean', description: 'true = clickat 用双击而不是单击' },
+      button: { type: 'string', description: '坐标类动作的鼠标键（默认 left），如 left | right | middle' },
+      expectValue: { type: 'string', description: 'type：写完回读校验的期望值（不一致 → ok:false）；selecttext：要选到的后缀' },
+      observeMax: { type: 'number', description: 'observe=true 时动作后快照列几个控件（默认 15；只影响快照，不影响动作结果）' },
+      shotsDir: { type: 'string', description: 'shot：截图副本目录（绝对路径）。证据目录里那份始终都会写' },
       diff: { type: 'boolean', description: 'read 专用：与上一次完整读做增量，返回 diff={added,removed,unchanged}（首读给 diffBaseline；读不完整时抑制并回落完整清单）' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderDrive(v) }] },
@@ -192,21 +238,47 @@ const tools = () => [
       const r = await drv().drive(args)
       // shot 视觉即返：describe=true 时截图后直接返回界面描述
       if (r.ok && r.action === 'shot' && args.describe) {
-        const v = await vsn().describeImage(r.workspacePath || r.path, UI_STATE_PROMPT)
-        if (v.ok) r.description = v.text
-        else r.visionError = v.error
+        const sens = await drv().secretFocusNow({ procId: args.procId || 0 })
+        if (args.allowSensitive !== true && (sens.secret === true || sens.unknown === true)) {
+          r.describeSkipped = sens.unknown ? 'sensitivity-unknown' : 'secretFocused'
+          r.warning = '没有把截图交给视觉模型：' + (sens.unknown ? ('查不到当前焦点（' + sens.reason + '），按 fail-closed 拒') : ('焦点在密码/验证码/token 类控件上（' + (sens.focused || '未知控件') + '）')) +
+            '。截图已落盘：' + (r.workspacePath || r.path) + '；确认画面无敏感内容后传 allowSensitive=true 解锁。'
+        } else {
+          const v = await vsn().describeImage(r.workspacePath || r.path, UI_STATE_PROMPT)
+          if (v.ok) r.description = v.text
+          else r.visionError = v.error
+        }
       }
       return r
     },
   }),
   defineTool({
     name: 'ui_windows',
-    description: '列出目标客户端进程的所有顶层窗口（类型/标题/handle/位置/是否离屏）。只读。登录窗口、验证码弹窗、模态对话框常常不是「主窗口」——动态界面（登录、切页、弹窗）第一步先看这个，再决定在哪操作。Triggers: 有哪些窗口 / 登录窗口 / 弹窗在哪 / list windows.',
-    parameters: {},
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.ok ? (v.count + ' 个窗口：\n' + (v.lines || []).join('\n')) : '失败：' + (v.error || '') }] },
+    description: '列出目标客户端进程的所有顶层窗口（类型/标题/handle/位置/是否离屏），**以及主窗口内部的嵌套窗口元素**（登录窗/许可协议/模态对话框常常是这种形态，它们不出现在顶层清单里却会遮住下面的控件）。只读。动态界面（登录、切页、弹窗）第一步先看这个，再决定在哪操作。Triggers: 有哪些窗口 / 登录窗口 / 弹窗在哪 / list windows.',
+    parameters: {
+      procId: { type: 'number', description: '指定进程 PID（多实例消歧；默认自动找）' },
+    },
+    output: {
+      schema: OBJECT,
+      render: (_a, v) => {
+        if (!v.ok) return [{ type: 'text', text: '失败：' + (v.error || '') }]
+        const nested = Array.isArray(v.nestedWindows) ? v.nestedWindows : []
+        const tail = nested.length
+          ? '\n⚠ 另有 ' + (v.nestedWindowsTotal || nested.length) + ' 个**嵌套窗口元素**（在主窗口视觉树里，会遮住下面的控件）：\n' +
+            nested.map((l) => '  ' + l).join('\n') +
+            '\n（判断"现在该操作哪个界面"看这里；再看 ui_observe(state) 的焦点确认。）'
+          : ''
+        // 截断/跳过与其它读路径共用同一套说法（completenessTail）
+        const comp = (v.truncated === true || typeof v.skipped === 'number')
+          ? '\n' + [v.truncated === true ? '⚠ 嵌套窗口清单已截断（只列了前 ' + (v.maxApplied || '?') + ' 个）' : '',
+            typeof v.skipped === 'number' ? 'skipped=' + v.skipped + (v.skipped > 0 ? '（读不到状态的元素，清单不完整）' : '（清单完整）') : ''].filter(Boolean).join('\n')
+          : ''
+        return [{ type: 'text', text: v.count + ' 个窗口：\n' + (v.lines || []).join('\n') + tail + comp }]
+      },
+    },
     timeoutMs: 60000,
-    async execute() {
-      return await drv().drive({ action: 'windows' })
+    async execute(args) {
+      return await drv().drive({ action: 'windows', ...(args && args.procId ? { procId: args.procId } : {}) })
     },
   }),
   defineTool({
@@ -216,11 +288,16 @@ const tools = () => [
     parameters: {
       match: { type: 'string', description: '按控件名正则过滤（如 登录|验证码）' },
       max: { type: 'number', description: '最多返回几条，默认 40' },
+      // G1 黑盒 #1 指出：ui_drive/ui_observe 有 procId 而它没有 ⇒ 多实例时**无法消歧**。
+      // 而 ui_launch 又会在"同名多进程且未配 DSH_UI_CLIENT_EXE"时拒绝执行 —— 口径不一致。
+      procId: { type: 'number', description: '指定进程 PID（多实例消歧；默认自动找）' },
+      winHandle: { type: 'number', description: '按顶层窗口 handle 定位（ui_windows 返回的 handle 直接用）——跨窗口读状态时比 winTitle 稳' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderState(v) }] },
     timeoutMs: 60000,
     async execute(args) {
-      return await drv().drive({ action: 'state', match: args.match || '', max: args.max || 40 })
+      // 原来硬编码 action:'state' 且不传 procId —— 加了参数就必须真的传下去，否则等于没有（"参数存在但不生效"是最坏的一种）
+      return await drv().drive({ action: 'state', match: args.match || '', max: args.max || 40, ...(args.procId ? { procId: args.procId } : {}), ...(args.winHandle ? { winHandle: args.winHandle } : {}) })
     },
   }),
   defineTool({
@@ -228,27 +305,35 @@ const tools = () => [
     description: '只读观察（推荐入口，无需 allowSideEffects）：find 定位 / read 读控件与真实输入值 / state 界面快照（窗口+焦点+交互控件）/ windows 顶层窗口 / waitfor 等条件成立 / expectwindow 窗口出现或消失 / expecttext 文本出现 / waitany 多条件竞速 / shot 截图。' +
       'read/state 结果恒带 skipped=N（本次枚举里读不到状态被跳过的元素数），>0 时附 warn 明说「清单不完整」——「没读到」不等于「界面上没有」。' +
       '动态界面（登录、验证码、按界面情况分支）的循环就是：ui_observe 看现状 → 决定 → ui_act 动手 → 再 ui_observe 确认。' +
+      '范围与等待（UD-04）：read/state 也认 inAid/inName（限定容器）与 winTitle（跨窗口），以及 waitFor（等条件成立再读，最常用于「等列表刷出来再读」）；被限定过的清单会标 narrowed+scope，**没标就是整个窗口**。' +
       'waitany 是判定登录结果的关键：一次同时押注「主窗口出现」「错误文本出现」「登录窗口还在」三支，返回命中的那支。Triggers: 看界面 / 等条件 / 判断登录结果 / observe.',
     parameters: {
-      action: { type: 'string', required: true, description: 'find | read | state | windows | waitfor | expectwindow | expecttext | waitany | shot | move | wheel | capture | state-live（move/wheel=移动鼠标/滚轮、capture=抓帧、state-live=免前台状态采样，都是只读白名单）' },
+      action: { type: 'string', required: true, enum: ['find', 'read', 'state', 'windows', 'waitfor', 'expectwindow', 'expecttext', 'waitany', 'shot', 'move', 'wheel', 'capture', 'state-live'], description: 'find | read | state | windows | waitfor | expectwindow | expecttext | waitany | shot | move | wheel | capture | state-live（move/wheel=移动鼠标/滚轮、capture=抓帧、state-live=免前台状态采样，都是只读白名单）' },
       name: { type: 'string', description: '控件 Name' },
       aid: { type: 'string', description: '控件 AutomationId' },
-      match: { type: 'string', description: 'read/state 的控件名正则；find/click 用 match 时按名字挑（配合 index）' },
+      // G1 黑盒 #1 抓到的残留：这句原本写"find/click 用 match 时按名字挑"——
+      // 而 **ui_observe 的 action 枚举里根本没有 click**（点击在 ui_act / ui_drive / ui_flow 上）。
+      // 描述里点名一个本面不存在的动作，会让人以为这里能点。
+      match: { type: 'string', description: 'read/state 的控件名正则；find 用 match 时按名字挑（配合 index）。点击不在这里 —— 点击请用 ui_act / ui_drive / ui_flow' },
       textRe: { type: 'string', description: 'expecttext / waitany(text)：文本正则（抓 ErrorInfo 之类）' },
       titleRe: { type: 'string', description: 'expectwindow / waitany(window)：窗口标题正则' },
       gone: { type: 'boolean', description: 'expectwindow：true = 等窗口消失' },
       ms: { type: 'number', description: '等待上限毫秒（默认 5000；waitany 默认 15000）' },
       interval: { type: 'number', description: '轮询间隔毫秒（默认 150）' },
       state: { type: 'string', description: 'waitfor 条件：appear(默认) | gone | enabled | disabled' },
-      waitFor: { type: 'object', additionalProperties: true, description: '{ms?, interval?, state?, match?, index?}' },
+      waitFor: { type: 'object', additionalProperties: true, description: '{ms?, interval?, state?, match?, index?}。目标取「动作自身的 name/aid」→「waitFor 里的 name/aid」→「只给 match（整树正则）」三者之一；三者全空会明确报「缺少目标」。read/state/state-live 也支持（等界面刷出来再读）。**match-only 更贵**（每轮整树枚举，实测约 3× 于 aid/name，ms 上限 15000）——循环等待请给 aid/name。' },
       conds: { type: 'array', description: 'waitany 条件数组：[{kind:"window"|"text"|"appear"|"gone"|"enabled"|"disabled", titleRe?, textRe?, name?, aid?, label?}]' },
       index: { type: 'number', description: '同名控件序号（0 起；read 输出的 #序号 可直接用）' },
-      inAid: { type: 'string', description: '限定在容器 AutomationId 子树内查找' },
-      winTitle: { type: 'string', description: '限定在标题匹配的窗口内查找（跨窗口定位）' },
+      inAid: { type: 'string', description: '限定在容器 AutomationId 子树内查找/读取（read/state 也生效；容器名写错会明确失败，不会退化成读整窗）' },
+      inName: { type: 'string', description: '限定在容器 Name 子树内查找/读取（read/state 也生效）' },
+      winTitle: { type: 'string', description: '限定在标题匹配的窗口内查找/读取（跨窗口定位；read/state 也生效）' },
       max: { type: 'number', description: 'state 最多返回控件数（默认 40）' },
+      stableCount: { type: 'number', description: 'waitany：连续命中几次才算成立（默认 2）—— 用来躲开「一闪而过」的中间态' },
       label: { type: 'string', description: 'shot 文件名标签' },
       procId: { type: 'number', description: '指定进程 PID（默认自动找）' },
-      workspace: { type: 'string', description: '保留兼容（已废弃）：截图一律写证据目录（DSH_UI_EVIDENCE_DIR），不复制到仓库' },
+      winHandle: { type: 'number', description: '按顶层窗口 handle 定位（ui_windows 返回的 handle 直接用），比 winTitle 稳' },
+      allowSensitive: { type: 'boolean', description: 'describe=true 时：焦点在密码/验证码/token 控件上默认拒（像素无法脱敏），确认无敏感内容才传 true' },
+
       describe: { type: 'boolean', description: 'shot：顺带返回视觉描述' },
       diff: { type: 'boolean', description: 'read 专用：与上一次完整读做增量，返回 diff={added,removed,unchanged}（首读给 diffBaseline；读不完整时抑制并回落完整清单）' },
     },
@@ -257,9 +342,16 @@ const tools = () => [
     async execute(args) {
       const r = await drv().drive({ ...args, action: args.action })
       if (r.ok && r.action === 'shot' && args.describe) {
-        const v = await vsn().describeImage(r.workspacePath || r.path, UI_STATE_PROMPT)
-        if (v.ok) r.description = v.text
-        else r.visionError = v.error
+        const sens = await drv().secretFocusNow({ procId: args.procId || 0 })
+        if (args.allowSensitive !== true && (sens.secret === true || sens.unknown === true)) {
+          r.describeSkipped = sens.unknown ? 'sensitivity-unknown' : 'secretFocused'
+          r.warning = '没有把截图交给视觉模型：' + (sens.unknown ? ('查不到当前焦点（' + sens.reason + '），按 fail-closed 拒') : ('焦点在密码/验证码/token 类控件上（' + String(sens.focused || '未知控件') + '）')) +
+            '。截图已落盘：' + (r.workspacePath || r.path) + '；确认画面无敏感内容后传 allowSensitive=true 解锁。'
+        } else {
+          const v = await vsn().describeImage(r.workspacePath || r.path, UI_STATE_PROMPT)
+          if (v.ok) r.description = v.text
+          else r.visionError = v.error
+        }
       }
       return r
     },
@@ -267,10 +359,11 @@ const tools = () => [
   defineTool({
     name: 'ui_act',
     description: '真实操作客户端（副作用，必须 allowSideEffects=true）：click 点击 / setvalue 写值（受限输入框如手机号框走它，绕开按键过滤）/ key 键盘输入（中文走剪贴板）/ type 键盘序列（{ENTER}/{TAB}/{ESC}，回车提交、Tab 跳转）/ drag 鼠标拖拽（滑块验证码）。' +
-      '写输入后驱动会回读校验，值没进去直接报错（不再假成功）；密码/验证码类控件的值不回显、不落证据；命中「按名硬拒」名单的控件被驱动层直接拒绝，传 true 也点不动（名单默认沿用历史值，可用 DSH_UI_DENY_RE 覆盖）。' +
+      '写输入后驱动会回读校验，值没进去直接报错（不再假成功）；密码/验证码类控件的值不回显、不落证据；' +
+      '「按名硬拒」名单**只在运维显式配置 DSH_UI_DENY_RE 后才生效**——默认为空（什么都不拦），所以"能点得动"不等于"该点"，别把它当护栏。' +
       'observe=true 时动作后直接附带界面快照（窗口+焦点+交互控件），省一次往返。凭据用 ${cred:name} 占位符（驱动进程从环境变量 DSH_CRED_name 展开，模型看不到明文）。' + READ_ONLY_NOTE + '。Triggers: 点一下 / 输入 / 登录 / 拖滑块 / ui act.',
     parameters: {
-      action: { type: 'string', required: true, description: 'click | setvalue | key | type | drag | clickat | doubleclick | pattern | scroll | selecttext | move | wheel（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位，坐标脆弱；doubleclick=元素级双击；pattern=调用元素真正暴露的 UIA pattern，动作名放 value/keys（Expand/Collapse/Increment/Decrement/Select/ScrollIntoView/Toggle/Invoke/Focus/Minimize/Maximize/Restore 等）；scroll=语义滚动（方向 value、页数 count）；selecttext=精确选区（text=value、prefix=match、suffix=expectValue、selectionType=state）；drag/clickat/doubleclick/pattern/scroll/selecttext 都能致效，必须 allowSideEffects=true；move/wheel 只移动鼠标/滚轮，无需副作用授权）' },
+      action: { type: 'string', required: true, enum: ['click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext', 'move', 'wheel'], description: 'click | setvalue | key | type | drag | clickat | doubleclick | pattern | scroll | selecttext | move | wheel（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位，坐标脆弱；doubleclick=元素级双击；pattern=调用元素真正暴露的 UIA pattern，动作名放 value/keys（Expand/Collapse/Increment/Decrement/Select/ScrollIntoView/Toggle/Invoke/Focus/Minimize/Maximize/Restore 等）；scroll=语义滚动（方向 value、页数 count）；selecttext=精确选区（text=value、prefix=match、suffix=expectValue、selectionType=state）；drag/clickat/doubleclick/pattern/scroll/selecttext 都能致效，必须 allowSideEffects=true；move/wheel 只移动鼠标/滚轮，无需副作用授权）' },
       name: { type: 'string', description: '控件 Name' },
       aid: { type: 'string', description: '控件 AutomationId' },
       value: { type: 'string', description: 'setvalue/key/type 的内容；支持 ${cred:name} 占位符（凭据不经过模型）' },
@@ -278,7 +371,10 @@ const tools = () => [
       ascii: { type: 'boolean', description: 'key：ASCII 直发（逐字符 keybd_event）；type：把 {}^%~() 当普通字符' },
       match: { type: 'string', description: '按控件名正则挑目标（配合 index）' },
       index: { type: 'number', description: '同名控件序号（0 起）' },
-      inAid: { type: 'string', description: '限定在容器内查找' },
+      inAid: { type: 'string', description: '限定在容器内查找（AutomationId）' },
+      // G1 黑盒 #1：ui_drive / ui_observe / ui_flow 都有 inName 而 ui_act 没有 —— 而**驱动层本来就支持**
+      // （driver.drive 一路透传 inName）。孪生工具的参数集不一致，会让"按容器定位"这件事在这里突然不可用。
+      inName: { type: 'string', description: '限定在容器内查找（按容器控件 Name，与 inAid 二选一或并用）' },
       winTitle: { type: 'string', description: '限定在标题匹配的窗口内操作' },
       waitFor: { type: 'object', additionalProperties: true, description: '先等条件成立再动手：{ms?, state?, match?, index?}' },
       expectValue: { type: 'string', description: 'type：写完回读校验的期望值（不一致 → ok:false）' },
@@ -289,6 +385,13 @@ const tools = () => [
       toY: { type: 'number', description: 'drag 终点 Y' },
       observe: { type: 'boolean', description: '动作后附带界面快照' },
       observeMatch: { type: 'string', description: '快照里控件名过滤正则' },
+      // R42：同样是「驱动层有、DSH 面没声明」（batch 脚本里 count/mods/x/y 逐个有实现点）
+      winHandle: { type: 'number', description: '按顶层窗口 handle 定位（ui_windows 返回的 handle 直接用），比 winTitle 稳' },
+      count: { type: 'number', description: 'scroll：滚动几页/几行（默认 1）' },
+      mods: { type: 'string', description: 'drag 时按住的修饰键，如 "shift" | "ctrl" | "alt"' },
+      x: { type: 'number', description: 'clickat：客户区 X' },
+      y: { type: 'number', description: 'clickat：客户区 Y' },
+      observeMax: { type: 'number', description: 'observe=true 时快照列几个控件（默认 15）' },
       waitMs: { type: 'number', description: '动作后等待毫秒（默认 250）' },
       procId: { type: 'number', description: '指定进程 PID' },
       allowSideEffects: { type: 'boolean', description: '必须为 true 才执行（安全护栏）' },
@@ -302,14 +405,75 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_tree',
-    description: '进程内视觉树 dump：注入只读探针进客户端进程，输出真实控件类型 + Name + AutomationId + DataContext 类型（比 UIA 信息全，深度定位绑定/模板问题）。只读，不弹窗。Triggers: 视觉树 / 控件结构 / dump-tree.',
+    description: '进程内视觉树 dump：注入只读探针进客户端进程，输出真实控件类型 + Name + AutomationId + DataContext 类型（比 UIA 信息全，深度定位绑定/模板问题）。只读，不弹窗。' +
+      '**注入不可用时自动降级为 UIA 层级树**（本机实测：Snoop 注入器不存在/DSH_SNOOP_DIR 未配置时就是这条路），' +
+      '此时返回 `source:\'uia\'` 且只有 类型/Name/aid/enabled/offscreen/位置尺寸/层级 —— **没有** DataContext 与 WPF 真实类型，' +
+      '别把它当成最全的那份树；要 DataContext 需配置 DSH_SNOOP_DIR 指向 Snoop 安装目录。' +
+      '两个隐性上限（maxDepth 切断、节点数上限）与正文截断**都会如实回报**（truncated/depthLimited/nodeCapHit）。Triggers: 视觉树 / 控件结构 / dump-tree.',
     parameters: {
-      maxDepth: { type: 'number', description: '最大深度，默认 8，上限 20' },
+      maxDepth: { type: 'number', description: '最大深度，默认 8，上限 20。被它切断时会返回 depthLimited=true（**不是完整的树**）' },
+      inAid: { type: 'string', description: '限定到某个容器（AutomationId），只 dump 它内部的子树。**大树的正文会撞 14000 字符上限** —— 先 ui_observe(read/state) 找到容器 aid，再带 inAid 深挖，是拿到完整子树的唯一办法（树会回报 narrowed/scope）。注意：指定范围时走 UIA 路径（注入探针不支持范围限定）。' },
+      inName: { type: 'string', description: '限定到某个容器（Name），同 inAid' },
     },
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.ok ? ('视觉树（' + (v.truncated ? '已截断' : '完整') + '）：\n' + v.text) : 'dump 失败：' + v.error }] },
+    output: {
+      schema: OBJECT,
+      /**
+       * F-015（2026-09-11 三方可复现）：旧写法 `v.ok ? ('视觉树（' + (v.truncated ? '已截断' : '完整') + '）：\n' + v.text) : …`
+       * 只要 `ok` 为真就写「完整」，**完全不看 `v.text` 是否为空**。实测（DSH 在 DSH 面、Claude 在 MCP 面各复现一次）
+       * 得到的就是「视觉树（完整）：」后面一片空白 —— 于是：
+       *   · 一个**什么都没读到的失败**被渲染成"读取成功且完整"；
+       *   · agent 会据此得出「客户端里没有控件 / 界面是空的」这种根本性错误结论。
+       * 现在：**有内容**才说完整/已截断；**空内容**必须明确说"没拿到任何节点"并给下一步与可能原因。
+       * 注意这跟 `ui_observe read` 的 `skipped` 是同一类病：把「没读到」伪装成「没有」。
+       */
+      render: (_a, v) => {
+        if (!v || v.ok !== true) {
+          const err = (v && v.error) || '原因未回报'
+          return [{ type: 'text', text: 'dump 失败：' + err +
+            (v && v.hint ? '\n' + v.hint : '') +
+            (/未配置|未指定|ProcName|窗口/i.test(String(err)) ? '\n（下一步：确认目标进程/窗口——ui_status 看进程，ui_windows 看窗口）' : '') +
+            (/超时|timeout/i.test(String(err)) ? '\n（下一步：降低 maxDepth 重试；探针注入超时常见于客户端正忙或权限不足）' : '') }]
+        }
+        const text = typeof v.text === 'string' ? v.text : ''
+        if (text.trim() === '') {
+          return [{ type: 'text', text: '⚠ 探针**执行成功但没返回任何节点**（空视觉树）——这不等于"界面上没有控件"。\n' +
+            '可能原因：① 探针注入到了错误的进程/窗口；② 客户端正在忙，探针还没遍历完就返回；③ 该窗口的确是空壳（少见）。\n' +
+            '下一步：先用 ui_observe(state) 做 UIA 侧的交叉验证；若 UIA 能看到控件而这里看不到，问题在探针注入，不在界面。\n' +
+            '（truncated=' + String(v.truncated) + '）' }]
+        }
+        // 2026-09-11 自查：`truncated` 过去只反映"正文超 14000 字符"，**深度切断与 4000 节点上限不可见** ——
+        // 一份被 maxDepth 剪过的树同样被渲染成「视觉树（完整）」。现在把三个来源分开说清（数据层字段见 driver.tree）。
+        const why = []
+        if (v.depthLimited) why.push('深度被 maxDepth=' + v.maxDepthApplied + ' 切断（更深的节点没 dump；调大 maxDepth 重跑）')
+        if (v.nodeCapHit) why.push('撞到节点数上限被截断（先 ui_observe(state) 缩小范围，再用 maxDepth 逐层下钻）')
+        if (v.textCapped) why.push('正文超长被截断（只返回了前一部分）')
+        const head = why.length
+          ? '视觉树（⚠ **不完整**：' + why.join('；') + '）：'
+          : (v.truncated ? '视觉树（已截断）：' : '视觉树（完整）：')
+        // 来源必须印出来：UIA 降级拿不到 DataContext/模板细节，与注入探针不是同一份东西。
+        const src = v.source === 'uia'
+          ? '\n⚠ 来源=**UIA 层级树**（注入探针不可用）：只有 类型/Name/aid/enabled/offscreen/位置/层级，' +
+            '**没有 DataContext 与 WPF 真实类型**。' + (v.injectorUnavailable && v.injectorUnavailable.error ? '\n  原因：' + String(v.injectorUnavailable.error).slice(0, 200) : '') +
+            '\n  要 DataContext/模板级信息：配置 DSH_SNOOP_DIR 指向 Snoop 安装目录后重试。'
+          : ''
+        const metaLine = (typeof v.nodes === 'number')
+          ? '\n（本次 dump：' + v.nodes + ' 个节点' + (typeof v.windows === 'number' ? '，' + v.windows + ' 个顶层窗口' : '') +
+            (typeof v.maxDepthApplied === 'number' ? '，maxDepth=' + v.maxDepthApplied : '') + '）'
+          : ''
+        const warn = v.observationWarning ? '\n⚠ ' + v.observationWarning : ''
+        // UIA 看不见内容的区域（CEF/自绘宿主）：必须印出来，否则调用方会把"UIA 没内容"读成"界面是空的"
+        const opaque = Array.isArray(v.opaqueRegions) && v.opaqueRegions.length
+          ? '\n' + (v.opaqueNote || ('⚠ 有 ' + v.opaqueRegionsTotal + ' 个 UIA 看不到内容的大区域：')) +
+            '\n' + v.opaqueRegions.map((l) => '  ' + l).join('\n')
+          : ''
+        // 被跳过的元素：可能是整棵子树没进这份树，而 truncated 不反映这种丢失
+        const skipNote = v.skippedNote ? '\n' + v.skippedNote : ''
+        return [{ type: 'text', text: head + src + metaLine + warn + opaque + skipNote + '\n' + text }]
+      },
+    },
     timeoutMs: 180000,
     async execute(args) {
-      return await drv().tree({ maxDepth: args.maxDepth || 8 })
+      return await drv().tree({ maxDepth: args.maxDepth || 8, inAid: args.inAid || '', inName: args.inName || '' })
     },
   }),
   defineTool({
@@ -324,12 +488,18 @@ const tools = () => [
       failFast: { type: 'boolean', description: '断言失败即停，默认 false' },
       allowSideEffects: { type: 'boolean', description: '含点击/输入/拖拽步骤时必须显式传 true' },
     },
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: '自验流程结束：' + v.passed + ' 通过 / ' + v.failed + ' 失败（批量执行 ' + (v.elapsedMs != null ? v.elapsedMs + 'ms' : '?') + '），证据：' + v.evidenceDir }] },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderFlow(v) }] },
     timeoutMs: 600000,
     async execute(args) {
       const v = await drv().flow(args)
-      if (v.failed > 0) {
-        autoRecord('verification-failure', 'ui_flow', 'ui_flow assertion failure: ' + v.failed + '/' + v.totalSteps + ' steps failed (evidence: ' + (v.stepsJson || v.evidenceDir || '?') + ')', { context: { tag: args.tag || 'flow' } })
+      // UD-03：动作步失败过去**不进**失败语料库（这里只认 v.failed，而它只统计断言步），
+      // 于是"click 失败了"这类错误永远不会被记录、也永远不会被复盘。
+      const stepFailures = typeof v.stepFailures === 'number' ? v.stepFailures : 0
+      if (v.failed > 0 || stepFailures > 0) {
+        autoRecord('verification-failure', 'ui_flow',
+          'ui_flow failure: assertions=' + v.failed + ', actionSteps=' + stepFailures + ' / ' + v.totalSteps +
+          ' steps (evidence: ' + (v.stepsJson || v.evidenceDir || '?') + ')',
+          { context: { tag: args.tag || 'flow', stepFailureNames: v.stepFailureNames || [] } })
       }
       return v
     },
@@ -338,11 +508,11 @@ const tools = () => [
     name: 'ui_live',
     description: 'agent 实时看见客户端界面：后台循环持续抓「窗口内容」帧（不抢前台、不恢复最小化），随时取最新一帧截图 + 控件状态摘要 + 帧变化感知。' +
       'action：start（启动后台循环，intervalMs 默认 1500ms；幂等）/ stop / status（当前快照）/ frame（取最新帧信息，fresh=true 强制新抓一帧；未启动时退化为一次性捕获）/ wait（阻塞到帧变化，fromHash 为基线 hash，timeoutMs 默认 30000）。' +
-      '拿到 frame 后 read_image(frame.path) 即「看见」客户端当前画面（path 是 latest.png 绝对路径，截图只在 E 盘证据目录）。wait 返回 changed=true 时 hash 变了=画面变了（行情动画也会触发，多看一眼无害；要语义结论时对 path 按需做视觉描述——循环内绝不自动调视觉模型）。' +
-      '敏感帧：焦点在密码/验证码/token 控件时 frame.secretFocused=true，默认不返回 path（像素无法脱敏），需显式 allowSensitive=true 才给。' +
+      '拿到 frame 后 read_image(frame.pathAbs) 即「看见」客户端当前画面（**pathAbs 才是绝对路径**；frame.path 只是文件名，直接喂给 read_image 会在当前工作目录里找、必然失败。截图只在 E 盘证据目录）。wait 返回 changed=true 时 hash 变了=画面变了（行情动画也会触发，多看一眼无害；要语义结论时对 pathAbs 按需做视觉描述——循环内绝不自动调视觉模型）。' +
+      '敏感帧：焦点在密码/验证码/token 控件时 frame.secretFocused=true，默认不返回任何路径（path 与 pathAbs 都为 null，像素无法脱敏），需显式 allowSensitive=true 才给。' +
       '图形/脚本消费：/api/dsh-ui-drive/live/start|stop|status|frame|frame.png（回环）。Triggers: 实时看见 / 实时视图 / 看现在的界面 / 等界面变化 / live view.',
     parameters: {
-      action: { type: 'string', required: true, description: 'start | stop | status | frame | wait' },
+      action: { type: 'string', required: true, enum: ['start', 'stop', 'status', 'frame', 'wait'], description: 'start | stop | status | frame | wait' },
       intervalMs: { type: 'number', description: '截图间隔毫秒，默认 1500' },
       stateIntervalMs: { type: 'number', description: '控件状态采集间隔毫秒，默认 3000' },
       maxControls: { type: 'number', description: 'state 最多返回控件数，默认 40' },
@@ -370,53 +540,9 @@ const tools = () => [
   }),
 ]
 
-// renderDrive / renderState 已移到 lib/render.mjs：渲染文本是 agent 唯一看得见的契约，
+// renderDrive / renderState / sanitizeLive / framePathText / launchText / renderLive
+// 已移到 lib/render.mjs：渲染与脱敏文本是 agent 唯一看得见、也是唯一能保护像素的契约，
 // 必须能离线单测（index.js 依赖宿主 @deepseek-ai/dsh-tools，普通 node 进程 import 不到）。
-
-/**
- * live 快照脱敏（统一出口）：任何 live 输出（status/frame/frame.png 路由）都过这里。
- * 敏感帧（焦点=密码/验证码）默认把 frame.path 置空 + sensitiveBlocked 标记，
- * agent/路由拿不到 png 路径（像素无法脱敏）；allowSensitive=true 显式解锁。
- * old codex 评审否决项①：/live/status 曾直出未过滤快照。
- */
-function sanitizeLive(s, allowSensitive) {
-  if (!s || !s.frame) return s
-  if (s.frame.secretFocused && !allowSensitive) {
-    return { ...s, frame: { ...s.frame, path: null, sensitiveBlocked: true } }
-  }
-  return s
-}
-
-function renderLive(v) {
-  if (v.error) return 'ui_live 失败：' + v.error
-  // Claude 1.4：wait() 返回 {ok,changed,hash,seq,timedOut,waitedMs,reason,snapshot}，
-  // 顶层没有 live/frame/ui——必须单独渲染，否则 agent 看到的永远是「已停止 0 帧」。
-  if (v.changed !== undefined || v.timedOut !== undefined) {
-    const snap = v.snapshot || {}
-    const f = snap.frame || null
-    const lines = []
-    lines.push('帧变化等待：' + (v.timedOut ? '超时 ' + (v.waitedMs || 0) + 'ms（画面未变化）' : (v.changed ? '已变化 ' + (v.waitedMs || 0) + 'ms，新帧 #' + v.seq + ' hash=' + String(v.hash || '').slice(0, 12) + '…' : '结束')))
-    if (!v.ok && v.reason) lines.push('原因：' + v.reason)
-    if (snap.live) lines.push('实时视图：' + (snap.live.running ? '运行中' : '已停止') + '（帧 ' + (snap.live.frameCount || 0) + (snap.live.autostopReason ? '，autostop=' + snap.live.autostopReason : '') + '）')
-    if (f && f.path) lines.push('最新帧 #' + f.seq + '：' + f.path)
-    return lines.join('\n')
-  }
-  const l = v.live || {}
-  const f = v.frame || null
-  const ui = v.ui || null
-  const lines = []
-  lines.push('实时视图：' + (l.running ? '运行中' : '已停止') + '（帧 ' + (l.frameCount || 0) + '，间隔 ' + (l.intervalMs || '-') + 'ms' + (l.autostopReason ? '，autostop=' + l.autostopReason : '') + (l.lastError ? '，最近错误：' + l.lastError : '') + '）')
-  if (v.client && v.client.pid) lines.push('客户端：pid=' + v.client.pid + ' ' + (v.client.window || '') + (v.client.running === false ? '（未运行）' : ''))
-  if (f) {
-    const state = f.state || '?'
-    const sec = f.secretFocused ? '，敏感帧' : ''
-    lines.push('最新帧 #' + f.seq + '：' + (f.path ? f.path + ' ' + f.w + 'x' + f.h : ('未出帧（' + state + sec + '）')) + (f.changed === false ? '（无变化）' : '（已变化）') + ' hash=' + String(f.hash || '').slice(0, 12) + '…' + sec + (f.captureMethod ? ' 抓法=' + f.captureMethod : ''))
-  }
-  if (ui) {
-    lines.push('控件状态：' + (ui.window || '?') + ' 焦点=' + (ui.focused || '无') + ' 共 ' + (ui.count || 0) + ' 个')
-  }
-  return lines.join('\n')
-}
 
 // ---------------------------------------------------------------- Web 路由（仅回环，面板雏形）
 
@@ -450,6 +576,22 @@ function makeRoutes() {
         if (!isLoopbackRequest(req)) { writeJson(res, 403, { error: 'forbidden: loopback-only' }); return }
         const method = req.method || 'GET'
         const rest = (req.url || '').split('?')[0].slice(API.length) || '/'
+
+        // GET /estop — 急停/策略状态（只读）。护栏原本对 agent **完全不可见**（Claude r15 复核）：
+        // 描述里没有任何一处提到 DSH_UI_ESTOP_FILE / DSH_UI_APP_POLICY，拒绝发生时只看到"策略拒绝"。
+        if (method === 'GET' && rest === '/estop') {
+          writeJson(res, 200, drv().estopStatus())
+          return
+        }
+
+        // POST /estop/reset — **运维路径**：显式复位急停锁存（只回环）。
+        // 刻意**不做成 agent 工具**：让模型能自行解除自己的护栏，等于没有护栏。
+        // 之前 `policy.reset()` 全仓无调用点 ⇒ 一旦急停锁存，除了重启宿主没有任何恢复手段。
+        if (method === 'POST' && rest === '/estop/reset') {
+          const sid = new URL(req.url, 'http://127.0.0.1').searchParams.get('sessionId') || undefined
+          writeJson(res, 200, drv().estopReset(sid))
+          return
+        }
 
         // GET /status — 插件与客户端状态
         if (method === 'GET' && rest === '/status') {

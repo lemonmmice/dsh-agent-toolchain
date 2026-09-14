@@ -104,7 +104,37 @@ const REASONS = ['读取元素状态失败: 不能对 Null 值表达式调用方
   check('state 渲染带跳过提示', /跳过 2/.test(text), text.slice(0, 200))
   check('read/state 走 renderDrive 时 state 有分支（不再回落到「完成」）', /交互控件 1 个/.test(renderDrive(state)), renderDrive(state).slice(0, 160))
   const clean = renderState({ ...state, skipped: 0, warn: undefined })
-  check('state skipped=0 时无跳过提示', !/跳过/.test(clean), clean.slice(0, 160))
+  // F-002（2026-09-11 真机确证）：旧断言是「skipped=0 时无跳过提示」，而那**正是被修掉的错契约**——
+  // 工具描述与 README 都承诺「read/state 结果**恒带** skipped=N」，但渲染层在 skipped=0 时什么都不打，
+  // 于是 agent 无法区分「skipped=0（清单完整）」与「工具没给（未知）」。现在 0 也必须显式出现。
+  check('F-002 state skipped=0 恒显式打印', /skipped=0/.test(clean), clean.slice(0, 220))
+  check('F-002 skipped=0 明确标"清单完整"', /清单完整/.test(clean), clean.slice(0, 220))
+  check('F-002 skipped=0 不得出现"不完整"字样', !/不完整/.test(clean), clean.slice(0, 220))
+  // 没回报跳过计数时（老脚本/回退路径）必须说"未知"，绝不冒充 0
+  const unknown = renderState({ ok: true, action: 'state', window: 'W', count: 1, lines: ['#0 [Button] "A"'] })
+  check('F-002 未回报时渲染 skipped=?+完整性未知（不冒充 0）', /skipped=\?/.test(unknown) && /完整性未知/.test(unknown), unknown.slice(0, 220))
+}
+
+// ------------------------------------------------- 5b. UD-01 / UD-02：截断必须说、0 行必须解释
+{
+  // UD-01：driver 已算准 truncated，旧渲染层一个字都不印 → 250 行的窗口被当成"全部控件"
+  const truncated = renderDrive({ ok: true, action: 'read', count: 250, truncated: true, skipped: 0,
+    lines: Array.from({ length: 200 }, (_, i) => `#${i} [Button] "B${i}"`) })
+  check('UD-01 截断必须显式提示"已截断"', /已截断/.test(truncated), truncated.slice(0, 260))
+  check('UD-01 截断提示给出拿全的办法（match/inAid）', /match/.test(truncated) && /inAid/.test(truncated), truncated.slice(0, 300))
+  const notTrunc = renderDrive({ ok: true, action: 'read', count: 3, truncated: false, skipped: 0, lines: ['#0 [Button] "A"'] })
+  check('UD-01 未截断时不得出现"已截断"', !/已截断/.test(notTrunc), notTrunc.slice(0, 200))
+
+  // UD-02：0 行必须解释得清（scanned=0 是"真没看到"，scanned>0 是"看到了但被过滤"）
+  const zeroNoElems = renderDrive({ ok: true, action: 'read', count: 0, skipped: 0, scanned: 0, lines: [] })
+  check('UD-02 count=0 & scanned=0 → 说清"扫到 0 个元素"', /扫到 0 个元素/.test(zeroNoElems), zeroNoElems.slice(0, 260))
+  const zeroFiltered = renderDrive({ ok: true, action: 'read', count: 0, skipped: 0, scanned: 240, offscreen: 240, lines: [] })
+  check('UD-02 count=0 & scanned>0 → 说清"被过滤掉"并给出 scanned/offscreen', /240/.test(zeroFiltered) && /过滤/.test(zeroFiltered), zeroFiltered.slice(0, 300))
+  check('UD-02 → 明说"不代表界面上没有控件"', /不代表界面上没有控件/.test(zeroFiltered), zeroFiltered.slice(0, 300))
+  const zeroUnknown = renderDrive({ ok: true, action: 'read', count: 0, skipped: 0, lines: [] })
+  check('UD-02 连 scanned 都没回报 → 说"无法区分"而不是断言为空', /无法区分/.test(zeroUnknown), zeroUnknown.slice(0, 300))
+  // 有内容时不该刷这些解释
+  check('UD-02 非 0 行不出现 0 行解释', !/0 行的解释/.test(notTrunc), notTrunc.slice(0, 200))
 }
 
 // ------------------------------------------------- 6. 一次性回退脚本的 SKIPPED 协议行

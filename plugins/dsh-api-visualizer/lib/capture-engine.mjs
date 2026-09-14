@@ -26,8 +26,29 @@ import { tmpdir } from 'node:os'
 /** Default trace log written by the client's injected system.diagnostics. */
 export const DEFAULT_LOG = join(process.env.TEMP || process.env.TMP || tmpdir(), 'uiprobe-net-trace.log')
 
-/** Default caller-attribution sidecar (JSONL) written by the client's ApiCallerTrace. */
+/**
+ * Default caller-attribution sidecar (JSONL).
+ *
+ * ⚠ F-004（2026-09-11 实测）：注释原先写的是「written by the client's ApiCallerTrace」，
+ * 但**客户端源码里搜不到 ApiCallerTrace**（`git grep ApiCallerTrace / uiprobe-caller / CallerTrace`
+ * 在客户端 Client 目录下全部零命中）——也就是说**这个生产者在本例中从未实现**。
+ * 后果：文件永远不存在，而尾随器对着它空转，errors 无上限增长（实测 11→57→222→825）。
+ * 现在：文件缺失是**明确的稳态**（status().missing + note），不计入 errors、并退避轮询。
+ * 要真正启用调用方归因，需要客户端侧新增一个把「页面/ViewModel/Api 方法 + 原生线程 id」
+ * 写成同格式 JSONL 的探针 —— 这是客户端侧的工作，不是本插件的。
+ */
 export const DEFAULT_CALLER_LOG = join(process.env.TEMP || process.env.TMP || tmpdir(), 'uiprobe-caller.log')
+
+/** 目标日志缺失时的轮询退避倍数（每 N 个 tick 才真正 stat 一次）。 */
+const MISSING_BACKOFF = 8
+
+/**
+ * 一段内容解析连续失败多少次后放弃（AV-07）。
+ * 太大会让坏行卡住整条流（永远重试同一段），太小会过早丢数据。
+ * 8 次 ≈ 6 秒（250ms 轮询），足够区分"临时性异常"与"这一段真的解不了"。
+ * 放弃时**必须记账**（droppedBytes/droppedChunks + lastError），绝不静默跳过。
+ */
+const MAX_PARSE_RETRY = 8
 
 /** Soft cap on pending (unfinished) requests. */
 const MAX_PENDING = 1000
@@ -594,10 +615,11 @@ export class TraceParser {
 
 /** File tailer: emits appended trace text via onChunk; resilient to rotation. */
 export class LogTailer {
-  constructor({ logPath, pollMs = 750, replay = false, onChunk = () => {} }) {
+  constructor({ logPath, pollMs = 750, replay = false, onChunk = () => {}, what = '日志' }) {
     this.logPath = logPath
     this.pollMs = pollMs
     this.onChunk = onChunk
+    this.what = what
     this.offset = 0
     this.startedAt = null
     this.initialSize = null
@@ -605,6 +627,42 @@ export class LogTailer {
     this.timer = null
     this.errors = 0
     this.remainder = '' // 未完整的行尾：hex 行被切在块边界时先拼回完整行
+    // F-004b（2026-09-11 实测）：把「文件还不存在」与「读失败」分开计。
+    // 旧实现两者都进同一个 catch → `this.errors++`，而 caller 旁路日志的**生产者
+    // 在本例中根本不存在**（见下面 status().note），于是每 750ms 涨一次、
+    // 实测 11 → 57 → 222 → 825 一路单调增长且无上限，同时对外报 running:true。
+    // 一个"正在跑但一直失败"的计数器，比一个明确的"没有这个文件"更糟。
+    this.missing = false
+    this.missingSince = null
+    this.lastError = null
+    this.lastErrorAt = null
+    this.ticks = 0
+    this.readFailures = 0
+    // AV-07：解析失败与"被丢弃的字节"必须可数、可见。
+    // 否则解析异常只会变成外层 catch 的一次计数，而**那段流量静默不入库**，
+    // 调用方看到的是"没有请求"，而不是"有请求但没解析出来"。
+    this.parseFailures = 0
+    this.lastParseError = null
+    this.droppedBytes = 0
+    this.droppedChunks = 0
+  }
+
+  /**
+   * 是否在运行 —— **与 `status().running` 同源**（`timer !== null`）。
+   *
+   * F-022（2026-09-11 真机实测确证）：这个 getter 是补上去的。在此之前 `LogTailer` **没有 `running` 属性**
+   * —— 它只有 `this.timer`，`running` 只在 `status()` 里临时算出来。而 `index.js` 里有**三处**直接读
+   * `engine.tailer.running` / `engine.callerTailer.running`：
+   *   · `wasRunning()`（决定 rotate 后要不要重启捕获）
+   *   · `setLogPath()` 的守卫（"捕获运行中不许改路径"）
+   *   · `setCallerLogPath()` 的守卫
+   * 于是这三处读到的恒为 `undefined` → **守卫永不生效**。
+   * 实测后果（我亲手踩到）：捕获正在运行时 POST `/capture/start {logPath:...}` 返回 **200**，
+   * 却把跟踪日志换成了一个不存在的文件 → 捕获静默变成"读空气"，而调用方以为切换成功了。
+   * 这类"守卫写在一个不存在的字段上"是最隐蔽的一类失效：代码看起来有防护，实际完全没有。
+   */
+  get running() {
+    return this.timer !== null
   }
 
   start() {
@@ -613,20 +671,41 @@ export class LogTailer {
       const st = statSync(this.logPath)
       this.initialSize = st.size
       if (!this.replay) this.offset = st.size
+      this.missing = false
+      this.missingSince = null
     } catch {
       this.offset = 0
       this.initialSize = 0
+      this.missing = true
+      this.missingSince = Date.now()
     }
     this.startedAt = Date.now()
     this.remainder = ''
     this.pump()
-    this.timer = setInterval(() => this.pump(), this.pollMs)
+    // 缺文件时退避：每 MISSING_BACKOFF 个 tick 才真去看一次。
+    // 文件出现后立刻恢复全速（pump 内部会把 missing 置回 false）。
+    this.timer = setInterval(() => {
+      this.ticks++
+      if (this.missing && this.ticks % MISSING_BACKOFF !== 0) return
+      this.pump()
+    }, this.pollMs)
   }
 
   /** One synchronous tail read (idempotent; consumes only bytes past this.offset). */
   pump() {
+    let st
     try {
-      const st = statSync(this.logPath)
+      st = statSync(this.logPath)
+    } catch {
+      // 文件不存在是**预期中的稳态**（例如 caller 旁路日志的生产者没启用），
+      // 不是错误：只记 missing + 时间，不清零、也不计入 errors。
+      this.missing = true
+      if (this.missingSince === null) this.missingSince = Date.now()
+      return
+    }
+    this.missing = false
+    this.missingSince = null
+    try {
       if (st.size < this.offset) {
         this.offset = 0 // rotated / cleared
         this.remainder = ''
@@ -637,21 +716,53 @@ export class LogTailer {
           const size = st.size - this.offset
           const buf = Buffer.alloc(size)
           readSync(fd, buf, 0, size, this.offset)
-          this.offset = st.size
           const data = this.remainder + buf.toString('utf8')
           const idx = data.lastIndexOf('\n')
           if (idx === -1) {
+            // 还没凑出完整行：把这段挂到 remainder，offset 可以安全推进
+            // （remainder 里已经包含了这些字节，下次不会重复读）
             this.remainder = data
-          } else {
-            this.remainder = data.slice(idx + 1)
-            this.onChunk(data.slice(0, idx + 1))
+            this.offset = st.size
+            return
+          }
+          const complete = data.slice(0, idx + 1)
+          const rest = data.slice(idx + 1)
+          // ────────────────────────────────────────────────────────────────
+          // AV-07（2026-09-11 审计确证）：这里**先推进 offset 再 onChunk**，
+          // 而 onChunk 里的解析异常被外层 catch 吞成计数 → **已消费的字节永不重放**，
+          // 那段流量静默不入库，而 status() 仍报 running:true。
+          // 现在改为：**解析成功才推进 offset**；失败则保持 offset 不变以便下次重试，
+          // 连续失败到上限才放弃那一段，并且**明确记账**（droppedBytes/droppedChunks），绝不静默。
+          try {
+            this.onChunk(complete)
+            this.offset = st.size
+            this.remainder = rest
+            this.parseFailures = 0
+          } catch (e) {
+            this.parseFailures++
+            this.lastParseError = e && e.message ? String(e.message).slice(0, 200) : String(e).slice(0, 200)
+            this.lastError = '解析失败（第 ' + this.parseFailures + ' 次，未丢弃，将重试）：' + this.lastParseError
+            this.lastErrorAt = Date.now()
+            if (this.parseFailures >= MAX_PARSE_RETRY) {
+              this.droppedBytes += complete.length
+              this.droppedChunks++
+              this.offset = st.size
+              this.remainder = rest
+              this.parseFailures = 0
+              this.lastError = '解析连续失败 ' + MAX_PARSE_RETRY + ' 次，已跳过 ' + complete.length +
+                ' 字节（累计丢弃 ' + this.droppedBytes + ' 字节）——这段流量**没有入库**，不要当成"没有请求"。原因：' + this.lastParseError
+            }
           }
         } finally {
           closeSync(fd)
         }
       }
-    } catch {
+    } catch (e) {
+      // 到这里才是**真的读失败**（权限 / 被占用 / 磁盘）：记消息，供 status() 如实上报。
       this.errors++
+      this.readFailures++
+      this.lastError = e && e.message ? String(e.message).slice(0, 300) : String(e).slice(0, 300)
+      this.lastErrorAt = Date.now()
     }
   }
 
@@ -670,7 +781,26 @@ export class LogTailer {
       size = st.size
       exists = true
     } catch {
-      // log file not present (trace config not injected yet)
+      // log file not present (trace config not injected yet / producer not enabled)
+    }
+    // F-004b：自述必须能让调用方分清三种情况——
+    //   ① 文件在、正在读（正常）；② 文件不在（等待生产者，**不是错误**）；③ 读失败（有 lastError）。
+    // 旧实现只有 running + errors 两个字段，于是"文件不在"看起来跟"读数一直崩"一模一样。
+    // AV-07：新增第四种——**有字节被丢弃**（解析失败到上限）。这条最危险：
+    // 数据没入库，而调用方看到的是"没有请求"，不是"有请求但没解析出来"。
+    let note
+    if (!exists) {
+      note = this.what + '不存在：' + this.logPath + '（等待生产者写入；' +
+        (this.missingSince ? '已等待 ' + Math.round((Date.now() - this.missingSince) / 1000) + 's；' : '') +
+        '这项缺失**不影响**另一条日志的解析，但依赖它的能力当前不可用）'
+    } else if (this.droppedBytes > 0) {
+      note = '⚠ ' + this.what + '有 ' + this.droppedBytes + ' 字节（' + this.droppedChunks +
+        ' 段）**解析失败被跳过、没有入库** —— 这段时间的流量在结果里是缺失的，' +
+        '不要把它读成"没有请求"。最近原因：' + (this.lastParseError || this.lastError || '未知')
+    } else if (this.lastError) {
+      note = this.what + '最近一次读取失败：' + this.lastError + (this.lastErrorAt ? '（' + new Date(this.lastErrorAt).toISOString() + '）' : '')
+    } else {
+      note = this.what + '正在读取（' + this.logPath + '）'
     }
     return {
       running: this.timer !== null,
@@ -681,6 +811,18 @@ export class LogTailer {
       replay: this.replay,
       startedAt: this.startedAt,
       errors: this.errors,
+      readFailures: this.readFailures,
+      // AV-07：丢弃必须可数（status 是调用方唯一能自证"数据是否完整"的地方）
+      droppedBytes: this.droppedBytes,
+      droppedChunks: this.droppedChunks,
+      parseFailures: this.parseFailures,
+      lastParseError: this.lastParseError,
+      dataComplete: this.droppedBytes === 0,
+      missing: !exists,
+      missingSince: exists ? null : this.missingSince,
+      lastError: this.lastError,
+      lastErrorAt: this.lastErrorAt,
+      note,
     }
   }
 }
@@ -689,19 +831,22 @@ export class LogTailer {
 export class CaptureEngine {
   constructor({ logPath = DEFAULT_LOG, callerLogPath = DEFAULT_CALLER_LOG, pollMs = 750, replay = false, onRecord = () => {} } = {}) {
     this.parser = new TraceParser({ onRecord })
-    // Sidecar: caller-attribution JSONL from the client's ApiCallerTrace (which
-    // page / ViewModel / Api fired each request). Joined to records by native
-    // thread id + url inside the parser. Always live-tailed (never replayed).
+    // Sidecar: caller-attribution JSONL (which page / ViewModel / Api fired each
+    // request). Joined to records by native thread id + url inside the parser.
+    // Always live-tailed (never replayed).
+    // ⚠ F-004：生产者目前不存在（见 DEFAULT_CALLER_LOG 的说明），文件缺失是稳态、不是错误。
     this.callerTailer = new LogTailer({
       logPath: callerLogPath,
       pollMs: Math.min(pollMs, 250),
       replay: false,
+      what: '调用方归因旁路日志',
       onChunk: (chunk) => this.feedCaller(chunk),
     })
     this.tailer = new LogTailer({
       logPath,
       pollMs,
       replay,
+      what: 'System.Net 跟踪日志',
       // Drain any pending caller entries FIRST so they're buffered before this
       // trace chunk's requests finalize (avoids a fast request finalizing before
       // its caller line is tailed).

@@ -6,7 +6,12 @@
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "test:json": "node scripts/run-tests.mjs --json",
     "check": "node scripts/check.mjs",
+    "smoke": "node scripts/plugin-load-smoke.mjs",
+    "smoke:json": "node scripts/plugin-load-smoke.mjs --json",
+    "verify": "node scripts/run-tests.mjs && node scripts/check.mjs && node scripts/plugin-load-smoke.mjs && node mcp/smoke.mjs",
     "bench": "node bench/harness/bench.mjs"
   },
   "repository": {

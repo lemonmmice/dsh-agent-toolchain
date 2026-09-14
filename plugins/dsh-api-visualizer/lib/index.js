@@ -21,7 +21,18 @@ import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { CaptureEngine, DEFAULT_LOG, DEFAULT_CALLER_LOG } from './capture-engine.mjs'
-import { ProxyEngine } from './proxy-engine.mjs'
+import { captureStart, captureStop, captureStatus, captureStatusSummary, doubleWriteVerdict, sampleDeltaVerdict } from './capture-control.mjs'
+// AV-03：'这次该不该整库重写'的纯判定（可测；避免在 flush 热路径里做上百 MB 的同步 IO）
+import { shouldCompact, COMPACT_MIN_INTERVAL_MS, MAX_STORE_BYTES_DEFAULT, trimToCaps } from './compaction.mjs'
+// F-007：宿主不热加载插件代码 —— 抓包/代理这些"看数据下结论"的工具必须自报代码是否陈旧。
+import { staleCodeInfo, moduleRoots } from '../../../lib/code-freshness.mjs'
+import { dirname as dirNameOf } from 'node:path'
+
+/** 本插件目录（仓库与 profile 两种布局下都成立）。 */
+const AV_PLUGIN_DIR = dirNameOf(dirNameOf(fileURLToPath(import.meta.url)))
+import { ProxyEngine, readSystemProxy } from './proxy-engine.mjs'
+import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote } from './query-view.mjs'
+import { envOr } from '../../../lib/env-fallback.mjs'
 
 /** Stable cordis plugin name. */
 export const name = 'api-visualizer'
@@ -34,6 +45,14 @@ const API = '/api/dsh-api-visualizer'
 
 /** Store cap: keep the newest records (rotation trims the head). */
 const MAX_RECORDS = 20000
+/**
+ * 保留集**字节上限**（AV-03 剩余缺口，Claude 第六轮方案 A）。
+ * 触发看字节、裁剪只看条数 —— 两维不一致会让"整理"回收 ≈0 字节并永不自愈（每 5 分钟白跑一次全量重写）。
+ * 可用 DSH_API_CAPTURE_MAX_BYTES 覆盖；约束：≥8×单条上限（≥32MB），保证单条自身永不超预算。
+ */
+const MAX_STORE_BYTES = Number(process.env.DSH_API_CAPTURE_MAX_BYTES) > 0
+  ? Number(process.env.DSH_API_CAPTURE_MAX_BYTES)
+  : MAX_STORE_BYTES_DEFAULT
 /** Max records per ingest call. */
 const MAX_BATCH = 500
 /** Cap on JSON request bodies (ingest batches can be sizable; 2MB per field). */
@@ -48,7 +67,7 @@ const SECTION_ORDER = 140
 const GUIDANCE =
   '本机已安装 dsh-api-visualizer 插件（DSH Web GUI 的接口捕获面板，Fiddler 式实时抓包）：侧边栏「接口捕获」入口，可视化展示 本机客户端进程 的 HTTP 接口调用。' +
   '能力：记录存本地 JSONL 库（按天分片 records-YYYYMMDD.jsonl，上限 20000 条）；面板内「开始实时捕获」按钮驱动宿主实时引擎，tail 客户端 System.Net 跟踪日志（%TEMP%\\uiprobe-net-trace.log，由客户端配置的 system.diagnostics 注入产生）自动解析出 方法/URL/状态/请求头/响应头/请求体/响应体（gzip 自动解包）并实时入库，source=realtime，并关联调用方归因（ViewModel/API/调用链，来自 %TEMP%\\uiprobe-caller.log）；' +
-  '对应路由：POST /api/dsh-api-visualizer/capture/start（body 可选 {logPath, replay}）、POST /capture/stop、GET /capture/status、POST /capture/rotate（body {keepDays}，轮转 trace/caller 日志并清理过期 .bak，300MB 自动轮转）；' +
+  '捕获控制面**有工具**：api_capture_start（起）/ api_capture_stop（停）/ api_capture_status（查状态 —— running:true 但跟踪日志不存在时**抓不到任何数据**，两者不是一回事）；对应路由 POST /api/dsh-api-visualizer/capture/start（body 可选 {logPath, replay}）、POST /capture/stop、GET /capture/status、POST /capture/rotate（body {keepDays}，轮转 trace/caller 日志并清理过期 .bak，300MB 自动轮转）；' +
   'agent 工具：api_capture_append（追加记录）、api_capture_query（查询/过滤已捕获记录，支持 q/method/source/status/host/minDurationMs/errors/caller 等，返回调用方归因）；也可经 POST /api/dsh-api-visualizer/ingest 灌入。' +
   '本地代理模式（抓任意进程，Fiddler 式）：POST /proxy/start（body 可选 {port, upstream}，默认 8899、上游自动读系统代理）、POST /proxy/stop、GET /proxy/status、GET /proxy/ca-cert.der（根证书下载）、POST /proxy/install-ca（导入本机信任，免管理员）、POST /proxy/system-proxy（body {enable}，把系统代理指向本代理/恢复原值）；HTTPS 走 CONNECT + 按域签发证书解密，source=proxy；WebSocket 升级请求同样被抓取（帧统计+文本解码，source=proxy, method=WS）。' +
   'AutoResponder 规则引擎（对代理流量生效）：GET/POST/DELETE /proxy/rules（规则：方法/URL 匹配 + mock 响应/伪造状态码/注入延迟/阻断），用于模拟错误、mock 行情、验证客户端容错。' +
@@ -58,8 +77,10 @@ const GUIDANCE =
 
 /** Primary store location (env override, then ~/.dsh). */
 function storeDir() {
-  if (process.env.DSH_API_CAPTURE_STORE) return process.env.DSH_API_CAPTURE_STORE
-  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'api-capture')
+  // 与 lib/capture-store.mjs 用同一种读法（用户级配置必须经 env-fallback）：两处不一致就会出现
+  // "面板读得到、工具读不到"这种两面行为不同的假象。
+  if (envOr('DSH_API_CAPTURE_STORE')) return envOr('DSH_API_CAPTURE_STORE')
+  return join(envOr('DSH_HOME') || join(homedir(), '.dsh'), 'api-capture')
 }
 const storeFile = (ts) => join(storeDir(), shardName(ts ?? Date.now()))
 
@@ -134,6 +155,18 @@ function normalize(raw) {
 /** Parse the JSONL store into records (newest last); deduped by id, last occurrence wins. */
 let storeCache = { key: null, records: [], index: null }
 let duplicateAppendsSinceCompact = 0
+// AV-03：整库重写（compaction）的成本与库体积同阶，绝不能每次 flush 都做。
+// 这三项记录"上次何时压、压了几次、为什么压"，供诊断用 —— 没有它们，写放大是不可见的。
+let lastCompactAt = 0
+let compactCount = 0
+let lastCompactReason = null
+// AV-03 补充：'条件成立但被节流'的累计次数必须可见（否则节流是不可观测的）。
+let compactThrottled = false
+let compactWantedButThrottled = 0
+// AV-03 剩余缺口：字节维度的裁剪结果。没有这三个数，"按字节裁剪到底回收了多少"只能靠猜。
+let lastCompactKeptBytes = null
+let lastCompactDropped = 0
+let lastCompactTruncatedBy = null
 
 function storeKey(files) {
   let mtime = 0
@@ -272,13 +305,30 @@ function persistAll(records) {
   invalidateStoreCache()
 }
 
-/** Append normalized records; enforce the global newest-N cap across shards. */
-function appendRecords(rawRecords) {
+/**
+ * Append normalized records; enforce the global newest-N cap across shards.
+ *
+ * Codex 第八轮指出的**两个 store 语义漂移**里最实质的一条：
+ * MCP 共享 store（`lib/capture-store.mjs`）的 `appendRecords(rawRecords, { runId })` 支持
+ * **注入 runId**（把一批记录绑到同一个证据 run 上），而宿主这份**完全不接受** runId ——
+ * 于是「runId 证据链」只对 agent 自己 POST 的记录有效，
+ * **实时捕获/代理捕获的真实客户端流量永远没有 runId**（正是最该被串起来的那部分）。
+ * 现在两侧同签名：`opts.runId` 只给**缺 runId** 的记录补，不覆盖记录自带的。
+ *
+ * 另一条（迁移/压缩状态/缓存）确实只属于宿主运行时（宿主是唯一写者：它有 legacy 迁移、
+ * 增量索引缓存与 AV-03 节流状态）；MCP 那份是无状态的读写器。这是**有意的分工**，
+ * 已在两侧注释里写明，避免下次有人看到"不一样"就顺手改成一样而破坏其中一边。
+ */
+function appendRecords(rawRecords, opts = {}) {
   migrateLegacy()
   const records = []
+  const runId = typeof opts.runId === 'string' && opts.runId !== '' ? opts.runId : ''
   for (const raw of rawRecords) {
     const rec = normalize(raw)
-    if (rec !== null) records.push(rec)
+    if (rec !== null) {
+      if (runId && rec.runId === undefined) rec.runId = runId
+      records.push(rec)
+    }
   }
   if (records.length === 0) return { ingested: 0, total: readAll().length }
   // 宿主是 store 唯一写者：按已维护的 id 索引统计重复（供压缩阈值判断），
@@ -296,10 +346,45 @@ function appendRecords(rawRecords) {
   for (const file of shardFiles()) {
     try { physicalBytes += statSync(file).size } catch { /* file may rotate between list/stat */ }
   }
-  if (all.length > MAX_RECORDS || duplicateAppendsSinceCompact >= 200 || physicalBytes > 128 * 1024 * 1024) {
-    all = sortNewestFirst(all).slice(0, MAX_RECORDS).reverse() // 保留最新 MAX_RECORDS 条，按时间正序写回
+  // AV-03（2026-09-11 审计确证）：这里的 `physicalBytes > 128MB` 是**状态型条件**，
+  // 而 persistAll 之后的物理大小 = 保留集（≤MAX_RECORDS 条）的大小。
+  // 一旦保留集本身超过 128MB，条件就**永真** → 每 800ms 的 flush 都整库重写一次
+  // （库越大越慢，且永远不会自愈）。flush 是由 800ms 定时器驱动的，等于持续做 128MB+ 的同步 IO。
+  //
+  // 修法：**节流**。真正必须立即执行的是硬上限（条数），其余（去重积压、体积）改为
+  // 最快每 COMPACT_MIN_INTERVAL_MS 一次；并留出 10% 余量，避免在阈值上下反复抖动。
+  const verdict = shouldCompact({
+    allCount: all.length, maxRecords: MAX_RECORDS, physicalBytes, maxBytes: MAX_STORE_BYTES,
+    duplicateAppends: duplicateAppendsSinceCompact, now: Date.now(), lastCompactAt,
+  })
+  if (verdict.compact) {
+    // AV-03 剩余缺口（Claude 第六轮方案 A）：裁剪必须与触发**同维**。
+    // 旧写法只 `slice(0, MAX_RECORDS)`（条数），而触发看的是字节 ——
+    // 保留集自身 140MB 时每 5 分钟全量重写、回收 ≈0 字节、永不自愈（写放大只是被摊薄）。
+    // 现在双上限、最旧优先，且目标 0.9× 上限 → 裁剪后必定落到触发阈值以下。
+    const trimmed = trimToCaps(sortNewestFirst(all), { maxRecords: MAX_RECORDS, maxBytes: MAX_STORE_BYTES })
+    all = trimmed.keep.reverse() // 保留集仍按时间正序写回
     persistAll(all)
     all = readAll()
+    lastCompactAt = Date.now()
+    compactCount++
+    lastCompactReason = verdict.reason
+    // 字节维度的结果必须可观测：没有它，"按字节裁剪到底有没有回收"只能靠猜。
+    lastCompactKeptBytes = trimmed.keptBytes
+    lastCompactDropped = trimmed.dropped
+    lastCompactTruncatedBy = trimmed.truncatedBy
+    duplicateAppendsSinceCompact = 0
+    compactThrottled = false
+    compactWantedButThrottled = 0
+  } else if (verdict.throttled) {
+    // AV-03 补充（Claude 第五轮指出）：`verdict.throttled` 过去在调用点**被丢弃** ——
+    // 于是"节流可观测"只是一句承诺，根本没到 /capture/status。纯函数的 12/12 测试
+    // 只证明了"函数会返回 throttled"，证明不了"这个值真的被用上"（那正是假信心）。
+    // 现在把它累计下来并对外暴露。
+    compactThrottled = true
+    compactWantedButThrottled++
+  } else {
+    compactThrottled = false
   }
   return { ingested: records.length, total: all.length }
 }
@@ -351,6 +436,7 @@ function isLoopbackRequest(request) {
   } catch {
     return false
   }
+  // AV-04：统一兜底，任何未捕获异常都不会变成宿主的空 400。
 }
 
 /** One JSON response. */
@@ -375,6 +461,14 @@ function readJsonBody(req, maxBytes) {
       chunks.push(chunk)
     })
     req.on('end', () => {
+      // 空 body 与"坏 JSON"是**两件事**：前者的接口在文档里就写着 body 可选
+      // （`POST /capture/start` 不带 body 也能起），后者才是调用方写错了。
+      // 旧实现两者都 reject ⇒ 空 body 也被回 400 'invalid JSON body'
+      // —— 我自己在实验里用无 body 的 POST 恢复捕获时当场撞上（可以不带参数的接口却要先构造一个 `{}`）。
+      if (size === 0) {
+        resolve({})
+        return
+      }
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
       } catch (error) {
@@ -438,6 +532,9 @@ function sortNewestFirst(list) {
 }
 
 function applyFilters(all, params) {
+  // 「字段缺失」的计数桶（见下方 status / durationMs / bytesRes 三处过滤的说明，F-046）。
+  // 声明在函数最前面，因为 status 过滤先用它 —— 放在下面会踩 const 的暂时性死区。
+  const noField = { durationMs: 0, bytesRes: 0, status: 0 }
   const q = (params.get('q') ?? '').trim()
   const regexMode = params.get('regex') === '1'
   let re = null
@@ -484,6 +581,8 @@ function applyFilters(all, params) {
   if (methodFilter !== '' && methodFilter !== 'ALL') items = items.filter((r) => r.method === methodFilter)
   if (sourceFilter !== '' && sourceFilter !== 'all') items = items.filter((r) => (r.source ?? '') === sourceFilter)
   if (statusFilter !== '') {
+    // 同上：**没有 status 字段**的记录不是"不是 2xx"，而是"不知道" —— 单独计数，别混进"不匹配"。
+    noField.status += items.filter((r) => !Number.isInteger(r.status)).length
     items = normalizedStatus.endsWith('xx')
       ? items.filter((r) => Number.isInteger(r.status) && Math.floor(r.status / 100) === Number(normalizedStatus[0]))
       : items.filter((r) => String(r.status) === statusFilter)
@@ -500,14 +599,37 @@ function applyFilters(all, params) {
       return cts.some((c) => ct.includes(c))
     })
   }
-  if (minDur !== null && Number.isFinite(minDur)) items = items.filter((r) => Number.isFinite(r.durationMs) && r.durationMs >= minDur)
-  if (minBytes !== null && Number.isFinite(minBytes)) items = items.filter((r) => (Number(r.bytesRes) || 0) >= minBytes)
-  if (maxBytes !== null && Number.isFinite(maxBytes)) items = items.filter((r) => (Number(r.bytesRes) || 0) <= maxBytes)
+  // ⚠ 「字段缺失」不是「不满足条件」—— 这两个被混在一起过（F-046，2026-09-12 G1 黑盒测试提出）：
+  //   旧实现 `minDurationMs` 用 `Number.isFinite(r.durationMs) && r.durationMs >= min` ⇒
+  //   **没有 durationMs 的记录被静默丢掉**，而空结果有两种完全不同的原因（"没有慢请求" vs "这些记录压根没这个字段"），
+  //   调用方只能看到空。更糟的是 `maxBytes` 用 `(Number(r.bytesRes) || 0) <= max`
+  //   ⇒ **"字节数未知"被当成"0 字节"**，于是未知大小的记录会**通过**"响应 ≤ N 字节"的过滤 ——
+  //   那不是漏报，是**答错**。
+  //   现在：这类记录一律**排除**（未知不能证明满足条件），并**计数**带出去（excludedNoField），让空结果可解释。
+  if (minDur !== null && Number.isFinite(minDur)) {
+    noField.durationMs += items.filter((r) => !Number.isFinite(r.durationMs)).length
+    items = items.filter((r) => Number.isFinite(r.durationMs) && r.durationMs >= minDur)
+  }
+  if (minBytes !== null && Number.isFinite(minBytes)) {
+    noField.bytesRes += items.filter((r) => !Number.isFinite(Number(r.bytesRes))).length
+    items = items.filter((r) => Number.isFinite(Number(r.bytesRes)) && Number(r.bytesRes) >= minBytes)
+  }
+  if (maxBytes !== null && Number.isFinite(maxBytes)) {
+    noField.bytesRes += items.filter((r) => !Number.isFinite(Number(r.bytesRes))).length
+    items = items.filter((r) => Number.isFinite(Number(r.bytesRes)) && Number(r.bytesRes) <= maxBytes)
+  }
   if (Number.isFinite(fromTs)) items = items.filter((r) => Number(r.ts) >= fromTs)
   if (Number.isFinite(toTs)) items = items.filter((r) => Number(r.ts) <= toTs)
   if (sessionId !== '') items = items.filter((r) => sessionKeyOf(r) === sessionId)
   if (traceId !== '') items = items.filter((r) => r.traceId === traceId)
-  if (errorsOnly) items = items.filter((r) => Number.isInteger(r.status) && r.status >= 400)
+  // runId：MCP 面早就有这个过滤，插件面**一直没有** —— 而 append 的描述却写着"与查询过滤 runId 配套使用"。
+  // 面与面不一致本身就是缺陷（E4 精神），描述引用一个本面不存在的参数更糟（F-047，两个 G1 黑盒 agent 都撞到）。
+  const runIdFilter = (params.get('runId') ?? '').trim()
+  if (runIdFilter !== '') items = items.filter((r) => r.runId === runIdFilter)
+  if (errorsOnly) {
+    noField.status += items.filter((r) => !Number.isInteger(r.status)).length
+    items = items.filter((r) => Number.isInteger(r.status) && r.status >= 400)
+  }
   if (noNoise) items = items.filter((r) => !NOISE_PATTERNS.some((p) => p.test(r.url)))
   if (bodyQ !== '') {
     items = items.filter((r) => {
@@ -515,6 +637,9 @@ function applyFilters(all, params) {
       return hay.includes(bodyQ)
     })
   }
+  // 把"因字段缺失而被排除"的计数挂在返回的数组上（非枚举属性 ⇒ 不会混进 JSON/序列化）。
+  // 调用方（路由/工具）负责把它带出去 —— **空结果必须可解释**，否则就是"没读到当成没有"。
+  Object.defineProperty(items, 'excludedNoField', { value: noField, enumerable: false, configurable: true })
   return items
 }
 
@@ -628,8 +753,11 @@ function readBaseline(name) {
 // ---------------------------------------------------------------- source locate
 
 function srcRoots() {
-  const env = process.env.DSH_API_SRC_ROOT ?? process.env.DSH_HANG_SRC_ROOT
-  if (typeof env === 'string' && env.trim() !== '') {
+  // 源码根是**用户级配置**：必须走 env-fallback（进程环境 → 用户级注册表 → 机器级）。
+  // 直接读 process.env 的后果：长活宿主的环境块里没有用户后来设置的变量 →
+  // 「源码定位」永远返回空 → 面板上"定位不到源码"，而用户明明配了（工具在说谎）。
+  const env = envOr('DSH_API_SRC_ROOT') || envOr('DSH_HANG_SRC_ROOT')
+  if (env.trim() !== '') {
     return env.split(';').map((p) => p.trim()).filter((p) => p !== '' && existsSync(p))
   }
   return []
@@ -748,8 +876,39 @@ function searchSource({ vm, api }) {
 }
 
 /** Build the route family. */
+/**
+ * 路由 handler 的错误兜底（AV-04 通用化）。
+ *
+ * 宿主的 web 层把任何 handler rejection 统一变成**空 400**
+ * （`dsh-host-webserver/lib/index.js:247-255`）—— 状态码没有语义、body 是空的，
+ * 里面那句可操作的原因一个字都传不出去，调用方只能猜。
+ * 同文件里大部分路由各自包了 try/catch，但**漏一个就漏一条信息**，且新加路由时没人会记得。
+ * 所以统一在这里兜一层：未捕获的异常一律转成**结构化** 500 + hint，而不是空 400。
+ */
+function guardHandler(handler) {
+  return async (req, res) => {
+    try {
+      await handler(req, res)
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      try {
+        if (!res.headersSent) {
+          writeJson(res, 500, {
+            ok: false,
+            error: 'route handler threw: ' + msg.slice(0, 400),
+            hint: '这是插件内部未捕获的异常。请把这条原文回报给插件维护者；' +
+              '同时确认请求体是合法 JSON、目标资源存在、以及相关前置（如"捕获未在运行"）已满足。',
+          })
+        } else {
+          try { res.end() } catch { /* 已发出的响应无法补救 */ }
+        }
+      } catch { /* 连兜底都失败：至少别再抛 */ }
+    }
+  }
+}
+
 function makeRoutes(capture, proxy) {
-  return [
+  const routes = [
     {
       kind: 'prefix',
       path: API,
@@ -822,7 +981,33 @@ function makeRoutes(capture, proxy) {
           const page = items.slice(offset, offset + limit)
           const oldest = page.length > 0 ? page[page.length - 1] : null
           const nextCursor = oldest !== null ? `${oldest.ts}|${oldest.id}` : null
-          writeJson(res, 200, { total, items: includeBody ? page : withoutBodies(page), nextCursor, hasMore: offset + page.length < items.length })
+          // 面板路由同样要带新鲜度/归因（第十轮自查：它此前只回 total/items/cursor，
+          // 于是面板与脚本消费者看不到"引擎没在跑 = 这是历史数据"和"归因没有生产者"）。
+          let stForRoute = null
+          try { stForRoute = capture && typeof capture.status === 'function' ? capture.status() : null } catch { stForRoute = null }
+          const view = buildQueryView({ records: page, all, status: stForRoute, callerFilter: String(params.get('caller') ?? ''), retention: retentionInfo() })
+          // 过滤掉的"字段缺失"记录必须出声：空结果有两种成因（"确实没有" vs "这些记录没有该字段"），
+          // 只说一个 total 会让调用方把后者读成前者（F-046，G1 黑盒测试提的场景 A）。
+          const noField = items.excludedNoField
+          const noFieldAny = noField && (noField.durationMs > 0 || noField.bytesRes > 0 || noField.status > 0)
+          writeJson(res, 200, {
+            total,
+            items: includeBody ? page : withoutBodies(page),
+            nextCursor,
+            hasMore: offset + page.length < items.length,
+            ...(noFieldAny ? { excludedNoField: noField } : {}),
+            ...(noFieldAny
+              ? {
+                  excludedNoFieldNote: '有记录因**缺少被过滤的那个字段**而被排除（不是"不满足条件"）：' +
+                    `durationMs ${noField.durationMs} 条 / bytesRes ${noField.bytesRes} 条 / status ${noField.status} 条。` +
+                    '想去掉这个歧义：把 minDurationMs / minBytes / maxBytes / status / errors 这些过滤条件去掉再查一次，两次条数之差就是它们的数量。',
+                }
+              : {}),
+            ...view,
+            freshnessNote: freshnessNote(view.freshness),
+            callerAttributionNote: callerAttributionNote(view.callerAttribution),
+            retentionNote: retentionNote(view.retention),
+          })
           return
         }
 
@@ -868,7 +1053,7 @@ function makeRoutes(capture, proxy) {
             }
           })
           items.sort((a, b) => b.count - a.count)
-          writeJson(res, 200, { total: items.length, items })
+          writeJson(res, 200, withRetention({ total: items.length, items }))
           return
         }
 
@@ -883,19 +1068,48 @@ function makeRoutes(capture, proxy) {
             const start = Math.floor(ts / bucketMs) * bucketMs
             let bucket = buckets.get(start)
             if (bucket === undefined) {
-              bucket = { start, count: 0, errors: 0, bytesRes: 0, durations: [] }
+              bucket = { start, count: 0, errors: 0, bytesRes: 0, bytesUnknown: 0, durations: [] }
               buckets.set(start, bucket)
             }
             bucket.count += 1
             if (Number.isInteger(r.status) && r.status >= 400) bucket.errors += 1
-            bucket.bytesRes += Number(r.bytesRes) || 0
+            // F-046 同型：求和时"未知"不该悄悄按 0 算 —— 0 是"真的是 0"，缺字段是"不知道"。
+            // 求和本身没法不把它当 0，但**必须把"有几条是不知道"带出去**，否则 bytesRes 会被读成"总流量"。
+            if (Number.isFinite(Number(r.bytesRes))) bucket.bytesRes += Number(r.bytesRes)
+            else bucket.bytesUnknown += 1
             if (Number.isFinite(r.durationMs)) bucket.durations.push(r.durationMs)
           }
           const items = [...buckets.values()].sort((a, b) => a.start - b.start).map((b) => {
             b.durations.sort((a, c) => a - c)
-            return { start: b.start, end: b.start + bucketMs, count: b.count, errors: b.errors, errorRate: b.count === 0 ? 0 : Number((b.errors / b.count).toFixed(3)), bytesRes: b.bytesRes, avgMs: b.durations.length === 0 ? null : Math.round(b.durations.reduce((a, c) => a + c, 0) / b.durations.length), p50Ms: percentileOf(b.durations, 0.5), p95Ms: percentileOf(b.durations, 0.95), p99Ms: percentileOf(b.durations, 0.99) }
+            return { start: b.start, end: b.start + bucketMs, count: b.count, errors: b.errors, errorRate: b.count === 0 ? 0 : Number((b.errors / b.count).toFixed(3)), bytesRes: b.bytesRes, bytesUnknown: b.bytesUnknown, avgMs: b.durations.length === 0 ? null : Math.round(b.durations.reduce((a, c) => a + c, 0) / b.durations.length), p50Ms: percentileOf(b.durations, 0.5), p95Ms: percentileOf(b.durations, 0.95), p99Ms: percentileOf(b.durations, 0.99) }
           })
-          writeJson(res, 200, { bucketMs, total: items.length, items })
+          // **空桶不许静默消失**（Claude r17 的 A1）：原先只对"有记录的桶"建行，真机上出现过相邻两行
+          // 之间隔着 **27 个空桶（27 小时）**、而返回里没有任何标记 —— 读者无从区分
+          // 「客户端没发流量」「捕获停了」「记录被裁了」这三种完全不同的情况。
+          const gaps = []
+          if (items.length > 0) {
+            const spanStart = items[0].start
+            const spanEnd = items[items.length - 1].start
+            const expected = Math.floor((spanEnd - spanStart) / bucketMs) + 1
+            for (let i = 0; i < expected; i++) {
+              const s = spanStart + i * bucketMs
+              if (!buckets.has(s)) gaps.push({ start: s, end: s + bucketMs })
+            }
+          }
+          const engine = (() => { try { return capture && typeof capture.status === 'function' ? capture.status() : null } catch { return null } })()
+          writeJson(res, 200, withRetention({
+            bucketMs,
+            total: items.length,
+            items,
+            emptyBuckets: gaps.length,
+            gaps: gaps.length ? gaps.slice(0, 50) : [],
+            gapsNote: gaps.length
+              ? '⚠ 时间线**只含有记录的桶**：区间内还有 ' + gaps.length + ' 个空桶（gaps 给了前 ' + Math.min(gaps.length, 50) + ' 个）。' +
+                '空桶的三种含义完全不同 —— **客户端没发流量 / 捕获停了 / 记录被裁掉了** —— 本响应无法替你区分；' +
+                '请结合 freshness.captureRunning 与 retention 判断，不要读成"这段时间没有请求"。'
+              : null,
+            captureRunning: engine ? engine.running === true : null,
+          }))
           return
         }
 
@@ -906,21 +1120,24 @@ function makeRoutes(capture, proxy) {
             const key = sessionKeyOf(r)
             let group = groups.get(key)
             if (group === undefined) {
-              group = { sessionId: key, explicit: Boolean(r.sessionId || r.traceId), firstTs: r.ts ?? 0, lastTs: r.ts ?? 0, count: 0, errors: 0, bytesRes: 0, methods: {}, hosts: {}, records: [] }
+              group = { sessionId: key, explicit: Boolean(r.sessionId || r.traceId), firstTs: r.ts ?? 0, lastTs: r.ts ?? 0, count: 0, errors: 0, bytesRes: 0, bytesUnknown: 0, methods: {}, hosts: {}, records: [] }
               groups.set(key, group)
             }
             group.firstTs = Math.min(group.firstTs, r.ts ?? group.firstTs)
             group.lastTs = Math.max(group.lastTs, r.ts ?? group.lastTs)
             group.count += 1
             if (Number.isInteger(r.status) && r.status >= 400) group.errors += 1
-            group.bytesRes += Number(r.bytesRes) || 0
+            // 同上（F-046）：求和把"未知"按 0 算可以，但必须把"有几条是未知"带出去，
+            // 否则 bytesRes 会被读成"这个会话的总流量"，而它是"已知部分的合计"。
+            if (Number.isFinite(Number(r.bytesRes))) group.bytesRes += Number(r.bytesRes)
+            else group.bytesUnknown += 1
             group.methods[r.method] = (group.methods[r.method] ?? 0) + 1
             const host = hostOf(r) || '-'
             group.hosts[host] = (group.hosts[host] ?? 0) + 1
             if (group.records.length < 20) group.records.push({ id: r.id, ts: r.ts, method: r.method, url: r.url, status: r.status })
           }
           const items = [...groups.values()].sort((a, b) => b.lastTs - a.lastTs)
-          writeJson(res, 200, { total: items.length, items })
+          writeJson(res, 200, withRetention({ total: items.length, items }))
           return
         }
 
@@ -989,7 +1206,7 @@ function makeRoutes(capture, proxy) {
             writeJson(res, 400, { error: `batch too large (> ${MAX_BATCH})` })
             return
           }
-          const result = appendRecords(raw)
+          const result = appendRecords(raw, { runId: typeof body?.runId === 'string' ? body.runId : '' })
           writeJson(res, 200, result)
           return
         }
@@ -1030,10 +1247,38 @@ function makeRoutes(capture, proxy) {
         if (method === 'GET' && rest === '/capture/status') {
           const all = readAll()
           writeJson(res, 200, {
+            ok: true,
+            // 一句话说清"现在到底能不能抓到东西" —— 与工具面**共用 capture-control.mjs**，
+            // 否则面板/路由/MCP 三个消费者又会各说各话（本仓第 38 类：同一逻辑两份实现必然漂移）。
+            // 实测：MCP 面的 capture_status 原先拿不到 summary/ok（路由里没有），审查时当场发现。
+            summary: captureStatusSummary(capture.status()),
             ...capture.status(),
             managed: true,
             storeTotal: all.length,
             storeRealtime: all.filter((r) => (r.source ?? '') === 'realtime').length,
+            // AV-03：把"整库重写"这件事变可见 —— 没有这三个数，写放大在外部是完全观测不到的。
+            store: {
+              total: all.length,
+              cap: MAX_RECORDS,
+              // AV-03 剩余缺口：字节维度的上限与上次裁剪结果。
+              // 只有条数 cap 时真实磁盘上界 ≈22000×4MB ≈ 85.9GB —— 128MB 从来不是"上界"，
+              // 而是"该整理了"。这两个数并排，调用方才能判断"整理到底止不止得住"。
+              maxBytes: MAX_STORE_BYTES,
+              lastCompactKeptBytes,
+              lastCompactDropped,
+              lastCompactTruncatedBy,
+              compactCount,
+              lastCompactAt: lastCompactAt || null,
+              lastCompactAgoMs: lastCompactAt ? Date.now() - lastCompactAt : null,
+              lastCompactReason,
+              duplicateAppendsSinceCompact,
+              // AV-03 补充：把'被节流'如实暴露 —— 没有它，写放大在外部不可观测。
+              throttled: compactThrottled,
+              wantedButThrottled: compactWantedButThrottled,
+              intervalMs: COMPACT_MIN_INTERVAL_MS,
+              // F-007：这份 status 出自哪个版本的代码，一并说清（不陈旧时不加字段）
+              ...(staleCodeInfo(moduleRoots(AV_PLUGIN_DIR)) || {}),
+            },
           })
           return
         }
@@ -1042,23 +1287,28 @@ function makeRoutes(capture, proxy) {
         if (method === 'POST' && rest === '/capture/start') {
           let body = {}
           try {
+            // 空 body 现在由 readJsonBody 解析成 `{}`（它是**合法**的：文档就写着 body 可选）；
+            // 这里剩下的 400 只对应"body 非空但不是合法 JSON" —— 那是调用方真的写错了。
             body = (await readJsonBody(req, 64 * 1024)) ?? {}
           } catch {
             writeJson(res, 400, { error: 'invalid JSON body' })
             return
           }
-          if (typeof body.logPath === 'string' && body.logPath.trim() !== '') {
-            capture.setLogPath(body.logPath.trim())
+          // 逻辑搬到 lib/capture-control.mjs（路由于工具**共用一句话**，见该文件头部说明）。
+          // 旧实现还把 setLogPath 的异常漏在外面 ⇒ 宿主把 rejection 变成**空 400**、原因传不出去（AV-04）。
+          const r = captureStart(capture, body)
+          if (r.ok === false) {
+            writeJson(res, r.hint ? 409 : 500, r)
+            return
           }
-          capture.start({ replay: body.replay === true })
-          writeJson(res, 200, { ...capture.status(), managed: true })
+          writeJson(res, 200, { ...r, managed: true })
           return
         }
 
         // POST /capture/stop — stop live capture
         if (method === 'POST' && rest === '/capture/stop') {
-          capture.stop()
-          writeJson(res, 200, { ...capture.status(), managed: true })
+          const r = captureStop(capture)
+          writeJson(res, r.ok === false ? 500 : 200, { ...r, managed: true })
           return
         }
 
@@ -1091,7 +1341,7 @@ function makeRoutes(capture, proxy) {
 
         // POST /proxy/stop
         if (method === 'POST' && rest === '/proxy/stop') {
-          writeJson(res, 200, { ...proxy.stop(), managed: true })
+          writeJson(res, 200, { ...(await proxy.stop()), managed: true })
           return
         }
 
@@ -1198,7 +1448,7 @@ function makeRoutes(capture, proxy) {
             })
           }
           items.sort((a, b) => b.maxInWindow - a.maxInWindow)
-          writeJson(res, 200, { windowMs, minCount, total: items.length, items })
+          writeJson(res, 200, withRetention({ windowMs, minCount, total: items.length, items }))
           return
         }
 
@@ -1446,6 +1696,9 @@ function makeRoutes(capture, proxy) {
       },
     },
   ]
+
+  // AV-04：统一兜底，任何未捕获异常都不会变成宿主的空 400。
+  return routes.map((r) => ({ ...r, handler: guardHandler(r.handler) }))
 }
 
 /** The api_capture_append agent tool: push captured API records into the store. */
@@ -1466,7 +1719,12 @@ function apiCaptureTool() {
           additionalProperties: false,
           properties: {
             method: { type: 'string', required: true, description: 'HTTP method, e.g. GET/POST.' },
+            // r50：G1 黑盒点名 —— 没有 ts 时，导入/回放**历史**抓包只能落成「此刻发生」（时间线错位）。
+            // 存储层本来就支持显式 ts（capture-store.mjs: `Number.isFinite(raw.ts) ? raw.ts : Date.now()`），
+            // 而这里是 `additionalProperties: false` ⇒ 不声明 = 传不进来。
+            ts: { type: 'number', description: '这条记录的**发生时间**（epoch 毫秒）。不传 = 写入此刻。⚠ 导入/回放**历史**流量时必须显式传：查询按这个字段做 fromTs/toTs 过滤，不传会把几分钟前的事写成「此刻发生」。' },
             url: { type: 'string', required: true, description: 'Request URL (absolute or relative).' },
+            runId: { type: 'string', description: 'Evidence-pack run id: 把这一批记录绑到同一个 run 上（缺 runId 的记录才补，不覆盖记录自带的）。与查询过滤 runId 配套使用。' },
             status: { type: 'integer', description: 'HTTP status code, if known.' },
             durationMs: { type: 'number', description: 'Round-trip duration in ms, if known.' },
             source: { type: 'string', description: 'Capture origin tag: etw / proxy / client-log / agent / other.' },
@@ -1496,6 +1754,7 @@ function apiCaptureTool() {
           },
         },
       },
+      runId: { type: 'string', description: '可选：给这一批**所有**缺 runId 的记录补上同一个 runId（证据链绑定）。已有 runId 的记录不受影响。' },
     },
     output: {
       schema: {
@@ -1509,7 +1768,8 @@ function apiCaptureTool() {
       render: (_args, value) => [{ type: 'text', text: `ingested: ${value.ingested}, store total: ${value.total}` }],
     },
     async execute(args) {
-      return appendRecords(args.records)
+      // runId 与 MCP 共享 store 对齐：把这一批绑到同一个证据 run 上（缺 runId 的记录才补）
+      return appendRecords(args.records, { runId: typeof args.runId === 'string' ? args.runId : '' })
     },
   })
 }
@@ -1531,14 +1791,28 @@ function paramsFromObj(obj) {
   return params
 }
 
-/** The api_capture_query agent tool: read/filter captured records. */
-function apiQueryTool() {
+/**
+ * The api_capture_query agent tool: read/filter captured records.
+ *
+ * F-005 / F-004c（2026-09-11 真机实测确证）：这个工具过去只回 `matched N record(s)`，
+ * 于是有两种"看起来正常、其实在骗人"的结果：
+ *   · **陈旧**：捕获引擎不自动启动，库里躺着**昨天**的记录，查询照常返回格式完美的数据，
+ *     没有任何字段提示年龄 → agent 会把昨天的流量当成今天的分析并下结论。
+ *   · **归因不可用**：调用方归因的旁路日志**没有生产者**（客户端源码里搜不到 ApiCallerTrace），
+ *     所有记录都没有 caller；用 `caller=` 过滤必然 0 条 → agent 会读成
+ *     「这个 ViewModel 没发过请求」，而事实是「这个过滤维度当前没有数据」。
+ * 现在两者都在返回里如实标注；带 `caller=` 且归因不可用时，额外给一句明确提示。
+ */
+function apiQueryTool(capture) {
   return defineTool({
     name: 'api_capture_query',
     description:
       'Query records stored by the dsh-api-visualizer capture panel (local records store). ' +
       'Returns method/url/status/duration plus caller attribution (which ViewModel/API fired each request). ' +
       'Use to analyze captured client traffic: slow calls, errors, a specific host, or requests fired by one ViewModel. ' +
+      '**注意新鲜度**：返回里带 freshness（最新记录年龄 + 捕获引擎是否在跑）——引擎未启动时你看到的是**历史数据**，' +
+      '不是当前状态。**要抓「现在正在发生」的流量：先调 api_capture_start**（它会在日志不存在时当场告诉你"读不到任何数据"，而不是让你以为在抓）。' +
+      '**空结果有两种成因**：① 真的没有；② 记录**缺**被过滤的那个字段（durationMs/bytesRes/status 都是可选的）。后者会被计入返回里的 `excludedNoField`（去掉过滤条件再查一次，两次条数之差就是它们的数量）—— 别把空结果直接读成"没有慢接口/没有重复请求"。' +
       'Triggers: 查询接口记录 / 分析捕获 / 哪些接口慢 / 接口报错分析 / query captured APIs.',
     parameters: {
       limit: { type: 'integer', description: 'Max records to return (default 50, max 500).' },
@@ -1555,11 +1829,12 @@ function apiQueryTool() {
       toTs: { type: 'number', description: 'Latest record timestamp (epoch ms).' },
       sessionId: { type: 'string', description: 'Session key filter.' },
       traceId: { type: 'string', description: 'Distributed trace id filter.' },
+      runId: { type: 'string', description: 'Evidence-pack run id filter（与 api_capture_append 的 runId 配套：查"这一次 run 的流量"）。注意：实时/代理捕获的真实流量默认没有 runId，只有显式绑过或被 append 注入过 runId 的记录才有。' },
       errors: { type: 'boolean', description: 'Only HTTP 4xx/5xx records.' },
-      noNoise: { type: 'boolean', description: 'Hide static-resource/heartbeat noise.' },
+      noNoise: { type: 'boolean', description: 'Hide static-resource/heartbeat noise. ⚠ 找"重复请求/定时器风暴"时**别开**它 —— 心跳/轮询正是你要看的那类请求，开了等于把证据滤掉。' },
       bodyQ: { type: 'string', description: 'Substring match inside request/response bodies/headers.' },
       caller: { type: 'string', description: 'Match caller attribution (viewModel / apiMethod / stack frame substring).' },
-      includeBody: { type: 'boolean', description: 'Include request/response bodies (off by default to keep output small).' },
+      includeBody: { type: 'boolean', description: 'Include request/response bodies (off by default to keep output small). ⚠ **body 与请求头里常常带真实 token / Cookie / 身份信息** —— 打开它意味着这些明文进入你的上下文（以及后续的报告/截图）；只在确实需要看报文时打开。' },
     },
     output: {
       schema: {
@@ -1570,21 +1845,17 @@ function apiQueryTool() {
           returned: { type: 'integer', required: true },
           hasMore: { type: 'boolean', required: true },
           items: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          freshness: { type: 'object', additionalProperties: true, description: '新鲜度：最新记录年龄 + 捕获引擎是否在跑' },
+          callerAttribution: { type: 'object', additionalProperties: true, description: '调用方归因是否真的有数据' },
         },
       },
-      render: (_args, value) => {
-        const head = `matched ${value.total} record(s), returning ${value.returned}`
-        const lines = (value.items ?? []).map((r) => {
-          const c = r.caller ?? {}
-          const who = [c.viewModel, c.apiMethod].filter(Boolean).join(' ← ')
-          return `${r.ts ?? '-'} ${r.method ?? '?'} ${r.status ?? '-'} ${fmtMs(r.durationMs)} ${who !== '' ? `[${who}] ` : ''}${r.url ?? ''}`
-        })
-        return [{ type: 'text', text: `${head}\n${lines.join('\n')}` }]
-      },
+      // 渲染逻辑在可测的 lib/query-view.mjs 里（本文件依赖 dsh-tools，普通 node 进程 import 不到）。
+      render: (args, value) => renderQuery(args, value),
     },
     async execute(args) {
       const params = paramsFromObj(args)
-      let items = sortNewestFirst(applyFilters(readAll(), params))
+      const all = readAll()
+      let items = sortNewestFirst(applyFilters(all, params))
       const caller = (args.caller ?? '').trim().toLowerCase()
       if (caller !== '') {
         items = items.filter((r) => {
@@ -1598,9 +1869,101 @@ function apiQueryTool() {
       const offset = Math.max(Number(args.offset) || 0, 0)
       const page = items.slice(offset, offset + limit)
       const out = args.includeBody === true ? page : withoutBodies(page)
-      return { total, returned: out.length, hasMore: offset + page.length < items.length, items: out }
+
+      // F-005 / F-004c：新鲜度 + 调用方归因 —— **走共享的单一产出点**（第十轮自查：这段原来只写在这里，
+      // 于是 MCP 面与面板路由都拿不到它）。见 lib/query-view.mjs。
+      let st = null
+      try { st = capture && typeof capture.status === 'function' ? capture.status() : null } catch { st = null }
+      // 保留期同样要带出来（工具面与路由面不许各说各话）
+      const retention = retentionInfo()
+      const { freshness, callerAttribution } = buildQueryView({ records: page, all, status: st, callerFilter: String(args.caller ?? ''), retention })
+
+      // F-046：**空结果必须可解释**。`minDurationMs`/`minBytes`/`maxBytes`/`status`/`errors` 这些过滤，
+      // 会把**没有那个字段**的记录排除掉（旧实现里 maxBytes 更糟：把"字节未知"当成 0 字节，于是**放行**了它）。
+      // 于是"0 条"有两种完全不同的含义 —— 不把计数带出来，调用方只能猜成"没有慢请求/没有错误"。
+      const noField = items.excludedNoField
+      const noFieldAny = noField && (noField.durationMs > 0 || noField.bytesRes > 0 || noField.status > 0)
+      return {
+        total,
+        returned: out.length,
+        hasMore: offset + page.length < items.length,
+        items: out,
+        ...(noFieldAny ? { excludedNoField: noField } : {}),
+        ...(noFieldAny
+          ? {
+              excludedNoFieldNote: '有记录因**缺少被过滤的那个字段**被排除（不是"不满足条件"）：' +
+                `durationMs ${noField.durationMs} 条 / bytesRes ${noField.bytesRes} 条 / status ${noField.status} 条。` +
+                '要把这层歧义去掉：去掉 minDurationMs / minBytes / maxBytes / status / errors 再查一次，两次条数之差就是它们的数量。',
+            }
+          : {}),
+        freshness,
+        callerAttribution,
+        retention,
+        retentionNote: retentionNote(retention),
+      }
     },
   })
+
+}
+
+/**
+ * 给"基于**保留集**的统计/列表"挂上保留期信息（r17 / Codex 复核发现）。
+ *
+ * 病：`/stats/timeline`、`/stats/sessions`、`/stats/repeats`、`/stats/endpoints` 都只回
+ * `{total, items}` —— 库裁剪过之后 `total: 0` 会被读成"这段时间没有流量/没有重复请求"，
+ * 而真相是**那些记录已被裁掉**。这和 capture_query 是同一个病，我上一轮只修了 capture_query
+ * （典型的"同一个修法只做了一半"），这里统一挂上。
+ */
+function withRetention(obj) {
+  const retention = retentionInfo()
+  return { ...obj, retention, retentionNote: retentionNote(retention) }
+}
+
+/** 人类可读的年龄（用于陈旧警告）。 */
+function fmtAge(ms) {
+  if (!Number.isFinite(ms)) return '?'
+  const min = ms / 60000
+  if (min < 1) return '刚刚'
+  if (min < 60) return Math.round(min) + ' 分钟前'
+  const h = min / 60
+  if (h < 24) return (Math.round(h * 10) / 10) + ' 小时前'
+  return (Math.round(h / 24 * 10) / 10) + ' 天前'
+}
+
+/**
+ * 保留期信息（本进程视角）。
+ *
+ * ⚠ 本文件**有自己的一份 store 实现**（不 import lib/capture-store.mjs），所以"裁剪过多少"曾经只活在
+ * 本进程的 `lastCompactDropped` 内存变量里 —— MCP 面与面板路由都拿不到（r17 主题自查发现）。
+ * 现在两侧共用**同一个标记文件**（store 目录下的 trimmed.json）：
+ *   · MCP 侧 `lib/capture-store.mjs` 裁剪时写它（readRetention 读它）；
+ *   · 本文件读它 + 合并本进程的内存计数（本进程裁剪时也会写）。
+ * 这样"库被裁剪过"这件事在**两个面**都看得见，不会一方说"没有"、另一方知道"被裁掉了"。
+ */
+function retentionInfo() {
+  let marker = null
+  try { marker = JSON.parse(readFileSync(join(storeDir(), 'trimmed.json'), 'utf8')) } catch { marker = null }
+  const memDropped = Number(lastCompactDropped) || 0
+  const fileDropped = marker && Number.isFinite(Number(marker.droppedTotal)) ? Number(marker.droppedTotal) : 0
+  // 本进程内存计数与文件计数取**较大者**：两者记录的是不同进程/不同时刻的裁剪，取大不会漏报
+  const droppedTotal = Math.max(memDropped, fileDropped)
+  let oldest = null
+  try {
+    const all = readAll()
+    for (const r of all) { const ts = Number(r && r.ts); if (Number.isFinite(ts) && (oldest === null || ts < oldest)) oldest = ts }
+  } catch { oldest = null }
+  return {
+    droppedTotal,
+    lastDroppedAt: marker && Number.isFinite(Number(marker.lastDroppedAt)) ? Number(marker.lastDroppedAt) : null,
+    truncatedBy: marker ? (marker.truncatedBy || null) : null,
+    oldestKeptTs: oldest,
+    maxRecords: MAX_RECORDS,
+    maxBytes: MAX_STORE_BYTES_DEFAULT,
+    note: droppedTotal > 0
+      ? '库按上限裁剪过（累计 ' + droppedTotal + ' 条）—— 被裁掉的记录已不在库内，查不到 ≠ 没发生过；' +
+        (oldest !== null ? '当前库内最早一条 ' + new Date(oldest).toLocaleString('zh-CN') + '。' : '')
+      : null,
+  }
 }
 
 function fmtMs(ms) {
@@ -1620,6 +1983,8 @@ function createCapture() {
   let flushTimer = null
   let logPath = process.env.DSH_CAPTURE_LOG ?? DEFAULT_LOG
   let callerLogPath = process.env.DSH_CAPTURE_CALLER_LOG ?? DEFAULT_CALLER_LOG
+  // 本次 start() 时刻的 emitted 基线（见 status() 里完整性判据的说明）
+  let emittedAtStart = 0
 
   const AUTO_ROTATE_BYTES = 300 * 1024 * 1024
 
@@ -1695,7 +2060,7 @@ function createCapture() {
     const result = { trace: 'missing', caller: 'missing', pruned: 0, restarted: false }
     if (!pruneOnly) {
       const running = wasRunning()
-      if (running) engine.stop()
+      if (running) Promise.resolve(engine.stop()).catch(() => {})
       result.trace = rotateFile(logPath)
       result.caller = rotateFile(callerLogPath)
       if (running) {
@@ -1721,11 +2086,26 @@ function createCapture() {
       }
       if (replay === true && eng.tailer.startedAt === null) eng.tailer.replay = true
       eng.start()
+      // ★ 完整性判据需要"自**本次**启动以来的 emitted 增量"：`counters.emitted` 是引擎对象创建以来的累计值，
+      //   而 startedAt 每次 start() 都会重置 —— 两个量不同区间时比值毫无意义（我第一版就因此算出 0.005 的假绿灯）。
+      emittedAtStart = Number(eng.parser && eng.parser.counters && eng.parser.counters.emitted) || 0
       startFlush()
     },
     stop() {
-      if (engine !== null) engine.stop()
+      if (engine !== null) Promise.resolve(engine.stop()).catch(() => {})
       stopFlush({ drain: true })
+    },
+    /** 采样式完整性判定的两端点（工具面在同一窗口里各取一次）。 */
+    integritySample() {
+      const st = this.status()
+      return {
+        ts: Date.now(),
+        emitted: Number(st.counters && st.counters.emitted) || 0,
+        startedAt: Number(st.startedAt) || null,
+        realtimeCount: (() => {
+          try { return readAll().filter((r) => (r.source ?? '') === 'realtime').length } catch { return null }
+        })(),
+      }
     },
     setLogPath(path) {
       if (path === logPath) return
@@ -1742,14 +2122,32 @@ function createCapture() {
     rotate({ keepDays = 7, pruneOnly = false } = {}) {
       return doRotate({ keepDays, pruneOnly })
     },
+    /**
+     * 引擎状态 + **完整性判据**。
+     *
+     * 为什么要在这里算（r39 真机查出）：运行中的旧宿主里"引擎 emit 12 条、库多了 24 行"（比值 2.000），
+     * 而当前代码实测 1.000。差异存在期间，面板/工具里所有"调用次数"都是**两倍** ——
+     * 这件事必须由状态接口**自己报出来**（`integrity`），而不是只写在文档里等人去读。
+     * 判据是"引擎自己的计数" vs "库里同时间段的 realtime 行数"，两个量都来自它自己的账本。
+     */
     status() {
       if (engine === null) {
-        return { running: false, logPath, logExists: existsSync(logPath), logSize: null, offset: 0, replay: false, startedAt: null, errors: 0, counters: null }
+        return { running: false, logPath, logExists: existsSync(logPath), logSize: null, offset: 0, replay: false, startedAt: null, errors: 0, counters: null, integrity: null }
       }
-      return engine.status()
+      const st = engine.status()
+      let integrity = null
+      try {
+        const startedAt = Number(st.startedAt) || 0
+        const emitted = (Number(st.counters && st.counters.emitted) || 0) - emittedAtStart  // 自本次启动起的增量（同区间）
+        if (startedAt > 0) {
+          const realtime = readAll().filter((r) => (r.source ?? '') === 'realtime' && (Number(r.ts) || 0) >= startedAt - 1000).length
+          integrity = doubleWriteVerdict({ emitted, realtimeSinceStart: realtime })
+        }
+      } catch { integrity = null } // 拿不到就不报（"没读到" ≠ "没问题"，但也不许编一个）
+      return { ...st, integrity }
     },
     dispose() {
-      if (engine !== null) engine.stop()
+      if (engine !== null) Promise.resolve(engine.stop()).catch(() => {})
       stopFlush({ drain: true })
     },
   }
@@ -1800,13 +2198,28 @@ function createProxy() {
       return status
     },
     stop() {
-      if (engine !== null) engine.stop()
+      if (engine !== null) Promise.resolve(engine.stop()).catch(() => {})
       stopFlush({ drain: true })
       return engine !== null ? engine.status() : { running: false }
     },
     status() {
       if (engine === null) {
-        return { running: false, port: 8899, upstream: null, caPath: join(storeDir(), 'proxy-certs', 'ca-cert.pem'), caReady: false, systemProxyActive: false, counters: null, startedAt: null }
+        // F-018：**不能**在引擎为空时硬编码 systemProxyActive:false ——
+        // 那正是"把用户机器改坏却说没动过"的写法。这里如实读当前系统代理，
+        // 并指出它指向哪里（若指向本插件端口而引擎没跑，就是需要用户处理的险情）。
+        const sys = readSystemProxy()
+        const pointsAtUs = sys.enable === true && String(sys.server || '').includes('127.0.0.1:' + 8899)
+        return {
+          running: false, port: 8899, upstream: null,
+          caPath: join(storeDir(), 'proxy-certs', 'ca-cert.pem'), caReady: false,
+          systemProxyActive: pointsAtUs,
+          systemProxy: sys,
+          warning: pointsAtUs
+            ? '⚠ 系统代理**仍指向 127.0.0.1:8899，但代理引擎没有在运行** —— 此时整机网络连接会被拒。' +
+              '处理：启动代理后再调 POST /proxy/system-proxy {enable:false} 恢复，或直接改回原来的 ' + (sys.server || '(空)') + '。'
+            : undefined,
+          counters: null, startedAt: null,
+        }
       }
       return engine.status()
     },
@@ -1858,7 +2271,9 @@ export function apply(ctx) {
     'dsh-api-visualizer: routes',
   )
   const disposeTool = ctx.effect(() => ctx.tools.register(apiCaptureTool()), 'dsh-api-visualizer: tools')
-  const disposeQueryTool = ctx.effect(() => ctx.tools.register(apiQueryTool()), 'dsh-api-visualizer: query-tool')
+  const disposeQueryTool = ctx.effect(() => ctx.tools.register(apiQueryTool(capture)), 'dsh-api-visualizer: query-tool')
+  // 起/停/查状态三件套。**必须在这里注册**（见 captureControlTools 的注释：写进别的函数体里=不执行）。
+  const disposeCaptureCtl = ctx.effect(() => captureControlTools(capture).forEach((t) => ctx.tools.register(t)), 'dsh-api-visualizer: capture-control')
   const disposeSection = ctx.systemPrompt.section({
     name: 'plugin:api-visualizer',
     order: SECTION_ORDER,
@@ -1878,4 +2293,110 @@ export function apply(ctx) {
 }
 
 // Test surface (unused by the cordis loader; keeps the store/filter logic unit-testable).
-export { applyFilters, buildContracts, createCapture, createProxy, endpointKeyOf, jsonShape, normalize, paramsFromObj, searchSource }
+export { applyFilters, buildContracts, createCapture, createProxy, endpointKeyOf, jsonShape, normalize, paramsFromObj, searchSource, apiQueryTool, fmtAge }
+
+/**
+ * 捕获控制面三件套（起 / 停 / 查状态）。
+ *
+ * 单独成函数并**在 apply() 里注册**的原因：我第一版把这三段直接写在了 `apiQueryTool()` 的函数体末尾，
+ * 而那个函数以 `return defineTool({...})` 结束 ⇒ 三段代码**永远不执行**。
+ * 语法能过、check 能过、代码还在，但工具压根没注册（加载冒烟 + E4 的反向断言当场抓住）。
+ */
+function captureControlTools(capture) {
+  const tools = []
+  // ------------------------------------------------------------------ 捕获控制面（r39）
+  //
+  // 两个 G1 黑盒 agent **独立点名**同一处：目录里没有任何工具能起停实时捕获，
+  // 而 `api_capture_query` 的描述让人"先 POST /api/dsh-api-visualizer/capture/start"——
+  // 目录又没给 host/port，agent 连 URL 都拼不出来。工具补上之后，描述里那条路由指引也就不再是死路。
+  tools.push(defineTool({
+    name: 'api_capture_start',
+    description:
+      '启动**实时捕获**（等于面板上那个「开始实时捕获」按钮）：tail 客户端的 System.Net 跟踪日志并实时入库。' +
+      '**要在"现在正在发生的流量"上做分析，必须先起它**（否则 api_capture_query 看到的只是历史数据）。' +
+      '⚠ 两个前提会**当场**告诉你而不是让你以为在抓：① 跟踪日志不存在（多半是客户端没重启过、system.diagnostics 没生效）⇒ 返回里带 `warnings` 明说"读不到任何数据"；' +
+      '② 调用方归因旁路日志不存在 ⇒ 明说"归因不可用"，看到 caller 为空时不要读成"没有调用方"。' +
+      'Triggers: 开始实时捕获 / 起捕获 / 抓当前流量 / start capture.',
+    parameters: {
+      logPath: { type: 'string', description: '可选：改用这个跟踪日志路径（**捕获运行中改路径会被拒绝**并给出下一步）。默认 %TEMP%\\uiprobe-net-trace.log。' },
+      replay: { type: 'boolean', description: 'true = 从头重放整个日志（用于把历史日志灌进库）；默认 false = 只 tail 新增内容。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          running: { type: 'boolean' },
+          logExists: { type: 'boolean' },
+          warnings: { type: 'array', items: { type: 'string' } },
+          summary: { type: 'string' },
+        },
+      },
+      render: (_a, v) => [{ type: 'text', text: (v && v.summary ? v.summary : captureStatusSummary(v)) + (v && v.warnings ? '\n' + v.warnings.map((w) => '⚠ ' + w).join('\n') : '') }],
+    },
+    async execute(args) {
+      const r = captureStart(capture, args ?? {})
+      return { ...r, summary: captureStatusSummary(r) }
+    },
+  }))
+
+  tools.push(defineTool({
+    name: 'api_capture_stop',
+    description:
+      '停止实时捕获（等于面板上的「停止」）。停止后 `api_capture_query` 看到的又变成历史数据 —— 这一点会在返回的 summary 里写明。' +
+      'Triggers: 停止捕获 / 停实时抓包 / stop capture.',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { ok: { type: 'boolean', required: true }, running: { type: 'boolean' }, summary: { type: 'string' } } },
+      render: (_a, v) => [{ type: 'text', text: v && v.summary ? v.summary : captureStatusSummary(v) }],
+    },
+    async execute() {
+      const r = captureStop(capture)
+      return { ...r, summary: captureStatusSummary(r) }
+    },
+  }))
+
+  tools.push(defineTool({
+    name: 'api_capture_status',
+    description:
+      '查实时捕获引擎的**当前状态**（只读）：在不在跑、跟踪日志在不在/多大、本次已解析多少条、' +
+      '以及**调用方归因旁路日志在不在**（它不在时 caller 必然为空，但那**不等于**"没有调用方"）。' +
+      '拿不准"现在到底能不能抓到东西"就先查它。' +
+      '**重复写入自检**：返回里的 `integrity` 比较"引擎自己数到的条数"与"库里同一时间段的条数" —— ' +
+      '比值 ≥1.5 说明**面板里的调用次数被放大了**（"重复请求/定时器风暴"这类结论在修好前不能按现有倍数下）。' +
+      '宿主是旧版本（拿不到同区间基准）时可传 `sampleSeconds`（如 90）：本工具在**同一窗口**里采两次再比。' +
+      'Triggers: 捕获状态 / 抓包在跑吗 / capture status.',
+    parameters: {
+      sampleSeconds: { type: 'number', description: '可选：>0 时在同一窗口里采两次（间隔这么多秒）再算比值 —— 用于旧宿主下判定重复写入；会阻塞这么久（5~600 秒）。' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { ok: { type: 'boolean', required: true }, running: { type: 'boolean' }, summary: { type: 'string' } } },
+      render: (_a, v) => [{ type: 'text', text: v && v.summary ? v.summary : captureStatusSummary(v) }],
+    },
+    async execute(args) {
+      const all = readAll()
+      if (Number(args?.sampleSeconds) > 0) {
+        const secs = Math.min(Math.max(Number(args.sampleSeconds), 5), 600)
+        const before = capture.integritySample()
+        await new Promise((r) => setTimeout(r, secs * 1000))
+        const after = capture.integritySample()
+        const integrity = sampleDeltaVerdict(before, after)
+        const r = captureStatus(capture, { managed: true, storeTotal: readAll().length, integrity, sampledSeconds: secs })
+        return { ...r, summary: captureStatusSummary(r) + (integrity && integrity.note ? '\n' + integrity.note : '') }
+      }
+      const r = captureStatus(capture, {
+        managed: true,
+        storeTotal: all.length,
+        storeRealtime: all.filter((x) => (x.source ?? '') === 'realtime').length,
+        // 新鲜度也一起给：只看"running:true"不够 —— 引擎可能在跑但**日志根本没数据**。
+        freshness: (() => {
+          try { return buildQueryView({ records: [], all, status: capture.status(), callerFilter: '', retention: retentionInfo() }).freshness } catch { return null }
+        })(),
+      })
+      return { ...r, summary: captureStatusSummary(r) }
+    },
+  }))
+  return tools
+}
+

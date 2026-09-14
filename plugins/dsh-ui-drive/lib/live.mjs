@@ -31,13 +31,16 @@
  *   dir
  * }
  */
+import { envOr } from '../../../lib/env-fallback.mjs'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+// 落盘前也要脱敏（latest.json 是消费面）。render.mjs 不反向 import 本模块，无环。
+import { sanitizeLive } from './render.mjs'
 
 const LIVE_DIR = () =>
-  process.env.DSH_UI_LIVE_DIR || join(homedir(), '.dsh-agent-toolchain', 'ui-live')
+  envOr('DSH_UI_LIVE_DIR') || join(homedir(), '.dsh-agent-toolchain', 'ui-live')
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -148,6 +151,7 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
     }
 
     st.frameCount++
+    const fileName = renamed ? 'latest.png' : 'frame-' + seq + '.png'
     st.lastFrame = {
       seq,
       ts: Date.now(),
@@ -156,7 +160,16 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
       h: r.h,
       captureMs,
       changed,
-      path: renamed ? 'latest.png' : 'frame-' + seq + '.png',
+      // UD-05（原 P1 清单第 5 条，2026-09-11）：`path` 一直是**文件名**（相对 live 目录），
+      // 而工具描述承诺的是"latest.png 绝对路径" —— 于是 `read_image(frame.path)` 会去
+      // **当前工作目录**找一个叫 latest.png 的文件，必然失败。像素无法脱敏是另一回事，
+      // 这里是纯粹的"文档说了一个不存在的绝对路径"。
+      // 修法：`path` 保持不变（路由 `/live/frame.png` 用 `join(dir, path)` 读它，改成绝对路径会把它拼坏），
+      // 另加 `pathAbs` 作为**可直接喂给 read_image 的绝对路径**（数据层，两面通用）。
+      path: fileName,
+      pathAbs: join(c.dir, fileName),
+      // 不再提供 `file`：它与 `path` 完全同值（全仓无人消费），而**每个冗余字段都是一个可绕过脱敏的入口**
+      // （Claude 第八轮：`join(dir, file)` 正好重组出被 null 掉的 pathAbs）。
       state: r.state,
       captureMethod: r.captureMethod,
       secretFocused: false, // 由 refreshUi 标记（capture 本身不查焦点）
@@ -178,7 +191,17 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
       return null
     }
     const lines = Array.isArray(r.lines) ? r.lines : [String(r.lines || '')]
+    // 观测完整性**必须**从 driver 的单一产出点取（范围/截断/跳过），不许在这里手工重建对象：
+    // 这一行原本是 `{ window, focused, count, lines }` 的**白名单重建**，把 skipped/truncated/narrowed
+    // 全丢了 —— 于是 ui_live 的控件摘要永远显示得像一份完整清单（Claude 第九轮 Q1 真机：max=5、
+    // scanned=1962 却什么都不报）。重建对象 = 白名单 = 下一个静默口子。
     const ui = { window: r.window ?? null, focused: r.focused ?? null, count: r.count || 0, lines: lines.slice(0, c.maxControls) }
+    if (typeof driver.completenessInfo === 'function') {
+      Object.assign(ui, driver.completenessInfo(r))
+    } else {
+      // fail-visible：拿不到就不许冒充"清单完整"，让渲染层打出「完整性未知」
+      ui.observationWarning = 'live 未从 driver 取到观测完整性字段（模块版本不匹配）→ 本次控件清单的完整性未知'
+    }
     ui.hash = textHash(ui)
     ui.ts = Date.now()
     st.lastUi = ui
@@ -237,7 +260,12 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
   function writeLatestJson() {
     try {
       const tmp = join(c.dir, 'latest.json.tmp')
-      writeFileSync(tmp, JSON.stringify({ ...snapshot(), dir: c.dir }, null, 2), 'utf8')
+      // Claude 第八轮第 3 条：本模块头自己声明 latest.json 是**消费面**（"消费方(agent/路由)只看这一份"），
+      // 但它过去写的是**未脱敏**的原始快照 —— 直接读盘的面板/脚本绕过了所有内存里的脱敏。
+      // 现在落盘前也过同一个 sanitizeLive（不允许 allowSensitive：**文件里永远不留敏感帧路径**）。
+      const snap = snapshot()
+      const safe = sanitizeLive({ ...snap, dir: c.dir }, false)
+      writeFileSync(tmp, JSON.stringify(safe, null, 2), 'utf8')
       renameSync(tmp, join(c.dir, 'latest.json'))
     } catch (e) {
       st.lastError = 'write latest.json: ' + e.message

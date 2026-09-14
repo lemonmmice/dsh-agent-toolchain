@@ -27,8 +27,9 @@
  *      否则调用方会把"没解析出来"当成"没有这段代码"。
  *   2. **绝不把原始 HTML 丢回去**：几 MB 的 HTML 对模型毫无价值，必须压缩成可读的调用链文本。
  */
-import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { envOr } from '../../../lib/env-fallback.mjs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -44,17 +45,122 @@ export const PROFILES = { cpu: 'CPU', dotnet: 'DotNet', general: 'GeneralProfile
  * `cpu` 档也带上 `DotNet` —— 实测：只开 CPU 时托管帧的**函数名解不出来**（只有模块名），
  * 因为缺 CLR 的 rundown 事件；而对 .NET 应用来说那些函数名才是真正要看的调用链。
  */
+/** 采样器进程在不在（wpr/xperf）—— **只作旁证**：查不到返回 null（≠ 没在跑），调用方必须按三态读。 */
+function samplerRunning() {
+  try {
+    const r = spawnSync('tasklist', ['/fi', 'IMAGENAME eq wpr.exe'], { encoding: 'utf8', timeout: 8000, windowsHide: true })
+    if (/wpr\.exe/i.test(String(r.stdout || ''))) return true
+    const r2 = spawnSync('tasklist', ['/fi', 'IMAGENAME eq xperf.exe'], { encoding: 'utf8', timeout: 8000, windowsHide: true })
+    return /xperf\.exe/i.test(String(r2.stdout || ''))
+  } catch {
+    return null   // 查不到就是「不知道」，不许说成 false
+  }
+}
+
 export const CAPTURE_SETS = { cpu: ['CPU', 'DotNet'], dotnet: ['DotNet', 'CPU'], general: ['GeneralProfile'] }
+
+/**
+ * xperf 失败时的**定向诊断**（F-027，2026-09-12 r29 真机端到端时查出）。
+ *
+ * 实测：xperf 因 **ETW 丢事件**失败时打印
+ *   `6728 Events were lost in this trace. … insufficient disk bandwidth for ETW logging.`
+ *   并以 `0x80070030`（ERROR_BUFFER_OVERFLOW）退出，**报告文件是 0 字节**。
+ * 而旧实现只按"报告里没有可解析的函数条目"给通用提示（"可能：符号未解析 / focus 太严 / xperf 输出为空"）
+ * —— **把用户引向符号**，而真正的原因是缓冲区/磁盘带宽。
+ * **错误信息把人引向错误的位置，比不给信息更糟。**
+ * 现在把 xperf 的退出码与**原文尾部**带出去，能识别时给出对症的下一步。
+ */
+export function diagnoseXperfFailure(code, rawOutput, reportBytes) {
+  const out = String(rawOutput ?? '')
+  const tail = out.trim().replace(/\s+/g, ' ').slice(-500)
+  const m = /(\d+)\s+Events were lost/i.exec(out)
+  const eventsLost = m !== null ? Number(m[1]) : null
+  let diagnosis = null
+  if (eventsLost !== null) {
+    diagnosis = `ETW **丢事件**（xperf 原文：${eventsLost} events were lost；官方解释是 ETW 日志的磁盘带宽不足）。`
+      + '这**不是**符号问题，也不是"没有热点"。下一步：① 缩短采集时长；② 采集期间减少磁盘写入'
+      + '（本机同时在做 dump / 写大文件时尤其明显）；③ 加大 ETW 缓冲区或降低采样负载；④ 重采一次再出报告。'
+  } else if (code !== null && code !== undefined && code !== 0) {
+    diagnosis = `xperf 退出码 ${code}（非 0）` + (reportBytes === 0 ? '，报告为 0 字节' : '')
+      + '。原文尾部见 raw 字段 —— 请以 xperf 的原话为准，不要默认是符号问题。'
+  } else if (reportBytes === 0) {
+    diagnosis = 'xperf 产出了 **0 字节报告**（通常意味着它没能解析这份 etl）—— 原文尾部见 raw 字段。'
+  }
+  return { exitCode: code ?? null, tail, eventsLost, diagnosis }
+}
+
+/**
+ * `_NT_SYMBOL_PATH` 是**整串替换**，不是追加 —— 这是个会被静默踩中的坑：
+ * 想把客户端自己的 pdb 加进来的人，很自然就写 `DSH_PERF_SYMBOL_PATH=<客户端 bin>`，
+ * 结果**系统 DLL 的符号全部丢失**，报告里从栈顶开始一路 `***unknown***`，
+ * 而人只会以为"这台机器符号没配好/网络不通"。
+ * 实测现场（F-045）：把客户端 bin（16 个 pdb）单独写进去后，报告里 `ntdll/clr/mscorlib` 全变 unknown。
+ *
+ * 所以规则改成「**加**符号服务器，而不是**换掉**它」：
+ *   - 配的值里有符号服务器指令（`srv*`）→ 原样使用（调用方明确知道自己在干什么）；
+ *   - 配的值只是目录（可能带 `;` 分隔的多个目录）→ **接在**默认公网链后面，并且**如实上报**（composed=true）。
+ * 返回 `{ value, composed }`：composed 不是"内部细节"，是调用方必须转达给用户的事实。
+ */
+export function composeSymbolPath(configured, dflt) {
+  const c = String(configured == null ? '' : configured).trim()
+  if (!c) return { value: String(dflt), composed: false }
+  if (/(^|;)\s*srv\*/i.test(c)) return { value: c, composed: false }
+  return { value: c.replace(/[;\s]+$/, '') + ';' + String(dflt), composed: true }
+}
+
+/**
+ * 成功路径也要能看见 xperf 的原话。
+ *
+ * 为什么必须补：`perf_hotstacks` 的工具描述写着 "debugSymbols: true = 让 xperf 打印符号查找细节
+ * （结果 raw 里回带）"，但 `hotstacks()` 只在**失败路径**塞 `raw` ——
+ * 于是"报告成功、却全是不认识的函数名"这种**最需要符号日志**的情形，恰恰拿不到日志。
+ * 实测现场（F-044）：探针脚本里那条"看 xperf 符号日志里提到了哪个客户端模块"的检查，
+ * 输出恒为 `raw 长度 = 0` —— 一个**永远不可能成立**的空洞检查。
+ */
+export function trimXperfRaw(out, { maxChars = 4000, symbolOnly = false } = {}) {
+  const all = String(out == null ? '' : out)
+  const lines = all.split(/\r?\n/)
+  let kept = lines
+  if (symbolOnly) {
+    // ⚠️ 第一版只留"含关键词的行"，结果把**失败原因**丢掉了。
+    //    反例（Codex r37）：`DBGHELP: loading Client.pdb` / `  Access is denied.` / `  HTTP status: 403`
+    //    只留下第一行 —— 而真正说明问题的恰恰是后两行（它们不含 symbol/pdb 这类词）。
+    //    同理 `6728 Events were lost in this trace.` 也会在有关键词命中时被一起过滤掉。
+    //    现在：关键词行 **+ 紧随其后的上下文行（缩进行/错误行）** 一起留，并如实标注"过滤过"。
+    const CONTEXT_RE = /^\s|denied|lost|error|fail|failed|cannot|unable|timeout|timed out|refus|not found|HTTP\s*[45]\d\d|0x[0-9a-f]{4,}/i
+    const KEY_RE = /symbol|\.pdb|srv\*|dbghelp|symcache|_NT_|downloading|SYMCHK/i
+    const hit = lines.some((l) => KEY_RE.test(l))
+    if (hit) {
+      const picked = []
+      for (let i = 0; i < lines.length; i++) {
+        if (KEY_RE.test(lines[i])) { picked.push(lines[i]); continue }
+        // 上一行是关键词行，且这一行像"它的续行/失败原因" ⇒ 保留
+        if (picked.length > 0 && CONTEXT_RE.test(lines[i]) && lines[i].trim() !== '') picked.push(lines[i])
+      }
+      kept = picked
+    }
+  }
+  const text = kept.join('\n').trim()
+  return {
+    raw: text.length > maxChars ? text.slice(0, maxChars) : text,
+    // 是**字节**，不是"字符数"：Codex r37 指出 `'符号'.length === 2` 而 UTF-8 是 6 字节，
+    // 渲染成"共 2 字节"就是假数字；同时它标的是**原始日志的总大小**，不是留出来的那一小段。
+    rawBytes: Buffer.byteLength(all, 'utf8'),
+    rawChars: all.length,
+    rawTruncated: text.length > maxChars,
+    rawFiltered: kept.length !== lines.length,
+  }
+}
 
 export function makeTrace(cfg = {}) {
   const c = Object.assign({
     evidenceDir: join(homedir(), '.dsh-agent-toolchain', 'perf-evidence'),
     wpr: DEFAULT_WPR,
     xperf: DEFAULT_XPERF,
-    procName: process.env.DSH_UI_PROC_NAME || '',
-    symbolPath: process.env.DSH_PERF_SYMBOL_PATH || process.env._NT_SYMBOL_PATH || '',
+    procName: envOr('DSH_UI_PROC_NAME'),
+    symbolPath: envOr('DSH_PERF_SYMBOL_PATH') || process.env._NT_SYMBOL_PATH || '',
     // 符号缓存根（跨运行共享）。空 = evidenceDir/symbol-cache。
-    symbolCacheDir: process.env.DSH_PERF_SYMBOL_CACHE || '',
+    symbolCacheDir: envOr('DSH_PERF_SYMBOL_CACHE'),
   }, cfg)
   if (!c.evidenceDir) c.evidenceDir = join(homedir(), '.dsh-agent-toolchain', 'perf-evidence')
 
@@ -88,7 +194,7 @@ export function makeTrace(cfg = {}) {
   /** ETW 内核会话需要管理员：先说清楚，别让用户对着 "Access is denied" 猜。 */
   const ELEVATED_PS = '([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)'
   async function isElevated() {
-    const ps = process.env.DSH_PERF_POWERSHELL || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+    const ps = envOr('DSH_PERF_POWERSHELL') || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
     const r = await runExe(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', ELEVATED_PS], { timeoutMs: 20000 })
     return /True/i.test(r.stdout)
   }
@@ -103,17 +209,44 @@ export function makeTrace(cfg = {}) {
     const key = String(args.profile || 'cpu').toLowerCase()
     const profiles = CAPTURE_SETS[key]
     if (!profiles) return { ok: false, error: '未知 profile（可用 cpu | dotnet | general）' }
-    if (!existsSync(c.wpr)) return { ok: false, error: 'wpr.exe 不存在：' + c.wpr + '（可用 DSH_PERF_WPR 指定）' }
-    if (!(await isElevated())) {
+    // r48：`status` 只是读一个标记文件 —— 它**不该**被 wpr 存在性/管理员权限挡住
+    //   （G1 的场景正是「没提权时想知道采样在不在跑」，那恰恰是最需要它的时候）。
+    if (action !== 'status' && !existsSync(c.wpr)) return { ok: false, error: 'wpr.exe 不存在：' + c.wpr + '（可用 DSH_PERF_WPR 指定）' }
+    if (action !== 'status' && !(await isElevated())) {
       return { ok: false, error: 'ETW 内核会话需要管理员权限，当前进程未提权 —— 请以管理员身份运行 DSH', needsElevation: true }
     }
 
     const dir = runDir(args.tag)
     const etl = args.etlPath || join(dir, 'trace.etl')
+    const sessionFile = join(dir, 'trace-session.json')
+
+    // r48：`status` —— G1 黑盒点名"start 之后无从确认采样在不在跑"（同族的 hang_*/api_capture_* 都有 status）。
+    if (action === 'status') {
+      let session = null
+      try { session = JSON.parse(readFileSync(sessionFile, 'utf8')) } catch { session = null }
+      const target = (session && session.etlPath) || etl
+      let sizeBytes = null
+      try { if (existsSync(target)) sizeBytes = statSync(target).size } catch { sizeBytes = null }
+      return {
+        ok: true, action: 'status',
+        running: session !== null,            // ⚠ 这是**我们自己记的标记**，不是查 xperf 得到的（见下）
+        runningBasis: 'start 时写的会话标记文件（<evidence>/trace-session.json），stop/cancel 时删除',
+        elapsedMs: session && session.startedAt ? (Date.now() - Number(session.startedAt)) : null,
+        etlPath: target, sizeBytes,
+        profile: (session && session.profile) || null,
+        samplerProcessFound: samplerRunning(),  // true/false/**null=查不到**（null 不等于没在跑）
+        hint: session
+          ? '采样进行中（按标记）——复现完成后调 perf_trace(action="stop", etlPath="' + target + '") 停并产出 etl。'
+          : (sizeBytes !== null
+            ? '没有进行中的采样（按标记）。最近这份 etl 已存在（' + sizeBytes + ' 字节）——要重采就 action="start" 或 "run"。'
+            : '没有进行中的采样（按标记），也没有找到 etl。'),
+      }
+    }
 
     if (action === 'stop' || action === 'cancel') {
       const stopArgs = action === 'cancel' ? ['-cancel'] : ['-stop', etl]
       const r = await runExe(c.wpr, stopArgs, { timeoutMs: 300000 })
+      try { rmSync(sessionFile, { force: true }) } catch { /* 标记删不掉不影响停止结果 */ }
       if (action === 'cancel') return { ok: r.code === 0, cancelled: true, raw: (r.stdout + r.stderr).slice(0, 400) }
       if (!existsSync(etl)) return { ok: false, error: '停止后未生成 etl', raw: (r.stdout + r.stderr).slice(0, 400) }
       const size = statSync(etl).size
@@ -133,8 +266,13 @@ export function makeTrace(cfg = {}) {
     if (started.code !== 0) {
       return { ok: false, error: 'wpr -start 失败', raw: (started.stdout + started.stderr).slice(0, 500), profiles }
     }
+    // start 成功后落一个会话标记（status 靠它；stop/cancel 清掉）
+    try { writeFileSync(sessionFile, JSON.stringify({ etlPath: etl, startedAt: Date.now(), profile: key }), 'utf8') } catch { /* 标记写不进去要在 status 里如实体现 */ }
     if (action === 'start') {
-      return { ok: true, started: true, profile: key, profiles, etlPath: etl, hint: '复现问题后调用 perf_trace(action="stop", etlPath=...)' }
+      return {
+        ok: true, started: true, profile: key, profiles, etlPath: etl,
+        hint: '复现问题后调用 perf_trace(action="stop", etlPath="' + etl + '")；期间可用 perf_trace(action="status") 确认采样还在跑（按标记文件判断）。',
+      }
     }
     const seconds = Math.min(Math.max(Number(args.seconds) || 20, 3), 600)
     await new Promise((r) => setTimeout(r, seconds * 1000))
@@ -167,15 +305,34 @@ export function makeTrace(cfg = {}) {
     return p
   }
 
+  /** 默认公网符号链（带**共享**本地缓存）。 */
+  function defaultSymbolPath() {
+    return 'srv*' + symbolCacheDir('symbols') + '*https://msdl.microsoft.com/download/symbols'
+  }
+
+  /** 生效的符号路径 + 是否"被我们接过"（供结果如实上报，见 composeSymbolPath）。 */
+  function symbolPathInfo(offline) {
+    if (offline) return { offline: true, configured: c.symbolPath || '', effective: null, composed: false, configuredFrom: configuredFrom() }
+    const composed = composeSymbolPath(c.symbolPath, defaultSymbolPath())
+    return { offline: false, configured: c.symbolPath || '', effective: composed.value, composed: composed.composed, configuredFrom: configuredFrom() }
+  }
+
+  /**
+   * 这个符号路径**是从哪儿来的**：显式配的 `DSH_PERF_SYMBOL_PATH`，还是机器既有的 `_NT_SYMBOL_PATH`。
+   * 为什么必须区分（Codex r37 第 4 条）：提示语里点名 `DSH_PERF_SYMBOL_PATH` 会让人去找一个**他没设过**的变量。
+   */
+  function configuredFrom() {
+    if (!c.symbolPath) return null
+    if (String(envOr('DSH_PERF_SYMBOL_PATH') || '') === String(c.symbolPath)) return 'DSH_PERF_SYMBOL_PATH'
+    if (String(process.env._NT_SYMBOL_PATH || '') === String(c.symbolPath)) return '_NT_SYMBOL_PATH'
+    return 'argument' // makeTrace 的注入（测试/探针脚本）
+  }
+
   /** 符号路径：显式配置 > 机器已有的 _NT_SYMBOL_PATH > 默认微软公网符号（带**共享**本地缓存）。 */
   function symbolEnv(offline) {
     const env = Object.assign({}, process.env)
     if (offline) { delete env._NT_SYMBOL_PATH; return env }
-    if (c.symbolPath) { env._NT_SYMBOL_PATH = c.symbolPath }
-    else if (process.env._NT_SYMBOL_PATH) { env._NT_SYMBOL_PATH = process.env._NT_SYMBOL_PATH }
-    else {
-      env._NT_SYMBOL_PATH = 'srv*' + symbolCacheDir('symbols') + '*https://msdl.microsoft.com/download/symbols'
-    }
+    env._NT_SYMBOL_PATH = symbolPathInfo(false).effective
     // symcache：xperf 的符号缓存（第二次出报告会快很多）—— 同样必须跨运行共享，
     // 否则"第二次快"这句话只在同一条 trace 目录里成立，换个 tag 就失效。
     if (!env._NT_SYMCACHE_PATH) {
@@ -221,6 +378,16 @@ export function makeTrace(cfg = {}) {
     if (args.focus) cmd.push('-symbol', String(args.focus))
     const t0 = Date.now()
     const r = await runExe(c.xperf, cmd, { timeoutMs: Number(args.timeoutMs) || 900000, env: symbolEnv(!!args.offline) })
+    // ★ xperf 的原始输出在**这里就**算好，后面**每一条**返回（超时 / 无报告 / 空报告 / 成功）都带上它。
+    //   第一版只在最终成功返回上带 —— 而那三条失败路径恰恰是最需要看 xperf 原话的（F-044 的完整修法）。
+    const rawInfo = trimXperfRaw(r.stdout + '\n' + r.stderr, { symbolOnly: !!args.debugSymbols })
+    const rawFields = {
+      xperfRaw: rawInfo.raw, xperfRawBytes: rawInfo.rawBytes, xperfRawChars: rawInfo.rawChars,
+      xperfRawTruncated: rawInfo.xperfRawTruncated === undefined ? rawInfo.rawTruncated : rawInfo.rawTruncated,
+      xperfRawFiltered: rawInfo.rawFiltered,
+      xperfRawNote: 'xperfRaw 是 xperf 的原始输出（可能按符号相关行过滤过，见 xperfRawFiltered）；' +
+        'xperfRawBytes 是**原始输出的总字节数**（不是这段留出来的长度）。',
+    }
     // 端到端实测踩到的假成功：xperf 被超时杀掉后仍留了一个**空报告文件**，
     // 原实现只看"文件是否存在"就报 ok:true，返回一个空结果 —— 调用方会以为"没有热点"。
     if (r.timedOut) {
@@ -233,7 +400,7 @@ export function makeTrace(cfg = {}) {
           if (leftoverBytes === 0) rmSync(outHtml, { force: true })
         }
       } catch { /* ignore */ }
-      return {
+      return Object.assign({
         ok: false, timedOut: true, etlPath: etl, reportPath: leftoverBytes ? outHtml : null,
         symbolCacheDir: !args.offline ? join(c.symbolCacheDir || join(c.evidenceDir, 'symbol-cache'), 'symbols') : null,
         raw: (r.stdout + '\n' + r.stderr).trim().slice(0, 400),
@@ -241,21 +408,53 @@ export function makeTrace(cfg = {}) {
           '② 用 focus 缩小 -symbol 范围；③ 调大 timeoutMs；④ 该 etl 是否过大（可用更短采集时长重采）',
         hint: '若超时发生在符号解码阶段（症状：xperf 长时间 ~0% CPU、报告一直 0 字节），多半是公网符号服务器慢或被挡 —— ' +
           '符号缓存会跨运行共享（见 symbolCacheDir），同一个 etl 重跑一次通常就快很多；也可用 offline:true 先只拿原生帧。',
-      }
+      }, rawFields)
     }
     if (!existsSync(outHtml)) {
-      return { ok: false, error: 'xperf 未产出报告', raw: (r.stdout + r.stderr).slice(0, 600) }
+      const rawTxt = (r.stdout + '\n' + r.stderr).trim()
+      const diag = diagnoseXperfFailure(r.code, rawTxt, 0)
+      return Object.assign({
+        ok: false,
+        etlPath: etl,
+        error: 'xperf 未产出报告' + (diag.diagnosis ? '：' + diag.diagnosis : ''),
+        xperfExit: diag.exitCode,
+        eventsLost: diag.eventsLost,
+        raw: rawTxt.slice(0, 800),
+      }, rawFields)
     }
     const html = readFileSync(outHtml, 'utf8')
     const parsed = parseStackReport(html)
     parsed.__etl = etl
     const s = summarize(parsed, { topN, focus: args.focus })
+    const symInfo = symbolPathInfo(!!args.offline)
+    const symFields = {
+      symbolPath: symInfo.effective,
+      // composed=true 不是内部细节：它意味着"你配的那个路径**被我们接上了**公网符号链"，
+      // 必须转达给用户，否则他会以为 `_NT_SYMBOL_PATH` 就是自己写的那一串。
+      symbolPathComposed: symInfo.composed,
+      symbolPathNote: symInfo.composed
+        ? '你把符号路径配成了一个**没有符号服务器指令**的值（没有 `srv*`），已**替你接上**默认公网链 —— ' +
+          '因为 `_NT_SYMBOL_PATH` 是**整串替换**语义：只写目录的话，系统 DLL 的符号会全部解析不出来（实测如此）。' +
+          '生效值见 symbolPath。想"只用本地符号"就把 `srv*` 自己写进去（写了就原样使用，我们不再动它）。' +
+          (symInfo.configuredFrom === '_NT_SYMBOL_PATH'
+            ? '（注：这个值来自机器既有的 `_NT_SYMBOL_PATH`，不是你显式配的 `DSH_PERF_SYMBOL_PATH`。）'
+            : '')
+        : null,
+    }
     if (!s.hotCount && !s.chainCount) {
       // 空报告 = 失败，不是"没有热点"（没读到 ≠ 没有）
+      const reportBytes = statSync(outHtml).size
+      const rawTxt = (r.stdout + '\n' + r.stderr).trim()
+      const diag = diagnoseXperfFailure(r.code, rawTxt, reportBytes)
       return Object.assign({
-        ok: false, etlPath: etl, reportPath: outHtml, reportBytes: statSync(outHtml).size,
-        error: '报告里没有可解析的函数条目 —— 不要当成"没有热点"。可能原因：符号未解析（确认已装符号/网络可达）、' +
-          'focus 过滤太严、xperf 输出为空。可先去掉 focus 重跑一次看有没有内容。',
+        ok: false, etlPath: etl, reportPath: outHtml, reportBytes,
+        xperfExit: diag.exitCode, eventsLost: diag.eventsLost,
+        error: '报告里没有可解析的函数条目 —— 不要当成"没有热点"。'
+          + (diag.diagnosis
+            ? diag.diagnosis
+            : '可能原因：符号未解析（确认已装符号/网络可达）、focus 过滤太严、xperf 输出为空。可先去掉 focus 重跑一次看有没有内容。')
+          + '（xperf 原文尾部：' + diag.tail.slice(-260) + '）',
+        raw: rawTxt.slice(0, 800),
         text: s.text,
       }, s)
     }
@@ -264,10 +463,12 @@ export function makeTrace(cfg = {}) {
       focus: args.focus || null, process: args.process || c.procName || null,
       symbols: !args.offline, elapsedMs: Date.now() - t0,
       symbolCacheDir: !args.offline ? join(c.symbolCacheDir || join(c.evidenceDir, 'symbol-cache'), 'symbols') : null,
-    }, s)
+      xperfRaw: rawInfo.raw, xperfRawBytes: rawInfo.rawBytes,
+      xperfRawTruncated: rawInfo.rawTruncated, xperfRawFiltered: rawInfo.rawFiltered,
+    }, symFields, s)
   }
 
-  return { trace, hotstacks, isElevated, parseStackReport, symbolEnv, config: () => c }
+  return { trace, hotstacks, isElevated, parseStackReport, symbolEnv, symbolPathInfo, config: () => c }
 }
 
 // ---------------------------------------------------------------- 报告解析
@@ -378,11 +579,207 @@ export function parseStackReport(html) {
     }
   }
 
-  const allNames = hotFunctions.map((f) => f.name).concat(butterfly.map((b) => b.name))
+  // 符号未解析比例：**口径必须覆盖"所有被打出来的名字"**。
+  //
+  // 修（2026-09-11，Claude r12 提的方向 + 我用真报告实测确认）：原口径只有
+  // `hotFunctions + butterfly 的 root 名`，**不含蝴蝶视图里的调用者/被调用者**——
+  // 而那份列表正是输出里最显眼的部分。真机（374KB 真 xperf 报告，test/fixtures/stack-report-managed.html）实测：
+  //   上报 0.2%（1472 项），而实际显示出来的名字有 1578 个、其中 6 个未解析（0.4%）；
+  //   链里明明白白写着 `***unknown***!***unknown***`，却一个都没进分母。
+  // 未解析帧恰恰**偏爱深层**（冷门模块没有 pdb 的概率最高），所以这个低估在符号没配好的报告里会成大问题：
+  // 报"0% 未解析"，而下面的调用链满是 unknown —— 又一条"工具不说谎"的失守。
+  const chainNames = butterfly.flatMap((b) => b.callers.map((c) => c.name).concat(b.callees.map((c) => c.name)))
+  const allNames = hotFunctions.map((f) => f.name).concat(butterfly.map((b) => b.name)).concat(chainNames)
   const unknown = allNames.filter((n) => /\*\*\*unknown\*\*\*/.test(n)).length
   const unknownRatio = allNames.length ? unknown / allNames.length : 0
+  // 分桶明细：让"未解析集中在链里"这种事能被看见，而不是被一个总数抹平。
+  //
+  // F-043 追加的第三桶（**这是"未解析"里唯一还能提取信息的一层**）：
+  // 未解析的名字有两种形态，价值完全不同：
+  //   `***unknown***!***unknown***`  —— 连**模块名**都没有 ⇒ 任何工具都无法归因，
+  //                                    只能靠补映射（换采集方式/补符号）才有救；
+  //   `mscorlib.dll!***unknown***`   —— **模块知道、函数名不知道** ⇒ 至少能说"这堆未知属于它"。
+  //
+  // ⚠️ 我在这里先写错过一次：动手实现时我凭上一轮的印象写下"实测 871 个未解析帧**全部**属于前者"，
+  //    而那个拆分**当时根本没测过**（unknown 总数是测过的，拆分不是）。真跑一次之后数字是
+  //    666 = 615（带模块名）+ 51（连模块名都没有）—— **与我的印象相反**。
+  //    教训还是同一条：**凭印象写下的"实测"就是伪证**，写进注释也一样有害（下一个人会信它）。
+  // 所以这里额外算一个 **byModule**：既回答"未知集中在谁身上"，也让上面那句话随时可被数据推翻。
+  const unknownNames = allNames.filter((n) => /\*\*\*unknown\*\*\*/.test(n))
+  // 「有没有模块前缀」必须**和 byModule 用同一把尺子**：第一版只看"是不是恰好等于 `***unknown***!`"，
+  // 于是 `!***unknown***`（前缀为空）被算成了"已知模块"，而 byModule 又把它归到 `(模块未知)`
+  // —— 同一份数据里两个字段互相矛盾（Codex r37 第 11 条）。
+  const nameModuleOf = (n) => {
+    const head = String(n).split('!')[0].trim()
+    if (head === '' || isUnknownBucket(head)) return '(模块未知)'
+    return head
+  }
+  const unknownWithModule = unknownNames.filter((n) => nameModuleOf(n) !== '(模块未知)').length
+  const unkByModule = new Map()
+  for (const n of unknownNames) {
+    const key = nameModuleOf(n)
+    unkByModule.set(key, (unkByModule.get(key) || 0) + 1)
+  }
+  const unknownDetail = {
+    unknown,
+    total: allNames.length,
+    inHot: hotFunctions.filter((f) => /\*\*\*unknown\*\*\*/.test(f.name)).length,
+    inRoots: butterfly.filter((b) => /\*\*\*unknown\*\*\*/.test(b.name)).length,
+    inChains: chainNames.filter((n) => /\*\*\*unknown\*\*\*/.test(n)).length,
+    withModule: unknownWithModule,
+    withoutModule: unknown - unknownWithModule,
+    byModule: [...unkByModule.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([module, count]) => ({ module, count })),
+  }
 
-  return { processes, modules, hotFunctions, butterfly, unknownRatio, totalSamples: hotFunctions.reduce((a, f) => Math.max(a, f.exclusive), 0) }
+  // ---- F-043：**有独占命中、却一条函数名都没解出来**的模块 ----
+  //
+  // 为什么值得单独算：`***unknown***!***unknown***` 连**模块名**都没有，
+  // 看上去是"零信息"。但 xperf 的**模块表**（Modules by Exclusive Hits）是带模块名的，
+  // 于是"未知"里其实还剩一层可用信息：**这段时间花在哪个模块里，只是没走到方法名**。
+  // 实测现场（2026-09-11）：把客户端自己的 16 个 pdb 目录加进符号路径后，报告里
+  //   `mscorlib!…` / `WindowsBase!…` / `PresentationFramework.ni.dll!System.Windows.Window.ShowDialog`
+  // 都能出名字，**客户端自己的托管帧却仍然一条都没有**（unknownRatio 0.14、客户端函数名 0 条）。
+  // 不说出来，agent 会把那 14% 的 unknown 当成"没有证据" —— 而它其实指向"热点在客户端自己的模块里"。
+  const resolvedMods = new Set()
+  for (const n of allNames) {
+    if (/\*\*\*unknown\*\*\*/.test(n)) continue
+    const mod = moduleKey(String(n).split('!')[0])
+    if (mod) resolvedMods.add(mod)
+  }
+  const silentModules = modules
+    .filter((m) => Number(m.hits) >= SILENT_MODULE_MIN_HITS && parseFloat(String(m.percent)) >= SILENT_MODULE_MIN_PERCENT)
+    .filter((m) => !resolvedMods.has(moduleKey(m.module)))
+    // ⚠️ `***unknown***` 自己也会作为**一行模块**出现在模块表里（真夹具 stack-report-managed.html 就有）。
+    //    它不是"一个模块"，而是"没归到任何模块的桶"（可能混着好几个）—— 把它写进
+    //    "有命中却没函数名的模块"会变成**编出来的身份**（Codex r37 第 6 条）。单列成 bucket 字段。
+    .filter((m) => !isUnknownBucket(m.module))
+    .map((m) => ({ module: m.module, hits: Number(m.hits) || 0, percent: m.percent }))
+  // 未归因桶单独带出来（信息不丢，但**不冒充模块身份**）
+  const unassigned = modules.find((m) => isUnknownBucket(m.module))
+
+  return {
+    processes, modules, silentModules,
+    unassignedModuleBucket: unassigned ? { module: unassigned.module, hits: Number(unassigned.hits) || 0, percent: unassigned.percent } : null,
+    hotFunctions, butterfly, unknownRatio, unknownDetail,
+    totalSamples: hotFunctions.reduce((a, f) => Math.max(a, f.exclusive), 0),
+  }
+}
+
+/** `***unknown***` 这类"桶"不是模块身份（见 silentModules 处的说明）。 */
+export function isUnknownBucket(name) {
+  return /\*\*\*unknown\*\*\*/.test(String(name == null ? '' : name))
+}
+
+/**
+ * 模块名的比较键：xperf 的**模块表**写 `mscorlib.dll`，而**帧**写 `mscorlib!方法` ——
+ * 不去掉扩展名就永远匹配不上，于是"有命中却解不出名字的模块"会**全部**漏报。
+ * （这类"同一实体两种写法"是静默失配的高发区，单列一个函数出来就是为了能被测试钉住。）
+ */
+export function moduleKey(name) {
+  return String(name == null ? '' : name).trim().toLowerCase()
+    .replace(/\.(dll|exe)$/i, '')
+    .replace(/\.ni$/i, '')
+}
+
+/** "有命中却没有函数名"的模块的入表门槛：低于它多半是噪声/表项截断，不值得升级成告警。 */
+export const SILENT_MODULE_MIN_HITS = 10
+export const SILENT_MODULE_MIN_PERCENT = 1
+
+/**
+ * 这段窗口是"**在等**"还是"**在烧**" —— 必须由工具说出来。
+ *
+ * 怎么逼出来的（F-043 现场，真机）：我拿着一段 6 秒采样去解释"客户端到底慢在哪"，
+ * 而那段窗口里 UI 线程**就是在消息泵里等消息**：独占采样 91% 落在 `ntkrnlmp.exe`（内核），
+ * 链条是 `Application.Run → Dispatcher.PushFrame → IL_STUB_PInvoke(MSG) → DispatchMessageWorker`。
+ * 对空闲的 UI 线程这**完全正常**；我差一点把它写成"91% 在内核 ⇒ 内核有瓶颈"。
+ * 而**第一版判定没触发**（我只认名字里带 `GetMessage` 且包含命中 ≥30% 的帧，
+ * 而那个帧在真报告里只作为链上深层节点出现、根本没有百分比）——
+ * 于是"工具不说"就等于"agent 只能靠猜"，正是要修的病。
+ *
+ * 判定分两条，**各自说清自己的含义**（不同信号的含义不同，不许合并成一句模糊的告警）：
+ *   ① 消息泵帧的包含命中 ≥ minPercent ⇒ 明确是**空闲等待**形态；
+ *   ② 独占命中的**第一名是内核镜像**（ntkrnlmp/ntoskrnl）且 ≥ minKernelPercent
+ *      ⇒ 说明"时间主要花在内核/系统调用路径上"，**但分辨不了"空闲等待"与"被阻塞"** ——
+ *      所以文案必须把这两种可能都摆出来，不许替读者选一个。
+ */
+export function waitingWindowHint(parsed, { minTopPercent = 50, minKernelPercent = 60 } = {}) {
+  // 只认"这看起来**真的**是个消息泵 API"（Codex r37 反例：`Client.dll!GetMessageDigest`
+  // 被 `/GetMessage/` 命中 ⇒ "30% 摘要 + 70% 忙活" 被报成"空闲、一切正常"，结论直接反过来）。
+  // 规则：取 `!` 之后的函数名，**整体**必须是已知消息泵 API（允许 Win32 A/W 后缀、允许 xxx/Nt/Zw 前缀），
+  // 不做任意子串匹配。
+  const isPumpApi = (full) => {
+    const s = String(full)
+    const fn = s.includes('!') ? s.slice(s.indexOf('!') + 1) : s
+    const base = fn.replace(/\((.*)$/, '').trim()
+    const tail = base.split(/[.:]/).pop() ?? base
+    return /^(xxx\w*)?(NtUser|Nt|Zw)?(Get|Peek|Wait)Message(W|A)?$/i.test(tail) ||
+      /^MsgWaitForMultipleObjects(Ex)?$/i.test(tail)
+  }
+  const pump = (parsed.hotFunctions || []).find((f) => isPumpApi(f.name) && parsePct(f.percent) >= minTopPercent)
+    || (parsed.butterfly || []).find((b) => isPumpApi(b.name) && parsePct(b.percent) >= minTopPercent)
+  if (pump) {
+    return {
+      kind: 'idle-message-pump',
+      frame: pump.name,
+      percent: String(pump.percent),
+      note: '这段窗口里**包含命中最大的一条链条就是消息泵等待**（`' + pump.name + '`，包含命中 ' + pump.percent + '）' +
+        '—— 也就是说，这个进程**大部分时间在等消息**。' +
+        '⚠ 仅凭这一条**不能**断定"所以一切正常"：它只否掉"这段时间整体在烧 CPU"，' +
+        '不排除"等到消息之后有一小段很慢的处理"（占比小、会被平均掉）。' +
+        '要查卡顿：先用 perf_probe 标定出**卡顿确实发生**的那段时间，再**在窗口内**重新 perf_trace 采集；' +
+        '或者用 perf_dump 看卡顿那一刻的线程栈。',
+    }
+  }
+  // 模块表**按命中排序**再取第一名：报告的行序是 xperf 给的，不能假设它一定从大到小
+  // （Codex r37 反例：10 个各 1 命中的模块排在前面时，"最热模块"会整个错位）。
+  const top = sortModulesByHits(parsed.modules)[0]
+  if (top && isKernelSideModule(top.module) && parsePct(top.percent) >= minKernelPercent) {
+    return {
+      kind: 'kernel-dominant',
+      frame: top.module,
+      percent: String(top.percent),
+      note: '这段窗口里**独占采样（采样点真的落在那里）最多的是 `' + top.module + '`（' + top.percent + '）** —— ' +
+        '即"时间花在内核/系统调用路径上"，**不是**在客户端自己的托管代码里烧 CPU。' +
+        '⚠ 但这一条**分辨不了三件不同的事**：① **空闲等待**（在消息泵里等消息，正常）；' +
+        '② **被阻塞**（等锁/等 IO/等别的线程，这才是问题）；③ **内核自己在忙**（驱动/中断，可能是显卡或网络侧）。' +
+        '本报告给不出这个区别，**别替它下结论**。' +
+        '要区分：先用 perf_probe 确认"卡顿确实发生在这段时间"，再用 perf_dump 看那一刻的线程栈。',
+    }
+  }
+  return null
+}
+
+/** 模块表按**独占命中**排序（不假设报告行序是从大到小 —— Codex r37 反例：行序可能错位）。 */
+export function sortModulesByHits(modules) {
+  return (Array.isArray(modules) ? modules.slice() : [])
+    .filter((m) => Number(m.hits) > 0)
+    .sort((a, b) => (Number(b.hits) || 0) - (Number(a.hits) || 0))
+}
+
+/**
+ * 这是不是"内核侧"模块（内核镜像或驱动）。
+ *
+ * Codex r37 指出第一版的两处毛病：① 只认 `ntkrnlmp/ntoskrnl/ntdll.exe` 这几个名字 ⇒
+ * **漏掉真正吃时间的驱动**（反例：`nvlddmkm.sys` 91% 却什么都不报）；② 用 `^ntkrnlmp` 前缀匹配 ⇒
+ * `ntkrnlmp-helper.dll` 也会被叫做"内核镜像"（**没有身份证据**）。现在：已知内核镜像**精确匹配**，
+ * 或**按扩展名**认 `.sys`（驱动）—— 只按扩展名，不做前缀猜测。
+ */
+export function isKernelSideModule(name) {
+  const s = String(name == null ? '' : name).trim().toLowerCase()
+  if (s === '') return false
+  if (/\.sys$/.test(s)) return true
+  return s === 'ntkrnlmp.exe' || s === 'ntoskrnl.exe' || s === 'ntdll.dll' || s === 'win32k.sys' ||
+    s === 'win32kfull.sys' || s === 'win32kbase.sys'
+}
+
+/** 旧名保留（历史调用点/文档用过），行为已扩展为 waitingWindowHint。 */
+export const idleMessagePumpHint = waitingWindowHint
+
+/** 解析 "12.34%" / 12.34 / "12.34" 三种写法（报告里两种都出现过）。 */
+function parsePct(v) {
+  if (v == null) return NaN
+  const n = parseFloat(String(v).replace('%', ''))
+  return Number.isFinite(n) ? n : NaN
 }
 
 /**
@@ -411,13 +808,84 @@ export function summarize(parsed, { topN = 15, focus = '' } = {}) {
   if (!hot.length && !chains.length) {
     lines.push('符号/条目: 报告里没有任何可解析的函数条目（**不等于"没有热点"**）')
   } else {
+    // 比例必须**连口径一起说**：只给一个百分数，读者会以为它覆盖了整份报告；
+    // 而真实口径是"本次打印出来的函数名"（最热函数 + 蝶形根 + 链上调用者/被调用者）。
+    const d = parsed.unknownDetail
+    // 口径必须**说准**（Codex r37 第 10 条）：分母是"报告里解析到的名字"（解析全表），
+    // **不是**下面打印出来的那一小段（topN / focus / 链上各截 8 条都会让实际打印少于一整个分母）。
+    // 说成"本次打印的 N 个函数名"会让读者以为 50% 指的是他眼前看到的东西 —— 那就错了。
     lines.push('符号未解析比例: ' + (parsed.unknownRatio * 100).toFixed(0) + '%' +
+      (d ? '（口径：**报告里解析到的** ' + d.total + ' 个名字（不限于下面打印的这部分），其中 ' + d.unknown + ' 个是 ***unknown***；' +
+        '其中最热表 ' + d.inHot + ' 个、链上 ' + d.inChains + ' 个）' : '') +
       (parsed.unknownRatio > 0.5 ? '  ⚠️ 大量帧未解析 —— 先配好符号（DSH_PERF_SYMBOL_PATH）再看结论' : ''))
+    // 未解析帧**偏爱深层**：总数很低但链上就有未知帧时也要点出来（否则"0%"会被当成"整条链都可信"）。
+    // 这里刻意用 ℹ️ 而不是 ⚠️：解析良好的报告里出现个别链上 unknown 是常态，用最高级告警就成了"狼来了"，
+    // ⚠️ 只留给"大量未解析"（>50%）那种真的不能下结论的情形。
+    if (d && d.inChains > 0 && parsed.unknownRatio <= 0.5) {
+      lines.push('  ℹ️ 注意：调用链里有 ' + d.inChains + ' 个未解析帧 —— 链上出现的 ***unknown*** 通常在**深层**，' +
+        '这部分代码在本次报告里是**看不见的**，不要据此判断"那段逻辑没被调用"。')
+    }
+    // F-043：未解析的帧"还剩多少信息可用"必须说清楚 —— 这决定了下一步该做什么。
+    if (d && d.unknown > 0) {
+      lines.push('  · 未解析的 ' + d.unknown + ' 个名字里：**' + d.withoutModule + ' 个连模块名都没有**' +
+        '（形如 `***unknown***!***unknown***`），**' + d.withModule + ' 个至少知道模块**。' +
+        (d.withModule > 0
+          ? '后者是**可归因的**：这堆未知属于哪些模块，见下一行 —— 定位到模块往往已经够用，别再往下猜函数。'
+          : '前者**无法被任何后处理归因**（模块名都不在报告里）。'))
+      const byMod = Array.isArray(d.byModule) ? d.byModule : []
+      if (byMod.length) {
+        lines.push('    未解析最多的模块：' + byMod.slice(0, 6).map((m) => m.module + ' ×' + m.count).join('，'))
+      }
+      // 为什么这条要专门写：ETW 的托管方法名依赖**采集期间**的运行时映射事件，
+      // 对一个**早就跑起来**的 .NET 进程，它自己的方法很可能点不出名字。
+      // 实测（本机客户端，6 秒采样）：采样 100% 落在该进程、20 个模块有名字、客户端自己的 pdb 也在符号路径上，
+      // 报告里客户端自己的模块/方法**一个都没有**。不说清楚，agent 会把这读成"客户端代码没参与"。
+      lines.push('    ⚠ 若目标是个**早就启动**的 .NET 应用：它自己的托管方法名在 ETW 里可能**整批**点不出来' +
+        '（运行时映射事件只在采集窗口内产生）—— 此时**能拿到的上限就是"在哪个系统/框架函数里、被谁调用"**，' +
+        '而不是"客户端哪个方法"。这不是"没有热点"，也不等于"客户端自己的代码没参与"。')
+    }
+    // F-043：`***unknown***!***unknown***` 连模块名都没有，最容易被读成"零信息"。
+    // 但报告里的**模块表**带模块名 —— 所以"未知"里还剩一层能用：**热点在哪个模块里**。
+    const silent = Array.isArray(parsed.silentModules) ? parsed.silentModules : []
+    if (silent.length) {
+      lines.push('')
+      lines.push('⚠ 有 ' + silent.length + ' 个模块**有独占命中、却一条函数名都没解出来**' +
+        '（门槛：hits≥' + SILENT_MODULE_MIN_HITS + ' 且 ≥' + SILENT_MODULE_MIN_PERCENT + '%）——' +
+        '热点**就在它里面**，但这份报告只给到模块级，给不出方法名：')
+      for (const m of silent.slice(0, 8)) lines.push('    ' + m.module + '   hits=' + m.hits + '  ' + m.percent)
+      lines.push('  · 想把方法名解出来：① 确认这些 pdb 与**正在运行的那个 dll** 是同一次构建产物（版本不匹配会静默失效）；' +
+        '② 把 pdb 所在目录加进 DSH_PERF_SYMBOL_PATH —— 它是**整串替换**不是追加，' +
+        '要写成 `srv*<缓存>*https://msdl.microsoft.com/download/symbols;<你的目录>`，只写目录会把系统符号全部丢掉；' +
+        '③ 即便如此，**已在运行的进程**其托管方法名仍可能给不出来（实测：客户端 pdb 已就位、系统 DLL 全解析，客户端自己的托管帧依然全是 unknown）。' +
+        '那时**模块级线索就是上限** —— 别把它当成"没有热点"。')
+    }
   }
   lines.push('')
   lines.push('## 最热函数（按包含命中 inclusive）')
   for (const f of hot) lines.push('  ' + String(f.percent).padStart(7) + '  ' + f.name + '   (excl ' + f.exclusive + ')')
   if (!hot.length) lines.push('  （没有解析出函数 —— 报告为空或过滤太严）')
+  // 模块表：**谁真的在烧 CPU**（独占命中 = 采样点落在该模块里）。
+  // 加它的理由很实际：未解析帧大多**带模块名**（实测 611 个里 552 个），
+  // 于是"哪个模块吃掉了时间"往往比"哪个函数"更早给出方向；而这份表一直躺在报告里没人看
+  // （parseStackReport 解析了它，summarize 却把它丢了 —— F-043）。
+  const modRows = sortModulesByHits(parsed.modules).slice(0, 10)
+  if (modRows.length) {
+    lines.push('')
+    lines.push('## 最热模块（按**独占**命中 —— 采样点就落在这个模块里）')
+    for (const m of modRows) lines.push('  ' + String(m.percent).padStart(7) + '  ' + m.module + '   (hits ' + m.hits + ')')
+    const unassigned = parsed.unassignedModuleBucket
+    if (unassigned) {
+      lines.push('  · 其中 `***unknown***`（' + unassigned.hits + ' 次 / ' + unassigned.percent + '）是**未归因的桶**：' +
+        '它可能混着好几个模块，**不是**"某个模块"的名字。')
+    }
+    lines.push('  （独占 ≠ 包含：模块名字在**调用链**里出现的次数远多于它真正吃掉的采样点，别按名字多少下结论）')
+  }
+  // 「这段窗口是在等还是在烧」必须由工具说出来 —— 否则读者会把"内核占比高"直接读成瓶颈（见 waitingWindowHint）
+  const idle = waitingWindowHint(parsed)
+  if (idle) {
+    lines.push('')
+    lines.push('⚠ ' + idle.note)
+  }
   lines.push('')
   lines.push('## 调用链（调用者 <-- 本函数 --> 被调用者）')
   for (const c of chains) {
@@ -431,10 +899,23 @@ export function summarize(parsed, { topN = 15, focus = '' } = {}) {
   return {
     text: lines.join('\n'),
     unknownRatio: parsed.unknownRatio,
+    unknownDetail: parsed.unknownDetail,
     hotCount: hot.length,
     chainCount: chains.length,
     hotFunctions: hot,
     chains,
     processes: (parsed.processes || []).slice(0, 10),
+    // 模块表必须**透出去**：parseStackReport 一直在解析它，但 summarize 把它丢了 ⇒
+    // 结构化结果里根本没有 modules 字段（实测：`hs.modules` 恒为 undefined，探针里那条
+    // "客户端的模块在不在 trace 里"的检查因此**永远拿不到答案**）。
+    // silentModules 更要透出去 —— 它是"热点在哪个模块里"的唯一线索（F-043）。
+    // ⚠️ 上限 30 必须**说明**（Codex r37 第 9 条）：调用方问"我的模块在不在里面"时，
+    //    看到"没出现"不能当成"不在"—— 所以同时给出总数与是否被截断。
+    modules: sortModulesByHits(parsed.modules).slice(0, 30),
+    modulesTotal: sortModulesByHits(parsed.modules).length,
+    modulesTruncated: sortModulesByHits(parsed.modules).length > 30,
+    silentModules: parsed.silentModules || [],
+    unassignedModuleBucket: parsed.unassignedModuleBucket || null,
+    waitingWindow: waitingWindowHint(parsed),
   }
 }

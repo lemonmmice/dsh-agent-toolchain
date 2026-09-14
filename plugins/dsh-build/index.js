@@ -8,7 +8,10 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
+import { renderBuild, renderStatus } from './lib/render.mjs'
 import { makeBuilder } from './lib/builder.mjs'
+import { checkCompileMembership, renderMembership } from '../../lib/compile-membership.mjs'
+import { envOr } from '../../lib/env-fallback.mjs'
 
 export const name = 'dsh-build'
 
@@ -30,11 +33,15 @@ const GUIDANCE =
 let builder = null
 function bld() {
   if (!builder) {
+    // 配置统一走 env-fallback（进程环境 → 用户级注册表 → 机器级）：DSH 宿主是长活进程，
+    // 用户后来设置的用户级变量不在它的环境块里 —— 直接读 process.env 会把"用户已经配好"
+    // 读成"没配置"，于是 build_run 报"找不到仓库根/msbuild 缺失"，而用户明明配了。
+    // 注意 `''` 与 undefined 的语义差别由 envOr 统一处理（显式空串=主动清空，不回退注册表）。
     builder = makeBuilder({
-      clientRoot: process.env.DSH_BUILD_CLIENT_ROOT || '',
-      repoRoot: process.env.DSH_BUILD_REPO_ROOT || '',
-      msbuild: process.env.DSH_BUILD_MSBUILD || '',
-      logsDir: process.env.DSH_BUILD_LOGS_DIR || join(homedir(), '.dsh-agent-toolchain', 'build-logs'),
+      clientRoot: envOr('DSH_BUILD_CLIENT_ROOT'),
+      repoRoot: envOr('DSH_BUILD_REPO_ROOT'),
+      msbuild: envOr('DSH_BUILD_MSBUILD'),
+      logsDir: envOr('DSH_BUILD_LOGS_DIR') || join(homedir(), '.dsh-agent-toolchain', 'build-logs'),
     })
   }
   return builder
@@ -66,15 +73,17 @@ const OBJECT = { type: 'object', additionalProperties: true }
 const tools = () => [
   defineTool({
     name: 'build_run',
-    description: '运行 MSBuild 构建并结构化解析错误。默认增量 Build（快检，秒级~2分钟）；最终结论用 Rebuild（全量，5-10分钟）；project 可定向单工程/.sln（相对仓库根），空=自动探测默认解决方案。返回错误列表（file/line/col/code/message）+ 日志路径。Triggers: 编译验证 / 增量编译 / 帮我编译 / 构建验证 / build.',
+    description: '运行 MSBuild 构建并结构化解析错误。默认增量 Build（快检，秒级~2分钟）；最终结论用 Rebuild（全量，5-10分钟）；project 可定向单工程/.sln（相对仓库根），**空=自动探测默认解决方案**（可能探测到**不含你改动**的那个 .sln，而"0 错误"照旧成立 ⇒ 请核对返回的目标与日志路径）。⚠ **错误数 0 ≠ 你新加的文件进了编译**（legacy .csproj 要手工 <Compile Include>，漏加时构建通过但文件根本没编）—— 要证这件事得自己验编译项或产物，本工具不替你证。返回错误列表（file/line/col/code/message）+ 日志路径。Triggers: 编译验证 / 增量编译 / 帮我编译 / 构建验证 / build.',
     parameters: {
-      target: { type: 'string', description: 'Build（增量，默认）或 Rebuild（全量）' },
+      target: { type: 'string', enum: ['Build', 'Rebuild'], description: 'Build（增量，默认）或 Rebuild（全量）' },
       project: { type: 'string', description: '可选：定向工程/.sln（相对仓库根）；空=自动探测默认解决方案（WholeSolution.sln 优先）' },
       configuration: { type: 'string', description: '默认 Debug' },
       platform: { type: 'string', description: '可选：默认按布局自动解析（老布局 x86 / 从 .sln 探测，Any CPU 优先）' },
-      engine: { type: 'string', description: '可选：msbuild（默认，VS MSBuild）或 dotnet（dotnet build，现代 SDK 仓库推荐）' },
+      engine: { type: 'string', enum: ['msbuild', 'dotnet'], description: '可选：msbuild（默认，VS MSBuild）或 dotnet（dotnet build，现代 SDK 仓库推荐）' },
       repoRoot: { type: 'string', description: '可选：仓库根目录（默认 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT）' },
-      killClient: { type: 'boolean', description: '客户端在运行时强制结束它再构建（会打断用户界面，需先确认）' },
+      // R42：MCP 面一直有 clientRoot，DSH 面没有（同一个调用在一面能指定、在另一面只能退化成环境变量）。
+      clientRoot: { type: 'string', description: '可选：客户端/解决方案根目录（等价于 repoRoot，优先于环境变量 DSH_BUILD_CLIENT_ROOT）' },
+      killClient: { type: 'boolean', description: '客户端在运行时强制结束它再构建（会打断用户界面，需先确认）。⚠ **与 ui_launch(force=true) 同样会销毁唯一现场**：客户端卡死/卡顿要先取证（perf_dump 抓快照、hang_run 挂监测），证据到手再杀；否则 dump/线程栈/证据包都没了' },
       runId: { type: 'string', description: '可选：本次任务的 runId。传了才会写 run-<runId>.json 凭证记录（verify_report 的 build 类 claim 正是读这个文件；不传则只写 last.json，多 agent 并发时会互相覆盖）。建议用 who-task-n 形式，如 dsh-logon-fix-1' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderBuild(v) }] },
@@ -92,35 +101,41 @@ const tools = () => [
     name: 'build_status',
     description: '查最近一次构建结果（目标/耗时/错误数/日志路径）。Triggers: 上次编译结果 / build status.',
     parameters: {},
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.hasRun ? ('最近构建：' + v.target + ' ' + (v.ok ? '通过' : '失败(' + v.errorCount + ' 错误)') + '，耗时 ' + (v.durationMs / 1000).toFixed(1) + 's，日志 ' + v.logPath) : '还没有构建记录' }] },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderStatus(v) }] },
     async execute() {
       return bld().status()
     },
   }),
   defineTool({
     name: 'build_errors',
-    description: '从最近一次构建日志重新解析错误/警告列表（结构化 file/line/col/code/message）。Triggers: 解析编译错误 / 查看编译错误.',
+    description: '从**最近一次**构建日志重新解析错误/警告列表（结构化 file/line/col/code/message）。⚠ 它读的是"最近一次日志"、**不保证是本次 run**（多 agent 并发时会读到别人的）：空 ≠ 没有错误，先看返回值里的日志路径/时间是不是你要的那次；要绑定本次请用 build_run 的 runId + verify_report(kind="build")。Triggers: 解析编译错误 / 查看编译错误.',
     parameters: {},
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.hasRun ? (v.errors.length + ' 错误 / ' + v.warnings.length + ' 警告（日志 ' + v.logPath + '）') : '没有构建记录' }] },
     async execute() {
       return bld().errorsOfLast()
     },
   }),
+  defineTool({
+    name: 'build_compile_check',
+    description:
+      '核对**一个源码文件到底进没进编译**（只读）—— 回答"编译 0 错误"答不出的那个问题。' +
+      '⚠ 本仓已知陷阱：**legacy .csproj 不会自动包含 .cs**，新增文件漏写 `<Compile Include>` 时' +
+      '**构建通过、文件根本没编**；而 `verify_report(kind="file")` 只验"文件存在"，会给**假 pass**（G1 黑盒 agent 原话）。' +
+      '本工具按工程风格判定：legacy ⇒ 必须有显式编译项（含通配符）；SDK ⇒ 默认 glob 包含，除非显式关掉 `EnableDefaultCompileItems`；' +
+      '`<Compile Remove>` 优先于 Include。**三态**：能证明"在"才说在、能证明"不在"才说不在、**读不到（文件/工程不存在、同层多工程、解析不了）一律 ok:false + 原因**，绝不说成"不在"。' +
+      '不数 = 不求值 MSBuild `Condition`，条数会如实带出。Triggers: 新文件进没进编译 / 文件被编译了吗 / Compile Include / compiled?.',
+    parameters: {
+      file: { type: 'string', required: true, description: '源码文件路径（绝对路径，或相对 repoRoot/当前工作目录）。' },
+      project: { type: 'string', description: '可选：显式指定工程文件（*.csproj）。不给就从这个文件往上找；找到多个会**返回歧义**而不是随便挑一个。' },
+      repoRoot: { type: 'string', description: '可选：向上查找工程的边界（默认 DSH_BUILD_CLIENT_ROOT / DSH_BUILD_REPO_ROOT / git 根）。' },
+    },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderMembership(v) }] },
+    async execute(args) {
+      const root = args.repoRoot || bld().config().clientRoot || bld().config().repoRoot || undefined
+      return checkCompileMembership(args.file, { projectPath: args.project, repoRoot: root })
+    },
+  }),
 ]
-
-function renderBuild(v) {
-  if (v.clientRunning && !v.killClient) return '客户端正在运行（PID ' + v.clientPid + '），输出文件被锁无法构建：' + v.error
-  if (!v.ok && v.timedOut) return '构建超时（' + (v.durationMs / 1000).toFixed(0) + 's）：' + v.target
-  if (v.spawnError) return '构建无法启动：' + v.spawnError
-  const head = (v.target === 'Rebuild' ? 'Solution Rebuild' : 'Incremental/targeted build') + ' ' + (v.ok ? 'PASSED' : 'FAILED') + '（' + (v.durationMs / 1000).toFixed(1) + 's，' + v.errorCount + ' 错误 / ' + v.warningCount + ' 警告，日志 ' + v.logPath + '）'
-  if (!v.ok && v.errors.length > 0) {
-    return head + '\n关键错误：\n' + v.errors.slice(0, 10).map((e) => e.file + '(' + e.line + ',' + e.col + '): ' + e.code + ': ' + e.message).join('\n') + (v.truncated ? '\n…(错误已截断，用 build_errors 看全部)' : '')
-  }
-  if (!v.ok && v.envErrorCount > 0) {
-    return head + '\n环境错误（文件锁，非代码错误）：' + v.envErrors.slice(0, 4).map((e) => e.code + ': ' + e.message.slice(0, 120)).join('\n')
-  }
-  return head
-}
 
 // ---------------------------------------------------------------- Web 路由（仅回环）
 

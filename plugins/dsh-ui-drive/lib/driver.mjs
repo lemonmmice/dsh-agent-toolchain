@@ -9,22 +9,51 @@
  *    程序集只加载一次、主窗口只解析一次，步间没有进程启动开销；
  *  - status 走 batch 脚本的 -Status 快路径（不加载 UIA）。
  */
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { decodeBuffer } from '../../../lib/decode.mjs'
+import { envOr, unconfiguredHint, envWithPrefix } from '../../../lib/env-fallback.mjs'
 import { createPolicy } from './policy.mjs'
 import { createEnvelope, envelopeSummary, envelopeToLine } from './evidence.mjs'
 
-const PS = process.env.DSH_UI_POWERSHELL || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+// 解释器路径用户可配：经 env-fallback（长活宿主的进程环境里可能没有用户后来设的值）。
+const PS = envOr('DSH_UI_POWERSHELL') || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
 /** 每类输出的截断上限（字符），防止超长结果挤爆上下文。 */
 const LIMIT_READ = 20000
 const LIMIT_TREE = 14000
+/**
+ * `ui_flow` transcript 里单步 read 保留的行数（Claude 第七轮 Q2）。
+ * 这个数字**必须显式回报**（`linesCappedAt` + `note`）—— 真机实测过没有回报时的后果：
+ * read 步 count=320、lines 50 条、无 truncated/returned，看 transcript 的人会把 50 条
+ * 当成"这个容器的全部控件"，而真实容器（个股表）能到 70+ 条。
+ */
+const TRANSCRIPT_READ_LINES = 50
 
 /** 动作后的默认静默等待：UIA 动作本身是同步的，1200ms 纯属浪费。 */
 export const DEFAULT_WAIT_MS = 250
+
+/**
+ * `ui_launch(force=true)` 在杀进程之后的**重启判决**（F-039，**纯函数**，便于单测）。
+ *
+ * 抽出来的理由与 F-038 同源：这段判决原本埋在 `launch()` 里、要靠真起/真杀进程才能触发，
+ * 于是"杀进程核对窗口刚好差一点"这种时序窗口**没法单测**，只能靠全量并发跑碰运气。
+ *
+ * 三种情况：
+ *   · `killed === true`                     ⇒ 正常重启（`lateExit:false`）
+ *   · `killed === false` 且复核后**已没了**  ⇒ **仍然重启**，并标注 `lateExit` ——
+ *     这就是 F-039：原行为是在这里放弃重启并谎称"仍在运行"，而进程其实已经退出。
+ *   · `killed === false` 且复核后**还在**    ⇒ **拒绝重启**（红线：绝不起第二个实例）
+ *
+ * **不变量**：`stillHere === true` 时**永远不** proceed。
+ */
+export function forceRestartDecision({ killed, stillHere }) {
+  if (killed === true) return { proceed: true, lateExit: false, reason: 'killed' }
+  if (stillHere !== true) return { proceed: true, lateExit: true, reason: 'late-exit' }
+  return { proceed: false, lateExit: false, reason: 'still-running' }
+}
 
 /**
  * 进程级互斥锁：文件已存在则等待（最多 DSH_UI_LOCK_WAIT_MS，默认 5 分钟），
@@ -73,9 +102,12 @@ function acquireProcessLock(lockPath) {
 }
 
 export function makeDriver(cfg) {  const c = {
-    procName: process.env.DSH_UI_PROC_NAME || '',
-    windowName: process.env.DSH_UI_WINDOW_NAME || '',
-    clientExe: process.env.DSH_UI_CLIENT_EXE || '',
+    // 配置来源：进程环境优先，进程里没有时回退到用户级/机器级注册表（见 lib/env-fallback.mjs）——
+    // 真机实测：用户在宿主启动**之后**才 setx，宿主的 process.env 里没有这些变量，
+    // 工具却报「未配置目标进程」，等于告诉用户去做他已经做过的事。
+    procName: envOr('DSH_UI_PROC_NAME'),
+    windowName: envOr('DSH_UI_WINDOW_NAME'),
+    clientExe: envOr('DSH_UI_CLIENT_EXE'),
     evidenceDir: join(homedir(), '.dsh-agent-toolchain', 'ui-evidence'),
     defaultTimeoutMs: 90000,
     defaultWaitMs: DEFAULT_WAIT_MS,
@@ -104,7 +136,25 @@ export function makeDriver(cfg) {  const c = {
     return new Promise((resolve) => {
       let child
       try {
-        child = spawn(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args.map(String)], { windowsHide: true })
+        // 把**解析好的**配置显式传给子进程（2026-09-11）。
+        // 起因：`DSH_UI_PROC_NAME` 等变量在宿主启动后才写进用户级环境变量 → 宿主的 process.env 里没有 →
+        // 它 spawn 的 PowerShell 自然也看不到，而**脚本内部**（`$env:DSH_SNOOP_DIR` / `$env:DSH_UI_PROC_NAME`）
+        // 是直接读环境变量的，Node 侧的回退救不了它们。结果：ui_tree 因为"找不到 Snoop 目录"整个不可用，
+        // 而错误只进 stderr、被上层当成"探针没返回内容"。
+        // 这里注入的是**已经解析过**的值（进程环境优先，其次用户级/机器级注册表），进程环境原样保留。
+        const env = { ...process.env }
+        if (c.procName) env.DSH_UI_PROC_NAME = c.procName
+        if (c.windowName) env.DSH_UI_WINDOW_NAME = c.windowName
+        if (c.clientExe) env.DSH_UI_CLIENT_EXE = c.clientExe
+        if (c.evidenceDir) env.DSH_UI_EVIDENCE_DIR = c.evidenceDir
+        const snoop = envOr('DSH_SNOOP_DIR')
+        if (snoop) env.DSH_SNOOP_DIR = snoop
+        // 凭据同样是**子进程里读环境变量**的（`${cred:name}` → `DSH_CRED_name`），而它是**带前缀的动态名**：
+        // 用户按 Windows 常规把凭据配在用户级环境变量里、长活宿主没继承 ⇒ 脚本读不到 ⇒
+        // 报「凭据占位符未解析」；人为了继续，就会**把明文贴进参数** —— 正是这个机制要防的事。
+        // 所以把注册表里所有 DSH_CRED_* 一并注入（进程环境已有的优先，值不被覆盖）。
+        Object.assign(env, missingCredEnv(env))
+        child = spawn(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args.map(String)], { windowsHide: true, env })
       } catch (e) {
         resolve({ code: -1, stdout: '', stderr: 'spawn 失败: ' + e, timedOut: false, spawnError: String(e) })
         return
@@ -166,16 +216,26 @@ export function makeDriver(cfg) {  const c = {
    * opts.timeoutMs：上限由调用方给（launch 的轮询会把「剩余预算」传进来）——
    * 否则一次卡住的 status 就能把「客户端重启调用」拖到远超 waitMs（B-2）。
    */
-  async function status({ timeoutMs = 30000 } = {}) {
+  async function status({ timeoutMs = 30000, procId = 0 } = {}) {
     const procName = c.procName || (c.clientExe ? basename(c.clientExe).replace(/\.exe$/i, '') : '')
     if (!procName && !c.clientExe) {
       // 未配置目标进程：明确区分「未配置」与「未运行」，避免三个状态塌缩成一个 running:false。
-      return { running: false, unconfigured: true, error: '未配置目标进程（设置 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE）' }
+      // 并且要说清**到底是没配过，还是配了但当前进程没继承**（后者只需重启宿主）——
+      // 只说"去设置 X"会教用户做他已经做过的事（真机实测过这一条）。
+      return {
+        running: false,
+        unconfigured: true,
+        error: '未配置目标进程（设置 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE）',
+        configHint: unconfiguredHint(['DSH_UI_PROC_NAME', 'DSH_UI_CLIENT_EXE']),
+      }
     }
     const script = existsSync(batchScript()) ? batchScript() : driveScript()
+    // G1 黑盒 #1：多实例（同名进程）时 status 无法消歧，而 ui_drive/ui_observe 都能传 procId —— 口径不一致。
+    // 脚本本身早就支持 `-ProcId`（param 里就有，Get-MainWindow/Get-Windows 都按 pid 取），这里把它接上。
+    const pidArgs = procId > 0 ? ['-ProcId', String(procId)] : []
     const args = existsSync(batchScript())
-      ? ['-Status', '-ProcName', procName, '-WindowName', c.windowName]
-      : ['-ProcName', procName, '-WindowName', c.windowName, '-Action', 'status']
+      ? ['-Status', '-ProcName', procName, '-WindowName', c.windowName, ...pidArgs]
+      : ['-ProcName', procName, '-WindowName', c.windowName, '-Action', 'status', ...pidArgs]
     const r = await runPs1(script, args, timeoutMs)
     const text = r.stdout
     // 超时 = 「不知道」，不是「未运行」：混为一谈会让上层把「卡住」当成「没起来」
@@ -191,7 +251,178 @@ export function makeDriver(cfg) {  const c = {
    * 任何一次卡住的 status 都不可能把重启调用拖成无限等待（昨夜整夜挂死 2.5h 的形态）。
    * 结果里带 polls/statusTimeouts 心跳，便于区分「客户端真没起来」与「轮询自身被拖慢」。
    */
-  async function launch({ extraArgs = '', waitMs = 60000 } = {}) {
+  /**
+   * 同名进程的 PID 列表（tasklist，不经 PowerShell —— 这条路径在 force 重启里是热路径）。
+   * 与 dsh-build 的 listClientPids 同一实现口径：按**镜像名**枚举，再由 exePathOf 做实例判别。
+   */
+  /**
+   * 编程错误识别 —— 让 "永不抛" 的兜底**不要吞掉自己的 bug**。
+   *
+   * 实测教训（2026-09-11）：force 重启第一版里 `listPidsByName` 用了 `execFileSync`，
+   * 而本文件只 import 了 `spawn` → **ReferenceError** 被 `catch { return [] }` 吃掉 →
+   * 枚举恒为空 → force 永远报 "nothingToKill" → 「卡死重启」这个功能**静默地什么都不做**，
+   * 而所有断言（"没有误杀"）还都是绿的。
+   * 归纳成规则：**环境失败可以降级，编程错误必须炸**。
+   */
+  function isProgrammingError(e) {
+    const s = String((e && e.message) || e)
+    return (e && (e.name === 'ReferenceError' || e.name === 'TypeError' || e.name === 'SyntaxError')) ||
+      /is not defined|is not a function|Cannot read propert/.test(s)
+  }
+
+  function listPidsByName(proc) {
+    const name = String(proc || '').trim()
+    if (!name) return []
+    try {
+      const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + name + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
+      const pids = []
+      const re = new RegExp('"' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.exe","(\\d+)"', 'g')
+      let m
+      while ((m = re.exec(out)) !== null) pids.push(Number(m[1]))
+      return pids
+    } catch (e) {
+      if (isProgrammingError(e)) throw e
+      return []
+    }
+  }
+
+  /** 单个 PID 是否还活着（按 PID 精确判定，不用"同名进程列表为空"当判据）。 */
+  function isPidAlive(pid) {
+    if (!pid) return false
+    try {
+      const out = execFileSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
+      return new RegExp('","' + pid + '",').test(out)
+    } catch (e) {
+      if (isProgrammingError(e)) throw e
+      return false
+    }
+  }
+
+  /** 某个 PID 的可执行文件全路径（拿不到返回空串，绝不抛）。只在真要动手/有歧义时调用。 */
+  function exePathOf(pid) {
+    try {
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        '(Get-CimInstance Win32_Process -Filter "ProcessId=' + Number(pid) + '").ExecutablePath'], { encoding: 'utf8', windowsHide: true })
+      return String(out || '').trim().split(/\r?\n/)[0] || ''
+    } catch (e) {
+      if (isProgrammingError(e)) throw e
+      return ''
+    }
+  }
+
+  /**
+   * 定位同名进程（force 重启用）。返回 [{pid, path}]；path 拿不到就给空串。
+   * 只用于"要动谁"的判断，不改任何状态。
+   */
+  function clientInstances() {
+    const name = (c.procName || '').trim()
+    if (!name) return []
+    const pids = listPidsByName(name)
+    return pids.map((pid) => ({ pid, path: exePathOf(pid) }))
+  }
+
+  /**
+   * 用**与 `killClientInstances()` 完全相同的规则**重新算出"我们会杀的那些实例"。
+   *
+   * 存在的唯一理由：force 重启在 `killed:false` 之后要**复核一次**再决定是否放弃（F-039）。
+   * 复核**不能**用"按进程名的粗枚举" —— 那会把**别的会话的同名实例**也算成"还在"，
+   * 于是"只杀 exe 路径匹配的那一个"的场景会被误判成"没杀掉"（第一版就是这么错的，被 D 段抓住）。
+   */
+  function targetInstancesNow() {
+    const want = String(c.clientExe || '').trim().toLowerCase()
+    const insts = clientInstances()
+    if (insts.length === 0) return []
+    // 与 killClientInstances 同源：配了 exe 路径 ⇒ 只认路径一致的；否则只有唯一实例才敢认。
+    if (want) return insts.filter((i) => String(i.path || '').toLowerCase() === want)
+    return insts.length === 1 ? insts : []
+  }
+
+  /**
+   * 结束目标客户端并**等它真的退出**（force 重启用）。
+   *
+   * 实例定位规则与 dsh-build 的 killClientProcess 同源（红线优先，宁可拒绝也不误杀）：
+   *   1) 配了 DSH_UI_CLIENT_EXE → 只杀**路径一致**的实例；
+   *   2) 没配路径但只有 1 个实例 → 杀它（无歧义）；
+   *   3) ≥2 个实例且没配路径 → **拒绝**，如实回报清单（绝不猜哪个是"我们的"客户端）。
+   */
+  async function killClientInstances() {
+    const startedAt = Date.now()
+    const want = String(c.clientExe || '').trim().toLowerCase()
+    const insts = clientInstances()
+    if (insts.length === 0) return { killed: false, nothingToKill: true, pids: [], waitedMs: 0 }
+    let targets = insts
+    let scope = 'single-instance'
+    if (want) {
+      targets = insts.filter((i) => String(i.path || '').toLowerCase() === want)
+      scope = 'exe-path'
+      if (targets.length === 0) {
+        return {
+          killed: false,
+          refused: true,
+          scope,
+          pids: [],
+          instances: insts,
+          waitedMs: 0,
+          error: '按 DSH_UI_CLIENT_EXE 找不到匹配的进程实例（同名进程的 exe 路径都对不上）：已拒绝强杀，避免误杀其它会话的客户端。实际实例：' +
+            insts.map((i) => i.pid + '@' + (i.path || '?')).join('、'),
+        }
+      }
+    } else if (insts.length > 1) {
+      return {
+        killed: false,
+        refused: true,
+        scope: 'ambiguous',
+        pids: [],
+        instances: insts,
+        waitedMs: 0,
+        error: '同名进程有 ' + insts.length + ' 个且未配置 DSH_UI_CLIENT_EXE，无法确定要动哪一个：已拒绝强杀（避免误杀其它会话）。' +
+          '实例：' + insts.map((i) => i.pid + '@' + (i.path || '?')).join('、') + '。请配置 DSH_UI_CLIENT_EXE 或手工处理。',
+      }
+    }
+    const pids = targets.map((t) => t.pid)
+    // 强杀必须**同步拿到结果**（2026-09-11，压测下两次实测漏杀之后）：
+    //   旧写法 `spawn('taskkill', …)` 是 fire-and-forget，结果与错误全丢 —— 于是"没杀掉"时
+    //   调用方只看到 `killed:false`，**不知道为什么**（taskkill 压根没起来？被拒绝？进程还在退？）。
+    //   现在用 execFileSync（有超时），把每次的 stderr 收下来如实回报（killErrors）。
+    const killErrors = []
+    const killOnce = () => {
+      for (const pid of pids) {
+        try {
+          execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+        } catch (e) {
+          const msg = String((e && (e.stderr || e.message)) || e).replace(/\s+/g, ' ').trim().slice(0, 160)
+          if (msg) killErrors.push(pid + ': ' + msg)
+        }
+      }
+    }
+    killOnce()
+    // 等它真的退出：taskkill 是异步的，进程还在时"重启"会撞文件锁/单实例互斥。
+    // 预算内**持续重试**（不是只重试一次）：高负载下 taskkill.exe 起进程本身就要几秒。
+    const deadline = Date.now() + (Number(process.env.DSH_UI_KILL_WAIT_MS) || 15000)
+    const remaining = []
+    let retried = 0
+    let lastKillAt = Date.now()
+    while (Date.now() < deadline) {
+      remaining.length = 0
+      for (const pid of pids) if (isPidAlive(pid)) remaining.push(pid)
+      if (remaining.length === 0) break
+      if (Date.now() - lastKillAt >= 1500) { retried++; killOnce(); lastKillAt = Date.now() }
+      await sleep(150)
+    }
+    return {
+      killed: remaining.length === 0,
+      scope,
+      pids,
+      // retries/killErrors 都是**显式字段**：重试过、以及 taskkill 报了什么，调用方有权知道。
+      retries: retried,
+      ...(killErrors.length ? { killErrors: killErrors.slice(-4) } : {}),
+      remaining: [...remaining],
+      waitedMs: Date.now() - startedAt,
+      instances: insts,
+    }
+  }
+
+  async function launch({ extraArgs = '', waitMs = 60000, force = false } = {}) {
     const startedAt = Date.now()
     // 复核（Codex 2026-09-11）指出：旧写法 `Math.max(3000, waitMs)` 会把调用方显式传的
     // `waitMs=1000` 偷偷抬到 3s，违背「调用方显式优先」的既有约定。现在只挡非法值（<=0/NaN）
@@ -199,11 +430,77 @@ export function makeDriver(cfg) {  const c = {
     const requested = Number(waitMs)
     const budget = requested > 0 ? Math.max(500, requested) : 60000
     const st0 = await status({ timeoutMs: Math.min(30000, budget) })
-    if (st0.running && st0.title) {
-      return { started: false, alreadyRunning: true, pid: st0.pid, title: st0.title, waitedMs: 0 }
+    if (st0.running && st0.title && force !== true) {
+      return { ok: true, windowReady: true, started: false, alreadyRunning: true, pid: st0.pid, title: st0.title, waitedMs: 0 }
+    }
+    // ---- force：显式重启（Codex 第九轮指出的能力缺口）----
+    // 上一版把"进程在跑但没窗口"一律拒绝 spawn（防重复实例），但那样**卡死后就无法重启**：
+    // ui_launch 既不会杀也不给 force，用户只能手工去关。而"客户端卡死 → 重启 → 复现"正是本工具链
+    // 存在的意义。所以开一条**显式**通道：只有 force=true 才动进程，且杀谁、等多久、还剩谁，全部如实回报。
+    let forceKill = null
+    if (force === true && st0.running) {
+      forceKill = await killClientInstances()
+      if (forceKill.refused) {
+        return { ok: false, windowReady: false, partial: false, started: false, alreadyRunning: true, pid: st0.pid, title: st0.title || null, waitedMs: Date.now() - startedAt, forceKill, error: forceKill.error, hint: 'force 已被拒绝执行：没有唯一确定的目标实例。配置 DSH_UI_CLIENT_EXE 指向目标 exe，或手工关闭后再 ui_launch。' }
+      }
+      if (!forceKill.killed) {
+        // ★ F-039（2026-09-12 r35，从一次**真机失败**里查出来的）：
+        //   不要**立刻**放弃。`killClientInstances` 只是说"在它的时间窗口内没观察到退出"，
+        //   那不等于"现在还活着"。实测（launch-force 在**全量测试并发跑**时）：
+        //     它报 `killed:false, remaining:[6856], waitedMs:21145`，
+        //     而**紧接着的下一行断言就证明该进程已经没了** —— 进程是在核对窗口**之后**才消失的。
+        //   旧行为：直接 return `alreadyRunning:true`（而且 `pid` 指向一个**已经死掉**的进程）且**不重启** ——
+        //   于是 `ui_launch(force=true)` 这条**卡死重启通道**静默地什么都没做。
+        //   而"客户端卡死 → 重启 → 复现"正是本工具链存在的意义（见上面 398-400 行的设计说明），
+        //   更糟的是：**负载越高越容易触发**，而负载高恰恰是客户端最容易卡死的时刻。
+        //
+        //   现在：**有界地再复核一次**（最多 ~2s）——
+        //     · 复核后确实还有同名实例 ⇒ 保持原语义（拒绝重启，宁可不动也不起第二个实例）；
+        //     · 复核后已经没了       ⇒ **继续重启**，并如实标注 `lateExit`（"晚了一步，不是没杀掉"）。
+        //   注意这里刻意用**按进程名**的廉价复核，而不是 `clientInstances()`（后者每个 pid 要起一次
+        //   PowerShell 拿 exe 路径，在就是"慢"的场景里再拖几秒是雪上加霜）。宁可保守：只要还有同名实例就先不动。
+        // ⚠ 复核必须**按同一套目标规则**来 —— 这是第一版的 bug（被全量自检的 D 段当场抓住）：
+        //   我用 `listPidsByName(procName)` 做复核，它会把**别的会话的同名实例**也算进来；
+        //   而 D 段恰恰是"两个同名实例、只杀 exe 路径匹配的那一个"的场景 ⇒ 复核永远说"还在" ⇒
+        //   拒绝重启 ⇒ `forceKill.killed` 仍是 false ⇒ D 段红。
+        //   **"保守"不能保守到"把不归我管的实例也算成我的"** —— 那不是保守，那是判断错。
+        //   正确做法：用与 `killClientInstances()` **完全相同**的目标选择规则重算一次"我会杀的那些"。
+        const stillHere = targetInstancesNow()
+        for (let i = 0; i < 10 && stillHere.length > 0; i++) {
+          await new Promise((r) => setTimeout(r, 200))
+          stillHere.length = 0
+          stillHere.push(...targetInstancesNow())
+        }
+        const decision = forceRestartDecision({ killed: forceKill.killed, stillHere: stillHere.length > 0 })
+        if (!decision.proceed) {
+          return { ok: false, windowReady: false, partial: false, started: false, alreadyRunning: true, pid: st0.pid, title: st0.title || null, waitedMs: Date.now() - startedAt, forceKill, error: 'force=true 但目标进程仍未退出（PID ' + (forceKill.remaining || []).join(',') + '，等待 ' + forceKill.waitedMs + 'ms，重试 ' + (forceKill.retries || 0) + ' 次' + (forceKill.killErrors && forceKill.killErrors.length ? '；taskkill 报错：' + forceKill.killErrors.join(' | ') : '') + '）：没有重启，避免在旧进程还活着时再拉起一个。' }
+        }
+        forceKill = {
+          ...forceKill,
+          killed: true,
+          lateExit: true,
+          remaining: [],
+          note: 'kill 核对窗口内未观察到退出，但**复核时已不存在**（晚了一步）—— 视为已结束，继续重启。'
+            + '（原行为会在这里放弃重启并谎称"仍在运行"；F-039）',
+        }
+      }
+    }
+    if (st0.running && !st0.title && force !== true) {
+      return {
+        ok: false,
+        windowReady: false,
+        partial: true,
+        started: false,
+        alreadyRunning: true,
+        pid: st0.pid,
+        title: null,
+        waitedMs: 0,
+        hint: '进程已经在运行（pid=' + st0.pid + '）但主窗口还没出现：**不会重复拉起第二个实例**（两个实例会抢同一份配置/日志/文件锁）。' +
+          '下一步：ui_status / ui_windows 看窗口列表与状态；如果它是**卡死**了要重启，请显式传 force=true（会先结束这个进程再启动，先跟用户确认）。',
+      }
     }
     if (!existsSync(c.clientExe)) {
-      return { started: false, error: '客户端 exe 不存在：' + c.clientExe + '（可用 DSH_UI_CLIENT_EXE 覆盖）' }
+      return { ok: false, started: false, error: '客户端 exe 不存在：' + c.clientExe + '（可用 DSH_UI_CLIENT_EXE 覆盖）' }
     }
     const args = extraArgs ? String(extraArgs).split(/\s+/).filter(Boolean) : []
     let child
@@ -215,7 +512,7 @@ export function makeDriver(cfg) {  const c = {
         windowsHide: false,
       })
     } catch (e) {
-      return { started: false, error: '启动失败: ' + e }
+      return { ok: false, started: false, error: '启动失败: ' + e }
     }
     child.unref()
     const deadline = startedAt + budget
@@ -232,11 +529,21 @@ export function makeDriver(cfg) {  const c = {
       polls++
       if (last.unknown) statusTimeouts++
       if (last.running && last.title) {
-        return { started: true, alreadyRunning: false, pid: last.pid, title: last.title, waitedMs: Date.now() - startedAt, polls }
+        return { ok: true, windowReady: true, started: true, alreadyRunning: false, pid: last.pid, title: last.title, waitedMs: Date.now() - startedAt, polls, ...(forceKill ? { forceKill, restarted: true } : {}) }
       }
     }
     const running = last ? last.running : false
+    // UD-06（原 P1 清单第 6 条，2026-09-11）：**半成功被当成成功**。
+    // 旧结果里 `started: running` —— 进程起来了但没有主窗口时 `started:true`，
+    // 而"没有窗口"这件事只写在 `warning` 里；渲染层在 started 分支**根本不打印 warning**，
+    // 于是 agent 看到的是"已启动 pid=… 窗口=null"，接着去用别的 ui_* 工具，全部失败。
+    // 修法（数据层，两面通用）：`ok` 只在**窗口真的可用**时为 true；
+    // 半成功显式标 `partial:true` + `windowReady:false` + 可执行的 hint。
+    const partial = running && !(last && last.title)
     return {
+      ok: false,
+      windowReady: !!(last && last.title),
+      partial,
       started: running,
       alreadyRunning: false,
       pid: last ? last.pid : null,
@@ -245,6 +552,12 @@ export function makeDriver(cfg) {  const c = {
       polls,
       statusTimeouts,
       warning: running ? '进程已起但主窗口超时未出现' : (statusTimeouts > 0 ? '启动超时（其中 ' + statusTimeouts + ' 次状态查询自身超时，进程状态未知）' : '启动超时'),
+      ...(forceKill ? { forceKill } : {}),
+      hint: partial
+        ? '进程在跑但没有可用的主窗口：**不要当成启动成功**（其余 ui_* 工具都需要一个可用窗口）。' +
+          '下一步用 ui_status / ui_windows 看窗口列表（**不要直接重发 ui_launch**：进程已存在时它会再拉起一个实例），' +
+          '若确认客户端是**卡死**了要重启，请显式传 force=true（会先结束该进程再启动，先跟用户确认）。'
+        : '进程在 ' + budget + 'ms 内没有起来：先 ui_status 看是否已在运行，再确认 DSH_UI_CLIENT_EXE 指向的 exe 能手工双击启动。',
     }
   }
 
@@ -307,7 +620,16 @@ export function makeDriver(cfg) {  const c = {
     // 必须取整且用 floor：mtimeMs 带小数（1788872266973.614），PowerShell 侧
     // Ticks/10000 是向下取整，round 会进位导致每次请求都误判 STALE_SCRIPT。
     try { stamp = String(Math.floor(statSync(batchScript()).mtimeMs)) } catch { stamp = '' }
-    const child = spawn(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', batchScript(), '-Serve', '-ProcName', c.procName, '-WindowName', c.windowName, '-ScriptStamp', stamp], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    const warmEnv = { ...process.env }
+    if (c.procName) warmEnv.DSH_UI_PROC_NAME = c.procName
+    if (c.windowName) warmEnv.DSH_UI_WINDOW_NAME = c.windowName
+    if (c.clientExe) warmEnv.DSH_UI_CLIENT_EXE = c.clientExe
+    const warmSnoop = envOr('DSH_SNOOP_DIR')
+    if (warmSnoop) warmEnv.DSH_SNOOP_DIR = warmSnoop
+    // 常驻进程是**长活**的：它的环境在启动那一刻就固定了，之后再来的 `${cred:...}` 只能靠这里注入。
+    // 所以走同一条凭据注入（与一次性脚本路径共用 missingCredEnv，避免两处不一致）。
+    Object.assign(warmEnv, missingCredEnv(warmEnv))
+    const child = spawn(PS, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', batchScript(), '-Serve', '-ProcName', c.procName, '-WindowName', c.windowName, '-ScriptStamp', stamp], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: warmEnv })
     warm.proc = child
     warm.buf = Buffer.alloc(0)
     warm.startedAt = Date.now()
@@ -902,6 +1224,12 @@ export function makeDriver(cfg) {  const c = {
     const gate = await checkSideEffectGate(action, allowSideEffects, { snapshotId, winTitle, winHandle, aid })
     if (!gate.allow) return gate.result
 
+    // ---- 配置类错误**前置判定**（在**安全门之后**）：没配目标进程就立即回，
+    // 绝不进"起脚本 → 等超时 → 再重试"那条路（实测纯配置错误要 90s+，只读动作重试后 180s 无返回）。
+    // ⚠ 顺序很重要：**安全门必须排在最前面** —— allowSideEffects / 快照新鲜度 / 急停这些拒绝对
+    //   必须在任何其它判断之前生效（mcp-snapshot-gate 测试就是为这条顺序立的哨兵）。
+    if (!hasTarget(procId)) return unconfiguredResult(action)
+
     // read(diff=true) 是 Node 侧对返回 lines 的后处理（不下发 PS1）；仅对成功的 read 生效。
     const wantDiff = diff === true
     const maybeDiff = (out) => (wantDiff && out && out.ok === true && out.action === 'read') ? attachDiff(out) : out
@@ -920,7 +1248,14 @@ export function makeDriver(cfg) {  const c = {
       let snapshot = null
       try {
         const st = await drive({ action: 'state', match: args.observeMatch || '', max: args.observeMax || 15, procId })
-        snapshot = st.ok ? { window: st.window, focused: st.focused, count: st.count, lines: st.lines } : { error: st.error }
+        // **快照也必须带观测完整性**（Claude 第十轮真机反例，2026-09-11）：
+        //   这里过去手工挑 `{window, focused, count, lines}` —— 把 truncated/scanned/skipped 全丢了，
+        //   于是"动作后快照"看起来永远是一份完整清单。真机反例：`ui_state(max=15)` 给
+        //   `{count:15, truncated:true, scanned:1828}`，剥掉字段后就只剩"15 个控件"。
+        //   这正是我在 live.mjs 修过的同型 bug 的孪生 —— 所以这里不再手写字段，走同一个 completenessInfo。
+        snapshot = st.ok
+          ? { window: st.window, focused: st.focused, count: st.count, lines: st.lines, ...completenessInfo(st) }
+          : { error: st.error }
       } catch (e) {
         snapshot = { error: String(e).slice(0, 160) }
       }
@@ -997,7 +1332,9 @@ export function makeDriver(cfg) {  const c = {
         waitMs,
       })
       if (!b.ok || b.steps.length === 0) {
-        return { ok: false, action, error: b.error || '批量单步执行失败' }
+        // 批量路径的错误同样要升级：`ui_windows`（以及 type/drag/waitfor 等**只有批量引擎实现**的动作）
+        // 走的就是这条路，冷启动时原本只回一句"未指定目标进程"，连变量名都不给。
+        return { ok: false, action, error: augmentPsError(b.error) || '批量单步执行失败' }
       }
       return await attachObserve(maybeDiff(shapeResult(action, b.steps[0], shotPlan, workspace)))
     }
@@ -1099,6 +1436,58 @@ export function makeDriver(cfg) {  const c = {
     return out
   }
 
+  /**
+   * UD-04：读取范围（inAid/inName 限定）必须一路透传到 agent 能看见的地方。
+   *
+   * 为什么抽成一个函数：read/state 的**产出点有三个**（shapeResult 的 read、shapeResult 的
+   * state、ui_flow 的 transcript），UD-04 的第一版只补了前两个 —— 单测立刻抓到
+   * 「flow transcript 带 narrowed/scope」红了一条。这类"同一漏洞修一半"本轮已出现四次
+   * （F-021 / AV-03 / UD-02 / UD-04），所以凡是需要在多处同时出现的字段，一律走同一个函数。
+   *
+   * 语义：一份被限定过范围的清单如果不标注，会被当成整个窗口的清单 —— 那不是"少印一行"，
+   * 而是给了一个**范围错误**的答案。
+   */
+  const scopeInfo = (res) => {
+    const out = {}
+    if (res.narrowed === true) {
+      out.narrowed = true
+      out.scope = res.scope || ''
+    }
+    if (res.waitedMs) out.waitedMs = res.waitedMs
+    return out
+  }
+
+  /**
+   * 上限截断（cap）也必须说出来 —— 与 scopeInfo/skipInfo 同源的第三半。
+   *
+   * 真机实测（Claude 第九轮 Q1，2026-09-11）：`ui_state max=5` 报 `truncated:true, maxApplied:5`，
+   * 但**同一个脚本分支**产出的 `ui_observe state-live max=5` 什么都不报，而那次 scanned=1962 ——
+   * 1962 个元素只给 5 条却标记为完整清单。根因：state 分支补了字段、state-live 分支没补（白名单形状）。
+   * 这已经是本轮第六次"同一漏洞只修了一半"（F-021 / AV-03 / UD-02 / UD-04 / Q1-state / 这里），
+   * 所以凡是"清单可能不完整"的信号，一律由 completenessInfo 一处产出、所有读产出点共用。
+   */
+  const capInfo = (res) => {
+    const out = {}
+    if (res.truncated === true) {
+      out.truncated = true
+      if (typeof res.maxApplied === 'number') out.maxApplied = res.maxApplied
+      if (typeof res.returned === 'number') out.returned = res.returned
+    }
+    return out
+  }
+
+  /**
+   * 观测完整性总集（**单一产出点**）：范围限定 + 上限截断 + 跳过/扫描计数。
+   *
+   * live 循环也用它（`live.mjs` 经 driver.completenessInfo 取用）：live.mjs 之前是
+   * `{ window, focused, count, lines }` 手工重建对象，把 skipped/truncated/narrowed **全部丢掉** ——
+   * 于是 ui_live 的控件摘要永远显示为"完整清单"。重建对象就是白名单，白名单就是下一个静默口子。
+   */
+  const completenessInfo = (res) => {
+    if (!res || typeof res !== 'object') return {}
+    return { ...scopeInfo(res), ...capInfo(res), ...skipInfo(res) }
+  }
+
   /** 把常驻进程返回的原始结果整形成 ui_drive 的稳定返回结构。 */
   function shapeResult(action, res, shotPlan, workspace) {
     if (res.ok !== true) {
@@ -1120,19 +1509,43 @@ export function makeDriver(cfg) {  const c = {
       // 复核（Codex 2026-09-11）指出：这里曾硬编码 `truncated:false`，而脚本明明在超过 300 行时
       // 会截断并设 `$res.truncated=$true` —— 等于把「被截断的清单」当完整清单交给调用方。
       // 现在如实透传，并在截断时补一个 returned=实际返回行数（count 是匹配总数，两者本就可以不同）。
+      // UD-04：这是**白名单**，脚本新加的字段不在这里透传就等于不存在（渲染层根本看不见）。
+      // narrowed/scope 必须过：一份被 inAid 限定过的清单如果没被标注，会被当成整个窗口的清单。
       const lines = normLines(res.lines)
-      return {
+      // 注意：这一支**也曾是白名单** —— 它自己写 `truncated`+`returned`，于是脚本新回报的
+      // `maxApplied`（read 现在也支持 max，见 ui-drive-batch.ps1 的 read 分支）根本到不了调用方。
+      // 统一走 capInfo：脚本回报什么就带什么，别再手工列字段。
+      const cap = capInfo(res)
+      const out = {
         ok: true,
         action,
         count: res.count || 0,
         lines,
-        truncated: res.truncated === true,
-        ...(res.truncated === true ? { returned: lines.length } : {}),
+        truncated: false, // 脚本没回报时保持历史形状（false 而不是缺字段）
+        ...cap,
+        ...scopeInfo(res),
         ...skipInfo(res),
         ...snapshotStamp(res.window ?? ''), // 权威读：抬升 seq，戳 snapshotId
       }
+      if (out.truncated === true) out.returned = lines.length
+      return out
     }
-    if (action === 'windows') return { ok: true, action, count: res.count || 0, lines: normLines(res.lines) }
+    if (action === 'windows') {
+      const out = { ok: true, action, count: res.count || 0, lines: normLines(res.lines) }
+      // 嵌套窗口（2026-09-11 真机自查）：WPF 的登录窗/许可协议/弹窗常常是**主窗口视觉树里的 Window 元素**，
+      // 而 UIA 只把进程的顶层窗口报为桌面元素 —— 实测客户端停在「用户许可协议」对话框时 ui_windows 只报 1 个窗口。
+      // 只给"1 个窗口"会让 agent 以为界面上没有别的窗，然后在被遮住的主界面上找控件。
+      const nested = normLines(res.nestedWindows)
+      if (nested.length) {
+        out.nestedWindows = nested
+        out.nestedWindowsTotal = typeof res.nestedWindowsTotal === 'number' ? res.nestedWindowsTotal : nested.length
+        out.note = '⚠ 除顶层窗口外，主窗口内部还有 ' + out.nestedWindowsTotal + ' 个**嵌套窗口元素**（登录窗/对话框/弹窗往往是这种形态）：' +
+          '它们不出现在顶层窗口清单里，但会**遮住**下面的控件。判断"现在该操作哪个界面"请看这里，或用 ui_observe(state) 看焦点。'
+      }
+      // 与其它读路径共用同一套完整性字段（截断/跳过）
+      Object.assign(out, capInfo(res), skipInfo(res))
+      return out
+    }
     if (action === 'state') {
       return {
         ok: true,
@@ -1142,7 +1555,9 @@ export function makeDriver(cfg) {  const c = {
         focused: res.focused ?? null,
         count: res.count || 0,
         lines: normLines(res.lines),
-        ...skipInfo(res),
+        // 观测完整性（范围/截断/跳过）统一由 completenessInfo 产出 —— 见其文档注释。
+        // state 的 max 上限过去是**隐式**的（只靠 scanned>count 推），现在显式回报 truncated/maxApplied。
+        ...completenessInfo(res),
         ...snapshotStamp(res.window ?? ''), // 权威读：抬升 seq，戳 snapshotId
       }
     }
@@ -1158,7 +1573,10 @@ export function makeDriver(cfg) {  const c = {
         count: res.count || 0,
         lines: normLines(res.lines),
         secretFocused: res.secretFocused === true,
-        ...skipInfo(res),
+        // Claude 第九轮 Q1（真机）：state 分支补了 truncated/maxApplied、这一支没补，于是
+        // `ui_observe(state-live, max=5)` 依旧静默截断（同窗 scanned=1962）。
+        // 现在两支共用 completenessInfo，**结构上不可能再只修一半**。
+        ...completenessInfo(res),
         // state-live 不抬升权威 seq、不发权威 snapshotId：live 每 3s 采样一次，若参与就系统性作废读快照。
         snapshotAuthoritative: false,
       }
@@ -1257,6 +1675,8 @@ export function makeDriver(cfg) {  const c = {
    */
   async function batch({ steps = [], procId = 0, waitMs = c.defaultWaitMs, tmpDir = '' } = {}) {
     if (!Array.isArray(steps) || steps.length === 0) return { ok: false, steps: [], error: 'steps 不能为空' }
+    // 同一条前置判定：批量路径单次超时上限 10 分钟，没配目标时更不该进这条路
+    if (!hasTarget(procId)) return { ok: false, steps: [], error: '未配置目标进程', unconfigured: true, configHint: unconfiguredHint(['DSH_UI_PROC_NAME', 'DSH_UI_CLIENT_EXE']) }
     if (!existsSync(batchScript())) {
       return { ok: false, steps: [], error: '批量脚本不存在：' + batchScript() }
     }
@@ -1264,6 +1684,12 @@ export function makeDriver(cfg) {  const c = {
     mkdirSync(dir, { recursive: true })
     const stepsFile = join(dir, 'batch-steps.json')
     const outFile = join(dir, 'batch-result.json')
+    // **跑之前先清掉结果文件**（2026-09-11，被 ui_tree 降级路径的单测抓出来）：
+    // 目录名是**秒级**时间戳（`tsDir()`）→ 同一秒内两次批量调用会落到同一个目录，
+    // 而下面"文件存在就解析"的读法是**有就算**：这一轮的脚本如果失败/没输出，
+    // 读到的是**上一轮的结果** —— 一次失败被伪装成成功，且内容是陈旧的。
+    // （本轮被这条坑过：注入空树 + 批量脚本坏掉，本该 ok:false，结果返回了上一次的树。）
+    try { rmSync(outFile, { force: true }) } catch { /* ignore */ }
     const cleanSteps = steps.map((s) => {
       const o = { action: normAction(s.action) }
       if (s.name !== undefined) o.name = s.name
@@ -1307,6 +1733,17 @@ export function makeDriver(cfg) {  const c = {
       if (s.interval !== undefined && s.interval !== null) o.interval = s.interval
       if (s.conds !== undefined && s.conds !== null) o.conds = s.conds
       if (s.stableCount !== undefined && s.stableCount !== null) o.stableCount = s.stableCount
+      // 2026-09-11 自查：这份白名单**漏了 8 个 drive() 认的参数** → flow 步里写它们等于没写，
+      // 且不报错（UD-04 家族的第四个成员）。最危险的是 `snapshotId`：调用方要求"绑新鲜度门"，
+      // 白名单一丢，门就**静默失效**（本该被拒的动作照做）。
+      if (s.maxDepth !== undefined && s.maxDepth !== null) o.maxDepth = s.maxDepth
+      if (s.snapshotId !== undefined && s.snapshotId !== '') o.snapshotId = s.snapshotId
+      if (s.observe !== undefined) o.observe = s.observe
+      if (s.observeMatch !== undefined && s.observeMatch !== '') o.observeMatch = s.observeMatch
+      if (s.observeMax !== undefined && s.observeMax !== null) o.observeMax = s.observeMax
+      if (s.label !== undefined && s.label !== '') o.label = s.label
+      if (s.shotsDir !== undefined && s.shotsDir !== '') o.shotsDir = s.shotsDir
+      if (s.workspace !== undefined && s.workspace !== '') o.workspace = s.workspace
       return o
     })
     writeFileSync(stepsFile, JSON.stringify(cleanSteps), 'utf8')
@@ -1333,17 +1770,240 @@ export function makeDriver(cfg) {  const c = {
 
   // ------------------------------------------------------------ 视觉树
 
-  /** ui_tree：进程内视觉树 dump（只读深查）。 */
-  async function tree({ maxDepth = 8 } = {}) {
+  /** ui_tree：进程内视觉树 dump（只读深查）。注入探针不可用时**降级到 UIA 层级树**并如实标注来源。
+   *  · maxDepth：最大深度
+   *  · inAid/inName：**限定到某个容器**（2026-09-11 新增）——大树的正文会撞 14000 字符上限，
+   *    "先缩小范围再深挖"是唯一能拿到完整子树的办法；UIA 路径天然支持（Resolve-ReadScope），
+   *    注入探针不支持（它 dump 整个 Application），所以**给了范围就走 UIA 路径**并如实标注。 */
+  async function tree({ maxDepth = 8, inAid = '', inName = '', max = 0 } = {}) {
     const depth = Math.min(Math.max(Math.round(maxDepth || 8), 1), 20)
-    const r = await runPs1(probeScript(), ['-Action', 'dump-tree', '-MaxDepth', String(depth)], 180000)
-    if (r.timedOut) return { ok: false, error: 'dump-tree 超时' }
-    const idx = r.stdout.lastIndexOf('--- RESULT ---')
-    const text = idx >= 0 ? r.stdout.slice(idx + '--- RESULT ---'.length) : r.stdout
-    if (/CSC_EXIT=[^0]/.test(r.stdout) || /INJECT_EXIT=[^0]/.test(r.stdout)) {
-      return { ok: false, error: (r.stdout + '\n' + r.stderr).slice(-1500) }
+    const scoped = !!(inAid || inName)
+    let injectorProblem = null
+    if (scoped) {
+      // 显式跳过注入探针：它不理解 inAid/inName，硬走它等于**静默忽略调用方的范围参数**。
+      injectorProblem = {
+        ok: false,
+        probeNotRun: false,
+        error: '本次指定了 inAid/inName 范围，注入探针不支持范围限定（它 dump 整个 Application）',
+        hint: '已改用支持范围限定的 UIA 层级树。要 DataContext/模板级信息，请不带范围参数调用。',
+      }
+    } else if (!existsSync(probeScript())) {
+      injectorProblem = {
+        ok: false,
+        probeUnavailable: true,
+        error: 'ui_tree 的注入探针脚本不存在（' + probeScript() + '）',
+        hint: '已自动降级为 UIA 层级树（不含 DataContext）。',
+      }
+    } else {
+      const r = await runPs1(probeScript(), ['-Action', 'dump-tree', '-MaxDepth', String(depth)], 180000)
+      if (r.timedOut) return { ok: false, error: 'dump-tree 超时' }
+      // 探针**没跑起来**与"跑起来了但没内容"是两件事（2026-09-11 真机自查）：
+      //   本机的 ui-probe.ps1 第 28 行会因 `DSH_SNOOP_DIR` 未配置而 throw，错误只进 stderr、
+      //   stdout 里连 `--- RESULT ---` 都没有 —— 而旧代码落到「探针执行成功但一个节点都没拿到」，
+      //   把"探针压根没启动"说成"探针成功了但界面没内容"，把排查方向指到了客户端上。
+      const hasMarker = r.stdout.includes('--- RESULT ---')
+      if (!hasMarker) {
+        const detail = (r.stderr || '').trim() || (r.stdout || '').trim() || '（无输出）'
+        const snoop = /DSH_SNOOP_DIR|Snoop 目录|Path.*null/i.test(detail)
+        injectorProblem = {
+          ok: false,
+          probeNotRun: true,
+          error: '注入探针未运行：' + detail.slice(-400),
+          hint: snoop
+            ? '探针需要 Snoop 注入器目录（DSH_SNOOP_DIR，用于定位 Snoop.InjectorLauncher.x86.exe）。本机未配置/未找到。'
+            : '',
+        }
+      } else {
+        const idx = r.stdout.lastIndexOf('--- RESULT ---')
+        const text = idx >= 0 ? r.stdout.slice(idx + '--- RESULT ---'.length) : r.stdout
+        if (/CSC_EXIT=[^0]/.test(r.stdout) || /INJECT_EXIT=[^0]/.test(r.stdout)) {
+          return { ok: false, error: (r.stdout + '\n' + r.stderr).slice(-1500) }
+        }
+        const shaped = shapeInjectedTree(text, depth)
+        if (shaped.ok === true) return withScopeHint(shaped, scoped)
+        // 注入侧"成功但没内容/失败标记"也降级（UIA 至少能给出层级与类型）
+        injectorProblem = shaped
+      }
     }
-    return { ok: true, text: text.trim().slice(0, LIMIT_TREE), truncated: text.length > LIMIT_TREE }
+
+    // ---------------- 降级路径：UIA 层级树（不需要注入器） ----------------
+    const treeStep = { action: 'tree', maxDepth: depth }
+    if (inAid) treeStep.inAid = inAid
+    if (inName) treeStep.inName = inName
+    if (Number(max) > 0) treeStep.max = Number(max)   // 节点数上限（PS 侧 treeCap）
+    const b = await batch({ steps: [treeStep] })
+    const step = (Array.isArray(b.steps) ? b.steps : [])[0] || null
+    if (b.ok !== true || !step || step.ok !== true) {
+      const uiaErr = (step && step.error) || b.error || '未知'
+      // 注入侧的分类标记**要提到顶层**（F-015 的判据）：调用方必须能区分
+      //   · emptyTree（探针跑到了、但界面真是空的）—— 与"探针没跑起来/崩了"是两码事；
+      //   · probeNotRun（探针压根没启动，通常是 DSH_SNOOP_DIR 未配置）。
+      // 藏在 injectorUnavailable 里只能说"有这回事"，提上来才能让上层直接判。
+      return {
+        ok: false,
+        truncated: false,
+        ...(injectorProblem.emptyTree === true ? { emptyTree: true } : {}),
+        ...(injectorProblem.probeNotRun === true ? { probeNotRun: true } : {}),
+        error: 'ui_tree 不可用：注入探针不可行（' + (injectorProblem.error || '未知') + '），且 UIA 降级也失败（' + uiaErr + '）',
+        hint: (injectorProblem.hint ? injectorProblem.hint + '\n' : '') +
+          'UIA 降级失败通常是进程/窗口问题：先 ui_status 看进程、ui_windows 看窗口。' +
+          '要拿到 DataContext/模板级信息，需要配置 DSH_SNOOP_DIR 指向 Snoop 安装目录。',
+        injectorUnavailable: injectorProblem,
+      }
+    }
+    const lines = Array.isArray(step.lines) ? step.lines : []
+    const treeText = lines.join('\n')
+    const textCapped = treeText.length > LIMIT_TREE
+    const out = {
+      ok: true,
+      source: 'uia',
+      // 来源必须显式：这份树是 UIA 层级，**没有** 注入探针才有的真实 WPF 类型与 DataContext。
+      // 不标注的话，调用方会以为自己拿到的是"最全的那份树"（与 truncated 那一类是同一种病）。
+      sourceNote: '这份树来自 **UIA 递归**（注入探针不可用：' + String(injectorProblem.error || '').slice(0, 160) + '）。' +
+        '可用字段：控件类型/Name/AutomationId/enabled/offscreen/位置尺寸/层级；' +
+        '**不可用**：WPF 真实类型全名、DataContext 类型（要这些需配置 DSH_SNOOP_DIR 让注入探针可运行）。',
+      text: treeText.slice(0, LIMIT_TREE),
+      nodes: step.count,
+      maxDepthApplied: step.maxDepthApplied,
+      nodeCap: step.nodeCap,
+      truncated: textCapped || step.depthLimited === true || step.nodeCapHit === true,
+      injectorUnavailable: {
+        probeNotRun: injectorProblem.probeNotRun === true,
+        probeUnavailable: injectorProblem.probeUnavailable === true,
+        error: injectorProblem.error,
+        hint: injectorProblem.hint || '',
+      },
+    }
+    if (step.depthLimited === true) out.depthLimited = true
+    if (step.nodeCapHit === true) out.nodeCapHit = true
+    if (textCapped) out.textCapped = true
+    if (typeof step.skipped === 'number') out.skipped = step.skipped
+    if (step.narrowed === true) { out.narrowed = true; out.scope = step.scope }
+    // **UIA 看不见内容的区域**（Claude 第十轮真机反例）：CEF/自绘宿主在树里是"大矩形 + 无子节点"，
+    // 而截图里是满屏内容。不报出来，调用方会把"UIA 没内容"读成"这里什么都没有"。
+    const opaque = normLines(step.opaqueRegions)
+    if (opaque.length) {
+      out.opaqueRegions = opaque
+      out.opaqueRegionsTotal = typeof step.opaqueRegionsTotal === 'number' ? step.opaqueRegionsTotal : opaque.length
+      out.opaqueNote = '⚠ 有 ' + out.opaqueRegionsTotal + ' 个**UIA 看不到内容的大区域**（≥300×300 且无子节点，通常是 CEF/WebView/自绘宿主）：' +
+        '树里它们只是空叶子，但画面上可能有整页内容（真机实例：`Chrome Legacy Window` 下的许可协议/广告页）。' +
+        '**要看内容必须用 shot/capture + 视觉描述**（describe_image），不要据此判定"这里没有控件"。'
+    }
+    // 被跳过的元素同样意味着"清单不完整"：整棵子树因异常被丢掉时，count/truncated 都不会变
+    // （Claude 第十轮 §2.3）。这里把 skipped 也纳入 completeness 口径。
+    if (typeof step.skipped === 'number' && step.skipped > 0) {
+      out.skippedNote = '⚠ 本次遍历跳过了 ' + step.skipped + ' 个读不到状态的元素 —— 可能有整棵子树没进这份树，' +
+        'truncated 只反映"上限截断"，不反映这种丢失。'
+    }
+    const why = []
+    if (step.depthLimited === true) why.push('被 maxDepth=' + step.maxDepthApplied + ' 切断（调大 maxDepth 重跑）')
+    if (step.nodeCapHit === true) why.push('撞到 ' + step.nodeCap + ' 节点上限（先 ui_observe(state) 缩小范围）')
+    if (textCapped) why.push('正文超 ' + LIMIT_TREE + ' 字符被截断')
+    if (why.length) out.note = '⚠ 这份视觉树**不是完整的**：' + why.join('；') + '。'
+    return withScopeHint(out, scoped)
+  }
+
+  /**
+   * 整棵树撞上 14000 字符上限时，**唯一**能拿到完整子树的办法是先缩范围再深挖 —— 把话说明白。
+   * 抽成一个函数：注入路径与 UIA 路径都会碰到同一个上限，两处各写一份必然会漂移（本轮的老毛病）。
+   */
+  function withScopeHint(out, scoped) {
+    if (!out || out.ok !== true) return out
+    if (out.textCapped === true && !scoped && !out.hint) {
+      out.hint = '本次树被正文上限截断。要拿到某个容器的**完整**子树：先 ui_observe(read/state) 找到容器 aid，' +
+        '再用 ui_tree(maxDepth=20, inAid="<容器aid>") 重跑（范围限定后正文通常装得下）。'
+    }
+    return out
+  }
+
+  /** 注入探针输出的整形（含 TREE_META 解析、两个隐性上限、失败标记）。 */
+  function shapeInjectedTree(rawText, depth) {
+    const body = String(rawText || '').trim()
+    if (/^NO_APPLICATION\b/.test(body)) {
+      return {
+        ok: false,
+        probeNotRun: false,
+        error: 'dump-tree：探针注入成功，但在目标进程里**找不到 WPF Application**（NO_APPLICATION）',
+        hint: '可能是注入了错误的进程，或该进程不是 WPF 应用。下一步：ui_status 确认 pid/窗口，再用 ui_observe(state) 交叉验证。',
+      }
+    }
+    if (/^DUMP_ERR\b/m.test(body)) {
+      const line = (body.match(/^DUMP_ERR.*$/m) || [''])[0]
+      return {
+        ok: false,
+        error: 'dump-tree：探针遍历视觉树时抛异常 —— ' + line.slice(0, 300),
+        hint: '树可能只 dump 了一部分。可用较小的 maxDepth 重试，或改用 ui_observe(state)。',
+      }
+    }
+    // F-015 / 架构级修复（2026-09-11，Claude 在第二轮指出）：
+    // `mcp/server.mjs:88-89` 明写「renderDrive/renderState 只被 DSH 的 output.render 消费，
+    // 它们加的'下一步'文本永远到不了 MCP 客户端」。也就是说**只在渲染层修诚实性是半效的**——
+    // MCP 面的消费者拿到的是这里的**原始对象**。
+    // 所以诚实信号必须落在**数据**里：探针执行成功但一个节点都没返回，那是**观测失败**，
+    // 不是"界面上没有控件"。
+    if (body === '') {
+      return {
+        ok: false,
+        emptyTree: true,
+        error: 'dump-tree 返回空树（探针执行到但一个节点都没拿到）',
+        hint: '这不等于「界面上没有控件」。可先看 UIA 侧交叉验证（ui_observe(state)）；本工具会自动降级到 UIA 层级树。',
+      }
+    }
+    let tree = body
+    let meta = null
+    const metaM = /^TREE_META (.*)$/m.exec(body.split(/\r?\n/, 1)[0] || '')
+    if (metaM) {
+      meta = {}
+      for (const kv of metaM[1].split(/\s+/)) {
+        const [k, v] = kv.split('=')
+        if (k) meta[k] = v === 'true' ? true : (v === 'false' ? false : (Number.isFinite(Number(v)) ? Number(v) : v))
+      }
+      // META 之后紧跟 TREE_OPAQUE 明细（同样在头部，避免被正文截断丢掉）——先摘出来，再从正文里剥掉
+      const rest = body.slice(body.indexOf('\n') + 1)
+      const opaqueLines = []
+      let cut = rest
+      while (/^TREE_OPAQUE /.test(cut)) {
+        const nl = cut.indexOf('\n')
+        opaqueLines.push(cut.slice('TREE_OPAQUE '.length, nl < 0 ? undefined : nl))
+        cut = nl < 0 ? '' : cut.slice(nl + 1)
+      }
+      meta._opaque = opaqueLines
+      tree = cut
+    }
+    const textCapped = tree.length > LIMIT_TREE
+    const depthLimited = meta ? meta.depthHit === true : false
+    const nodeCapHit = meta ? meta.capHit === true : false
+    const out = {
+      ok: true,
+      source: 'injection',
+      text: tree.slice(0, LIMIT_TREE),
+      truncated: textCapped || depthLimited || nodeCapHit,
+    }
+    if (meta) {
+      out.nodes = meta.nodes
+      out.maxDepthApplied = meta.maxDepth
+      out.windows = meta.windows
+      if (depthLimited) out.depthLimited = true
+      if (nodeCapHit) out.nodeCapHit = true
+      if (textCapped) out.textCapped = true
+      // 注入路径的盲区明细（TREE_OPAQUE）：与 UIA 路径**同一套说法**（单一实现，别再分叉）
+      const opaque = Array.isArray(meta._opaque) ? meta._opaque : []
+      if (opaque.length) {
+        out.opaqueRegions = opaque
+        out.opaqueRegionsTotal = opaque.length
+        out.opaqueNote = '⚠ 有 ' + opaque.length + ' 个**树里看不到内容的大元素**（≥300×300 且无可见子节点，通常是 CEF/WebView/自绘宿主）：' +
+          '树里它们只是空叶子，画面上可能有整页内容。**要看内容必须用 shot/capture + 视觉描述**，不要据此判定"这里没有控件"。'
+      }
+      if (depthLimited || nodeCapHit || textCapped) {
+        out.note = '⚠ 这份视觉树**不是完整的**：' +
+          (depthLimited ? '被 maxDepth=' + meta.maxDepth + ' 切断（更深的节点没 dump，调大 maxDepth 重跑）；' : '') +
+          (nodeCapHit ? '撞到 ' + meta.cap + ' 节点上限被截断（先用 ui_observe(state) 定位目标，再用 maxDepth 逐层下钻）；' : '') +
+          (textCapped ? '正文超过 ' + LIMIT_TREE + ' 字符被截断。' : '')
+      }
+    } else {
+      out.observationWarning = '探针未回报 TREE_META（深度/节点上限是否命中未知）→ 本次树的完整性未知，不等于"这是完整视觉树"'
+    }
+    return out
   }
 
   // ------------------------------------------------------------ 流程自验
@@ -1410,6 +2070,13 @@ export function makeDriver(cfg) {  const c = {
     const transcript = []
     let passed = 0
     let failed = 0
+    // UD-03（2026-09-11 审计确证）：非断言步（click/read/shot/…）的失败过去只在 `failFast` 时才计入 `failed`，
+    // 而返回的 `ok` 是 `failed === 0` —— 于是一个**失败的 click** 会得到 `{ok:true, passed:0, failed:0}`，
+    // 渲染成「0 通过 / 0 失败」，agent 据此认为整段流程跑通了。
+    // 更糟的连带效应：失败语料库（failure corpus）也永不触发，这套错误从此不再被记录。
+    // 修法：失败**一律计数**；`failFast` 只决定"要不要中断"，不决定"算不算失败"。
+    let stepFailures = 0
+    const stepFailureNames = []
     let finalShot = null
     const w = (line) => {
       try { writeFileSync(log, new Date().toISOString() + ' ' + line + '\n', { flag: 'a' }) } catch { /* ignore */ }
@@ -1514,8 +2181,25 @@ export function makeDriver(cfg) {  const c = {
         entry.found = res.found === true
         if (res.detail !== undefined) entry.detail = res.detail
       } else if (action === 'read') {
+        // Claude 第七轮证伪（Q2，真机）：transcript 里的 read 只 `slice(0,50)`，
+        // **既不透传脚本已经算好的 `truncated`，也不给 `returned`** ——
+        // 真机实测：read 步 count=320、lines 只有 50 条、无 truncated、无 returned；
+        // 而同一次整窗的独立 read 是 truncated:true / returned:300。
+        // 于是 `count > lines.length` 成了唯一且隐式的截断信号，看 transcript 的人会把
+        // "50 条"当成"这个容器的全部控件"（比独立 read 的 300 更狠）。
         entry.count = res.count || 0
-        entry.lines = normLines(res.lines).slice(0, 50)
+        const allLines = normLines(res.lines)
+        const capped = allLines.slice(0, TRANSCRIPT_READ_LINES)
+        entry.lines = capped
+        entry.returned = capped.length
+        if (allLines.length > capped.length || res.truncated === true) {
+          entry.truncated = true
+          entry.linesCappedAt = TRANSCRIPT_READ_LINES
+          entry.note = 'transcript 里的 read 只保留前 ' + TRANSCRIPT_READ_LINES + ' 行（脚本层另有 300 行上限，' +
+            '本次匹配 ' + (res.count || 0) + ' 行）——**不要把这份清单当成容器的全部控件**；' +
+            '要全量请单独 ui_observe(read, match/inAid 收窄) 或看 steps.json 之外的直接调用结果。'
+        }
+        Object.assign(entry, scopeInfo(res)) // UD-04：范围限定随每一步一起回报
         Object.assign(entry, skipInfo(res)) // B-1：跳过数随每一步一起回报
         Object.assign(entry, snapshotStamp(res.window ?? b.window ?? '')) // 权威读：戳 snapshotId
       } else if (action === 'windows') {
@@ -1527,6 +2211,12 @@ export function makeDriver(cfg) {  const c = {
         entry.focused = res.focused ?? null
         entry.count = res.count || 0
         entry.lines = normLines(res.lines)
+        // Q2 对称性：transcript 里 read 标了截断，state 的 max 上限同样要标
+        if (res.truncated === true) {
+          entry.truncated = true
+          if (typeof res.maxApplied === 'number') entry.maxApplied = res.maxApplied
+        }
+        Object.assign(entry, scopeInfo(res)) // UD-04
         Object.assign(entry, skipInfo(res))
         Object.assign(entry, snapshotStamp(res.window ?? b.window ?? '')) // 权威读：戳 snapshotId
       } else if (action === 'waitfor' || action === 'expectwindow' || action === 'expecttext' || action === 'waitany') {
@@ -1564,9 +2254,12 @@ export function makeDriver(cfg) {  const c = {
       else if (action === 'wait') w('step ' + r.step + ': wait ' + (res.waitedMs || 0) + 'ms')
       else w('step ' + r.step + ': ' + action + ' ' + (ok ? (res.output || 'OK') : 'FAIL ' + (res.error || '')))
       transcript.push(entry)
-      if (!ok && failFast) {
-        failed++
-        break
+      if (!ok) {
+        // UD-03：非断言步的失败必须计数（旧代码 `if (!ok && failFast) { failed++; break }`
+        // 让"不启用 failFast"的调用方拿到 ok:true）。failFast 只控制中断。
+        stepFailures++
+        stepFailureNames.push(r.step + ':' + action)
+        if (failFast) break
       }
     }
 
@@ -1582,17 +2275,22 @@ export function makeDriver(cfg) {  const c = {
         failFast,
         passed,
         failed,
+        stepFailures,
+        stepFailureNames,
         totalSteps: steps.length,
         engine: 'batch',
         batchElapsedMs: batchInfo ? batchInfo.elapsedMs : null,
         transcript: clean(transcript),
       }
       writeFileSync(join(dir, 'steps.json'), JSON.stringify(stepsOut, null, 2), 'utf8')
-      w('flow end passed=' + passed + ' failed=' + failed + ' batchElapsedMs=' + (batchInfo ? batchInfo.elapsedMs : '-'))
+      w('flow end passed=' + passed + ' failed=' + failed + ' stepFailures=' + stepFailures + ' batchElapsedMs=' + (batchInfo ? batchInfo.elapsedMs : '-'))
       return {
-        ok: failed === 0,
+        // 只有"断言失败 0 次"**且**"动作步也全都成功"才算 ok（UD-03）。
+        ok: failed === 0 && stepFailures === 0,
         passed,
         failed,
+        stepFailures,
+        stepFailureNames,
         totalSteps: steps.length,
         evidenceDir: dir,
         transcript: stepsOut.transcript,
@@ -1610,11 +2308,77 @@ export function makeDriver(cfg) {  const c = {
     return new Promise((r) => setTimeout(r, ms))
   }
 
+  /**
+   * 「没有可用目标进程」的统一返回（**单点定义**，所有动作共用），并且必须在打脚本**之前**判。
+   *
+   * 起因（2026-09-12 实测）：没配 DSH_UI_PROC_NAME 时，`ui_windows` 不会立刻失败 ——
+   * 它会照常起脚本、等脚本抛错；而脚本里的参数检查发生在**进程启动/加锁之后**，于是：
+   *   · 这条"纯配置错误"要等**步超时**才回；
+   *   · 只读动作还会**重试一次**（READ_ONLY_ACTIONS），批量路径单次超时上限 10 分钟；
+   *   · 实测直接调 `drive({action:'windows'})`：**180s 内没返回**（2 × 90s 重试），
+   *     而它本该毫秒级告诉调用方"你没配目标进程，去设 DSH_UI_PROC_NAME"。
+   * 对 agent 而言这就是"ui 驱动卡住了"，与用户报的卡死/卡顿现象混在一起，最难排查。
+   * 结论：**配置类错误一律前置判定、立即返回、不重试、不等超时。**
+   */
+  function unconfiguredResult(action, extra = {}) {
+    return {
+      ok: false,
+      action,
+      unconfigured: true,
+      error: '未配置目标进程：' + action + ' 需要 DSH_UI_PROC_NAME（或 DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE）才能工作。',
+      configHint: unconfiguredHint(['DSH_UI_PROC_NAME', 'DSH_UI_CLIENT_EXE']),
+      ...extra,
+    }
+  }
+
+  /** 目标进程是否可用（显式给了 procId 视为可用）。只看**已解析过的**配置，不裸读环境变量。 */
+  function hasTarget(procId = 0) {
+    return Number(procId) > 0 || !!(c.procName || c.clientExe)
+  }
+
+  /**
+   * 补齐子进程需要的 `DSH_CRED_*`（**只在进程环境里没有时**才从注册表补，已有值不覆盖）。
+   *
+   * 为什么必须做（2026-09-12 复核发现，与前面那些"裸读"同源）：
+   *   `${cred:name}` 的展开发生在 **PowerShell 子进程**里（`dshtest` 脚本读 `$env:DSH_CRED_name`），
+   *   而它是**带前缀的动态名** —— `envValue(name)` 只按完整名查，救不了它。
+   *   于是"用户在用户级环境变量里配好凭据、长活宿主没继承"这条真实路径上，
+   *   工具会报「凭据占位符未解析」，而用户明明配过；后果是**人会把明文直接贴进参数**，
+   *   恰恰毁掉这个机制存在的意义（凭据不进模型上下文/证据文件）。
+   */
+  function missingCredEnv(baseEnv) {
+    const out = {}
+    let reg = {}
+    try { reg = envWithPrefix('DSH_CRED_', { env: baseEnv }) } catch { reg = {} }
+    for (const [k, v] of Object.entries(reg)) {
+      if (!baseEnv[k] && String(v) !== '') out[k] = String(v)
+    }
+    return out
+  }
+
   /** PowerShell 错误流很长，只留关键行。 */
   function cleanPsError(stderr) {
     const lines = String(stderr || '').split(/\r?\n/)
     const first = lines.find((l) => /Exception|错误|error|失败|not|无法|找不到|拒绝/i.test(l) && !/CategoryInfo|FullyQualified|^\s*\+|^\s*~/.test(l))
-    return first ? first.trim().slice(0, 400) : (lines[0] || '').slice(0, 400)
+    return augmentPsError(first ? first.trim().slice(0, 400) : (lines[0] || '').slice(0, 400))
+  }
+
+  /**
+   * 把 PowerShell 侧"缺参数"类报错**升级成可执行说明**（单点，所有动作共用）。
+   *
+   * 起因（2026-09-12 冷启动巡检）：同一插件的两个工具对"没配目标进程"说法完全不同 ——
+   *   `ui_status` 会带上 `configHint`（说清该设哪个变量、以及"没配过"还是"配了没继承"）；
+   *   而 `ui_windows`/`ui_tree`/`ui_read`/`ui_act` 等只回一句
+   *   「未指定目标进程（-ProcName 或 -ProcId 至少一个）」—— agent 拿着这句只能猜：
+   *   是客户端没开？是权限不够？还是少配了什么？**连变量名都不给**。
+   * 所有这些报错都来自同一个 PS1 参数检查、又都汇集到 cleanPsError，
+   * 所以在这里升级一次即可覆盖全部动作（同一个修法只写一处 —— 本仓反复吃过的亏）。
+   */
+  function augmentPsError(msg) {
+    const s = String(msg || '')
+    if (!/未指定目标进程|-ProcName 或 -ProcId/.test(s)) return s
+    return s + '\n（原因：本机没有可用的目标进程配置。下一步：设置 DSH_UI_PROC_NAME（或 DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE）后重试——' +
+      unconfiguredHint(['DSH_UI_PROC_NAME', 'DSH_UI_CLIENT_EXE']) + '）'
   }
 
   return {
@@ -1629,18 +2393,75 @@ export function makeDriver(cfg) {  const c = {
     tsDir,
     warmShutdown,
     warmRestart,
+    /**
+     * 急停状态（只读）。为什么要有它（Claude r15 复核）：
+     *   急停一旦锁存，`check()` 会**持续拒绝**该 session 的所有副作用动作，而 `reset()` 全仓**无调用点**
+     *   ⇒ 复位只能靠重启宿主进程；而两个面的描述里**一个字都没提**急停/策略表 ——
+     *   agent 只会看到"策略拒绝"，既不知道护栏存在、也不知道怎么恢复。
+     *   这里把状态暴露出来（哨兵在不在、锁没锁、策略配没配），让拒绝可解释、复位可执行。
+     */
+    estopStatus: () => {
+      // ⚠ 路径必须取自**策略自己**（policy.estopFilePath()），不能重新读环境变量：
+      //   注入的 policy（测试/多策略）与状态输出各说各话，就是又一次"两个面不一致"。
+      const sentinel = policy.estopFilePath()
+      const policyFile = policy.policyFilePath()
+      return {
+        sentinel,
+        sentinelExists: !!sentinel && existsSync(sentinel),
+        policyFile,
+        policyConfigured: !!policy.isConfigured(),
+        latched: !!policy.latchedSession(),
+        latchedSession: policy.latchedSession(),
+        // 安全策略文本**不参与判定**，如实标出来（否则"我配了它"会被当成"有护栏"）。
+        safetyPolicyFile: policy.diagnostics.safetyPolicyFile || '',
+        safetyPolicyLoaded: policy.diagnostics.safetyPolicyLoaded === true,
+        safetyPolicyGatesActions: false,
+        note: '急停是外部总闸：哨兵文件在盘上时任何 session 一律拒；文件删掉后**已锁存的 session 仍拒**（删文件 ≠ 复位）。复位：POST /api/dsh-ui-drive/estop/reset（仅本机回环、非 agent 工具）。',
+      }
+    },
+    /**
+     * r44：当前焦点是否落在**敏感控件**上（密码/验证码/token/口令；词表 + IsPassword 双源判定，在 PS 侧算）。
+     *
+     * 为什么 fail-closed：这个函数唯一的用途是决定"要不要把一张截图交给视觉模型"。
+     * 查不到（客户端没跑 / state-live 失败）时**不能**当成"不敏感" —— 那恰恰是密码输入瞬间的常态。
+     * 返回 { ok, secret, unknown, focused, reason }；调用方应把 unknown 与 secret 同等对待。
+     */
+    secretFocusNow: async ({ procId = 0, winTitle = '' } = {}) => {
+      try {
+        const r = await drive({ action: 'state-live', max: 1, procId, winTitle })
+        if (!r || r.ok !== true) {
+          return { ok: false, secret: null, unknown: true, focused: '', reason: (r && (r.error || r.reason)) || 'state-live 未成功' }
+        }
+        return { ok: true, secret: r.secretFocused === true, unknown: false, focused: String(r.focused || ''), reason: '' }
+      } catch (e) {
+        return { ok: false, secret: null, unknown: true, focused: '', reason: String((e && e.message) || e) }
+      }
+    },
+    /** 显式复位急停锁存（**运维路径**：给面板/本机回环路由用，不作为 agent 工具，免得模型自己关掉护栏）。 */
+    estopReset: (sessionId) => {
+      policy.reset(sessionId)
+      return { ok: true, reset: true, latched: !!policy.latchedSession(), latchedSession: policy.latchedSession() }
+    },
     // 显式释放客户端互斥锁（长跑脚本轮间让锁用；进程退出时会自动释放）
     releaseLock: () => {
       if (!lockPath) return
       try { rmSync(lockPath, { force: true }) } catch { /* ignore */ }
       HELD_LOCKS.delete(lockPath)
     },
+    // r44：`shot` + `describe` 之前把门（G1 黑盒指出：ui_live 有 secretFocused 防线，
+    //   而**会把像素交给视觉模型**的 describe 通道没有）。**实现见上面的 secretFocusNow 成员** ——
+    //   这里不要再写 `secretFocusNow,` 这种简写：那会变成"引用一个不存在的绑定"，
+    //   整个 makeDriver() 直接抛 `secretFocusNow is not defined`（我第一版就这么写的，
+    //   被 param-forwarding-e2e / mcp-toolface-consistency 两个测试当场抓住）。
     warmStatus,
     // W1 缝契约（冻结）：写侧单点的两个纯函数 + snapshotId 编解码 + 权威状态诊断。W2 复用这些挂 deny/急停。
     classifyAction,
     validateSnapshot,
     encodeSnapshotId,
     decodeSnapshotId,
+    // 观测完整性单一产出点（Claude 第九轮 Q1）：live.mjs 等**其它模块**必须经此取用，
+    // 否则它们只能手工重建对象 —— 而重建就是白名单，就是下一个"只修一半"。
+    completenessInfo,
     snapshotState: () => ({ seq: snap.seq, gen: currentGen, latest: snap.latest ? { ...snap.latest } : null }),
     evidenceDir: () => c.evidenceDir,
     scriptsDir: () => c.scriptsDir,
