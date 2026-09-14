@@ -45,6 +45,64 @@ function ageText(ms) {
 }
 
 /**
+ * ★ 错误/警告条目 → 一行一条（**三个渲染共用一个实现** —— 第 24 类：同一件事不许三份实现）。
+ *
+ * 2026-09-14（F-059 同族，被"载荷探针"抓出来）：这三个渲染**都**只印计数、**不印条目** ——
+ *   `build_errors`（工具的作用就是"从最近日志重解析错误/警告列表"）印的是
+ *     「2 错误 / 15 警告（日志 C:\…）」；
+ *   `build_status` 印的是「最近构建：Build 失败(2 错误)…」；
+ *   而 2 条错误**到底写了什么**，在 DSH 面**一个工具都看不到**（`build_run` 那份才印，但它只在**当场失败**时印）。
+ *   ⇒ 这就是 F-052（`memory_search` 只印"找到 N 条"）的**同一族**：算出来了、也返回了，渲染层把它丢了。
+ */
+export function formatEntries(entries, limit = 10) {
+  const list = Array.isArray(entries) ? entries : []
+  return list.slice(0, limit).map((e) => {
+    if (!e || typeof e !== 'object') return String(e)
+    const where = (e.file ?? '?') + '(' + (e.line ?? '?') + ',' + (e.col ?? '?') + ')'
+    return where + ': ' + (e.code ?? '?') + ': ' + (e.message ?? '')
+  }).join('\n')
+}
+
+/** 条目清单 + "还有多少没印"的尾巴（**截断必须说出来**）。 */
+export function entriesSection(title, entries, limit = 10, tail = '') {
+  const list = Array.isArray(entries) ? entries : []
+  if (list.length === 0) return ''
+  const body = formatEntries(list, limit)
+  const more = list.length > limit ? '\n…（共 ' + list.length + ' 条，这里只列前 ' + limit + ' 条' + (tail ? '；' + tail : '') + '）' : (tail ? '\n（' + tail + '）' : '')
+  return '\n' + title + '：\n' + body + more
+}
+
+/**
+ * build_errors（"从最近一次日志重解析错误/警告列表"）的渲染。
+ *
+ * 2026-09-14（F-059 同族，载荷探针抓出来）：旧实现**只有一行计数** ——
+ *   `v.errors.length + ' 错误 / ' + v.warnings.length + ' 警告（日志 …）'`
+ * 而这个工具的描述写的是「重新解析错误/警告列表（**结构化 file/line/col/code/message**）」，
+ * 返回里也**确实**带着那些条目 ⇒ **描述承诺的东西 agent 一个字都看不到**。
+ * （`GET /errors` 路由也是拿同一份数据，所以只有 DSH 面缺。）
+ *
+ * 口径：
+ *   · 没跑过 ⇒ 明说"没有构建记录"（旧行为保留）；
+ *   · 有记录 ⇒ 计数 + **条目**（错误最多 10 条、警告最多 5 条）+ 日志路径 + "截断了多少"；
+ *   · **警告只有在没有错误时才列**（有错误时警告是噪音，日志路径给全了你随时能去看）。
+ */
+export function renderErrors(v) {
+  if (!v || typeof v !== 'object') return '构建错误解析没有返回结果（工具执行异常）'
+  if (v.hasRun !== true) return '没有构建记录'
+  const errors = Array.isArray(v.errors) ? v.errors : []
+  const warnings = Array.isArray(v.warnings) ? v.warnings : []
+  const head = errors.length + ' 错误 / ' + warnings.length + ' 警告（日志 ' + (v.logPath || '?') + '）'
+  if (errors.length === 0 && warnings.length === 0) {
+    return head + '\n（没有解析出任何条目 —— ⚠ **空 ≠ 没有错误**：先确认这份日志是不是你要的那一次，见工具描述。）'
+  }
+  let text = head
+  text += entriesSection('错误', errors, 10, errors.length > 10 ? '完整日志 ' + (v.logPath || '?') : '')
+  if (errors.length === 0) text += entriesSection('警告', warnings, 5, '完整日志 ' + (v.logPath || '?'))
+  else if (warnings.length > 0) text += '\n（另有 ' + warnings.length + ' 条警告未列出 —— 有错误时先看错误；要看警告请直接读日志。）'
+  return text
+}
+
+/**
  * build_status（"最近一次构建结果"）的渲染。
  *
  * 四个实测踩出来的问题（CL-7 / CL-3 / BV-05）：
@@ -96,7 +154,12 @@ export function renderStatus(v, now = Date.now()) {
   if (v.evidenceWriteError) notes.push('⚠ ' + v.evidenceWriteError)
   // F-007：陈旧代码必须自曝 —— 否则"修复没生效"会被误读成"功能不存在"
   if (v.codeStaleNote) notes.push(v.codeStaleNote)
-  return [head, ...notes].join('\n')
+  // ★ 2026-09-14：**把条目印出来**（此前只印计数）。
+  //   收敛位置在**提示之后**：陈旧/口径/代码陈旧的警告要先被看到，条目是"下一层细节"。
+  //   没有条目时这段是空串（`entriesSection` 自己判），所以旧行为里的"通过"路径一字未变。
+  const errSection = entriesSection('关键错误（解析自日志）', v.errors, 10, '完整日志 ' + (v.logPath || '?'))
+  const warnSection = v.errors && v.errors.length ? '' : entriesSection('警告（解析自日志）', v.warnings, 10, '完整日志 ' + (v.logPath || '?'))
+  return [head, ...notes].join('\n') + errSection + warnSection
 }
 
 /**

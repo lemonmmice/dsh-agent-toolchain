@@ -69,5 +69,41 @@ const ago = (min) => new Date(NOW - min * 60000).toISOString()
   check('缺 at 时不炸且不误报年龄', /最近构建/.test(noAt) && !/小时前/.test(noAt), noAt.slice(0, 200))
 }
 
+// ================================================================
+// 6. ★★ 失败记录必须**把错误条目印出来**（2026-09-14，载荷探针抓出来的）
+//
+// 病：`renderStatus` 只印 `head`，而 head 里只有**计数**。实况原话：
+//     「最近构建：Build 失败(2 错误)，耗时 5.7s，日志 C:\…（2.8 天前）」
+// 那 2 条错误**到底写了什么**，当时 DSH 面**一个工具都看不到**：
+//   `build_errors` 也只印计数，`build_run` 那份才印 —— 但它只在**当场失败**时印。
+// ⇒ 与 F-052（`memory_search` 只印"找到 N 条"）同一族：**算出来了、也返回了，渲染层把它丢了**。
+{
+  const failed = renderStatus({
+    hasRun: true, ok: false, target: 'Build', durationMs: 5700, errorCount: 2, warningCount: 15,
+    logPath: 'C:\\logs\\b.log', at: ago(2),
+    errors: [
+      { file: 'KLineMultiGroupViewModel.cs', line: 412, col: 7, code: 'CS0103', message: '当前上下文中不存在名称"Foo"' },
+      { file: 'Bar.cs', line: 9, col: 1, code: 'CS1002', message: '应输入 ;' },
+    ],
+  }, NOW)
+  check('★ 失败时**列出**错误条目（file(line,col): code: message）—— 只有计数等于把原因藏起来',
+    /KLineMultiGroupViewModel\.cs\(412,7\): CS0103:/.test(failed) && /Bar\.cs\(9,1\): CS1002:/.test(failed), failed.slice(0, 400))
+  check('★ 依然保留计数与日志路径（旧行为不许丢）',
+    /失败\(2 错误\)/.test(failed) && /C:\\logs\\b\.log/.test(failed), failed.slice(0, 240))
+
+  const okNoErr = renderStatus({ hasRun: true, ok: true, target: 'Build', durationMs: 1, errorCount: 0, warningCount: 0, logPath: 'L.log', at: ago(2) }, NOW)
+  check('★ 通过且没有错误时**不**凭空多出一段"关键错误"（旧行为一字未变）', !/关键错误/.test(okNoErr), okNoErr.slice(0, 200))
+
+  const many = renderStatus({
+    hasRun: true, ok: false, target: 'Build', durationMs: 1, errorCount: 40, warningCount: 0, logPath: 'L.log', at: ago(2),
+    errors: Array.from({ length: 40 }, (_, i) => ({ file: 'F' + i + '.cs', line: i, col: 1, code: 'CS1', message: 'm' + i })),
+  }, NOW)
+  check('★ 错误多于上限时**截断并说出来**（不许默默只给前 10 条）',
+    (many.match(/F\d+\.cs\(/g) || []).length === 10 && /只列前 10 条/.test(many), many.slice(-280))
+
+  const weird = renderStatus({ hasRun: true, ok: false, target: 'Build', durationMs: 1, errorCount: 2, warningCount: 0, logPath: 'L.log', at: ago(2), errors: [null, 'raw string'] }, NOW)
+  check('★ 条目形状残缺时不炸（渲染层永远不能抛）', typeof weird === 'string' && weird.length > 0, weird.slice(0, 200))
+}
+
 console.log(failures ? `\nFAILED: ${failures} 项` : '\nPASS: dsh-build build_status 渲染（BV-05 / CL-7 / CL-3）')
 process.exit(failures ? 1 : 0)

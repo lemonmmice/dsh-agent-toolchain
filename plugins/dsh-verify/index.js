@@ -10,6 +10,10 @@
  * 时降级为可读的错误提示，不炸插件加载。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
+// 渲染层放在**本插件内的零依赖模块**里（可被普通 node 测试 import）—— 见 lib/render-failure.mjs。
+// 注意：这里必须是**静态** import（本插件目录内的文件永远在），不能走下面那个带守卫的动态 import
+// （那个是给 `../../lib/verify/report.mjs` —— 共享库，插件被拷出 monorepo 时可能不存在）。
+import { renderFailureQuery } from './lib/render-failure.mjs'
 
 export const name = 'dsh-verify'
 
@@ -177,6 +181,7 @@ const tools = () => [
     description:
       '查询本地**失败样本库**（JSONL，仅本机，从不上传）：按 q（task/description/resolution 子串）、failureClass、tag、时间范围过滤，返回最新在前。' +
       '**已被撤回的记录默认排除**（看返回里的 `retractedExcluded`）；要看它们并带撤回理由传 includeRetracted=true。**读全部历史分片**（活动 + 归档）。' +
+      '返回的**记录正文会被渲染出来**（类别 / task / description / resolution）。' +
       'Triggers: 查失败样本库 / 之前记过什么失败 / failure query.',
     parameters: {
       q: { type: 'string', description: '子串匹配 task/description/resolution' },
@@ -188,7 +193,7 @@ const tools = () => [
       offset: { type: 'number', description: '跳过最新的 N 条' },
       includeRetracted: { type: 'boolean', description: '把被撤回的记录也带出来（各带 retractedReason）。默认 false' },
     },
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: '失败样本库：返回 ' + (v.count ?? (v.rows ? v.rows.length : 0)) + ' 条（库内合计 ' + (v.total ?? '?') + '，已排除撤回 ' + (v.retractedExcluded ?? 0) + ' 条）' }] },
+    output: { schema: OBJECT, render: (_a, v) => renderFailureQuery(v) },
     async execute(args) {
       return withCorpus((c) => c.query(args))
     },
