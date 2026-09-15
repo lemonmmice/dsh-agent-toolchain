@@ -67,7 +67,8 @@ const SECTION_ORDER = 140
 const GUIDANCE =
   '本机已安装 dsh-api-visualizer 插件（DSH Web GUI 的接口捕获面板，Fiddler 式实时抓包）：侧边栏「接口捕获」入口，可视化展示 本机客户端进程 的 HTTP 接口调用。' +
   '能力：记录存本地 JSONL 库（按天分片 records-YYYYMMDD.jsonl，上限 20000 条）；面板内「开始实时捕获」按钮驱动宿主实时引擎，tail 客户端 System.Net 跟踪日志（%TEMP%\\uiprobe-net-trace.log，由客户端配置的 system.diagnostics 注入产生）自动解析出 方法/URL/状态/请求头/响应头/请求体/响应体（gzip 自动解包）并实时入库，source=realtime，并关联调用方归因（ViewModel/API/调用链，来自 %TEMP%\\uiprobe-caller.log）；' +
-  '捕获控制面**有工具**：api_capture_start（起）/ api_capture_stop（停）/ api_capture_status（查状态 —— running:true 但跟踪日志不存在时**抓不到任何数据**，两者不是一回事）；对应路由 POST /api/dsh-api-visualizer/capture/start（body 可选 {logPath, replay}）、POST /capture/stop、GET /capture/status、POST /capture/rotate（body {keepDays}，轮转 trace/caller 日志并清理过期 .bak，300MB 自动轮转）；' +
+  '捕获控制面**有工具**：api_capture_start（起）/ api_capture_stop（停）/ api_capture_status（查状态 —— running:true 但跟踪日志不存在时**抓不到任何数据**，两者不是一回事）；对应路由 POST /api/dsh-api-visualizer/capture/start（body 可选 {logPath, replay}）、POST /capture/stop、GET /capture/status、POST /capture/rotate（body {keepDays}，轮转 trace/caller 日志并清理过期 .bak）；' +
+  '⚠ **跟踪日志不会在运行中自动轮转**（R1-02 / F-056 实测）：唯一那次"超 300MB 自动轮转"发生在 **start() 且当时没在跑**的那一刻，跑起来之后只涨不停（本机实测 ≈11–12 MB/分钟），而且默认就写在 **%TEMP%（C 盘）**。长跑前请自己 `POST /capture/rotate`（或面板「轮转日志」）；api_capture_start 每次都会把当前大小与这件事印在返回里。' +
   'agent 工具：api_capture_append（追加记录）、api_capture_query（查询/过滤已捕获记录，支持 q/method/source/status/host/minDurationMs/errors/caller 等，返回调用方归因）；也可经 POST /api/dsh-api-visualizer/ingest 灌入。' +
   '本地代理模式（抓任意进程，Fiddler 式）：POST /proxy/start（body 可选 {port, upstream}，默认 8899、上游自动读系统代理）、POST /proxy/stop、GET /proxy/status、GET /proxy/ca-cert.der（根证书下载）、POST /proxy/install-ca（导入本机信任，免管理员）、POST /proxy/system-proxy（body {enable}，把系统代理指向本代理/恢复原值）；HTTPS 走 CONNECT + 按域签发证书解密，source=proxy；WebSocket 升级请求同样被抓取（帧统计+文本解码，source=proxy, method=WS）。' +
   'AutoResponder 规则引擎（对代理流量生效）：GET/POST/DELETE /proxy/rules（规则：方法/URL 匹配 + mock 响应/伪造状态码/注入延迟/阻断），用于模拟错误、mock 行情、验证客户端容错。' +
@@ -2328,9 +2329,10 @@ function captureControlTools(capture) {
       '**要在"现在正在发生的流量"上做分析，必须先起它**（否则 api_capture_query 看到的只是历史数据）。' +
       '⚠ 两个前提会**当场**告诉你而不是让你以为在抓：① 跟踪日志不存在（多半是客户端没重启过、system.diagnostics 没生效）⇒ 返回里带 `warnings` 明说"读不到任何数据"；' +
       '② 调用方归因旁路日志不存在 ⇒ 明说"归因不可用"，看到 caller 为空时不要读成"没有调用方"。' +
+      '③ **跟踪日志不会在运行中自动轮转，且默认落在 %TEMP%（C 盘）**（R1-02/F-056）⇒ 每次 start 都会回一条 `warnings` 说明当前大小与该怎么做（要清走 POST /capture/rotate）。' +
       'Triggers: 开始实时捕获 / 起捕获 / 抓当前流量 / start capture.',
     parameters: {
-      logPath: { type: 'string', description: '可选：改用这个跟踪日志路径（**捕获运行中改路径会被拒绝**并给出下一步）。默认 %TEMP%\\uiprobe-net-trace.log。' },
+      logPath: { type: 'string', description: '可选：改用这个跟踪日志路径（**捕获运行中改路径会被拒绝**并给出下一步）。默认 %TEMP%\\uiprobe-net-trace.log（**在 C 盘**，且运行中不会自动轮转）。' },
       replay: { type: 'boolean', description: 'true = 从头重放整个日志（用于把历史日志灌进库）；默认 false = 只 tail 新增内容。' },
     },
     output: {

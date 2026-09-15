@@ -97,6 +97,34 @@ function statusOf(capture) {
 }
 
 /**
+ * R1-02（2026-09-15 用户裁决：**改描述 + start 时告警**；**不动**客户端 App.config）：
+ * 跟踪日志有两条合起来会"悄悄吃掉 C 盘、而且没人觉得有问题"的事实：
+ *   ① **默认就落在 %TEMP%（C 盘）**；
+ *   ② **运行中不会自动轮转** —— 唯一那次"超 300MB 自动轮转"发生在 `start()` 且**当时没在跑**的那一刻
+ *     （F-056 现场结论：那句"300MB 自动轮转"只在启动那一刻成立，跑起来之后就不成立）。
+ * 所以每次 start 都把它印进返回里 —— 选的就是"起的时候说一句"，而不是等人来问。
+ * ⚠ 只在**日志确实存在**时给这条（不存在时另有"读不到任何数据"那条负责，别重复吓人）。
+ * ⚠ 大小/位置拿不到就说"未读到"，**不许**编一个数（本仓口径：没读到 ≠ 没有）。
+ */
+export function logGrowthWarning(st) {
+  if (!st || st.logExists !== true) return null
+  const p = typeof st.logPath === 'string' ? st.logPath : ''
+  if (p === '') return null                       // 连路径都没有 ⇒ 这条提醒没有依据，宁可不报
+  // ⚠ `Number(null) === 0`、`Number(undefined) === NaN` —— 直接 Number() 会把"**缺字段**"变成"**0 MB**"。
+  //   本模块上面 `doubleWriteVerdict` 已经为同一个坑写过注释，我这里**又踩了一次**（测试当场抓住）。
+  const raw = st.logSize
+  const sizeMB = raw === null || raw === undefined ? null
+    : (Number.isFinite(Number(raw)) ? Math.round(Number(raw) / 1048576) : null)
+  const onC = /^[a-zA-Z]:/.test(p) ? /^[cC]:/.test(p) : null      // 非盘符路径（UNC 等）⇒ null：不臆造
+  return '跟踪日志**不会在运行中自动轮转**（"超 300MB 自动轮转"只在 **start() 且当时没在跑**那一刻成立，' +
+    'F-056 实测）—— 现在 ' + (sizeMB === null ? '大小**未读到**' : sizeMB + ' MB') +
+    (onC === true ? '、**在 C 盘**' : onC === false ? '、不在 C 盘' : '') +
+    '；默认路径就是 %TEMP%（C 盘）。它只会一直涨（r61 本机实测 ≈11–12 MB/分钟，随流量变化）' +
+    (sizeMB !== null && sizeMB >= 300 ? '；⚠ 已超 300MB：**下次 start**（那时若没在跑）会先自动轮转一次' : '') +
+    '。要清就走 `POST /api/dsh-api-visualizer/capture/rotate`（body `{keepDays}`）或面板「轮转日志」。'
+}
+
+/**
  * 起捕获。**返回里必须带上"现在到底抓不抓得到东西"** —— 这正是最容易骗人的地方：
  * 实测踩过（F-022）：跟踪日志不存在时旧实现仍回 200，捕获静默变成"读空气"。
  *
@@ -131,6 +159,9 @@ export function captureStart(capture, body = {}) {
     warnings.push('调用方归因旁路日志不存在：' + (st.caller.logPath || '?') +
       ' —— 该能力当前不可用（不影响跟踪日志的解析）；看到 caller 为空时不要读成"没有调用方"。')
   }
+  // R1-02：日志在 C 盘 + 运行中不自动轮转 —— 起的时候说一句（用户选的就是这条，而不是等人来问）。
+  const growth = logGrowthWarning(st)
+  if (growth !== null) warnings.push(growth)
   return { ok: true, ...st, ...(warnings.length ? { warnings } : {}) }
 }
 
@@ -166,11 +197,41 @@ export function captureStatusSummary(st) {
     if (st.caller && st.caller.logExists !== true) parts.push('⚠ 调用方归因不可用（旁路日志不存在）')
   }
   if (st.counters && typeof st.counters === 'object') {
-    parts.push('本次已解析 ' + (st.counters.emitted ?? 0) + ' 条（见到 ' + (st.counters.requestsSeen ?? 0) + ' 个请求）')
+    // ⚠ R1-07（2026-09-14 夜真机查出）：`counters.emitted` 是**引擎对象创建以来**的累计值 ——
+    //   它跨越 `stop`/`start`，也跨越"用户中途清库"，而这里原先写的是「**本次**已解析」。
+    //   现场三个数：18:42:21 start 的摘要说「本次已解析 **70** 条」；18:47 摘要说 175 条；
+    //   而同一时刻库里只有 **105** 条（`integrity.emitted = 105`、`storeTotal = 105`）⇒ 175 − 70 = 105。
+    //   数字本身没错，**标签**错了 —— 而读的人（我）差一点把 175 当成本次的证据量去报告。
+    //   现在：优先用与重复写入自检**同口径**的增量（`integrity.emitted`，自本次 start 起），
+    //   拿不到增量时退回累计值但**如实标注"累计"** —— 宁可啰嗦，不许把累计说成本次。
+    const sinceStart = st.integrity && typeof st.integrity.emitted === 'number' ? st.integrity.emitted : null
+    if (sinceStart !== null) {
+      parts.push('本次已解析 ' + sinceStart + ' 条（自本次 start 起的增量；累计 ' + (st.counters.emitted ?? 0) +
+        ' 条 = 含清库/停启之前的部分；见到 ' + (st.counters.requestsSeen ?? 0) + ' 个请求）')
+    } else {
+      parts.push('已解析 ' + (st.counters.emitted ?? 0) + ' 条（**累计**：自引擎创建起、含清库/停启之前的部分 —— ' +
+        '**不是"本次"**；见到 ' + (st.counters.requestsSeen ?? 0) + ' 个请求）')
+    }
   }
   // 重复写入必须**进入这一句人话**：它是"面板上的次数能不能信"的唯一信号。
-  if (st.integrity && st.integrity.ok === false) {
-    parts.push('⚠ 疑似重复写入（比值 ' + st.integrity.ratio + '）—— 面板里的调用次数被放大了，重启 DSH 宿主可恢复')
+  // ⚠ R1-08（2026-09-14 夜，黑盒 agent 独立撞出来的）：原实现**只在异常时**才印这一行
+  //   （`if (st.integrity && st.integrity.ok === false)`），于是"自检跑过且正常"与"根本没做自检"
+  //   在渲染文本里**完全一样**（一个字都没有）。而工具描述白纸黑字写着"返回里的 `integrity` 比较…"，
+  //   黑盒验收的原话是：「描述承诺返回的 integrity 自检字段实际不存在」——**承诺了却看不见 = 撒谎**。
+  //   现在**三态都印**：正常 / 异常 / 暂不判定（含样本太小）。
+  if (st.integrity) {
+    const ig = st.integrity
+    if (ig.ok === true) {
+      parts.push('重复写入自检：正常（比值 ' + ig.ratio + '，引擎 ' + ig.emitted + ' 条 / 库内 realtime ' +
+        (ig.realtimeSinceStart ?? '?') + ' 条，同一区间）')
+    } else if (ig.ok === false) {
+      parts.push('⚠ 疑似重复写入（比值 ' + ig.ratio + '）—— 面板里的调用次数被放大了，重启 DSH 宿主可恢复')
+    } else {
+      parts.push('重复写入自检：**暂不判定**' + (ig.note ? '（' + ig.note + '）' : '') +
+        ' —— 这**不等于**没问题，而是这个窗口里样本不够下结论')
+    }
+  } else {
+    parts.push('重复写入自检：**本次没有做**（拿不到 integrity；"没做"不等于"没问题"）')
   }
   return parts.join('；')
 }

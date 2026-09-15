@@ -10,7 +10,8 @@
 //   · 捕获运行中改路径必须**把可操作的原因传出去**（旧实现漏了 try/catch ⇒ 宿主把它变成空 400）；
 //   · 归因旁路日志不在时，要说明"caller 为空 ≠ 没有调用方"；
 //   · 状态里"在跑"与"抓得到"是两件事（引擎 running=true 但日志不存在 ⇒ 读不到任何流量）。
-import { captureStart, captureStop, captureStatus, captureStatusSummary } from '../lib/capture-control.mjs'
+import { captureStart, captureStop, captureStatus, captureStatusSummary, logGrowthWarning } from '../lib/capture-control.mjs'
+import { readFileSync } from 'node:fs'
 
 let failures = 0
 function check(name, cond, extra = '') {
@@ -50,7 +51,12 @@ function fakeEngine({ logExists = true, callerLogExists = true, running = false,
   const r = captureStart(eng, {})
   check('起捕获：ok=true 且引擎真的被调用', r.ok === true && eng.calls.some((c) => c.startsWith('start:')), JSON.stringify(eng.calls))
   check('起捕获：带回状态（running=true）', r.running === true)
-  check('起捕获：日志存在时**不**报 warning（不狼来了）', r.warnings === undefined, JSON.stringify(r.warnings))
+  // ⚠ 这条**被改过**（R1-02，2026-09-15 用户裁决）：日志存在时现在会带一条"运行中不自动轮转 + 在 C 盘"的提醒，
+  //   所以不能再断言"没有 warning"。要守住的**不是**"一句都不许说"，而是"**不许报'读不到数据'那种假警报**"。
+  check('起捕获：日志存在时**不报**"读不到数据"式假警报（不狼来了）',
+    !Array.isArray(r.warnings) || !r.warnings.some((w) => /读不到任何数据/.test(w)), JSON.stringify(r.warnings))
+  check('★ R1-02：日志存在时**要**带"不会在运行中自动轮转"的提醒（用户选的就是"起的时候说一句"）',
+    Array.isArray(r.warnings) && r.warnings.some((w) => /不会在运行中自动轮转/.test(w)), JSON.stringify(r.warnings))
 }
 {
   const eng = fakeEngine({ logExists: false })
@@ -64,6 +70,44 @@ function fakeEngine({ logExists = true, callerLogExists = true, running = false,
   const r = captureStart(eng, {})
   check('★ 归因旁路日志不在：带 warning，且写明"caller 为空 ≠ 没有调用方"',
     Array.isArray(r.warnings) && r.warnings.some((w) => /没有调用方/.test(w)), JSON.stringify(r.warnings))
+}
+
+// ------------------------------------------------ 1b. R1-02：日志在 C 盘 + **运行中不自动轮转**
+//
+// 现场（F-056，2026-09-14 真机）：描述里写着"300MB 自动轮转"，实测那件事**只在启动那一刻成立** ——
+//   `start()` 里 `if (autoRotate && !wasRunning()) { if (size > 300MB) doRotate() }`，
+//   跑起来之后**没有任何**运行时轮转。而日志默认落在 `%TEMP%`（**C 盘**），r61 实测无轮转时长到 431/451 MB。
+// 用户 2026-09-15 的裁决是「**改描述 + start 时告警**」两条，**不动**客户端 App.config
+//   ⇒ 所以这两句必须**同时**在"导出函数的行为"和"描述文本"上被钉住（只改一头 = 名不副实）。
+{
+  const w = logGrowthWarning({ logExists: true, logPath: 'C:\\Users\\x\\AppData\\Local\\Temp\\uiprobe-net-trace.log', logSize: 451 * 1048576 })
+  check('★ R1-02：明说"运行中不会自动轮转"，并点出**唯一那次**只在 start() 且没在跑时成立',
+    /不会在运行中自动轮转/.test(w) && /start\(\)/.test(w), String(w))
+  check('★ R1-02：点出默认落 **C 盘** + 给出当前大小', /C 盘/.test(w) && /451 MB/.test(w), String(w))
+  check('★ R1-02：给出可执行的下一步（rotate 路由 / 面板按钮）', /capture\/rotate/.test(w) && /轮转日志/.test(w), String(w))
+  check('★ R1-02：已超 300MB 时说清"下次 start 会先自动轮转一次"', /下次 start/.test(w), String(w))
+  // 三态之一：日志都不在 ⇒ 这条**不报**（那是"读不到任何数据"那条的活，别重复吓人）
+  check('★ R1-02：日志不存在时不报这条（与"读不到任何数据"不重复）',
+    logGrowthWarning({ logExists: false, logPath: 'C:\\x.log' }) === null, '')
+  // ★★ 本仓口径：拿不到就**说拿不到**，不许编一个数
+  const w2 = logGrowthWarning({ logExists: true, logPath: 'C:\\x.log', logSize: null })
+  check('★★ R1-02：大小拿不到 ⇒ 如实说"未读到"，**不许编一个数**',
+    /未读到/.test(w2) && !/现在 \d+ MB/.test(w2), String(w2))
+  check('★ R1-02：连路径都没有 ⇒ 不报（没有依据就不说）', logGrowthWarning({ logExists: true }) === null, '')
+  // 假警报与假绿灯一样有害：不在 C 盘就不许说"在 C 盘"
+  const w3 = logGrowthWarning({ logExists: true, logPath: 'D:\\dsh-agent-toolchain\\uiprobe-net-trace.log', logSize: 1024 })
+  check('★ R1-02：不在 C 盘时**不许**说"在 C 盘"', /不在 C 盘/.test(w3), String(w3))
+}
+
+// ------------------------------------------------ 1c. R1-02 的"改描述"那半边（agent 读的就是这些字）
+{
+  const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  check('★★ 描述里不再有**无条件的**"300MB 自动轮转"（F-056：那句话只在启动那一刻成立）',
+    !/清理过期 \.bak，300MB 自动轮转/.test(src), '老话还在 ⇒ 描述仍在骗人')
+  check('★★ 描述里明说"运行中不会自动轮转" + 落在 %TEMP%（C 盘）',
+    /不会在运行中自动轮转/.test(src) && /%TEMP%（C 盘）/.test(src), '')
+  check('★ 插件导语与 api_capture_start 的描述**都**带上这条（agent 两个地方都会读）',
+    (src.match(/不会在运行中自动轮转/g) || []).length >= 2, '只有一处 ⇒ 另一半没改')
 }
 {
   const eng = fakeEngine({ throwOnSetLogPath: 'capture running; stop it before changing logPath' })
@@ -134,6 +178,49 @@ function fakeEngine({ logExists = true, callerLogExists = true, running = false,
   check('★ 窗口里引擎没产出 ⇒ 说"无法判定"（而不是当成 1.00 的正常）', vZero.ok === null && /无法判定/.test(vZero.note), JSON.stringify(vZero))
   const s6 = captureStatusSummary({ ok: true, running: true, logExists: true, counters: { emitted: 3381, requestsSeen: 3381 }, integrity: bad })
   check('★ 判定进入"人话总结"（不能只藏在字段里）', /疑似重复写入/.test(s6) && /重启 DSH 宿主/.test(s6), s6)
+}
+
+// ---------------------------------------------------------------- 5. R1-07：「本次已解析」必须是**本次**的增量
+//
+// 现场（2026-09-14 夜，真机，三个数互相印证）：
+//   18:42:21 `start` 的摘要说「本次已解析 **70** 条」；
+//   18:47   摘要说「本次已解析 **175** 条（见到 175 个请求）」，而**库里只有 105 条**；
+//   原始 JSON：`counters.emitted = 175` 而 `integrity.emitted = 105`、`storeTotal = 105` ⇒ 175 − 70 = 105 ✔
+// ⇒ `counters.emitted` 是**引擎对象创建以来**的累计值（跨越 stop/start、也跨越用户中途清库），
+//   而摘要与工具描述都写"**本次**" —— 数字没错，**标签**错了；读的人会把 175 当成本次证据量。
+// ⚠ 同时要说清：`integrity` 判据本身**是对的**（比值 1 ⇒ 没有重复写入）—— 坏的只是措辞。
+{
+  const live = {
+    ok: true, running: true, logExists: true, logSize: 9093966, offset: 9093966,
+    counters: { emitted: 175, requestsSeen: 175 },
+    integrity: { ok: true, ratio: 1, emitted: 105, realtimeSinceStart: 105 },
+  }
+  const s = captureStatusSummary(live)
+  check('★★ "本次已解析"用的是与自检同口径的**增量**（105），不是累计值（175）', /本次已解析 105 条/.test(s), s)
+  check('★★ 累计值必须**如实标注**（否则读的人会把 175 当成本次证据量）',
+    /累计 175 条/.test(s) && /含清库\/停启之前/.test(s), s)
+  check('★ 不许出现"本次已解析 175"这种把累计冒充本次的写法', !/本次已解析 175/.test(s), s)
+  // 拿不到增量时：退回累计值，但必须标明"累计 / 不是本次"（宁可啰嗦，不许冒充）
+  const s2 = captureStatusSummary({ ok: true, running: true, logExists: true, counters: { emitted: 175, requestsSeen: 175 } })
+  check('★★ 没有增量可依据时，不许把累计说成本次',
+    /累计/.test(s2) && /不是["“]?本次/.test(s2) && !/本次已解析 175/.test(s2), s2)
+
+  // ---- R1-08（同一夜、由黑盒验收 agent 独立撞出来）：自检**跑过且正常**时也必须印出来 ----
+  // 原实现只在 `integrity.ok === false` 时印一句警告 ⇒ "自检正常"与"没做自检"在渲染文本里一模一样。
+  // 黑盒验收原话：「描述承诺返回的 integrity 自检字段实际不存在」—— 承诺了却看不见，就是撒谎。
+  check('★★ 自检正常时也要印（否则"正常"与"没做"不可区分）',
+    /重复写入自检：正常/.test(s), s)
+  check('★ 正常时带上可比对的量（比值 + 两侧条数），而不是一句"没问题"',
+    /比值 1/.test(s) && /引擎 105 条/.test(s) && /库内 realtime 105 条/.test(s), s)
+  const s3 = captureStatusSummary({
+    ok: true, running: true, logExists: true, counters: { emitted: 175, requestsSeen: 175 },
+    integrity: { ok: null, note: '样本太小（<10 条），暂不判定' },
+  })
+  check('★★ 三态齐全：暂不判定也说清"不等于没问题"',
+    /暂不判定/.test(s3) && /不等于/.test(s3), s3)
+  const s4 = captureStatusSummary({ ok: true, running: true, logExists: true, counters: { emitted: 5, requestsSeen: 5 } })
+  check('★★ 拿不到自检结果时明说"没做"（不许静默——静默会被读成"没问题"）',
+    /本次没有做/.test(s4) && /没做.*不等于.*没问题|不等于["“]?没问题/.test(s4), s4)
 }
 
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }
