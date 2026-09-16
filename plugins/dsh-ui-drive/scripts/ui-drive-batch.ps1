@@ -1073,6 +1073,23 @@ function Test-NeedsForeground($step) {
   return $false
 }
 
+function Render-WindowPng([IntPtr]$h, $r, [int]$w, [int]$hh, [string]$outPath) {
+  # 把窗口自身内容渲染成 PNG。PrintWindow(PW_RENDERFULLCONTENT=2) 优先：让窗口把内容（含 WPF/DWM
+  # 合成）画进我们给的 DC，**不依赖窗口是否显示在物理屏上**——无头/断开(RDP)会话里屏幕 DC 是全黑的，
+  # 纯 CopyFromScreen 会把截图抓成一片黑（shot 曾经就是这么黑的）。PrintWindow 失败（个别无 DWM
+  # 窗口）才退回 CopyFromScreen（此时窗口需在前台、未被遮挡才可信）。返回 'print' | 'screen'。
+  $bmp = New-Object System.Drawing.Bitmap($w, $hh)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $hdc = $g.GetHdc()
+  $ok = [UiDriveBatchWin32]::PrintWindow($h, $hdc, 2)
+  $g.ReleaseHdc($hdc)
+  $method = 'print'
+  if (-not $ok) { $method = 'screen'; $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size) }
+  $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
+  $g.Dispose(); $bmp.Dispose()
+  return $method
+}
+
 function Save-Shot($main, [string]$outPath) {
   if (-not $outPath) { $outPath = Join-Path $env:TEMP ('uia-shot-' + (Get-Date -Format 'HHmmss') + '.png') }
   $dir = Split-Path -Parent $outPath
@@ -1089,11 +1106,7 @@ function Save-Shot($main, [string]$outPath) {
     $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
   }
   if ($w -le 0 -or $hh -le 0) { throw ('窗口尺寸非法 ' + $w + 'x' + $hh) }
-  $bmp = New-Object System.Drawing.Bitmap($w, $hh)
-  $g = [System.Drawing.Graphics]::FromImage($bmp)
-  $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
-  $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
-  $g.Dispose(); $bmp.Dispose()
+  Render-WindowPng $h $r $w $hh $outPath | Out-Null
   return @{ path = $outPath; w = $w; h = $hh }
 }
 
@@ -2081,21 +2094,9 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
               if (-not $outPath) { $outPath = Join-Path $env:TEMP ('uia-capture-' + (Get-Date -Format 'HHmmss') + '.png') }
               $dir = Split-Path -Parent $outPath
               if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-              $bmp = New-Object System.Drawing.Bitmap($w, $hh)
-              $g = [System.Drawing.Graphics]::FromImage($bmp)
-              $hdc = $g.GetHdc()
-              $method = 'print'
-              # PW_RENDERFULLCONTENT=2：抓 DWM 合成后的窗口内容（含 WPF），
-              # 某些无 DWM 的窗口会失败 → 退回 CopyFromScreen（记 captureMethod 区别）。
-              $ok = [UiDriveBatchWin32]::PrintWindow($h, $hdc, 2)
-              $g.ReleaseHdc($hdc)
-              if (-not $ok) {
-                $method = 'screen'
-                # 退回屏幕矩形抓取：需要窗口在前台才有意义（被遮挡时画的是别人的内容）
-                $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
-              }
-              $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
-              $g.Dispose(); $bmp.Dispose()
+              # 抓帧统一走 Render-WindowPng（PrintWindow 优先，见其定义处注释）——与 shot 同一条实现，
+              # 避免两处各写一份、日后再次漂移（这正是当初 shot 全黑而 capture 正常的根因）。
+              $method = Render-WindowPng $h $r $w $hh $outPath
               $res.ok = $true; $res.path = $outPath; $res.w = $w; $res.h = $hh
               $res.state = 'visible'; $res.captureMethod = $method
             }

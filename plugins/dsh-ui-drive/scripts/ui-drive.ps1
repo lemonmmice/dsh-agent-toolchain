@@ -38,6 +38,7 @@ public class UiDriveWin32 {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@
@@ -242,7 +243,13 @@ switch ($Action) {
     $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
     $bmp = New-Object System.Drawing.Bitmap($w, $hh)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
+    # PrintWindow(PW_RENDERFULLCONTENT=2) 优先：让窗口把自身内容（含 WPF/DWM 合成）画进 DC，不依赖
+    # 窗口是否显示在物理屏上——无头/断开(RDP)会话里屏幕 DC 是黑的，纯 CopyFromScreen 会抓成全黑。
+    # PrintWindow 失败（个别无 DWM 窗口）才退回 CopyFromScreen（此时需窗口在前台、未被遮挡才可信）。
+    $hdc = $g.GetHdc()
+    $shotOk = [UiDriveWin32]::PrintWindow($h, $hdc, 2)
+    $g.ReleaseHdc($hdc)
+    if (-not $shotOk) { $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size) }
     $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
     $g.Dispose(); $bmp.Dispose()
     Write-Output ('SHOT ' + $Out + ' ' + $w + 'x' + $hh)
