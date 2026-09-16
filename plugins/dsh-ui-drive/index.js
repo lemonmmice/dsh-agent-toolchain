@@ -158,6 +158,7 @@ const tools = () => [
     name: 'ui_status',
     description: dshDescription('ui_status'),
     parameters: dshParameters('ui_status'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.running ? ('客户端运行中 pid=' + v.pid + ' 窗口=' + v.title) : (v.unknown ? ('客户端状态未知：' + (v.error || '查询超时')) : '客户端未运行') }] },
     async execute(args) {
       // 传下去才算真的支持（参数存在但被忽略 = 最坏的一种）
@@ -253,6 +254,7 @@ const tools = () => [
     name: 'ui_windows',
     description: dshDescription('ui_windows'),
     parameters: dshParameters('ui_windows'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: {
       schema: OBJECT,
       render: (_a, v) => {
@@ -280,6 +282,7 @@ const tools = () => [
     name: 'ui_state',
     description: dshDescription('ui_state'),
     parameters: dshParameters('ui_state'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderState(v) }] },
     timeoutMs: 60000,
     async execute(args) {
@@ -290,6 +293,7 @@ const tools = () => [
   defineTool({
     name: 'ui_observe',
     description: dshDescription('ui_observe'),
+    isConcurrencySafe: () => true, // P1-1c 只读（action 枚举均为只读观测；真源 lib/tool-registry READ_ONLY）
     parameters: {
       action: { type: 'string', required: true, enum: ['find', 'read', 'state', 'windows', 'waitfor', 'expectwindow', 'expecttext', 'waitany', 'shot', 'move', 'wheel', 'capture', 'state-live'], description: 'find | read | state | windows | waitfor | expectwindow | expecttext | waitany | shot | move | wheel | capture | state-live（move/wheel=移动鼠标/滚轮、capture=抓帧、state-live=免前台状态采样，都是只读白名单）' },
       name: { type: 'string', description: '控件 Name' },
@@ -387,6 +391,7 @@ const tools = () => [
     name: 'ui_tree',
     description: dshDescription('ui_tree'),
     parameters: dshParameters('ui_tree'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: {
       schema: OBJECT,
       /**

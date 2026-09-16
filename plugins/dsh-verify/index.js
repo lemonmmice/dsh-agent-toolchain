@@ -130,6 +130,7 @@ const tools = () => [
     name: 'toolchain_status',
     description: dshDescription('toolchain_status'),
     parameters: dshParameters('toolchain_status'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: (v && v.text) ? v.text : JSON.stringify(v) }] },
     async execute(args) {
       const mod = await loadStatus()
@@ -155,6 +156,7 @@ const tools = () => [
     name: 'failure_query',
     description: dshDescription('failure_query'),
     parameters: dshParameters('failure_query'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => renderFailureQuery(v) },
     async execute(args) {
       return withCorpus((c) => c.query(args))
@@ -165,6 +167,7 @@ const tools = () => [
     name: 'failure_stats',
     description: dshDescription('failure_stats'),
     parameters: dshParameters('failure_stats'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: '失败样本库：活动分片 ' + (v.total ?? '?') + ' 条（全部分片 ' + (v.totalAllShards ?? '?') + '，已撤回 ' + (v.retracted ?? 0) + '）' }] },
     async execute() {
       return withCorpus((c) => c.stats())

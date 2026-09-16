@@ -88,6 +88,7 @@ const tools = () => [
     name: 'perf_report',
     description: dshDescription('perf_report'),
     parameters: dshParameters('perf_report'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderReport(v) }] },
     async execute() {
       return prf().report()
@@ -107,6 +108,7 @@ const tools = () => [
     name: 'perf_analyze',
     description: dshDescription('perf_analyze'),
     parameters: dshParameters('perf_analyze'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.ok ? renderAnalysis(v) : ('失败：' + v.error) }] },
     timeoutMs: 6 * 60 * 1000,
     async execute(args) {
@@ -117,6 +119,7 @@ const tools = () => [
     name: 'perf_heap',
     description: dshDescription('perf_heap'),
     parameters: dshParameters('perf_heap'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.ok ? ('堆对象总数 ' + v.totalObjects + ' / ' + (v.totalSizeBytes / 1024 / 1024).toFixed(1) + 'MB，Top 类型（按占用）：\n' + (v.top || []).slice(0, 15).map((t) => t.type + ' x' + t.count + ' = ' + (t.sizeBytes / 1024 / 1024).toFixed(1) + 'MB').join('\n')) : ('失败：' + v.error) }] },
     timeoutMs: 6 * 60 * 1000,
     async execute(args) {

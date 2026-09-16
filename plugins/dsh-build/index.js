@@ -95,6 +95,7 @@ const tools = () => [
     name: 'build_status',
     description: dshDescription('build_status'),
     parameters: dshParameters('build_status'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderStatus(v) }] },
     async execute() {
       return bld().status()
@@ -104,6 +105,7 @@ const tools = () => [
     name: 'build_errors',
     description: dshDescription('build_errors'),
     parameters: dshParameters('build_errors'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderErrors(v) }] },
     async execute() {
       return bld().errorsOfLast()
@@ -113,6 +115,7 @@ const tools = () => [
     name: 'build_compile_check',
     description: dshDescription('build_compile_check'),
     parameters: dshParameters('build_compile_check'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderMembership(v) }] },
     async execute(args) {
       // ⚠ F-051：`makeBuilder()` 返回的是 `{ config: c, … }` —— **`config` 是对象，不是函数**。
