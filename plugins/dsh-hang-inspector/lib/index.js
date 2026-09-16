@@ -22,6 +22,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { makeHangInspector } from './hang.mjs'
+// W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name）。
+import { dshParameters, dshDescription } from '../../../lib/tool-registry.mjs'
 // 渲染层单独成模块：它是 agent 唯一看得见的契约，必须能离线单测（见 lib/render.mjs 顶部说明）。
 import { renderStatus, renderRun, renderStop, renderPacks, renderPack, renderAnalyze, renderDelete } from './render.mjs'
 
@@ -114,8 +116,8 @@ const OBJECT = { type: 'object', additionalProperties: true }
 const tools = (hang) => [
   defineTool({
     name: 'hang_status',
-    description: '卡死监测状态（只读）：监测进程是否在跑、pid/退出码、日志尾部。证据包用 hang_packs 列。Triggers: 卡死监测在跑吗 / hang status.',
-    parameters: {},
+    description: dshDescription('hang_status'),
+    parameters: dshParameters('hang_status'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderStatus(v) }] },
     timeoutMs: 30 * 1000,
     async execute() {
@@ -125,10 +127,8 @@ const tools = (hang) => [
   }),
   defineTool({
     name: 'hang_run',
-    description: '启动卡死**监测**（不是"抓一次现场"）。分两种情形：**客户端此刻已经卡死** → 先 `perf_dump` 把现场固定下来（进程一旦被重启，现场就没了）；**卡死不定期复现** → 用本工具挂监测、让用户照常操作。只监视目标客户端**主窗口响应性，绝不自动点击** —— 让用户按平常方式操作复现卡死，检测到无响应时自动收集证据包（冻结截图/时间线/进程信息/net-trace 尾部/探针与 procdump 日志/完整 dump）。立即返回，随后用 hang_status / hang_packs 轮询。maxSeconds>0 时自动停止（0=不限，用 hang_stop 结束）。Triggers: 抓卡死 / 启动卡死监测 / hang.',
-    parameters: {
-      maxSeconds: { type: 'number', description: '多少秒后自动停止（0=不限，最大 86400），默认 0' },
-    },
+    description: dshDescription('hang_run'),
+    parameters: dshParameters('hang_run'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderRun(v) }] },
     timeoutMs: 60 * 1000,
     async execute(args) {
@@ -137,8 +137,8 @@ const tools = (hang) => [
   }),
   defineTool({
     name: 'hang_stop',
-    description: '停止卡死监测（结束其进程树）。**已收集的证据包会保留**。Triggers: 停卡死监测 / hang stop.',
-    parameters: {},
+    description: dshDescription('hang_stop'),
+    parameters: dshParameters('hang_stop'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderStop(v) }] },
     timeoutMs: 60 * 1000,
     async execute() {
@@ -147,8 +147,8 @@ const tools = (hang) => [
   }),
   defineTool({
     name: 'hang_packs',
-    description: '**列表**（只给元信息，不给正文；读正文用 hang_pack）。列出已收集的卡死证据包（新的在前）：id、时间、文件清单、dump 大小、是否有冻结截图、分析状态、summary 首行。读全文证据用 hang_pack，跑分析用 hang_analyze。**注意年龄**：几小时前的包不能用来解释刚发生的卡死。Triggers: 卡死证据包 / 有哪些 dump / hang packs.',
-    parameters: {},
+    description: dshDescription('hang_packs'),
+    parameters: dshParameters('hang_packs'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderPacks(v, { now: Date.now() }) }] },
     timeoutMs: 30 * 1000,
     async execute() {
@@ -158,10 +158,8 @@ const tools = (hang) => [
   }),
   defineTool({
     name: 'hang_pack',
-    description: '读**一个**卡死证据包的全文证据（**单体**：先 hang_packs 拿 id，再读它；本工具不吃路径、只吃 id）：summary / process-info / net-trace 尾部 / 探针与 procdump 日志（各截断 512KB）+ 文件清单 + 缓存的 analysis.json。冻结截图是包目录里的 frozen-screen.png，需要看图时把该路径交给视觉工具。Triggers: 看卡死证据 / 证据包内容 / hang pack.',
-    parameters: {
-      id: { type: 'string', required: true, description: '证据包 id（来自 hang_packs）' },
-    },
+    description: dshDescription('hang_pack'),
+    parameters: dshParameters('hang_pack'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderPack(v) }] },
     timeoutMs: 60 * 1000,
     async execute(args) {
@@ -172,13 +170,8 @@ const tools = (hang) => [
   }),
   defineTool({
     name: 'hang_analyze',
-    description: '对证据包的 frozen.dmp 跑 ClrMD(DumpStack) 分析：托管线程栈、嫌疑/UI 线程、诊断结论，并把嫌疑方法映射到项目源码（DSH_HANG_SRC_ROOT）。这是"到底哪一行代码卡住了"的答案。**已完成的分析会被复用**（不重算），除非传 refresh=true —— 只有在你刚改了 DSH_HANG_SRC_ROOT 或证据包变了才需要重算（重算会用**当前**配置覆盖旧结果，配置更差时会把好结果顶掉）。wait=true（默认）阻塞到分析完成并返回报告；wait=false 立即返回、稍后用 hang_packs 看状态。Triggers: 分析卡死 / 卡死线程栈 / 映射源码 / hang analyze.',
-    parameters: {
-      id: { type: 'string', required: true, description: '证据包 id（来自 hang_packs，必须含 frozen.dmp）' },
-      wait: { type: 'boolean', description: '是否等分析完成，默认 true' },
-      waitMs: { type: 'number', description: 'wait=true 时最长等待毫秒，默认 300000' },
-      refresh: { type: 'boolean', description: '已缓存完成结果时是否强制重算（改了 DSH_HANG_SRC_ROOT 后用）' },
-    },
+    description: dshDescription('hang_analyze'),
+    parameters: dshParameters('hang_analyze'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderAnalyze(v) }] },
     timeoutMs: 12 * 60 * 1000,
     async execute(args) {
@@ -187,12 +180,8 @@ const tools = (hang) => [
   }),
   defineTool({
     name: 'hang_delete',
-    description: '删除卡死证据包（**本地删除、不可恢复**；dump 有数百 MB）。**必须显式 confirm=true**。给 id 删一个，或 all=true 清空全部。Triggers: 删证据包 / 清空卡死证据 / hang delete.',
-    parameters: {
-      id: { type: 'string', description: '要删除的证据包 id' },
-      all: { type: 'boolean', description: 'true = 清空证据目录里全部证据包' },
-      confirm: { type: 'boolean', required: true, description: '必须为 true —— 删除不可恢复' },
-    },
+    description: dshDescription('hang_delete'),
+    parameters: dshParameters('hang_delete'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderDelete(v) }] },
     timeoutMs: 60 * 1000,
     async execute(args) {
