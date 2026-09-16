@@ -201,7 +201,12 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
 
   const evDir = mkdtempSync(join(tmpdir(), 'dsh-perf-sym-'))
   try {
-    const t = makeTrace({ evidenceDir: evDir })
+    // ⚠ r61：本节测的是"**默认组合**出来的符号路径"（缓存目录固定 + 注入缓存 + srv 形态）。
+    //   而按本仓语义，**一旦配置了 `DSH_PERF_SYMBOL_PATH`（尤其带 `srv*`）就是整串替换、不再注入缓存目录**
+    //   ⇒ 本节所有断言在这个变量存在时会红 —— **红的是机器环境，不是代码**（r61 实测：子进程里塞上真实配置，
+    //   `symbolCacheDir 覆盖生效` 当场红出与真凶一模一样的签名；去掉即绿）。
+    //   所以这里**显式声明"没有配置符号路径"**，而不是依赖环境干净（测试不许断言/依赖机器全局状态）。
+    const t = makeTrace({ evidenceDir: evDir, symbolPath: '' })
     const env = t.symbolEnv(false)
 
     // 7a. 符号缓存必须落在 evidenceDir 下**固定**的目录，而不是任何带时间戳的运行目录
@@ -209,8 +214,8 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
     check('symcache 目录同样不含时间戳运行目录', !/trace-\d{4}-\d{2}-\d{2}T/.test(String(env._NT_SYMCACHE_PATH)), String(env._NT_SYMCACHE_PATH))
 
     // 7b. 两次不同 tag 的"运行"必须解析到**同一个**符号缓存目录（这就是"跨运行共享"的定义）
-    const a = makeTrace({ evidenceDir: evDir })
-    const b = makeTrace({ evidenceDir: evDir })
+    const a = makeTrace({ evidenceDir: evDir, symbolPath: '' })
+    const b = makeTrace({ evidenceDir: evDir, symbolPath: '' })
     const envA = a.symbolEnv(false)
     const envB = b.symbolEnv(false)
     check('同一个 evidenceDir 下，两次运行解析到同一个符号缓存', envA._NT_SYMBOL_PATH === envB._NT_SYMBOL_PATH, envA._NT_SYMBOL_PATH + ' vs ' + envB._NT_SYMBOL_PATH)
@@ -225,7 +230,7 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
     // 7d. DSH_PERF_SYMBOL_CACHE 生效（可把缓存指到大盘上）
     const custom = mkdtempSync(join(tmpdir(), 'dsh-perf-symcustom-'))
     try {
-      const t2 = makeTrace({ evidenceDir: evDir, symbolCacheDir: custom })
+      const t2 = makeTrace({ evidenceDir: evDir, symbolCacheDir: custom, symbolPath: '' })
       const e2 = t2.symbolEnv(false)
       check('symbolCacheDir 覆盖生效', String(e2._NT_SYMBOL_PATH).includes(custom), String(e2._NT_SYMBOL_PATH))
     } finally { try { rmSync(custom, { recursive: true, force: true }) } catch { /* ignore */ } }
@@ -477,6 +482,105 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
     /可能性不是诊断/.test(toRender) && !/卡在符号解码。别调小/.test(toRender), toRender.slice(0, 240))
   const toRender2 = renderHotstacks({ ok: false, timedOut: true, error: 'xperf 出报告超时' })
   check('生产者没给 hint 时也不自己编诊断', !/卡在符号解码$/.test(toRender2) && /先别急着调小 timeoutMs/.test(toRender2), toRender2.slice(0, 200))
+}
+
+// ------------------------------------------------- 9. R1-03 / R1-05：会话标记的位置契约 + 清理器真的看得见证据
+//
+// 现场（2026-09-14 夜，真机完整复现）：
+//   `perf_trace(action="start")` 返回成功后**立刻**查 `action="status"`，它说
+//   「没有进行中的采样（按标记），也没有找到 etl」—— 而此刻 `logman query -ets` 里
+//   `WPR_initiated_WprApp_WPR System Collector` 正 Running、etl 也正在写。
+//   根因：标记写在下一次调用**重新生成**的时间戳目录里（`runDir()` 每次取 `new Date()`），
+//   于是 status 去 `trace-<T2>/` 找 `start` 写在 `trace-<T1>/` 的标记 ⇒ 恒找不到。
+//   同一根因还让 `stop/cancel` 删不掉真标记、并让 `evidence-clean.mjs`（按证据目录根读）
+//   的"采样进行中不删 etl"保护从未生效。R1-05 则是同一处布局的另一半：
+//   `perf_clean` 只扫证据目录**顶层文件**，而 etl 在 `trace-<stamp>/` 子目录里 ⇒
+//   盘上躺着 6.71 GB 时它报「0 个文件命中，共 0 字节」。
+//
+// ⚠ 这一段刻意用**真实调用**（`trace({action:'status'})` + `cleanEvidence(...)`），
+//   而不是只做文本断言 —— 因为这两个缺陷的本质都是"**读写两端对同一个契约各写各的**"，
+//   文本断言抓不到，只有让两侧真的对上才抓得到。
+{
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { traceSessionFile } = await import('../lib/trace.mjs')
+  const { cleanEvidence } = await import('../lib/evidence-clean.mjs')
+
+  const evDir = mkdtempSync(join(tmpdir(), 'dsh-perf-session-'))
+  try {
+    const marker = traceSessionFile(evDir)
+    check('★ 标记文件必须是证据目录的**直接子文件**（不许落在 trace-<stamp> 运行目录里）',
+      dirname(marker).toLowerCase() === evDir.toLowerCase(), marker)
+
+    // 9a. 行为：status 必须看得见"上一次调用写下的"标记（两次调用的时间戳必然不同）
+    const runEtl = join(evDir, 'trace-2026-01-01T00-00-00', 'trace.etl')
+    writeFileSync(marker, JSON.stringify({ etlPath: runEtl, startedAt: Date.now() - 5000, profile: 'cpu' }), 'utf8')
+    const t = makeTrace({ evidenceDir: evDir })
+    const s1 = await t.trace({ action: 'status', tag: 'aaa' })
+    const s2 = await t.trace({ action: 'status' })
+    check('★★ status 看得见这份标记（running:true）—— 原实现去新时间戳目录里找 ⇒ 恒 false',
+      s1.running === true && s2.running === true, JSON.stringify({ s1: s1.running, s2: s2.running }))
+    check('★ 并据此报出 etlPath 与已跑时长（不是 null）',
+      String(s1.etlPath).toLowerCase() === runEtl.toLowerCase() && Number(s1.elapsedMs) >= 4000,
+      JSON.stringify({ etlPath: s1.etlPath, elapsedMs: s1.elapsedMs }))
+    check('★ 提示语据此给出 stop 的正确 etlPath（不要再让人去 start 第二次）',
+      /采样进行中/.test(String(s1.hint)) && String(s1.hint).includes(runEtl), String(s1.hint).slice(0, 160))
+
+    // 9b. 跨组件：perf_clean 必须看得见运行子目录里的 etl，并在采样进行中**跳过**它
+    //     ⚠ "看得见"的证据在 `skipped` 里，不在 `candidates` 里 —— 被有理由跳过的文件
+    //       是不能删的候选，两种清单本来就不同（不要把 skipped 读成"没扫到"）。
+    mkdirSync(join(evDir, 'trace-2026-01-01T00-00-00'), { recursive: true })
+    writeFileSync(runEtl, 'x'.repeat(2048), 'utf8')
+    const dry = cleanEvidence({ dir: evDir, confirm: false })
+    check('★★ R1-05：perf_clean 看得见子目录里的 etl（出现在 skipped 且理由是"采样进行中"）',
+      dry.skipped.some((s) => s.path.toLowerCase() === runEtl.toLowerCase() && /采样进行中/.test(s.reason)),
+      JSON.stringify({ skipped: dry.skipped, candidates: dry.candidates.map((c) => c.path) }))
+    const cleaned = cleanEvidence({ dir: evDir, confirm: true })
+    check('★★ 采样进行中：etl 必须被"跳过"而不是删掉（写者与读者的标记位置对齐了）',
+      cleaned.deleted.length === 0 && cleaned.skipped.some((s) => /采样进行中/.test(s.reason)),
+      JSON.stringify({ deleted: cleaned.deleted, skipped: cleaned.skipped.map((s) => s.reason) }))
+    check('★ 文件确实还在盘上（"跳过"不能只是嘴上说说）', existsSync(runEtl), runEtl)
+
+    // 9c. 反证：标记拿掉后，同一份 etl 必须**正面落进 candidates** 并真的被删掉
+    //     （前者正是 R1-05 的靶心：原实现只扫顶层 ⇒ 这里恒为空；后者证明 9b 的"跳过"是定点生效的）
+    rmSync(marker, { force: true })
+    const dry2 = cleanEvidence({ dir: evDir, confirm: false })
+    check('★★ R1-05（正面）：标记不在时，子目录里的 etl 必须落进 candidates（原实现这里恒为空）',
+      dry2.candidates.some((c) => c.path.toLowerCase() === runEtl.toLowerCase() && c.bytes === 2048),
+      JSON.stringify({ candidates: dry2.candidates }))
+    const cleaned2 = cleanEvidence({ dir: evDir, confirm: true })
+    check('★ 标记移除后同一份 etl 被删掉', cleaned2.deleted.length === 1 && !existsSync(runEtl), JSON.stringify(cleaned2.deleted))
+
+    // 9d. 符号缓存**永远不碰**（跨运行共享的 srv* 缓存，几百 MB 到 GB 级，删了就要重新下）
+    mkdirSync(join(evDir, 'symbol-cache', 'symbols'), { recursive: true })
+    const cached = join(evDir, 'symbol-cache', 'symbols', 'some.pdb.dmp')
+    writeFileSync(cached, 'y'.repeat(64), 'utf8')
+    const c3 = cleanEvidence({ dir: evDir, confirm: false })
+    check('★ symbol-cache 子树不出现在候选里（删它 = 下次出报告重新下 GB 级符号）',
+      !c3.candidates.some((c) => c.path.toLowerCase().includes('symbol-cache')), JSON.stringify(c3.candidates.map((c) => c.path)))
+    check('★ 也不删目录本身（只列文件）', c3.ok === true && existsSync(join(evDir, 'symbol-cache')))
+
+    // 9e. **边界**：不是"我们自己建的运行目录"的子目录一律**不进**。
+    //     为什么必须有这条：R1-05 的第一版写成"任意子目录都下潜一层"，于是把工具指向 `%TEMP%`
+    //     这类父目录时，它会钻进**别人的**子目录里去删 .dmp/.etl —— 正是本文件第 3 条设计原则
+    //     （只在自己管的目录里动）要防的事。测试套当时就把它抓下来了（evidence-clean.test.mjs 的红）。
+    mkdirSync(join(evDir, 'someone-elses-folder'), { recursive: true })
+    writeFileSync(join(evDir, 'someone-elses-folder', 'other.dmp'), 'z'.repeat(64), 'utf8')
+    const c4 = cleanEvidence({ dir: evDir, confirm: false })
+    check('★★ 非运行目录命名的子目录**不进**（不越界动别处的文件）',
+      !c4.candidates.some((c) => c.path.includes('someone-elses-folder')) &&
+      !c4.skipped.some((s) => String(s.path).includes('someone-elses-folder')),
+      JSON.stringify({ cand: c4.candidates.map((c) => c.path), skip: c4.skipped.map((s) => s.path) }))
+    check('★ 而 `trace-<stamp>` 这种**我们自己的**运行目录仍然进（下潜不是被一刀砍掉）',
+      cleanEvidence({ dir: evDir, confirm: false, what: 'dumps' }).totalBytes >= 0 &&
+      // 用一份新的 run 目录反证下潜仍在工作
+      (() => {
+        mkdirSync(join(evDir, 'trace-2026-02-02T00-00-00'), { recursive: true })
+        writeFileSync(join(evDir, 'trace-2026-02-02T00-00-00', 'probe.dmp'), 'q'.repeat(128), 'utf8')
+        const c5 = cleanEvidence({ dir: evDir, confirm: false })
+        return c5.candidates.some((c) => c.path.endsWith('probe.dmp'))
+      })(), '')
+  } finally { try { rmSync(evDir, { recursive: true, force: true }) } catch { /* ignore */ } }
 }
 
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }

@@ -30,7 +30,7 @@
 import { envOr } from '../../../lib/env-fallback.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 
 const PROGRAM_FILES_X86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
@@ -39,6 +39,24 @@ export const DEFAULT_XPERF = process.env.DSH_PERF_XPERF || join(PROGRAM_FILES_X8
 
 /** wpr 预设名映射（wpr -profiles 里的大小写就是这些）。 */
 export const PROFILES = { cpu: 'CPU', dotnet: 'DotNet', general: 'GeneralProfile' }
+
+/**
+ * 采样会话标记文件的**唯一**位置：证据目录根下的 `trace-session.json`。
+ *
+ * ⚠⚠ 这个函数存在的理由是一次真机缺陷（2026-09-14 夜 R1-04，**完整复现**）：
+ *   原实现把标记写在 `runDir()` 里，而 `runDir()` **每次调用都取一次 `new Date()`** ——
+ *   于是 `start` 把标记写进 `trace-<T1>/`，`status` 却去 `trace-<T2>/` 里找（T2 = 调用时刻）。
+ *   三个连环后果（同一根因）：
+ *     ① `perf_trace(action="status")` **永远报 running:false**（实测：`start` 返回成功后立刻查
+ *        status，它说"没有进行中的采样（按标记），也没有找到 etl"——而 WPR 的内核会话正开着、
+ *        etl 正在写。agent 照着这句提示会**再 start 一次**）；
+ *     ② `stop`/`cancel` 删的也是 `trace-<T2>/` 里的标记 ⇒ 真正的标记**永远删不掉**，
+ *        每跑一次留一个孤儿标记；
+ *     ③ `evidence-clean.mjs`（`perf_clean`）按**证据目录根**读这个标记（`join(dir,'trace-session.json')`）
+ *        ⇒ 它"采样进行中不删 etl"的保护**从来没生效过** —— 两个组件对同一个契约各写各的。
+ *   修法：把位置收敛成一个**导出的纯函数**，读写两端都从这里取（写者对齐读者，而不是反过来）。
+ */
+export function traceSessionFile(evidenceDir) { return join(evidenceDir, 'trace-session.json') }
 
 /**
  * 采集时要同时启用的预设。
@@ -168,7 +186,11 @@ export function makeTrace(cfg = {}) {
   const runDir = (tag) => join(c.evidenceDir, 'trace-' + stamp() + (tag ? '-' + tag : ''))
 
   /** 跑一个可执行文件并收全输出；超时杀进程树。 */
-  function runExe(exe, args, { timeoutMs = 600000, env } = {}) {
+  function runExe(exe, args, opts = {}) {
+    // 测试接缝（理由同 env-fallback 的 env/exec 注入）：采集前自检的行为必须能被**离线**验住 ——
+    // 否则"这台机器的 WPR 能不能收尾"只能靠真机碰运气，而它恰恰是"白跑一轮复现"的分水岭。
+    if (typeof c.runExe === 'function') return c.runExe(exe, args, opts)
+    const { timeoutMs = 600000, env } = opts
     return new Promise((resolve) => {
       let child
       try {
@@ -200,6 +222,53 @@ export function makeTrace(cfg = {}) {
   }
 
   /**
+   * **采集前自检**：这台机器的 `wpr` 能不能**收尾**（start 之后 stop 得出 etl）？
+   *
+   * ⚠ 为什么必须有（2026-09-15 真机 R1-12）：本机 WPR 的 `-stop` 坏了 ——
+   *   `wpr -start CPU -filemode` 正常，`wpr -stop <file>` 报
+   *   `Cannot change thread mode after it is set. Profile Id: RunningProfile. Error code: 0x80010106`
+   *   且**不产出 etl**。而 `perf_trace` 的采集**单点依赖 WPR** ⇒
+   *   失败发生在**用户把问题复现完之后**才发现 ⇒ **白跑一轮**（复现一次可能要好几分钟到几十分钟）。
+   *   所以：start 之前先用 1~2 秒的极小探针把"能不能收尾"问清楚，**当场告诉调用方**。
+   *
+   * ⚠ 退出码口径（R1-14 更正，2026-09-15 实测）：**不能写"退出码恒为 0"**。
+   *   本机实测那一发是**响亮失败**：`$LASTEXITCODE = -2147417850`（= 0x80010106）。
+   *   早先"退出码 0"的说法来自一次未复现的观察 —— **判据始终是"有没有 etl 文件"**，不是退出码；
+   *   所以下面的诊断文案一律**回带实测退出码**，而不是替 wpr 断言它退了几。
+   *
+   * 设计取舍：探针**发现坏也照样允许 start**（可能别的 profile 能收尾），但会把
+   * `preflight.ok=false` + 警告放进返回值 —— **不静默、也不擅自替调用方做决定**。
+   * 结果按进程缓存（探针代价只付一次）；`skipPreflight: true` 可跳过。
+   */
+  let wprStopProbeCache = null
+  async function probeWprStop() {
+    if (wprStopProbeCache) return wprStopProbeCache
+    const probeEtl = join(c.evidenceDir, '_wpr-preflight.etl')
+    try { rmSync(probeEtl, { force: true }) } catch { /* 删不掉不影响结论 */ }
+    const t0 = Date.now()
+    const st = await runExe(c.wpr, ['-start', 'CPU', '-filemode'], { timeoutMs: 60000 })
+    let stopCode = null, raw = ''
+    let ok = false
+    if (st.code === 0) {
+      const sp = await runExe(c.wpr, ['-stop', probeEtl], { timeoutMs: 120000 })
+      stopCode = sp.code
+      raw = (sp.stdout + sp.stderr).trim()
+      ok = existsSync(probeEtl)
+      try { if (ok) rmSync(probeEtl, { force: true }) } catch { /* 探针产物，删不掉也无害 */ }
+    } else {
+      raw = (st.stdout + st.stderr).trim()
+    }
+    // 探针万一留下会话，收掉它 —— 否则真正的 start 会撞"已有会话"
+    try { await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 }) } catch { /* ignore */ }
+    wprStopProbeCache = {
+      ok, startCode: st.code, stopCode, elapsedMs: Date.now() - t0,
+      signature: /0x80010106|Cannot change thread mode/i.test(raw) ? 'RPC_E_CHANGED_MODE(0x80010106)' : null,
+      raw: raw.slice(0, 300),
+    }
+    return wprStopProbeCache
+  }
+
+  /**
    * 采集 ETW trace。
    * action=start → 起采样（等你复现）; stop → 停并产出 etl; run → 起→等 seconds 秒→停。
    * @returns {ok, etlPath?, seconds?, profile?, error?, hint?}
@@ -218,7 +287,8 @@ export function makeTrace(cfg = {}) {
 
     const dir = runDir(args.tag)
     const etl = args.etlPath || join(dir, 'trace.etl')
-    const sessionFile = join(dir, 'trace-session.json')
+    // ⚠ 标记**固定在证据目录根**，不跟着 runDir 的时间戳漂移（否则 R1-04 的三个连环后果复现，见 traceSessionFile 注释）
+    const sessionFile = traceSessionFile(c.evidenceDir)
 
     // r48：`status` —— G1 黑盒点名"start 之后无从确认采样在不在跑"（同族的 hang_*/api_capture_* 都有 status）。
     if (action === 'status') {
@@ -244,44 +314,169 @@ export function makeTrace(cfg = {}) {
     }
 
     if (action === 'stop' || action === 'cancel') {
-      const stopArgs = action === 'cancel' ? ['-cancel'] : ['-stop', etl]
-      const r = await runExe(c.wpr, stopArgs, { timeoutMs: 300000 })
+      // ★ R1-14：**先读标记、再决定拿谁收尾**（xperf 起的采样不能拿 wpr 去停）。
+      //   老标记没有 engine 字段 ⇒ 按 'wpr' 读 —— 与 R1-14 之前的行为逐字一致（零回归）。
+      let session0 = null
+      try { session0 = JSON.parse(readFileSync(sessionFile, 'utf8')) } catch { session0 = null }
+      const engine = (session0 && session0.engine === 'xperf') ? 'xperf' : 'wpr'
+      const rawEtlPath = session0 && session0.rawPath ? String(session0.rawPath) : null
+      const cancelOnly = action === 'cancel'
+      let r = null
+      let mergeRun = null
+      if (engine === 'xperf') {
+        r = await runExe(c.xperf, ['-stop'], { timeoutMs: 300000 })
+        // ★ R1-14（2026-09-15 实测）：**合并这一步不能省**。`xperf -help symbols` 原文：
+        //   "For symbol decoding, the trace must be ... stopped and merged with -d or merged with -merge
+        //    ... [xperf performs a special image identification process during its custom trace merge.]"
+        //   实测对比（同机、同符号路径）：未合并 ⇒ 报告 155 KB / 1 个热点函数（全 ***unknown***、**0 个模块名**）；
+        //   合并后 ⇒ 13.4 MB / 8249 个热点函数 / 193 个模块 / 真名（`ntkrnlmp.exe!SwapContext` 这种）。
+        if (!cancelOnly && rawEtlPath && existsSync(rawEtlPath) && !existsSync(etl)) {
+          mergeRun = await runExe(c.xperf, ['-merge', rawEtlPath, etl], { timeoutMs: 900000 })
+        }
+      } else {
+        r = await runExe(c.wpr, cancelOnly ? ['-cancel'] : ['-stop', etl], { timeoutMs: 300000 })
+      }
       try { rmSync(sessionFile, { force: true }) } catch { /* 标记删不掉不影响停止结果 */ }
-      if (action === 'cancel') return { ok: r.code === 0, cancelled: true, raw: (r.stdout + r.stderr).slice(0, 400) }
-      if (!existsSync(etl)) return { ok: false, error: '停止后未生成 etl', raw: (r.stdout + r.stderr).slice(0, 400) }
+      // 兼容 R1-04 修复前写下的**孤儿标记**（在 trace-<stamp>/ 里）：只删属于本次这份 etl 的那个，
+      // 免得误删另一次会话（虽然按新契约不该再有第二个位置，但盘上确实可能还留着旧的）。
+      try {
+        const legacy = join(dirname(etl), 'trace-session.json')
+        const s = JSON.parse(readFileSync(legacy, 'utf8'))
+        if (s && String(s.etlPath || '').toLowerCase() === String(etl).toLowerCase()) rmSync(legacy, { force: true })
+      } catch { /* 没有孤儿标记 / 不属于本次：都不动 */ }
+      if (cancelOnly) {
+        return { ok: Boolean(r) && r.code === 0, cancelled: true, engine, raw: (r ? (r.stdout + r.stderr) : '').slice(0, 400) }
+      }
+      if (!existsSync(etl)) {
+        const rTxt = r ? (r.stdout + r.stderr) : ''
+        // ── xperf 通道：**采到了、但合并没成** —— 这是"可救"的一类，必须与"整个没采到"分开说，
+        //    否则调用方会把"没合并 ⇒ 报告没有模块归属"读成"客户端没有热点"。
+        if (engine === 'xperf' && rawEtlPath && existsSync(rawEtlPath)) {
+          return {
+            ok: false, engine,
+            error: '**已采到原始 etl，但 `xperf -merge` 没产出合并文件**' +
+              '⇒ 直接拿原始 etl 出报告会**一个模块名都没有**（不是"没有热点"）。',
+            rawPath: rawEtlPath,
+            raw: ((mergeRun ? (mergeRun.stdout + mergeRun.stderr) : '') + rTxt).slice(0, 500),
+            hint: '原始 etl 保留着：可手工 `xperf -merge "' + rawEtlPath + '" "' + etl + '"` 合并后再出报告。',
+          }
+        }
+        // ★ R1-12 / R1-14：`wpr -stop` 失败时把"能认出来的签名"翻成人话，并**回带实测退出码**：
+        //   R1-12 那版文案硬写着"退出码 0"，而 2026-09-15 实测是 `-2147417850`(=0x80010106) —— 工具不该替 wpr 断言它退了几。
+        const sig = /0x80010106|Cannot change thread mode/i.test(rTxt) ? 'RPC_E_CHANGED_MODE(0x80010106)' : null
+        const exitCode = r ? r.code : null
+        let cleanup = null
+        try { const cr = await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 }); cleanup = (cr.stdout + cr.stderr).trim().slice(0, 200) } catch { /* ignore */ }
+        return {
+          ok: false, engine,
+          error: '停止后未生成 etl' + (sig
+            ? '（**这台机器的 WPR 收尾坏了**：' + sig + '，wpr -stop 实测退出码 ' + exitCode + '，不产出文件）'
+            : (exitCode === null ? '' : '（wpr -stop 退出码 ' + exitCode + '）')),
+          raw: rTxt.slice(0, 500),
+          ...(sig ? {
+            diagnosis: '**采集通道失败，不是"这次没问题"**：`wpr -start` 正常、`wpr -stop` 收不了尾 ⇒ 本次采样没有 etl。' +
+              '已确认这不是"工具开两个预设"造成的（单预设 `wpr -start CPU -filemode` 也复现同一错误）。',
+            nextSteps: [
+              '① **换 xperf 通道重采**：perf_trace(action="start", engine="xperf") —— 它不依赖 WPR 收尾（R1-14 已实现，收尾时会自动 `-merge`）；',
+              '② 重启机器（通常能恢复 WPR 的收尾能力），再 action="start" 前会自检 —— 自检不过就别开始采样；',
+              '③ 别把这次失败读成"这段时间客户端没有热点"。',
+            ],
+          } : {}),
+          cleanedUp: cleanup,
+        }
+      }
       const size = statSync(etl).size
       return {
-        ok: true, etlPath: etl, sizeBytes: size, profile: key, profiles,
-        hint: '下一步用 perf_hotstacks(etlPath) 出调用链；可加 focus 只保留包含某模块/函数名的栈',
+        ok: true, etlPath: etl, sizeBytes: size, profile: key, profiles, engine,
+        ...(engine === 'xperf' && rawEtlPath ? { rawPath: rawEtlPath } : {}),
+        hint: '下一步用 perf_hotstacks(etlPath) 出调用链；可加 focus 只保留包含某模块/函数名的栈' +
+          (engine === 'xperf' ? '（本次走 xperf 通道，收尾已做 `-merge`：**模块归属只在合并时产生**，省了这步报告会全是 ***unknown***）' : ''),
       }
     }
 
     // start / run
     mkdirSync(dir, { recursive: true })
-    // 多个预设用多个 -start 串联（实测：只开 CPU 时托管帧**函数名解不出来**，必须带上 DotNet 才有 CLR rundown）
-    const startArgs = []
-    for (const p of profiles) startArgs.push('-start', p)
-    startArgs.push('-filemode')
-    const started = await runExe(c.wpr, startArgs, { timeoutMs: 180000 })
-    if (started.code !== 0) {
-      return { ok: false, error: 'wpr -start 失败', raw: (started.stdout + started.stderr).slice(0, 500), profiles }
+    // ★ R1-14：**通道选择**。engine=auto（默认）时，采集前自检（R1-12）的结论**同时**用来路由：
+    //   自检说"WPR 收不了尾"（本机就是这样）⇒ 直接走 xperf，不再让调用方白跑一轮复现。
+    //   自检本身仍是"只报告、不拦人"，只是 auto 会拿它的结论做路由。
+    const engineArg = String(args.engine || 'auto').toLowerCase()
+    if (!['auto', 'wpr', 'xperf'].includes(engineArg)) {
+      return { ok: false, error: '未知 engine（可用 auto | wpr | xperf）' }
     }
-    // start 成功后落一个会话标记（status 靠它；stop/cancel 清掉）
-    try { writeFileSync(sessionFile, JSON.stringify({ etlPath: etl, startedAt: Date.now(), profile: key }), 'utf8') } catch { /* 标记写不进去要在 status 里如实体现 */ }
+    const preflight = args.skipPreflight === true ? null : await probeWprStop()
+    const engine = engineArg === 'auto'
+      ? ((preflight && preflight.ok === false) ? 'xperf' : 'wpr')
+      : engineArg
+    if (engine === 'xperf' && !existsSync(c.xperf)) {
+      return {
+        ok: false, engine,
+        error: 'xperf.exe 不存在：' + c.xperf + '（可用 DSH_PERF_XPERF 指定；engine=auto 时"WPR 收尾坏了"会路由到这里）',
+        ...(preflight ? { preflight } : {}),
+      }
+    }
+    // xperf 通道的中间产物：`-f` 写的是**未合并**的原始 etl，合并要在 stop 时另做一步（模块归属全靠那一步）。
+    const rawEtl = join(dir, 'trace-raw.etl')
+    let preflightWarning = null
+    if (preflight && !preflight.ok) {
+      preflightWarning = engine === 'xperf'
+        ? '⚠ **采集前自检不通过**：这台机器的 `wpr -stop` **收不了尾**' +
+          (preflight.signature ? '（' + preflight.signature + '）' : '') +
+          // ⚠ 别一律写"已自动改用"：显式传 engine="xperf" 时**没人自动改**，是调用方自己指定的
+          //   （r61 真机 E2E 抓到这句：我显式传了 xperf，输出却说"（engine=auto）已自动改用"）。
+          (engineArg === 'auto'
+            ? ' ⇒ **本次已自动改用 xperf 通道**（engine=auto 路由的结果）。'
+            : ' ⇒ 本次是**调用方显式指定** engine="xperf"（自检结论只作旁证，不是它改的通道）。') +
+          '收尾时会自动 `xperf -merge` —— **模块归属只在合并那一步产生**（不合并的报告连模块名都没有）。' +
+          '（自检只花 ' + preflight.elapsedMs + 'ms；要强制走 WPR 就传 engine="wpr"）'
+        : '⚠ **采集前自检不通过**：这台机器的 `wpr -stop` **收不了尾**' +
+          (preflight.signature ? '（' + preflight.signature + '）' : '') +
+          '，会**不产出 etl** ⇒ **这次采样很可能白跑一轮复现**。' +
+          '建议：① 换通道（`engine="xperf"`，本机实测可用）或先修 WPR（重启机器通常能恢复）；' +
+          '② 复现后 `action="stop"` 会如实报结果（含实测退出码）。' +
+          '（自检本身只花 ' + preflight.elapsedMs + 'ms；`skipPreflight: true` 可跳过）'
+    }
+    let started
+    if (engine === 'xperf') {
+      // PROC_THREAD+LOADER 是"镜像事件"的来源（LOADER 原文：Kernel and user mode Image Load/Unload events），
+      //   PROFILE 是采样，CSWITCH 让调用链能连起来；-stackwalk 必须显式给，否则只有采样点、没有栈。
+      started = await runExe(c.xperf, [
+        '-on', 'PROC_THREAD+LOADER+PROFILE+CSWITCH',
+        '-stackwalk', 'PROFILE+CSWITCH',
+        '-f', rawEtl,
+      ], { timeoutMs: 180000 })
+    } else {
+      // 多个预设用多个 -start 串联（实测：只开 CPU 时托管帧**函数名解不出来**，必须带上 DotNet 才有 CLR rundown）
+      const startArgs = []
+      for (const p of profiles) startArgs.push('-start', p)
+      startArgs.push('-filemode')
+      started = await runExe(c.wpr, startArgs, { timeoutMs: 180000 })
+    }
+    if (started.code !== 0) {
+      return { ok: false, engine, error: engine + ' -start 失败', raw: (started.stdout + started.stderr).slice(0, 500), profiles, ...(preflight ? { preflight } : {}) }
+    }
+    // start 成功后落一个会话标记（status 靠它；stop/cancel 清掉）。
+    // 写**证据目录根**下的固定路径 —— 与 evidence-clean.mjs 的读者端对齐（R1-04）。
+    // ★ R1-14：标记里**必须记 engine**（stop 靠它决定找谁收尾）+ xperf 的原始 etl 路径（合并要用）。
+    try {
+      writeFileSync(sessionFile, JSON.stringify({
+        etlPath: etl, startedAt: Date.now(), profile: key, tag: args.tag || null, dir, engine,
+        ...(engine === 'xperf' ? { rawPath: rawEtl } : {}),
+      }), 'utf8')
+    } catch { /* 标记写不进去要在 status 里如实体现 */ }
     if (action === 'start') {
       return {
-        ok: true, started: true, profile: key, profiles, etlPath: etl,
-        hint: '复现问题后调用 perf_trace(action="stop", etlPath="' + etl + '")；期间可用 perf_trace(action="status") 确认采样还在跑（按标记文件判断）。',
+        ok: true, started: true, profile: key, profiles, etlPath: etl, engine,
+        ...(engine === 'xperf' ? { rawPath: rawEtl, captureArgs: 'xperf -on PROC_THREAD+LOADER+PROFILE+CSWITCH -stackwalk PROFILE+CSWITCH' } : {}),
+        ...(preflight ? { preflight } : {}),
+        ...(preflightWarning ? { warning: preflightWarning } : {}),
+        hint: '复现问题后调用 perf_trace(action="stop", etlPath="' + etl + '")；期间可用 perf_trace(action="status") 确认采样还在跑（按标记文件判断）。' +
+          (preflightWarning ? '\n' + preflightWarning : ''),
       }
     }
     const seconds = Math.min(Math.max(Number(args.seconds) || 20, 3), 600)
     await new Promise((r) => setTimeout(r, seconds * 1000))
-    const stopped = await runExe(c.wpr, ['-stop', etl], { timeoutMs: 300000 })
-    if (!existsSync(etl)) return { ok: false, error: 'wpr -stop 后未生成 etl', raw: (stopped.stdout + stopped.stderr).slice(0, 500) }
-    return {
-      ok: true, etlPath: etl, sizeBytes: statSync(etl).size, seconds, profile: key, profiles,
-      hint: '下一步用 perf_hotstacks(etlPath) 出调用链；etl 可能数百 MB，出报告要几分钟（首次含符号下载）',
-    }
+    // ★ R1-14：`run` **复用 stop 分支**（含 xperf 的 `-merge`）—— 免得两条路各写一份、日后漂移。
+    return { ...(await trace({ action: 'stop', etlPath: etl, tag: args.tag })), seconds, engine }
   }
 
   /**

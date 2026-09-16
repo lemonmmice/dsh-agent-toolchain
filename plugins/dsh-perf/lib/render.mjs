@@ -177,19 +177,50 @@ function renderTraceStatus(v) {
  *     正是它能活到现网的原因。所以这里按 `v.action` 显式分支，并由 `test/render-trace.test.mjs`
  *     拿生产者的 `enum` 驱动一条不变量：**每声明一个 action，渲染层都必须有对应说法**。
  */
+/**
+ * 失败路径的公共尾巴：raw + **定向诊断**。
+ *
+ * ⚠ 2026-09-15（R1-12）：原来这里只印 `raw`。而 `wpr -stop` 失败时生产者会额外给出
+ *   `diagnosis`（说清"这不是这次没问题"）与 `nextSteps`（重启机器 / 换采集手段 / 别读成没有热点）——
+ *   **不印出来就等于没写**（第 60 类：算出来了没印出来）。MCP 面是 jtext 直出，所以**只有 DSH 面中招**，
+ *   与 F-049 / `state-live` 那两处一字不差。
+ */
+function failureTail(v) {
+  const parts = []
+  if (v && v.diagnosis) parts.push('诊断：' + v.diagnosis)
+  if (v && Array.isArray(v.nextSteps) && v.nextSteps.length) parts.push('下一步：\n  ' + v.nextSteps.join('\n  '))
+  if (v && v.cleanedUp !== undefined && v.cleanedUp !== null) parts.push('（已顺手 `wpr -cancel` 清场：' + String(v.cleanedUp).slice(0, 120) + '）')
+  if (v && typeof v.needsElevation === 'boolean' && v.needsElevation) parts.push('（ETW 需要管理员权限：请以管理员身份启动 DSH）')
+  return (parts.length ? '\n' + parts.join('\n') : '') + rawTail(v)
+}
+
 export function renderTrace(v) {
   if (!v || !v.ok) {
-    return '采集失败：' + ((v && v.error) || '原因未回报') +
-      (v && v.needsElevation ? '（ETW 需要管理员权限：请以管理员身份启动 DSH）' : '') +
-      rawTail(v)
+    return '采集失败：' + ((v && v.error) || '原因未回报') + failureTail(v)
   }
   const prof = (v.profiles || []).join('+')
-  if (v.started) return '已开始采集（预设 ' + prof + '）。请复现问题，然后调用 perf_trace(action="stop", etlPath="' + v.etlPath + '")。'
-  if (v.action === 'status') return renderTraceStatus(v)
-  if (v.cancelled) return '已取消采集（wpr -cancel，**没有产出 etl**）。' + (v.raw ? '\n' + String(v.raw).slice(0, 300) : '')
+  // ★ R1-14：**通道必须印出来**。engine 是新增的结构化字段，第一版只把它放进返回值、**没放进渲染** ——
+  //   于是调用方看到 "trace 完成…" 却不知道这次走的是 WPR 还是 xperf（而两者的后果不同：xperf 要靠 `-merge` 才有模块归属）。
+  //   这正是 R1-06「渲染层吞掉结构化结果」那一类，我自己又踩了一次（r61 真机冒烟时发现：输出里读不出通道）。
+  //   ⚠ 老的值里没有 engine 字段 ⇒ 不臆造通道，如实写"未回报"（不许替它猜一个）。
+  const eng = v.engine ? String(v.engine) : null
+  const engLine = eng
+    ? '，通道 ' + eng + (eng === 'xperf' ? '（收尾已做 `xperf -merge`：模块归属来自那一步）' : '')
+    : '，通道未回报'
+  // ★ R1-12：`start` 成功**也可能是个陷阱** —— 采集前自检发现这台机器的 WPR 收不了尾时，
+  //   采样照起（决定权在调用方），但**必须当场说出来**：否则用户会照着"请复现问题"去白跑一轮。
+  const warn = v.warning ? '\n' + v.warning : ''
+  if (v.started) {
+    const pf = v.preflight
+    const pfLine = pf ? '\n（采集前自检：' + (pf.ok ? '通过' : '**不通过**') + '，' + (pf.elapsedMs != null ? pf.elapsedMs + 'ms' : '耗时未回报') +
+      (pf.signature ? '，签名 ' + pf.signature : '') + '）' : ''
+    return '已开始采集（预设 ' + prof + engLine + '）。请复现问题，然后调用 perf_trace(action="stop", etlPath="' + v.etlPath + '")。' + pfLine + warn
+  }
+  if (v.action === 'status') return renderTraceStatus(v) + warn
+  if (v.cancelled) return '已取消采集（wpr -cancel，**没有产出 etl**）。' + (v.raw ? '\n' + String(v.raw).slice(0, 300) : '') + warn
   // run / stop 的完成路径
   return 'trace 完成：' + (v.etlPath || '(路径未回报)') + '（' + fmtBytes(v.sizeBytes) +
-    (v.seconds ? '，采集 ' + v.seconds + 's' : '') + '，预设 ' + prof + '）\n' + (v.hint || '')
+    (v.seconds ? '，采集 ' + v.seconds + 's' : '') + '，预设 ' + prof + engLine + '）\n' + (v.hint || '') + warn
 }
 
 export function renderHotstacks(v) {

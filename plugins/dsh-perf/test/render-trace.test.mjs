@@ -154,6 +154,45 @@ for (const [action, c] of Object.entries(CASES)) {
     /采集失败：wpr -start 失败/.test(fail) && /boom/.test(fail), JSON.stringify(fail))
   check('★ 提权失败带出"需要管理员"（回归）',
     /需要管理员权限/.test(renderTrace({ ok: false, error: 'x', needsElevation: true })))
+
+  // ⑥ ★★ R1-12：**start 成功也可能是个陷阱** —— 自检发现这台机器的 WPR 收不了尾时，
+  //    渲染层必须把那句警告印出来（否则 agent 只看到"请复现问题"，用户就白跑一轮复现）。
+  //    ⚠ 这条正是"算出来了没印出来"的钉子：生产者早就给了 `warning`，是渲染层把它丢了。
+  {
+    const warnText = '⚠ **采集前自检不通过**：这台机器的 `wpr -stop` **收不了尾**（RPC_E_CHANGED_MODE(0x80010106)）…**这次采样很可能白跑一轮复现**。'
+    const started = renderTrace({
+      ok: true, started: true, profiles: ['CPU', 'DotNet'], etlPath: 'C:\\ev\\trace.etl',
+      preflight: { ok: false, signature: 'RPC_E_CHANGED_MODE(0x80010106)', elapsedMs: 1234 },
+      warning: warnText,
+    })
+    check('★★ start 成功但自检不通过 ⇒ **必须**把警告印出来（不许只印"请复现问题"）',
+      started.includes('采集前自检不通过') && /白跑/.test(started), JSON.stringify(started.slice(0, 240)))
+    check('★ 并带出签名与自检耗时（可核对）',
+      /RPC_E_CHANGED_MODE\(0x80010106\)/.test(started) && /1234ms/.test(started), JSON.stringify(started.slice(0, 240)))
+    const healthy = renderTrace({
+      ok: true, started: true, profiles: ['CPU'], etlPath: 'C:\\ev\\t.etl',
+      preflight: { ok: true, elapsedMs: 900 },
+    })
+    check('★ 自检通过时说"通过"（不制造假警报），且没有 warning 就不加戏',
+      /采集前自检：通过/.test(healthy) && !/不通过/.test(healthy) && !/白跑/.test(healthy), JSON.stringify(healthy.slice(0, 200)))
+  }
+
+  // ⑦ ★★ R1-12：`wpr -stop` 失败时的**定向诊断**必须出现在 DSH 面的渲染文本里
+  //    （生产者给了 diagnosis/nextSteps，而旧渲染只印 raw —— 又是"只有外壳面中招"）
+  {
+    const failed = renderTrace({
+      ok: false, error: '停止后未生成 etl（**这台机器的 WPR 收尾坏了**：RPC_E_CHANGED_MODE(0x80010106)）',
+      raw: 'Cannot change thread mode after it is set.',
+      diagnosis: '**采集通道失败，不是"这次没问题"**：wpr -start 正常、wpr -stop 收不了尾 ⇒ 本次采样没有 etl。',
+      nextSteps: ['① 重启机器（最可能恢复）', '② 改用别的采集手段', '③ 别把这次失败读成"这段时间客户端没有热点"。'],
+      cleanedUp: 'no trace profiles running',
+    })
+    check('★★ stop 失败 ⇒ 渲染里必须带 diagnosis（说清不是"这次没问题"）',
+      /诊断：/.test(failed) && /不是"这次没问题"/.test(failed), JSON.stringify(failed.slice(0, 240)))
+    check('★★ 也必须带 nextSteps（含"别读成没有热点"这条 —— 它是防止下游误判的关键一句）',
+      /下一步：/.test(failed) && /没有热点/.test(failed) && /重启机器/.test(failed), JSON.stringify(failed.slice(0, 300)))
+    check('★ 清场结果也印出来（清场了要说，没清场不能假装清了）', /wpr -cancel/.test(failed), JSON.stringify(failed.slice(0, 300)))
+  }
 }
 
 // ---------------------------------------------------------------- 覆盖面登记（只许缩小）
@@ -163,8 +202,12 @@ for (const [action, c] of Object.entries(CASES)) {
 //   `COVERED` 只许**变大**；`KNOWN_UNCOVERED` 只许**变小**（钉子钉住当前值）。
 //   ⚠ 未覆盖 **不等于** 有问题 —— 它就是"未查"（本仓第 35 类：窗口内没有 ≠ 不存在）。
 {
-  const COVERED = new Set(['perf_trace'])
-  const KNOWN_UNCOVERED = ['ui_drive', 'ui_observe', 'ui_act', 'ui_live']   // 钉子：只许缩短
+  // ⚠ 2026-09-14 夜（D.1）：那四个工具**已经核过了** —— `plugins/dsh-ui-drive/test/render-actions.test.mjs`
+  //   用同一套做法（从生产者读 enum + 手写真实返回形状 + 不许出现编造的量）把它们核了一遍，
+  //   并且**一核就抓到 5 处**（capture / expectwindow / expecttext / waitany 掉进 default 渲染成「完成」，
+  //   结构化数据被吞）。所以钉子按"只许缩短"的规矩拔掉 —— 这四个工具现在必须在 COVERED 里。
+  const COVERED = new Set(['perf_trace', 'ui_drive', 'ui_observe', 'ui_act', 'ui_live'])
+  const KNOWN_UNCOVERED = []   // 钉子：只许缩短（已空；新工具带 action enum 就会立刻红）
   const enumTools = []
   {
     const { readdirSync, existsSync } = await import('node:fs')
@@ -199,5 +242,24 @@ for (const [action, c] of Object.entries(CASES)) {
     '；**未查（不等于有问题）**：' + uncovered.join(', ') + '）')
 }
 
+// ── ⑧ R1-14：**通道（engine）必须印出来** ─────────────────────────────────────────
+//   由来（r61 真机冒烟）：第一版把 engine 放进**返回值**、**没放进渲染** ⇒ 调用方从 "trace 完成…" 里
+//   读不出这次走的是 WPR 还是 xperf，而两者后果不同（xperf 要靠 `-merge` 才有模块归属）。
+//   与 R1-06「渲染层吞掉结构化结果」同源：**结构化字段进了返回值 ≠ 进了人话**。
+{
+  const runXperf = renderTrace({ ok: true, etlPath: 'D:\\ev\\trace.etl', sizeBytes: 173 * 1024 * 1024, seconds: 5, profiles: ['CPU', 'DotNet'], engine: 'xperf' })
+  check('★★ 完成行里印出通道（xperf）', /通道 xperf/.test(runXperf), runXperf.slice(0, 150))
+  check('★★ xperf 通道要连带说明"模块归属来自 -merge"（否则用户不知道为什么要合并）',
+    /-merge/.test(runXperf) && /模块归属/.test(runXperf), runXperf.slice(0, 200))
+  const runWpr = renderTrace({ ok: true, etlPath: 'D:\\ev\\trace.etl', sizeBytes: 173 * 1024 * 1024, seconds: 5, profiles: ['CPU', 'DotNet'], engine: 'wpr' })
+  check('★ WPR 通道也印，且不误导成"需要 merge"', /通道 wpr/.test(runWpr) && !/-merge/.test(runWpr), runWpr.slice(0, 160))
+  const started = renderTrace({ ok: true, started: true, etlPath: 'D:\\ev\\trace.etl', profiles: ['CPU', 'DotNet'], engine: 'xperf' })
+  check('★ start 的"已开始采集"也要带通道（不然复现完才发现走错通道）', /通道 xperf/.test(started), started.slice(0, 160))
+  const legacy = renderTrace({ ok: true, etlPath: 'D:\\ev\\trace.etl', sizeBytes: 1024, seconds: 5, profiles: ['CPU'] })
+  check('★★ 值里**没有** engine 时不许臆造通道，如实写"未回报"',
+    /通道未回报/.test(legacy) && !/通道 wpr/.test(legacy) && !/通道 xperf/.test(legacy), legacy.slice(0, 160))
+  check('★ 缺 engine 时其余文案不变（零回归）', /trace 完成/.test(legacy) && /预设 CPU/.test(legacy), legacy.slice(0, 160))
+}
+
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }
-console.log('\nPASS: perf_trace 渲染层与生产者的 action 分支对齐（含"不给不存在的文件编尺寸"与新增 action 的哨兵）')
+console.log('\nPASS: perf_trace 渲染层与生产者的 action 分支对齐（含"不给不存在的文件编尺寸"、通道必须印出来、新增 action 的哨兵）')
