@@ -46,7 +46,9 @@ const { dshDescription } = await import('../../../lib/tool-registry.mjs')
 // ------------------------------------------------- 2. 源码守卫
 {
   // 无条件的"不外传"承诺必须消失（有条件地说明可以）
-  const guidance = (src.match(/const GUIDANCE =[\s\S]*?\n\n/) || [''])[0]
+  // ⚠ CRLF 容错：本文件是 CRLF，旧正则 `\n\n` 匹配不到 `\r\n\r\n`（两个 \n 被 \r 隔开）⇒ 捕获空串，
+  // 于是三条内容断言全假（"不外传"那条因空串反而假通过）。用 `\r?\n\r?\n` 兜住空行边界。
+  const guidance = (src.match(/const GUIDANCE =[\s\S]*?\r?\n\r?\n/) || [''])[0]
   check('公告里不再出现无条件"不外传"', !/不外传/.test(guidance) || /不要向用户承诺/.test(guidance), guidance.slice(0, 300))
   check('公告点名了远程 api.minimax.chat 与"内容离开本机"', /api\.minimax\.chat/.test(guidance) && /离开本机|出本机/.test(guidance), guidance.slice(0, 400))
   check('公告要求先查 memory_status 再回答隐私问题', /先调 memory_status|memory_status 看 embedEndpoint/.test(guidance), guidance.slice(0, 400))
