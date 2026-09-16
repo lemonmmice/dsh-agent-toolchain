@@ -102,12 +102,17 @@ function fakeEngine({ logExists = true, callerLogExists = true, running = false,
 // ------------------------------------------------ 1c. R1-02 的"改描述"那半边（agent 读的就是这些字）
 {
   const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  // W1：api_capture_start 的**描述**已迁进单一真源 lib/tool-registry.mjs（键按 MCP 名 capture_start）；
+  //   GUIDANCE 仍在 src 里。两处合起来看——"运行中不会自动轮转"必须在**导语(src) + 工具描述(注册表)都**出现。
+  const { dshDescription } = await import(new URL('../../../lib/tool-registry.mjs', import.meta.url))
+  const startDesc = dshDescription('capture_start')
+  const combined = src + '\n' + startDesc
   check('★★ 描述里不再有**无条件的**"300MB 自动轮转"（F-056：那句话只在启动那一刻成立）',
-    !/清理过期 \.bak，300MB 自动轮转/.test(src), '老话还在 ⇒ 描述仍在骗人')
+    !/清理过期 \.bak，300MB 自动轮转/.test(combined), '老话还在 ⇒ 描述仍在骗人')
   check('★★ 描述里明说"运行中不会自动轮转" + 落在 %TEMP%（C 盘）',
-    /不会在运行中自动轮转/.test(src) && /%TEMP%（C 盘）/.test(src), '')
-  check('★ 插件导语与 api_capture_start 的描述**都**带上这条（agent 两个地方都会读）',
-    (src.match(/不会在运行中自动轮转/g) || []).length >= 2, '只有一处 ⇒ 另一半没改')
+    /不会在运行中自动轮转/.test(combined) && /%TEMP%（C 盘）/.test(combined), '')
+  check('★ 插件导语(src) 与 api_capture_start 的描述(注册表)**都**带上这条（agent 两个地方都会读）',
+    /不会在运行中自动轮转/.test(src) && /不会在运行中自动轮转/.test(startDesc), 'GUIDANCE 或工具描述缺了一处')
 }
 {
   const eng = fakeEngine({ throwOnSetLogPath: 'capture running; stop it before changing logPath' })

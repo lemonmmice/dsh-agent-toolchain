@@ -1183,36 +1183,8 @@ server.tool(
 
 server.tool(
   'capture_query',
-  'Query the local API-capture store (the same day-shard JSONL the dsh-api-visualizer capture panel writes): ' +
-    'method/url/status/duration plus caller attribution (which ViewModel/API fired each request). ' +
-    'Use to analyze captured client traffic: slow calls, errors, one host, or requests fired by one ViewModel. ' +
-    'ALWAYS read the accompanying honesty fields: `freshness` (captureRunning / newestAgeMs / engineNote) tells you ' +
-    'whether the capture engine is live or you are looking at HISTORICAL data, and `callerAttribution` tells you ' +
-    'whether caller data exists AT ALL - when it is unavailable the reason is stated there (today the client-side ' +
-    'producer does not exist, so "no caller" must NOT be read as "no caller happened"). Both are also summarized ' +
-    'in `freshnessNote` / `callerAttributionNote`.',
-  {
-    limit: z.number().optional().describe('Max records (default 50, max 500)'),
-    offset: z.number().optional(),
-    q: z.string().optional().describe('Substring match against url/note'),
-    method: z.string().optional().describe('HTTP method filter (GET/POST/...)'),
-    source: z.string().optional().describe('Capture source: realtime / proxy / agent / etw'),
-    status: z.string().optional().describe('Exact code or 2xx/3xx/4xx/5xx'),
-    host: z.string().optional().describe('Comma-separated hostnames'),
-    minDurationMs: z.number().optional().describe('Only records at least this slow (ms)'),
-    minBytes: z.number().optional(),
-    maxBytes: z.number().optional(),
-    fromTs: z.number().optional().describe('Earliest record ts (epoch ms)'),
-    toTs: z.number().optional(),
-    sessionId: z.string().optional(),
-    traceId: z.string().optional(),
-    runId: z.string().optional().describe('Filter by the run id carried on records (evidence-pack spine)'),
-    errors: z.boolean().optional().describe('Only HTTP 4xx/5xx records'),
-    noNoise: z.boolean().optional().describe('Hide static-resource/heartbeat noise'),
-    bodyQ: z.string().optional().describe('Substring inside request/response bodies/headers'),
-    caller: z.string().optional().describe('Caller attribution substring (viewModel / apiMethod / stack frame)'),
-    includeBody: z.boolean().optional().describe('Include bodies (off by default). WARNING: bodies and headers routinely carry real tokens / cookies / identity data — enabling this pulls that plaintext into your context (and into anything you write afterwards).'),
-  },
+  mcpDescription('capture_query'),
+  mcpShape('capture_query'),
   async (args) => {
     // **新鲜度 + 调用方归因必须一起给**（2026-09-11 第十轮自查）：
     //   这段诚实性逻辑原来只写在 DSH 插件的 api_capture_query 里，MCP 面（agent 最常用的那个）
@@ -1273,14 +1245,8 @@ async function hostCapture(method, path, body) {
 
 server.tool(
   'capture_start',
-  'Start LIVE capture (the same thing the panel\'s "开始实时捕获" button does): tail the client\'s System.Net trace log and ingest records into the store. ' +
-    'Use the capture_start tool (do NOT hand-roll a POST) before analysing "traffic happening right now" - otherwise capture_query only sees historical data. ' +
-    'The host process owns the engine, so this goes through the loopback route (http://127.0.0.1:3080/api/dsh-api-visualizer/capture/start). ' +
-    'The result carries `warnings` when the trace log does not exist (capture would read nothing) or when the caller-attribution side log is missing (caller will then be empty - that does NOT mean "no caller happened").',
-  {
-    logPath: z.string().optional().describe('Optional: switch to this trace-log path (REJECTED while capture is running, with the next step).'),
-    replay: z.boolean().optional().describe('true = re-read the whole log from the start (to backfill history); default false = only new lines'),
-  },
+  mcpDescription('capture_start'),
+  mcpShape('capture_start'),
   async (args) => {
     const r = await hostCapture('POST', '/capture/start', { logPath: args.logPath, replay: args.replay === true })
     return jtext(r)
@@ -1289,22 +1255,15 @@ server.tool(
 
 server.tool(
   'capture_stop',
-  'Stop LIVE capture (the panel\'s stop button). After this, capture_query sees historical data again - the summary says so explicitly.',
-  {},
+  mcpDescription('capture_stop'),
+  mcpShape('capture_stop'),
   async () => jtext(await hostCapture('POST', '/capture/stop', {}))
 )
 
 server.tool(
   'capture_status',
-  'Read the live-capture engine state (read-only): running?, trace log present and how big, how many records parsed this session, ' +
-    'and whether the caller-attribution side log exists (when it does not, caller is empty - that does NOT mean no caller happened). ' +
-    'Ask this first when unsure whether capture can actually see anything right now. ' +
-    'DOUBLE-WRITE SELF-CHECK: the returned `integrity` compares what the engine says it emitted against how many realtime rows the store gained - ' +
-    'a ratio >= 1.5 means every call count you read in the panel is inflated (do NOT draw "repeated request / timer storm" conclusions from those numbers until it is fixed). ' +
-    'Against an older host that cannot supply a same-interval basis, pass sampleSeconds (e.g. 90) to sample twice in the SAME window; it blocks for that long.',
-  {
-    sampleSeconds: z.number().optional().describe('When > 0, sample twice this many seconds apart in the SAME window and compare the deltas (needed against an older host). Blocks for that long (max 600).'),
-  },
+  mcpDescription('capture_status'),
+  mcpShape('capture_status'),
   async (args) => {
     const sampleSeconds = Math.min(Math.max(Number(args?.sampleSeconds) || 0, 0), 600)
     const snap = async () => {
@@ -1340,11 +1299,9 @@ server.tool(
 
 server.tool(
   'capture_append',
-  'Append captured API-call records into the local API-capture store (the same store the capture panel reads; appears live in the GUI).',
-  {
-    records: z.array(z.object({ method: z.string(), url: z.string(), ts: z.number().optional() }).passthrough()).describe('Records: method+url required; ts/status/durationMs/reqBody/resBody/note/caller optional. Bodies ≤ 2MB. ts = when the call happened (epoch ms) — required in practice when importing/replaying HISTORICAL traffic, otherwise it is stored as NOW and the timeline shifts.'),
-    runId: z.string().optional().describe('Attach this run id to every appended record (evidence-pack spine)'),
-  },
+  mcpDescription('capture_append'),
+  // records 复杂参数保持内联；放在 mcpShape 展开**之前**以复现原 properties 顺序（records, runId）。
+  { records: z.array(z.object({ method: z.string(), url: z.string(), ts: z.number().optional() }).passthrough()).describe('Records: method+url required; ts/status/durationMs/reqBody/resBody/note/caller optional. Bodies ≤ 2MB. ts = when the call happened (epoch ms) — required in practice when importing/replaying HISTORICAL traffic, otherwise it is stored as NOW and the timeline shifts.'), ...mcpShape('capture_append') },
   async (args) => jtext(appendRecords(args.records, { runId: args.runId }))
 )
 

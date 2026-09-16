@@ -24,6 +24,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const repo = join(here, '..', '..', '..')
 const shared = readFileSync(join(repo, 'lib', 'capture-store.mjs'), 'utf8')
 const plugin = readFileSync(join(here, '..', 'lib', 'index.js'), 'utf8')
+// W1：capture_query 的参数已迁进单一真源 lib/tool-registry.mjs —— runId 参数从注册表查（键按 MCP 名 capture_query）。
+const { REGISTRY } = await import(new URL('../../../lib/tool-registry.mjs', import.meta.url))
 
 for (const [label, src] of [['shared(capture-store)', shared], ['plugin(lib/index.js)', plugin]]) {
   check(`${label}: min/max 字节过滤**不**把缺失字段当成 0 字节`,
@@ -51,7 +53,9 @@ for (const [label, src] of [['shared(capture-store)', shared], ['plugin(lib/inde
 }
 
 // runId 这个参数必须**两面都有**（G1 黑盒：MCP 有、DSH 没有 —— 而 append 的描述说"配套使用"）
-check('DSH 面 api_capture_query 暴露 runId 参数', /runId: \{ type: 'string', description: 'Evidence-pack run id filter/.test(plugin))
+// W1：DSH 面 api_capture_query 的参数由注册表 capture_query 生成 —— 直接查注册表里有 runId 参数。
+check('DSH 面 api_capture_query 暴露 runId 参数',
+  (REGISTRY.capture_query?.params || []).some((p) => p.name === 'runId'))
 
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }
 console.log('\nPASS: 过滤语义漂移哨兵（shared vs plugin）')
