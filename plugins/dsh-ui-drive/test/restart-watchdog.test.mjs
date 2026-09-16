@@ -81,6 +81,31 @@ function newDriver() {
   return makeDriver({ scriptsDir, evidenceDir, procName: 'FakeProc', clientExe: exePath })
 }
 
+// ---------------------------------------------------------------- 时长断言的余量（冷启动预算）
+//
+// 本文件里凡是"时长 ≈ 某个预算"的断言，都容易被**进程冷启动**污染：CI runner 实测一次
+// spawn ≈ 1.6–2.1s（本机 ≈ 0.3s）。把冷启动算进预算里，断言就退化成"在测机器快慢"——
+// 这正是 CI run 35081549630 变红的原因：2s 超时 + 2.1s 冷启动 = 4141ms，被旧断言
+// `elapsed < 3200`（"远小于两个超时"）判成了失败。
+//
+// 因此两条纪律：
+//   ① 冷启动**实测一次**，作为所有时长断言的公共余量（不写死数字）；
+//   ② 能用非时间判据表达的，就不要用墙钟 —— 下发次数 / ok / unknown / stalls 与机器无关。
+//      例：第 1 段真正证明"只付了一次超时"的是 `counter === '2'` + `r.ok === true`（若重试本身
+//      也超时，这两个必有一个不成立），而不是那条墙钟上界。
+async function measureColdStartMs() {
+  installFakeServe({ mode: 'never' }) // 不僵死：立刻回答，只测 spawn + ready 握手
+  const d = newDriver()
+  const t0 = Date.now()
+  await d.drive({ action: 'read' })
+  const ms = Date.now() - t0
+  d.warmShutdown()
+  return ms
+}
+const COLD_MS = await measureColdStartMs()
+const SLACK = COLD_MS + 1500 // 冷启动 + 余量（覆盖 runner 抖动）
+console.log(`  --   实测冷启动 ${COLD_MS}ms ⇒ 本文件时长断言统一加余量 ${SLACK}ms`)
+
 // ------------------------------------------- 1. 卡住的请求：由「请求自己的超时」处置 + 只读重试恢复
 //
 // 语义变化说明（2026-09-11 复核后）：看门狗阈值改成 `max(DSH_UI_STALL_MS, 最老请求自己的超时)`——
@@ -99,7 +124,8 @@ function newDriver() {
   check('卡住的请求被下发 2 次（1 次卡住 + 1 次重试）', counter === '2', counter)
   check('read 超时后重试成功（换新进程）', r.ok === true && r.count === 2, JSON.stringify(r).slice(0, 200))
   check('看门狗没有抢在请求自身超时之前误杀（stalls=0）', ws.stalls === 0, JSON.stringify({ stalls: ws.stalls, reason: ws.lastStallReason }))
-  check('总耗时 ≈ 一个请求超时 + 重试（远小于 2 个超时）', elapsed < 3200, elapsed + 'ms')
+  // 这条只守「没有挂死、没有多付一个超时」的量级；真正的"只付一次超时"由上面两条非时间断言保证。
+  check('总耗时在「一次超时 + 一次冷启动」量级内（不是挂死）', elapsed < 2000 + SLACK, elapsed + 'ms（余量 ' + SLACK + '）')
   check('重试后常驻进程恢复可用', ws.alive === true, JSON.stringify(ws))
   d.warmShutdown()
   delete process.env.DSH_UI_STALL_MS
@@ -127,7 +153,7 @@ function newDriver() {
   const t0 = Date.now()
   const st = await d.status({ timeoutMs: 800 })
   const elapsed = Date.now() - t0
-  check('status 受调用方上限约束', elapsed < 3000, elapsed + 'ms')
+  check('status 受调用方上限约束', elapsed < 800 + SLACK, elapsed + 'ms（预算 800 + 余量 ' + SLACK + '）')
   check('status 超时 → unknown=true（不谎报未运行）', st.running === false && st.unknown === true, JSON.stringify(st))
   d.warmShutdown()
   delete process.env.FAKE_STATUS_SLEEP_MS
@@ -141,7 +167,7 @@ function newDriver() {
   const t0 = Date.now()
   const r = await d.launch({ waitMs: 3000 })
   const elapsed = Date.now() - t0
-  check('launch 在 waitMs 上限内返回（不会挂死）', elapsed < 8000, elapsed + 'ms')
+  check('launch 在 waitMs 上限内返回（不会挂死）', elapsed < 3000 + SLACK + 1000, elapsed + 'ms（预算 3000 + 最后一次 status 600 + 余量 ' + SLACK + '）')
   check('launch 如实报「没起来」+ 轮询心跳', r.started === false && r.polls >= 1, JSON.stringify(r))
   check('launch 的 waitedMs 与真实耗时一致（不写死 waitMs）', Math.abs(r.waitedMs - elapsed) < 1500, JSON.stringify({ waitedMs: r.waitedMs, elapsed }))
   d.warmShutdown()
@@ -155,7 +181,7 @@ function newDriver() {
   const t0 = Date.now()
   const r = await d.launch({ waitMs: 1000 })
   const elapsed = Date.now() - t0
-  check('显式 waitMs=1000 就按 ~1s 结束（不再被抬到 3s）', elapsed < 2600, elapsed + 'ms')
+  check('显式 waitMs=1000 就按 ~1s 结束（不再被抬到 3s）', elapsed < 1000 + SLACK, elapsed + 'ms（预算 1000 + 余量 ' + SLACK + '）')
   check('launch 仍如实回报轮询与耗时', r.started === false && r.waitedMs > 0, JSON.stringify({ started: r.started, waitedMs: r.waitedMs, polls: r.polls }))
   d.warmShutdown()
 }
@@ -194,7 +220,7 @@ function newDriver() {
   const d = makeDriver({ scriptsDir, evidenceDir, procName: 'FakeProc', clientExe: join(scriptsDir, 'nope.exe') })
   const t0 = Date.now()
   const r = await d.launch({ waitMs: 30000 })
-  check('exe 不存在 → 立刻返回错误（不轮询 30s）', r.started === false && /不存在/.test(r.error || '') && Date.now() - t0 < 5000, JSON.stringify(r))
+  check('exe 不存在 → 立刻返回错误（不轮询 30s）', r.started === false && /不存在/.test(r.error || '') && Date.now() - t0 < 1500 + SLACK, JSON.stringify(r))
   d.warmShutdown()
 }
 
