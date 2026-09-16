@@ -18,6 +18,8 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
+// W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在 defineTool 的 name）。
+import { dshParameters, dshDescription } from '../../../lib/tool-registry.mjs'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -375,18 +377,11 @@ function makeRoutes(proxy) {
 function httpRequestTool() {
   return defineTool({
     name: 'http_request',
-    description:
-      'Send an HTTP request from the host (Postman-style, server-side so no browser CORS) and return the response ' +
-      '(status / statusText / headers / body / duration). The call is also logged to the dsh-postman 「接口调试」 panel history. ' +
-      'A non-2xx status is a normal result (ok:true); ok:false means the request could not be made (bad url / connection / timeout). ' +
-      '**本机回环路由**：插件各自注册了 `/api/dsh-<插件名>` 前缀（已核：dsh-ui-drive / dsh-perf / dsh-api-visualizer / dsh-hang-inspector / dsh-postman / dsh-build —— 子路径见各插件自己的面板/文档，本工具**不列**未核实的子路径），这些路由在**回环上无鉴权**，面板能做而工具面没暴露的操作就得靠它打（例如抓包启停、契约基线、源码定位）。⚠ 两条纪律：① 它们是**真实的副作用入口**（可能启停捕获、复位护栏、改本机状态），按副作用对待；② 只能打 `127.0.0.1`，别把它当外网请求工具。' +
-    'Triggers: 发请求 / 调接口 / 接口测试 / http request / call an API.',
+    // W1：description + 简单参数走注册表；headers（复杂 object）保持内联原样（hybrid）。
+    description: dshDescription('http_request'),
     parameters: {
-      method: { type: 'string', description: 'HTTP method（省略时按 GET 发，与实现一致）, e.g. GET/POST/PUT/DELETE/PATCH.' },
-      url: { type: 'string', required: true, description: 'Absolute request URL (http/https).' },
+      ...dshParameters('http_request'),
       headers: { type: 'object', additionalProperties: true, description: 'Request headers as a name→value map.' },
-      body: { type: 'string', description: 'Request body (ignored for GET/HEAD). For JSON, set content-type and pass a JSON string.' },
-      timeoutMs: { type: 'number', description: `Timeout in ms (default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}).` },
     },
     output: {
       schema: {

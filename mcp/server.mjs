@@ -968,21 +968,9 @@ server.tool(
 // ---------------------------------------------------------------- http
 server.tool(
   'http_request',
-  'Send an HTTP request from the host (server-side, no browser CORS) and return status / headers / body. ' +
-    'A non-2xx status is a normal result; ok:false means the request could not be made. ' +
-    'LOOPBACK ROUTES: each plugin also exposes a `/api/dsh-<plugin>` prefix (verified prefixes: dsh-ui-drive, dsh-perf, ' +
-  'dsh-api-visualizer, dsh-hang-inspector, dsh-postman, dsh-build — sub-paths live in each plugin, this tool does NOT list ' +
-  'unverified sub-paths). These routes have NO auth on loopback, and panel-only capabilities (capture start/stop, contract ' +
-  'baselines, source locate) are reachable only that way. Treat them as REAL side effects, and only ever call 127.0.0.1. ' +
-  'Redirects are followed automatically, so read redirected/finalUrl/requestedUrl in the result: a 302 to a login page ' +
-    'otherwise looks exactly like a 200 from the API you asked for (status/headers/body all belong to the FINAL url).',
-  {
-    method: z.string().default('GET').describe('HTTP method'),
-    url: z.string().describe('Absolute http(s) URL'),
-    headers: z.record(z.string(), z.string()).optional().describe('Request headers'),
-    body: z.string().optional().describe('Request body (ignored for GET/HEAD)'),
-    timeoutMs: z.number().optional(),
-  },
+  // W1：description + 简单参数走注册表；headers（复杂 record）保持内联原样（hybrid）。
+  mcpDescription('http_request'),
+  { ...mcpShape('http_request'), headers: z.record(z.string(), z.string()).optional().describe('Request headers') },
   async (args) => {
     const r = await sendRequest({
       method: args.method,
