@@ -5,6 +5,8 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { DshMemory } from './lib/memory.mjs'
+// W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name）。
+import { dshParameters, dshDescription } from '../../lib/tool-registry.mjs'
 
 export const name = 'dsh-memory'
 
@@ -36,21 +38,9 @@ function mem() {
 const tools = () => [
   defineTool({
     name: 'memory_index',
-    description:
-      '把本地目录索引进长期记忆向量库（增量：按文件 mtime 跳过未变更文件）。之后可用 memory_search 语义检索。' +
-      // BV-07：隐私必须写在**模型真正会读的那份描述**里 —— GUIDANCE 只是系统提示的一段，
-      // 而模型决定"要不要索引这个目录"时看的是这条。原来这条一个字都没提 egress。
-      '隐私：数据落在本地 ~/.dsh/memory/，**但 embedding 可能出本机** —— 配置了 MiniMax key 时文件分块会发到远程 api.minimax.chat；未配置 key 时是本地 bigram、不出本机。' +
-      '要确认走哪条路请调 memory_status 看 embedEndpoint/note；**不要向用户承诺"不外传"**。' +
-      'Triggers: 记住这个项目 / 索引代码库 / index the repo.',
-    parameters: {
-      path: { type: 'string', required: true, description: '要索引的目录绝对路径' },
-      // ⚠ 2026-09-15：加这个参数是因为**每次调用必须有确定的上界**。
-      //   没有它的时候，一个几百个分块的目录会让这次调用跑几分钟到几十分钟 —— 调用方在上限内等不到返回、
-      //   被打断、又拿不到"做到哪了"⇒ 只能重来 ⇒ **每次调用都像卡死**（用户原话）。
-      //   现在：到预算就停，返回里写清"还剩多少、再调一次接着做"（已完成的文件按 mtime 跳过，不会重做）。
-      budgetMs: { type: 'number', description: '本次索引的时间预算（毫秒，默认 60000）。到点就停并把"还剩多少"如实返回；再调一次即可接着做（增量跳过已完成的文件）。' },
-    },
+    // W1：描述含 BV-07 隐私声明、budgetMs 含"每次调用须有确定上界"的 rationale — 详见 git 历史 / 注册表。
+    description: dshDescription('memory_index'),
+    parameters: dshParameters('memory_index'),
     output: {
       schema: {
         type: 'object', additionalProperties: true,
@@ -96,13 +86,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'memory_search',
-    description:
-      '语义检索长期记忆（索引过的文档/代码内容）。返回最相关片段及来源文件。' +
-      'Triggers: 项目里怎么做的 / 检索记忆 / 查一下之前 / search memory.',
-    parameters: {
-      query: { type: 'string', required: true, description: '检索问题或关键词' },
-      k: { type: 'number', description: '返回条数，默认 5，最大 10' },
-    },
+    description: dshDescription('memory_search'),
+    parameters: dshParameters('memory_search'),
     output: {
       schema: {
         type: 'object', additionalProperties: true,
@@ -153,12 +138,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'memory_save',
-    description: '保存一条跨会话 KV 记忆（如项目约定、用户偏好、历史决策）。同一 key+scope 会覆盖。Triggers: 记住这个约定 / save memory.',
-    parameters: {
-      key: { type: 'string', required: true, description: '记忆键名，如 "项目约定" 或 "用户偏好"' },
-      value: { type: 'string', required: true, description: '记忆内容' },
-      scope: { type: 'string', description: '作用域（如项目名），默认 global' },
-    },
+    description: dshDescription('memory_save'),
+    parameters: dshParameters('memory_save'),
     output: { schema: { type: 'object', additionalProperties: true, properties: { saved: { type: 'boolean' }, key: { type: 'string' }, error: { type: 'string' } } },
       render: (_args, value) => [{ type: 'text', text: value.saved ? (`已记住：${value.key}`) : (`保存被拒绝：${value.error}`) }] },
     async execute(args) {
@@ -172,11 +153,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'memory_recall',
-    description: '读取一条 KV 记忆（跨会话）。Triggers: 之前说过的约定 / recall memory.',
-    parameters: {
-      key: { type: 'string', required: true, description: '记忆键名' },
-      scope: { type: 'string', description: '作用域，默认 global' },
-    },
+    description: dshDescription('memory_recall'),
+    parameters: dshParameters('memory_recall'),
     output: { schema: { type: 'object', additionalProperties: true, properties: { found: { type: 'boolean' }, key: { type: 'string' }, value: { type: 'string' } } },
       render: (_args, value) => [{ type: 'text', text: value.found ? (`${value.key} = ${value.value}`) : (`没有找到记忆：${value.key}`) }] },
     async execute(args) {
@@ -186,11 +164,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'memory_forget',
-    description: '删除一条 KV 记忆。Triggers: 忘掉之前的约定 / forget memory.',
-    parameters: {
-      key: { type: 'string', required: true, description: '记忆键名' },
-      scope: { type: 'string', description: '作用域，默认 global' },
-    },
+    description: dshDescription('memory_forget'),
+    parameters: dshParameters('memory_forget'),
     output: { schema: { type: 'object', additionalProperties: true, properties: { forgotten: { type: 'boolean' }, key: { type: 'string' } } },
       render: (_args, value) => [{ type: 'text', text: `已忘记：${value.key}` }] },
     async execute(args) {
@@ -200,8 +175,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'memory_status',
-    description: '查看长期记忆状态（索引分块数、KV 条数、embedding 后端）。Triggers: 记忆状态 / memory status.',
-    parameters: {},
+    description: dshDescription('memory_status'),
+    parameters: dshParameters('memory_status'),
     output: { schema: { type: 'object', additionalProperties: true, properties: { chunks: { type: 'integer' }, kvEntries: { type: 'integer' }, embed: { type: 'string' }, embedEndpoint: { type: 'string' }, note: { type: 'string' } } },
       // BV-07：`embedEndpoint`/`note` 一直在数据层（MCP 面的 jtext 能看见），但 DSH 面的渲染
       // 只印 `embed` 标签 —— 于是 agent 看到"（MiniMax embo-01）"，**无从判断内容有没有出本机**，
