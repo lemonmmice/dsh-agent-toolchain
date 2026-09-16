@@ -313,11 +313,8 @@ server.tool(
 
 server.tool(
   'ui_status',
-  'Report ONLY the existence/geometry of the target client process and main window (running? PID? title? bounds?) — read-only. It does NOT show what is on screen and does NOT tell whether the client is hung; for content/focus use ui_state or ui_observe(action="state"). Configure the client via DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE.',
-  {
-    // R42：DSH 面 ui_status 有 procId 而这里没有 —— 同名多进程时 MCP 侧无法消歧。
-    procId: z.number().optional().describe('Target process PID (disambiguate when several instances are running)'),
-  },
+  mcpDescription('ui_status'),
+  mcpShape('ui_status'),
   async (args) => jtext(await drv().status(args.procId ? { procId: args.procId } : {}))
 )
 
@@ -339,26 +336,15 @@ const uiAction = z.enum([
 
 server.tool(
   'ui_state',
-  'UI snapshot (read-only, one step to see "what is on screen right now"): current main window + focused element + ' +
-    'the interactive control list (buttons/edits/tabs/checkboxes/list items with #index, aid, enabled and the real input value). ' +
-    'Prefer this over repeated read (which returns hundreds of text lines). match filters by control name regex; max caps the list (default 40).',
-  {
-    match: z.string().optional().describe('Regex filter on control names (e.g. 登录|验证码)'),
-    max: z.number().optional().describe('Max controls returned, default 40'),
-    procId: z.number().optional().describe('Target process PID (disambiguate when several instances are running)'),
-    winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows)'),
-  },
+  mcpDescription('ui_state'),
+  mcpShape('ui_state'),
   async (args) => jtext(await drv().drive({ action: 'state', match: args.match || '', max: args.max || 40, ...(args.procId ? { procId: args.procId } : {}), ...(args.winHandle ? { winHandle: args.winHandle } : {}) }))
 )
 
 server.tool(
   'ui_windows',
-  'List every top-level window of the target client process (type / title / handle / position / offscreen) **plus nested window elements ' +
-    'inside the main window** (a login pane / licence dialog / modal is usually nested and does NOT show up as a top-level window). ' +
-    'Read-only. Check this first when driving a dynamic UI, then decide where to act.',
-  {
-    procId: z.number().optional().describe('Target process PID (disambiguate when several instances are running)'),
-  },
+  mcpDescription('ui_windows'),
+  mcpShape('ui_windows'),
   async (args) => jtext(await drv().drive({ action: 'windows', ...(args.procId ? { procId: args.procId } : {}) }))
 )
 
@@ -618,22 +604,8 @@ server.tool(
 
 server.tool(
   'ui_launch',
-  'Start the target desktop client (the exe named by DSH_UI_CLIENT_EXE) and wait for its main window; ' +
-    'if it is already running the existing process is returned. extraArgs passes extra command-line ' +
-    'arguments (e.g. --remote-debugging-port=9222 for CEF debugging). ' +
-    'WARNING: if the client has just hung, do NOT reach for force first - force=true kills the process and ' +
-    'destroys the only crime scene (no dump / no thread stacks / no evidence bundle). Capture evidence FIRST ' +
-    '(perf_dump for a snapshot, or hang_run to watch for a recurrence), then force=true to restart. ' +
-    'force=true is the ONLY restart path: it kills the running target process first ' +
-    'and reports exactly which PIDs were killed and how long it waited; it REFUSES when several same-named processes exist ' +
-    'and DSH_UI_CLIENT_EXE does not disambiguate (never kills the wrong session). ' +
-    'Use this when ui_status reports the client is not running - every other ui_* tool needs a live window.',
-  {
-    extraArgs: z.string().optional().describe('Extra command-line arguments, space separated'),
-    waitMs: z.number().optional().describe('How long to wait for the main window (default 60000)'),
-    allowSensitive: z.boolean().optional().describe('The post-launch screenshot is described by a vision model; if the focused control is a password/captcha field the description is refused by default — set true to override'),
-    force: z.boolean().optional().describe('DESTRUCTIVE: kill the running target client first, then start it (restart a hung client). Confirm with the user before using.'),
-  },
+  mcpDescription('ui_launch'),
+  mcpShape('ui_launch'),
   async (args) => {
     const l = await drv().launch({ extraArgs: args.extraArgs || '', waitMs: args.waitMs || 60000, force: args.force === true })
     // r44：与 DSH 面同一件事（视觉即返）——启动成功就顺带截一张并交给视觉模型，
@@ -665,45 +637,15 @@ server.tool(
 
 server.tool(
   'ui_tree',
-  'Dump the in-process visual tree: a read-only probe is injected into the target client and ' +
-    'reports real control types + Name + AutomationId + DataContext type. Richer than UIA, for ' +
-    'diagnosing bindings / templates. Read-only, no popups. Prefer ui_observe for ordinary ' +
-    'interaction - use this only when UIA detail is insufficient. ' +
-    'When the injector is unavailable (no Snoop / DSH_SNOOP_DIR unset) it AUTOMATICALLY FALLS BACK to a ' +
-    'UIA hierarchy tree and returns source:"uia" - that one has types/Name/AutomationId/enabled/offscreen/' +
-    'bounds/hierarchy but NO DataContext and NO real WPF type names, so do not treat it as the richest tree. ' +
-    'Both hidden caps (maxDepth cut-off, node-count cap) and body truncation are reported explicitly ' +
-    '(truncated/depthLimited/nodeCapHit) - a maxDepth value does NOT mean you got the whole tree.',
-  {
-    maxDepth: z.number().optional().describe('Maximum depth (default 8, capped at 20). When it cuts the tree off the result carries depthLimited=true - that is NOT a complete tree'),
-    inAid: z.string().optional().describe('Scope the dump to one container (AutomationId): only its subtree is returned. The whole-window tree blows past the 14000-char body cap - narrowing first (ui_observe read/state to find a container aid, then ui_tree inAid=...) is the only way to get a COMPLETE subtree. The result reports narrowed/scope. Note: with a scope the UIA path is used (the injector cannot scope).'),
-    inName: z.string().optional().describe('Scope the dump to one container by Name (same as inAid)'),
-  },
+  mcpDescription('ui_tree'),
+  mcpShape('ui_tree'),
   async (args) => jtext(await drv().tree({ maxDepth: args.maxDepth || 8, inAid: args.inAid || '', inName: args.inName || '' }))
 )
 
 server.tool(
   'ui_live',
-  'Watch the running client continuously: a background loop grabs "window content" frames without ' +
-    'stealing the foreground or restoring a minimized window. ' +
-    'action=start (idempotent; intervalMs default 1500) / stop / status (current snapshot, no new ' +
-    'capture) / frame (latest frame info: path + hash + control summary; fresh=true forces a new ' +
-    'capture; degrades to a one-shot capture when not started) / wait (block until the frame hash ' +
-    'changes; fromHash is the baseline, timeoutMs default 30000). ' +
-    'Read the returned path with a vision-capable model to actually see the screen. ' +
-    'Frames whose focus is a password/captcha/token control do NOT return a path unless ' +
-    'allowSensitive=true - pixels cannot be redacted. ' +
-    'Only start the loop when you need to watch changes over time; for a single look use frame.',
-  {
-    action: z.enum(['start', 'stop', 'status', 'frame', 'wait']),
-    intervalMs: z.number().optional().describe('Frame interval ms (default 1500)'),
-    stateIntervalMs: z.number().optional().describe('Control-state sampling interval ms (default 3000)'),
-    maxControls: z.number().optional().describe('Max controls in the state summary (default 40)'),
-    fresh: z.boolean().optional().describe('frame: force a new capture'),
-    fromHash: z.string().optional().describe('wait: baseline frame hash'),
-    timeoutMs: z.number().optional().describe('wait: max wait ms (default 30000)'),
-    allowSensitive: z.boolean().optional().describe('Return a frame path even when a password/captcha control has focus'),
-  },
+  mcpDescription('ui_live'),
+  mcpShape('ui_live'),
   async (args) => {
     const ctl = liveCtl()
     const action = String(args.action || '').toLowerCase()
