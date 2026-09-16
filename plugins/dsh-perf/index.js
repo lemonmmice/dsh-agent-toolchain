@@ -167,6 +167,12 @@ const tools = () => [
       profile: { type: 'string', enum: ['cpu', 'dotnet', 'general'], description: 'cpu（默认，= CPU+DotNet，能解托管名）| dotnet | general' },
       tag: { type: 'string', description: '证据目录后缀标签，便于归档（如 repaint-storm）' },
       etlPath: { type: 'string', description: 'action=stop 时指定要停到哪个 .etl（填 start 返回的 etlPath）' },
+      // ★ R1-12：采集**单点依赖 WPR**，而 WPR 的 `-stop` 会坏（本机 2026-09-15 实测：start 正常、stop 报
+      //   0x80010106 且**不产出 etl**；注意实测**退出码是 -2147417850，不是 0** —— 判据始终是"有没有 etl 文件"）
+      //   ⇒ 失败点落在"用户已经复现完"之后，**白跑一轮**。所以 start 前先用 1~2 秒探针问清楚。
+      //   ★ R1-14：auto 还会拿这个结论**自动换 xperf 通道**（xperf 采集不依赖 WPR 收尾）。
+      engine: { type: 'string', enum: ['auto', 'wpr', 'xperf'], description: '采集通道（默认 auto）：auto = 自检说"这台机器的 WPR 收不了尾"就自动改用 xperf，否则走 WPR；wpr = 强制 WPR；xperf = 强制 xperf。xperf 通道收尾时会自动多做一步 `xperf -merge` —— **模块归属只在合并那一步产生**（不合并的报告连模块名都是 ***unknown***）' },
+      skipPreflight: { type: 'boolean', description: 'true = 跳过"采集前自检"（默认 false）。自检会用 1~2 秒起一个极小 WPR 会话并立刻收尾，验证**这台机器的 WPR 能不能收尾**；engine=auto 时它同时决定走哪条通道；显式 engine="wpr" 且自检不通过时，start 仍会执行但返回值带 warning（告诉你这次很可能产不出 etl）' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderTrace(v) }] },
     timeoutMs: 20 * 60 * 1000,

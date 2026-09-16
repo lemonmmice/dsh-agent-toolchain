@@ -6,7 +6,10 @@
  *
  * 设计原则（照抄本仓已经站住的那几条）：
  *   1. **默认只看不删**：不给 `confirm:true` 就只列清单（dry-run），并如实报出"会删多少字节"；
- *   2. **只删自己能认出来的文件**：只处理 `.dmp` / `.etl`（证据大件），**绝不做递归删除**、绝不碰目录本身；
+ *   2. **只删自己能认出来的文件**：只处理 `.dmp` / `.etl`（证据大件）；为了找得到它们，
+ *      会往下看**一层**（`trace-<stamp>/trace.etl`、`<stamp>/xxx.dmp` —— 证据大件都在按次运行的
+ *      子目录里，顶层只有 `last-probe.json`；R1-05 实测：原实现只扫顶层 ⇒ 盘上有 6.71 GB 时
+ *      它报「0 个文件命中，共 0 字节」），但**绝不递归删除**、**绝不碰目录本身**；
  *   3. **只在自己管的目录里动**：目标必须在 perf 证据目录之下（`resolve` 后前缀比对），否则**拒绝**；
  *   4. **采样进行中不删**：会话标记（trace-session.json）说在跑时，拒绝删 `.etl`（那正是它正在写的文件）；
  *   5. 失败要把原因说清楚（目录不存在 / 传进来的路径越界 / 读不到），不许静默什么都不做。
@@ -47,22 +50,51 @@ export function cleanEvidence(args = {}) {
 
   const candidates = []
   const skipped = []
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    let st
-    try { st = statSync(p) } catch { skipped.push({ path: p, reason: '读不到状态' }); continue }
-    if (!st.isFile()) continue                       // 只处理文件，**绝不递归**
-    const isDump = /\.dmp$/i.test(name)
-    const isEtl = /\.etl$/i.test(name)
-    if (!isDump && !isEtl) continue
-    if (what === 'dumps' && !isDump) continue
-    if (what === 'etls' && !isEtl) continue
-    if (!BIG_EXT.test(name)) continue
-    const ageDays = (now - st.mtimeMs) / 86400000
-    if (keepDays > 0 && ageDays < keepDays) { skipped.push({ path: p, reason: '未超龄（' + ageDays.toFixed(2) + ' 天 < keepDays=' + keepDays + '）' }); continue }
-    if (sampling && isEtl) { skipped.push({ path: p, reason: '采样进行中（trace-session.json 在盘上）：不删 etl' }); continue }
-    candidates.push({ path: p, bytes: st.size, ageDays: Number(ageDays.toFixed(2)) })
+  // ⚠⚠ 必须**往下走一层**（2026-09-14 夜 R1-05 真机查出）：
+  //   原实现只扫证据目录的**顶层文件**（`readdirSync(dir)` + `st.isFile()`），
+  //   而全工具链的证据大件都放在**按次运行的子目录**里（`trace-<stamp>/trace.etl`、
+  //   `<stamp>/xxx.dmp`）—— 顶层只有 `last-probe.json`。
+  //   现场实测：`perf_clean`（不加 confirm）报「**0 个文件命中，共 0 字节**」，
+  //   而同一时刻该目录下躺着 **6.71 GB** 的 `trace-2026-09-14T10-42-21-tonight-b\trace.etl`。
+  //   它甚至还给了"可能已经清过了"这句把人带偏的解释 —— 一个用来腾空间的工具，
+  //   在盘上有 6.7 GB 可清时说自己没东西可清。
+  //
+  // ⚠ 但**下潜必须收窄**（同一个测试套当场抓到我第一版写太宽）：
+  //   第一版"任意子目录都下潜一层"，于是把工具指向 `%TEMP%` 这种父目录时，
+  //   它会钻进别人的子目录去删 `.dmp/.etl` —— 这正是本文件第 3 条设计原则要防的"动到别处"。
+  //   现在只下潜**我们自己建的运行目录**（命名是这两族：`trace-<stamp>` 与 `<YYYYMMDD-HHMMSS>`），
+  //   深度仍 ≤ 1，仍**只删文件、绝不删目录**，并显式跳过 `symbol-cache`（跨运行共享的符号缓存，
+  //   删了下次出报告要重新下 GB 级 pdb）。
+  const OUR_RUN_DIR = /^(trace-|20\d{6}[-T])/i
+  const collect = (d, depth) => {
+    for (const name of readdirSync(d)) {
+      const p = join(d, name)
+      let st
+      try { st = statSync(p) } catch { skipped.push({ path: p, reason: '读不到状态' }); continue }
+      if (st.isDirectory()) {
+        if (depth >= 1) continue                                   // 只下潜一层
+        if (!OUR_RUN_DIR.test(name)) continue                      // 只认我们自己的运行目录（别处的子目录一律不进）
+        if (name.toLowerCase() === 'symbol-cache') continue         // 符号缓存**故意保留**
+        collect(p, depth + 1)
+        continue
+      }
+      if (!st.isFile()) continue
+      const isDump = /\.dmp$/i.test(name)
+      const isEtl = /\.etl$/i.test(name)
+      if (!isDump && !isEtl) continue
+      if (what === 'dumps' && !isDump) continue
+      if (what === 'etls' && !isEtl) continue
+      if (!BIG_EXT.test(name)) continue
+      const ageDays = (now - st.mtimeMs) / 86400000
+      if (keepDays > 0 && ageDays < keepDays) { skipped.push({ path: p, reason: '未超龄（' + ageDays.toFixed(2) + ' 天 < keepDays=' + keepDays + '）' }); continue }
+      if (sampling && isEtl) { skipped.push({ path: p, reason: '采样进行中（trace-session.json 在盘上）：不删 etl' }); continue }
+      // ⚠ 这里**只能放 JSON 能表达的值** —— 第一版我塞了个 Symbol 做"来自哪一层"的标记，
+      //   结果它被带到工具返回值里，宿主按 `output.schema` 校验时直接判「不是 lossless JSON 对象」，
+      //   整个 `perf_clean` 在 DSH 面不可用（`lib/toolface-params.test.mjs` 当场抓到）。
+      candidates.push({ path: p, bytes: st.size, ageDays: Number(ageDays.toFixed(2)) })
+    }
   }
+  collect(dir, 0)
   const totalBytes = candidates.reduce((a, x) => a + x.bytes, 0)
 
   if (!confirm) {
@@ -92,7 +124,11 @@ export function renderClean(v) {
   const head = v.dryRun
     ? '【只看不删】' + (v.candidates.length) + ' 个文件命中，共 ' + v.totalBytes + ' 字节'
     : '【已删除】' + v.deleted.length + ' 个文件，释放 ' + v.freedBytes + ' 字节'
-  const lines = (v.candidates || []).slice(0, 20).map((c) => '  ' + basename(c.path) + '  ' + c.bytes + ' 字节（' + c.ageDays + ' 天前）')
+  // ⚠ 打印**完整路径**（不是 basename）—— 这是删文件的清单，agent 必须看得见"到底删哪个"。
+  //   第一版只印 basename：目录一深，同名文件（多个 run 目录下的 trace.etl）就分不清了，
+  //   而且 `lib/toolface-params.test.mjs` 的载荷探针（取记录里最长的字符串字段，即绝对路径）
+  //   当场判定"记录数组一个字都没渲染出来"（F-059 同族）—— 那正是它存在的意义。
+  const lines = (v.candidates || []).slice(0, 20).map((c) => '  ' + c.path + '  ' + c.bytes + ' 字节（' + c.ageDays + ' 天前）')
   const more = (v.candidates || []).length > 20 ? '  …共 ' + v.candidates.length + ' 个' : ''
   const skips = (v.skipped || []).slice(0, 5).map((s) => '  ⏭ ' + basename(s.path) + '：' + s.reason)
   return [head, '目录：' + v.dir, ...lines, more, ...skips, v.hint].filter(Boolean).join('\n')

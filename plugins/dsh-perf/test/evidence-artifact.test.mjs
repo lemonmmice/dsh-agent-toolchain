@@ -224,9 +224,20 @@ const RAW_ANALYSIS = findRawAnalysis()
     check('归纳后 uiThread 非空（真机 UI 线程解得出）',
       !!summary.uiThread && summary.uiThread.frames.length > 0,
       JSON.stringify(summary.uiThread && summary.uiThread.frames.length))
-    check('未解析帧被显式标注（真机 ip=7670106C 那条）',
-      JSON.stringify(summary.uiThread.stack).includes('未解析帧 ip=7670106C'),
-      JSON.stringify(summary.uiThread.stack.slice(0, 2)))
+    // ⚠ 2026-09-15：这条原来写成 `…includes('未解析帧 ip=7670106C')` —— **把某个具体帧 IP 写死了**，
+    //   而夹具是"本机**最近一次**真机 dump 的分析"（`findRawAnalysis()` 按文件名长度挑最大的那个）。
+    //   于是**只要这台机器上再抓一次 dump**（本次就是这么红的：T1 抓了一份新 dump ⇒ 未解析帧变成 758C106C），
+    //   闸就红 —— 那是夹具易变，不是产品缺陷。**改成断言性质**（不变量），并顺手把它变得更强：
+    //   ① 每一条"模块为空"的帧都必须被标注成 `未解析帧 ip=…`；② 标注条数 == raw 里真正的未解析帧条数。
+    const uiFrames = (raw.threads.find((t) => t && t.isUI) || {}).frames || []
+    const unresolvedInRaw = uiFrames.filter((f) => !f || !f.module).length
+    const labeled = (summary.uiThread.stack || []).filter((l) => /未解析帧 ip=[0-9A-F]+/i.test(String(l)))
+    check('未解析帧被显式标注（性质：每条无模块的帧都带 `未解析帧 ip=…`，不写死具体 IP）',
+      labeled.length > 0 && labeled.length >= unresolvedInRaw,
+      JSON.stringify({ labeled: labeled.length, unresolvedInRaw, sample: summary.uiThread.stack.slice(0, 2) }))
+    check('★ 而**有模块**的帧不许被误标成"未解析"（否则标注等于噪音）',
+      !(summary.uiThread.stack || []).some((l) => /未解析帧/.test(String(l)) && /\.dll!|\.exe!/.test(String(l))),
+      JSON.stringify((summary.uiThread.stack || []).filter((l) => /未解析帧/.test(String(l))).slice(0, 2)))
   }
 }
 

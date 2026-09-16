@@ -166,6 +166,51 @@ export function renderDrive(v) {
     // 与 state 同形渲染（同一个 completenessTail），不再有"某条读路径悄悄不印"。
     case 'state-live': return renderState(v)
     case 'windows': return v.count + ' 个顶层窗口：\n' + (v.lines || []).join('\n')
+    // ── R1-06（D.1 核出来的三处，同一形状：生产者给了结构化结果，渲染层没有分支 ⇒ 掉进 default）──
+    // 为什么"掉进 default"在这里等于**信息被吞**而不是"文字难看"：这三个 action 的结果里
+    // **都没有 `output` 字段**（见 lib/driver.mjs:1586/1593/1603），而 default 渲染的是 `v.output || '完成'`
+    // ⇒ agent 看到的逐字符就是「完成」。渲染文本是 agent 唯一看得见的东西（本文件开头那句）。
+    case 'capture': {
+      // driver.mjs:1603 `{ok,action,state,captureMethod,pid,window,path?,w?,h?}`；
+      // 字段语义照 scripts/ui-drive-batch.ps1:2045 的注释（state=visible|minimized|hidden|nowindow，
+      // captureMethod=print|screen）——**不编方向，照实印**。
+      const bits = ['窗口状态=' + (v.state || '?')]
+      if (v.captureMethod) {
+        bits.push('方式=' + (v.captureMethod === 'print' ? 'print（PrintWindow，窗口被遮挡也抓得到）'
+          : v.captureMethod === 'screen' ? 'screen（CopyFromScreen，**窗口被遮挡/最小化时画面不可信**）'
+            : v.captureMethod))
+      }
+      if (v.pid) bits.push('pid=' + v.pid + (v.window ? ' 窗口=' + v.window : ''))
+      const head = '抓帧：' + bits.join('，')
+      if (!v.path) return head + '\n⚠ 本次**没有帧文件路径**（没抓到帧）—— 别把它读成"抓到了一张空图"'
+      return head + '\n帧文件：' + v.path + (v.w && v.h ? ' ' + v.w + 'x' + v.h : '')
+    }
+    case 'expectwindow':
+    case 'expecttext': {
+      // driver.mjs:1586 `{ok,action,found,waitedMs,detail?,count?,lines?}`。
+      // README 把这两个说成"判定登录结果的唯一可靠信号"——而它们此前渲染成「完成」。
+      // ⚠ **不猜方向**：结果里没有 `gone` 字段，成功路径无法区分"出现了"与"消失了"，
+      //    所以只说"条件成立"；方向（gone=…/textRe=…）在失败时由 error 带出。
+      const what = v.action === 'expectwindow' ? '窗口条件' : '文本条件'
+      const body = []
+      if (v.detail) body.push('  ' + v.detail)
+      if (Array.isArray(v.lines) && v.lines.length) body.push(...v.lines.map((l) => '  ' + l))
+      if (typeof v.count === 'number') body.push('  命中 ' + v.count + ' 条')
+      return (v.found === true ? '✓ ' + what + '成立' : '✗ ' + what + '未成立') +
+        '（等待 ' + (v.waitedMs || 0) + 'ms）' + (body.length ? '\n' + body.join('\n') : '')
+    }
+    case 'waitany': {
+      // driver.mjs:1593 `{ok,action,hitIndex,hitKind,hitLabel,waitedMs,detail?}`。
+      // waitany 的卖点就是"一次押注多支、并告诉你哪一支中了"（工具描述原话）——
+      // 此前渲染成「完成」⇒ **"命中哪一支"这个唯一有价值的信息被吞掉**，agent 只能再猜一次。
+      const hit = Number(v.hitIndex) >= 0
+      const bits = []
+      if (v.hitKind) bits.push('kind=' + v.hitKind)
+      if (v.hitLabel) bits.push('label=' + v.hitLabel)
+      return (hit ? '竞速命中第 ' + v.hitIndex + ' 支' : '竞速结束：**没有任何一支成立**') +
+        '（等待 ' + (v.waitedMs || 0) + 'ms）' + (bits.length ? '：' + bits.join(' ') : '') +
+        (v.detail ? '\n  ' + v.detail : '')
+    }
     case 'waitfor': return (v.found ? '条件已满足' : '条件已满足（目标已消失）') + '（等待 ' + (v.waitedMs || 0) + 'ms）' + (v.detail ? '：' + v.detail : '')
     case 'shot': return '截图：' + v.path + ' ' + v.w + 'x' + v.h + (v.workspacePath ? '（副本 ' + v.workspacePath + '，可用 describe_image 复核）' : '') + (v.description ? '\n界面描述：' + v.description : '')
     default: return v.output || '完成'

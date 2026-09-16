@@ -45,6 +45,11 @@ const tools = () => [
       'Triggers: 记住这个项目 / 索引代码库 / index the repo.',
     parameters: {
       path: { type: 'string', required: true, description: '要索引的目录绝对路径' },
+      // ⚠ 2026-09-15：加这个参数是因为**每次调用必须有确定的上界**。
+      //   没有它的时候，一个几百个分块的目录会让这次调用跑几分钟到几十分钟 —— 调用方在上限内等不到返回、
+      //   被打断、又拿不到"做到哪了"⇒ 只能重来 ⇒ **每次调用都像卡死**（用户原话）。
+      //   现在：到预算就停，返回里写清"还剩多少、再调一次接着做"（已完成的文件按 mtime 跳过，不会重做）。
+      budgetMs: { type: 'number', description: '本次索引的时间预算（毫秒，默认 60000）。到点就停并把"还剩多少"如实返回；再调一次即可接着做（增量跳过已完成的文件）。' },
     },
     output: {
       schema: {
@@ -57,14 +62,32 @@ const tools = () => [
       render: (_args, value) => [{
         type: 'text',
         // BV-07：远端 embedding 必须在默认视图里看得见 —— 否则 agent 会照着"索引完成"向用户做错误隐私承诺
-        text: `索引完成：${value.files} 个文件 / ${value.chunks} 个分块（新增 ${value.indexed ?? '-'}，跳过 ${value.skipped ?? '-'}，清理 ${value.deleted ?? '-'}）` +
+        // ⚠ 2026-09-15：`索引完成` 这句以前**无条件**出现。被预算/超时打断时它照样说"完成"，
+        //   于是调用方以为做完了、拿不到"还剩多少"，只好重来 —— **措辞必须跟着实际状态走**。
+        text: (value.stoppedBy === 'budget'
+          ? `索引**未完成**（到时间预算 ${value.budgetMs ?? '?'}ms 停下）：本次处理 ${value.processedFiles ?? '?'}/${value.files} 个文件，新增 ${value.indexed ?? '-'} 个文件 / ${value.chunks ?? 0} 个分块，跳过 ${value.skipped ?? '-'}，**还剩 ${value.remainingFiles ?? '?'} 个文件**。\n下一步：**再调一次 memory_index(同一个 path)** 就接着做（已完成的按 mtime 跳过，不会重做）；想一次多做些就传更大的 budgetMs。`
+          : `索引完成：${value.files} 个文件 / ${value.chunks} 个分块（新增 ${value.indexed ?? '-'}，跳过 ${value.skipped ?? '-'}，清理 ${value.deleted ?? '-'}）`) +
+          (value.stoppedIn === 'load'
+            ? `\n⚠ 这次的预算**花在装载索引上了**（loadMs=${value.loadMs}ms）：一个字都没处理。索引文件越大装载越慢 —— 这种情况**再调一次也一样**，要么显著调大 budgetMs，要么把索引目录拆小。`
+            : '') +
+          (value.deferredFiles ? `\n（本次有 ${value.deferredFiles} 个文件做到一半被预算打断：**已回滚**，下次干净重做 —— 不会留"半索引"让内容从检索里消失。）` : '') +
+          (value.failedFiles && value.failedFiles.length
+            ? `\n⚠ **${value.failedFiles.length} 个文件嵌入失败**（已回滚、未计入索引）：` +
+              value.failedFiles.slice(0, 3).map((f) => `${f.file} → ${String(f.error).slice(0, 120)}`).join('；') +
+              (value.failedFiles.length > 3 ? ' 等' : '')
+            : '') +
+          (value.sizeSkippedFiles && value.sizeSkippedFiles.length
+            ? `\n⚠ 跳过 ${value.sizeSkippedFiles.length} 个**超大文件**（未索引，不是"没有内容"）：` +
+              value.sizeSkippedFiles.slice(0, 3).map((f) => `${f.file}（${Math.round(f.bytes / 1024)}KB）`).join('、') +
+              (value.sizeSkippedFiles.length > 3 ? ' 等' : '') + ' —— 需要的话可传更大的 maxFileBytes'
+            : '') +
           (String(value.embedEndpoint || '').startsWith('remote')
             ? `\n⚠ **embedding 走的是远程 API**（${value.embedEndpoint}）：本次索引的文件内容已经离开本机，**不要向用户说"数据不外传"**。要改成纯本地请取消 MiniMax API key（会自动降级为本地 bigram 检索）。`
             : `\n（embedding：${value.embedEndpoint || 'local'} —— 内容未离开本机）`),
       }],
     },
     async execute(args) {
-      const r = await mem().indexWorkspace(args.path)
+      const r = await mem().indexWorkspace(args.path, { budgetMs: args.budgetMs })
       // BV-07：把"这次索引有没有把内容发出去"直接放进**这次调用的返回值**里 ——
       // 让 agent 不必先想到去查 memory_status 才知道文件分块是否离开了本机。
       const st = mem().status()

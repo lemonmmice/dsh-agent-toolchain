@@ -58,9 +58,29 @@ mkdirSync(join(root, 'symbol-cache'), { recursive: true })   // 目录 ⇒ 绝�
 
 // ---- 5. 只在自己的目录里动 + 读不到就说清楚 ----
 {
-  const outside = cleanEvidence({ dir: join(root, '..') })   // 父目录（存在，但不该被当作证据目录处理）
-  check('★ 父目录下没有 .dmp/.etl 时给"没有符合条件的文件"（不会去动别处的东西）',
+  // ⚠ 这里原来写的是 `cleanEvidence({ dir: join(root, '..') })` —— `root` 是 `mkdtempSync(tmpdir())` 建的，
+  //   于是"父目录"= **整个系统 %TEMP%**，而断言要求它"没有 .dmp/.etl"。
+  //   那等于断言**机器全局状态干净**：任何别的进程（WPR 探针的 etl、另一次采集、浏览器崩溃转储）
+  //   往 %TEMP% 丢一个 .dmp/.etl，这条就**假红**（Claude r61 实测撞到：残留的 `%TEMP%\r61-raw.etl`）。
+  //   测试断言机器全局状态 = 测试自身有缺陷。改成**自控容器**：真正要钉的性质是"清 A 不碰 B"。
+  const container = mkdtempSync(join(tmpdir(), 'dsh-perf-clean-container-'))
+  const evA = join(container, 'ev-a')
+  const evB = join(container, 'ev-b')
+  const empty = join(container, 'empty-evidence')
+  for (const d of [evA, evB, empty]) mkdirSync(d, { recursive: true })
+  writeFileSync(join(evA, 'a.dmp'), 'x'.repeat(64))
+  writeFileSync(join(evB, 'b.dmp'), 'x'.repeat(64))
+
+  const cleanedA = cleanEvidence({ dir: evA, confirm: true })
+  check('★★ 清 A **不碰兄弟目录 B**（"只在自己的目录里动"这条性质的正身）',
+    cleanedA.deleted.length === 1 && !existsSync(join(evA, 'a.dmp')) && existsSync(join(evB, 'b.dmp')),
+    JSON.stringify({ deleted: cleanedA.deleted.map((d) => d.path), bStillThere: existsSync(join(evB, 'b.dmp')) }))
+
+  const outside = cleanEvidence({ dir: empty })   // 自控的空目录（**不是** %TEMP%）
+  check('★ 空目录里给"没有符合条件的文件"（不会去动别处的东西）',
     outside.ok === true && outside.candidates.length === 0, JSON.stringify(outside.candidates.map((c) => c.path)))
+
+  rmSync(container, { recursive: true, force: true })
   const missing = cleanEvidence({ dir: join(root, 'does-not-exist') })
   check('★ 目录不存在 ⇒ ok:false + 原因（不静默"什么都没做"）',
     missing.ok === false && /不存在/.test(missing.error), JSON.stringify(missing.error))
