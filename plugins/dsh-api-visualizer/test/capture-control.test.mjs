@@ -95,7 +95,7 @@ function fakeEngine({ logExists = true, callerLogExists = true, running = false,
     /未读到/.test(w2) && !/现在 \d+ MB/.test(w2), String(w2))
   check('★ R1-02：连路径都没有 ⇒ 不报（没有依据就不说）', logGrowthWarning({ logExists: true }) === null, '')
   // 假警报与假绿灯一样有害：不在 C 盘就不许说"在 C 盘"
-  const w3 = logGrowthWarning({ logExists: true, logPath: 'D:\\dsh-agent-toolchain\\uiprobe-net-trace.log', logSize: 1024 })
+  const w3 = logGrowthWarning({ logExists: true, logPath: 'D:\\evidence\\uiprobe-net-trace.log', logSize: 1024 })
   check('★ R1-02：不在 C 盘时**不许**说"在 C 盘"', /不在 C 盘/.test(w3), String(w3))
 }
 
