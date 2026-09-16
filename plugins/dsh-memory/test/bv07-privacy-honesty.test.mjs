@@ -29,6 +29,8 @@ function check(name, cond, extra = '') {
 
 const here = dirname(fileURLToPath(import.meta.url))
 const src = readFileSync(join(here, '..', 'index.js'), 'utf8')
+// W1：memory_index 的**描述**已迁进单一真源（lib/tool-registry.mjs）；隐私不变量在那边查。
+const { dshDescription } = await import('../../../lib/tool-registry.mjs')
 
 // ------------------------------------------------- 1. 数据层
 {
@@ -48,7 +50,9 @@ const src = readFileSync(join(here, '..', 'index.js'), 'utf8')
   check('公告里不再出现无条件"不外传"', !/不外传/.test(guidance) || /不要向用户承诺/.test(guidance), guidance.slice(0, 300))
   check('公告点名了远程 api.minimax.chat 与"内容离开本机"', /api\.minimax\.chat/.test(guidance) && /离开本机|出本机/.test(guidance), guidance.slice(0, 400))
   check('公告要求先查 memory_status 再回答隐私问题', /先调 memory_status|memory_status 看 embedEndpoint/.test(guidance), guidance.slice(0, 400))
-  check('memory_index 的工具描述也写了隐私（模型读的是这条）', /隐私：/.test(src) && /可能出本机/.test(src), 'index.js 的 memory_index 描述')
+  // W1：描述搬进注册表后，这条隐私不变量对**注册表里的 memory_index 描述**查（模型读的就是这条）。
+  const memIndexDesc = dshDescription('memory_index')
+  check('memory_index 的工具描述也写了隐私（模型读的是这条）', /隐私：/.test(memIndexDesc) && /可能出本机/.test(memIndexDesc), '注册表 memory_index.descZh')
   check('memory_index 的返回值带 embedEndpoint/privacyNote', /embedEndpoint: st\.embedEndpoint/.test(src) && /privacyNote: st\.note/.test(src))
   check('memory_status 渲染读 embedEndpoint 并分远端/本地两路', /startsWith\('remote'\)/.test(src) && /不要向用户承诺/.test(src))
 }

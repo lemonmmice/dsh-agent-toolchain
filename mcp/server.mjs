@@ -1088,23 +1088,15 @@ server.tool(
 
 server.tool(
   'memory_index',
-  'Index a local directory into the long-term memory vector store (incremental: skips unchanged files by mtime; skips bin/obj/node_modules). ' +
-    'BOUNDED: each call stops at a time budget (budgetMs, default 60000) and reports how many files remain — call it again with the same path to continue (finished files are skipped by mtime, so nothing is redone). ' +
-    'A file is indexed all-or-nothing: if the budget runs out mid-file the partial chunks are rolled back, so a half-indexed file can never silently disappear from search. ' +
-    'PRIVACY: when a MiniMax API key is configured, file chunks are embedded via the REMOTE api.minimax.chat endpoint — indexed content leaves this machine. ' +
-    'Fail-closed: files containing tokens/secrets are skipped before embedding and counted as sensitiveSkipped. Multiple roots coexist; indexing one directory never deletes another directory\'s chunks.',
-  {
-    path: z.string().describe('Absolute directory to index'),
-    budgetMs: z.number().optional().describe('Time budget for this call in ms (default 60000). When it runs out the call stops and reports the remaining files; call again to continue.'),
-  },
+  mcpDescription('memory_index'),
+  mcpShape('memory_index'),
   async (args) => jtext(await mem().indexWorkspace(args.path, { budgetMs: args.budgetMs }))
 )
 
 server.tool(
   'memory_search',
-  'Semantic search over indexed documents/code. Returns relevant snippets with source files. ' +
-    'PRIVACY: queries are embedded via the configured backend — remote (api.minimax.chat) when a MiniMax API key is set, local bigram otherwise.',
-  { query: z.string(), k: z.number().default(5).describe('Results count, max 10') },
+  mcpDescription('memory_search'),
+  mcpShape('memory_search'),
   async (args) => {
     const k = Math.min(Math.max(Math.round(args.k || 5), 1), 10)
     // 用带**索引新鲜度**的版本：命中可能来自索引快照，而源文件可能已变
@@ -1121,9 +1113,8 @@ server.tool(
 
 server.tool(
   'memory_save',
-  'Save a cross-session key-value memory (per scope, e.g. a project name). Same key+scope overwrites. ' +
-    'Fail-closed: values containing tokens/API keys/secrets are rejected.',
-  { key: z.string(), value: z.string(), scope: z.string().default('global') },
+  mcpDescription('memory_save'),
+  mcpShape('memory_save'),
   async (args) => {
     try {
       return jtext(mem().remember(args.key, args.value, args.scope))
@@ -1135,8 +1126,8 @@ server.tool(
 
 server.tool(
   'memory_recall',
-  'Read a saved key-value memory.',
-  { key: z.string(), scope: z.string().default('global') },
+  mcpDescription('memory_recall'),
+  mcpShape('memory_recall'),
   async (args) => {
     const v = mem().recall(args.key, args.scope)
     // Flat shape: value is the stored string, not a nested row object.
@@ -1146,19 +1137,15 @@ server.tool(
 
 server.tool(
   'memory_status',
-  'Memory store status: chunk count, KV entries, data dir, embedding backend.',
-  {},
+  mcpDescription('memory_status'),
+  mcpShape('memory_status'),
   async () => jtext(mem().status())
 )
 
 server.tool(
   'memory_forget',
-  'Delete one KV memory entry. Use when a stored convention no longer applies, so a later session ' +
-    'does not act on a stale decision.',
-  {
-    key: z.string().describe('Memory key to delete'),
-    scope: z.string().optional().describe('Scope (default global)'),
-  },
+  mcpDescription('memory_forget'),
+  mcpShape('memory_forget'),
   async (args) => {
     mem().forget(args.key, args.scope || 'global')
     return jtext({ forgotten: true, key: args.key })

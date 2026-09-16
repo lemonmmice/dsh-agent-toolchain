@@ -12,8 +12,14 @@
 import { z } from 'zod'
 import { REGISTRY } from '../lib/tool-registry.mjs'
 
+function baseOf(p) {
+  if (p.enum) return z.enum(p.enum)
+  if (p.type === 'boolean') return z.boolean()
+  if (p.type === 'number' || p.type === 'integer') return z.number()
+  return z.string()
+}
 function zodOfParam(p) {
-  let t = p.enum ? z.enum(p.enum) : (p.type === 'boolean' ? z.boolean() : z.string())
+  let t = baseOf(p)
   if (p.mcpDefault !== undefined) t = t.default(p.mcpDefault)
   else if (!p.required) t = t.optional()
   if (p.en) t = t.describe(p.en)
