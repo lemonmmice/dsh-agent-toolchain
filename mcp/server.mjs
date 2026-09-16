@@ -275,6 +275,7 @@ server.tool(
       'WARNING: like ui_launch(force=true) this DESTROYS the only crime scene — if the client is hung or stuttering, capture evidence first ' +
       '(perf_dump / hang_run), otherwise the dump, thread stacks and evidence bundle are gone.'),
     runId: z.string().optional().describe('Optional run id: the build log and the per-run record (run-<runId>.json) are named with it — the evidence-pack spine'),
+    background: z.boolean().optional().describe('Run the build in the BACKGROUND (non-blocking). true returns a jobId (= runId) immediately and runs build() in a detached child; poll with build_status (state=running→done/crashed). Default false (synchronous, unchanged). Use for a full Rebuild (5-10 min) so the agent can keep observing the client / do other work while it runs.'),
   },
   async (args) => {
     // Per-call argument overrides (clientRoot/repoRoot/engine) still win; the shared instance
@@ -288,6 +289,17 @@ server.tool(
         logsDir: envOr('DSH_BUILD_LOGS_DIR'),
       })
       : bld()
+    // W4: background build returns a jobId immediately; poll with build_status. Build logic unchanged.
+    if (args.background === true) {
+      return jtext(b.startBackground({
+        target: args.target,
+        project: args.project,
+        configuration: args.configuration,
+        platform: args.platform,
+        killClient: args.killClient,
+        runId: args.runId,
+      }))
+    }
     const r = await b.build({
       target: args.target,
       project: args.project,
