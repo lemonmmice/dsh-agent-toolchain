@@ -14,6 +14,8 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
+// W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name；capture 家族按 MCP 名索引）。
+import { dshParameters, dshDescription } from '../../../lib/tool-registry.mjs'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
 import { homedir } from 'node:os'
@@ -1706,12 +1708,8 @@ function makeRoutes(capture, proxy) {
 function apiCaptureTool() {
   return defineTool({
     name: 'api_capture_append',
-    description:
-      'Append captured API-call records to the dsh-api-visualizer store (local records.jsonl); they appear live in the GUI 「接口捕获」 panel. ' +
-      'Use after capturing interfaces from the client process (e.g. ETW trace, proxy log, client log parsing). ' +
-      'Triggers: 抓接口 / 接口可视化 / 上报接口记录 / record captured APIs.',
-    parameters: {
-      records: {
+    description: dshDescription('capture_append'),
+    parameters: { ...dshParameters('capture_append'), records: {
         type: 'array',
         required: true,
         description: 'Captured API records. Each record: method + url are required; status/durationMs/reqBody/resBody/note optional. Keep reqBody/resBody ≤ 2MB.',
@@ -1754,9 +1752,7 @@ function apiCaptureTool() {
             note: { type: 'string', description: 'Human note, e.g. what this interface does.' },
           },
         },
-      },
-      runId: { type: 'string', description: '可选：给这一批**所有**缺 runId 的记录补上同一个 runId（证据链绑定）。已有 runId 的记录不受影响。' },
-    },
+      } },
     output: {
       schema: {
         type: 'object',
@@ -1807,36 +1803,8 @@ function paramsFromObj(obj) {
 function apiQueryTool(capture) {
   return defineTool({
     name: 'api_capture_query',
-    description:
-      'Query records stored by the dsh-api-visualizer capture panel (local records store). ' +
-      'Returns method/url/status/duration plus caller attribution (which ViewModel/API fired each request). ' +
-      'Use to analyze captured client traffic: slow calls, errors, a specific host, or requests fired by one ViewModel. ' +
-      '**注意新鲜度**：返回里带 freshness（最新记录年龄 + 捕获引擎是否在跑）——引擎未启动时你看到的是**历史数据**，' +
-      '不是当前状态。**要抓「现在正在发生」的流量：先调 api_capture_start**（它会在日志不存在时当场告诉你"读不到任何数据"，而不是让你以为在抓）。' +
-      '**空结果有两种成因**：① 真的没有；② 记录**缺**被过滤的那个字段（durationMs/bytesRes/status 都是可选的）。后者会被计入返回里的 `excludedNoField`（去掉过滤条件再查一次，两次条数之差就是它们的数量）—— 别把空结果直接读成"没有慢接口/没有重复请求"。' +
-      'Triggers: 查询接口记录 / 分析捕获 / 哪些接口慢 / 接口报错分析 / query captured APIs.',
-    parameters: {
-      limit: { type: 'integer', description: 'Max records to return (default 50, max 500).' },
-      offset: { type: 'integer', description: 'Skip the newest N matching records (default 0).' },
-      q: { type: 'string', description: 'Substring match against url/note.' },
-      method: { type: 'string', description: 'HTTP method filter (GET/POST/...).' },
-      source: { type: 'string', description: 'Capture source: realtime / proxy / agent / etw.' },
-      status: { type: 'string', description: 'Status filter: exact code or 2xx/3xx/4xx/5xx.' },
-      host: { type: 'string', description: 'Hostname filter (comma-separated list).' },
-      minDurationMs: { type: 'number', description: 'Only records at least this slow (ms).' },
-      minBytes: { type: 'number', description: 'Min response bytes.' },
-      maxBytes: { type: 'number', description: 'Max response bytes.' },
-      fromTs: { type: 'number', description: 'Earliest record timestamp (epoch ms).' },
-      toTs: { type: 'number', description: 'Latest record timestamp (epoch ms).' },
-      sessionId: { type: 'string', description: 'Session key filter.' },
-      traceId: { type: 'string', description: 'Distributed trace id filter.' },
-      runId: { type: 'string', description: 'Evidence-pack run id filter（与 api_capture_append 的 runId 配套：查"这一次 run 的流量"）。注意：实时/代理捕获的真实流量默认没有 runId，只有显式绑过或被 append 注入过 runId 的记录才有。' },
-      errors: { type: 'boolean', description: 'Only HTTP 4xx/5xx records.' },
-      noNoise: { type: 'boolean', description: 'Hide static-resource/heartbeat noise. ⚠ 找"重复请求/定时器风暴"时**别开**它 —— 心跳/轮询正是你要看的那类请求，开了等于把证据滤掉。' },
-      bodyQ: { type: 'string', description: 'Substring match inside request/response bodies/headers.' },
-      caller: { type: 'string', description: 'Match caller attribution (viewModel / apiMethod / stack frame substring).' },
-      includeBody: { type: 'boolean', description: 'Include request/response bodies (off by default to keep output small). ⚠ **body 与请求头里常常带真实 token / Cookie / 身份信息** —— 打开它意味着这些明文进入你的上下文（以及后续的报告/截图）；只在确实需要看报文时打开。' },
-    },
+    description: dshDescription('capture_query'),
+    parameters: dshParameters('capture_query'),
     output: {
       schema: {
         type: 'object',
@@ -2324,17 +2292,8 @@ function captureControlTools(capture) {
   // 目录又没给 host/port，agent 连 URL 都拼不出来。工具补上之后，描述里那条路由指引也就不再是死路。
   tools.push(defineTool({
     name: 'api_capture_start',
-    description:
-      '启动**实时捕获**（等于面板上那个「开始实时捕获」按钮）：tail 客户端的 System.Net 跟踪日志并实时入库。' +
-      '**要在"现在正在发生的流量"上做分析，必须先起它**（否则 api_capture_query 看到的只是历史数据）。' +
-      '⚠ 两个前提会**当场**告诉你而不是让你以为在抓：① 跟踪日志不存在（多半是客户端没重启过、system.diagnostics 没生效）⇒ 返回里带 `warnings` 明说"读不到任何数据"；' +
-      '② 调用方归因旁路日志不存在 ⇒ 明说"归因不可用"，看到 caller 为空时不要读成"没有调用方"。' +
-      '③ **跟踪日志不会在运行中自动轮转，且默认落在 %TEMP%（C 盘）**（R1-02/F-056）⇒ 每次 start 都会回一条 `warnings` 说明当前大小与该怎么做（要清走 POST /capture/rotate）。' +
-      'Triggers: 开始实时捕获 / 起捕获 / 抓当前流量 / start capture.',
-    parameters: {
-      logPath: { type: 'string', description: '可选：改用这个跟踪日志路径（**捕获运行中改路径会被拒绝**并给出下一步）。默认 %TEMP%\\uiprobe-net-trace.log（**在 C 盘**，且运行中不会自动轮转）。' },
-      replay: { type: 'boolean', description: 'true = 从头重放整个日志（用于把历史日志灌进库）；默认 false = 只 tail 新增内容。' },
-    },
+    description: dshDescription('capture_start'),
+    parameters: dshParameters('capture_start'),
     output: {
       schema: {
         type: 'object',
@@ -2357,10 +2316,8 @@ function captureControlTools(capture) {
 
   tools.push(defineTool({
     name: 'api_capture_stop',
-    description:
-      '停止实时捕获（等于面板上的「停止」）。停止后 `api_capture_query` 看到的又变成历史数据 —— 这一点会在返回的 summary 里写明。' +
-      'Triggers: 停止捕获 / 停实时抓包 / stop capture.',
-    parameters: {},
+    description: dshDescription('capture_stop'),
+    parameters: dshParameters('capture_stop'),
     output: {
       schema: { type: 'object', additionalProperties: true, properties: { ok: { type: 'boolean', required: true }, running: { type: 'boolean' }, summary: { type: 'string' } } },
       render: (_a, v) => [{ type: 'text', text: v && v.summary ? v.summary : captureStatusSummary(v) }],
@@ -2373,17 +2330,8 @@ function captureControlTools(capture) {
 
   tools.push(defineTool({
     name: 'api_capture_status',
-    description:
-      '查实时捕获引擎的**当前状态**（只读）：在不在跑、跟踪日志在不在/多大、本次已解析多少条、' +
-      '以及**调用方归因旁路日志在不在**（它不在时 caller 必然为空，但那**不等于**"没有调用方"）。' +
-      '拿不准"现在到底能不能抓到东西"就先查它。' +
-      '**重复写入自检**：返回里的 `integrity` 比较"引擎自己数到的条数"与"库里同一时间段的条数" —— ' +
-      '比值 ≥1.5 说明**面板里的调用次数被放大了**（"重复请求/定时器风暴"这类结论在修好前不能按现有倍数下）。' +
-      '宿主是旧版本（拿不到同区间基准）时可传 `sampleSeconds`（如 90）：本工具在**同一窗口**里采两次再比。' +
-      'Triggers: 捕获状态 / 抓包在跑吗 / capture status.',
-    parameters: {
-      sampleSeconds: { type: 'number', description: '可选：>0 时在同一窗口里采两次（间隔这么多秒）再算比值 —— 用于旧宿主下判定重复写入；会阻塞这么久（5~600 秒）。' },
-    },
+    description: dshDescription('capture_status'),
+    parameters: dshParameters('capture_status'),
     output: {
       schema: { type: 'object', additionalProperties: true, properties: { ok: { type: 'boolean', required: true }, running: { type: 'boolean' }, summary: { type: 'string' } } },
       render: (_a, v) => [{ type: 'text', text: v && v.summary ? v.summary : captureStatusSummary(v) }],
