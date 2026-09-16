@@ -961,34 +961,29 @@ server.tool(
 
 server.tool(
   'hang_status',
-  'Hang-inspector status (read-only): whether the hang monitor is running, its pid/exit code, and the last 150 log lines. ' +
-    'Evidence packs live in DSH_HANG_EVIDENCE_DIR (default ~/.dsh-agent-toolchain/hang-evidence); list them with hang_packs.',
-  {},
+  mcpDescription('hang_status'),
+  mcpShape('hang_status'),
   async () => jtext(hng().runStatus())
 )
 
 server.tool(
   'hang_run',
-  'Start the hang MONITOR — this does NOT capture a freeze that already happened: if the client is frozen RIGHT NOW call perf_dump first (restarting destroys the scene); this tool is for intermittent freezes you still have to reproduce. It watches the target client main-window responsiveness WITHOUT clicking anything — ' +
-    'the user reproduces the freeze and the monitor collects an evidence pack on detection (frozen screenshot, timeline, process info, ' +
-    'net-trace tail, probe/procdump logs, full dump). Returns immediately; poll hang_status / hang_packs. ' +
-    'Set maxSeconds>0 to auto-stop (0 = run until hang_stop or the script exits).',
-  { maxSeconds: z.number().optional().describe('Auto-stop after N seconds (0 = unlimited, max 86400)') },
+  mcpDescription('hang_run'),
+  mcpShape('hang_run'),
   async (args) => jtext(hng().startRun({ maxSeconds: args.maxSeconds ?? 0 }))
 )
 
 server.tool(
   'hang_stop',
-  'Stop the hang monitor (kills its process tree). Evidence packs already collected are kept.',
-  {},
+  mcpDescription('hang_stop'),
+  mcpShape('hang_stop'),
   async () => jtext(hng().stopRun())
 )
 
 server.tool(
   'hang_packs',
-  'List collected hang evidence packs, newest first: id, timestamp, file list, dump size, screenshot presence, ' +
-    'analysis status, and the first line of summary.txt / process-info.txt. Use hang_pack for the full text evidence.',
-  {},
+  mcpDescription('hang_packs'),
+  mcpShape('hang_packs'),
   async () => {
     const items = hng().listPacks()
     return jtext({ total: items.length, evidenceDir: hng().packsDir(), items })
@@ -997,10 +992,8 @@ server.tool(
 
 server.tool(
   'hang_pack',
-  'Read one evidence pack in full (read-only): every text evidence file (summary / process-info / net-trace tail / probe + procdump logs, ' +
-    'each capped at 512KB), the file list, and the cached analysis.json. The frozen screenshot is a PNG on disk inside the pack dir ' +
-    '(frozen-screen.png) — pass that path to an image-reading tool to look at it.',
-  { id: z.string().describe('Pack id from hang_packs') },
+  mcpDescription('hang_pack'),
+  mcpShape('hang_pack'),
   async (args) => {
     const detail = hng().packDetail(args.id)
     if (detail === null) return text('pack not found: ' + args.id)
@@ -1010,18 +1003,8 @@ server.tool(
 
 server.tool(
   'hang_analyze',
-  'Run the ClrMD (DumpStack) analysis on a pack frozen.dmp: managed thread stacks, the suspect/UI thread, a diagnosis line, ' +
-    'and the suspect method mapped to project source (DSH_HANG_SRC_ROOT) with line numbers. ' +
-    'wait=true blocks until the analysis finishes (up to waitMs) and returns the report — the usual choice for an agent; ' +
-    'wait=false returns immediately and the panel/poller reads the cached analysis. ' +
-    'A finished analysis is REUSED (not recomputed) unless refresh=true — so passing refresh=true only when you just ' +
-    'changed DSH_HANG_SRC_ROOT or the pack changed; re-running with a worse config used to silently overwrite a good result.',
-  {
-    id: z.string().describe('Pack id from hang_packs (must contain frozen.dmp)'),
-    wait: z.boolean().optional().describe('Wait for the analysis to finish (default true)'),
-    waitMs: z.number().optional().describe('Max wait in ms when wait=true (default 300000)'),
-    refresh: z.boolean().optional().describe('Re-run even if a finished analysis is cached (use after changing DSH_HANG_SRC_ROOT)'),
-  },
+  mcpDescription('hang_analyze'),
+  mcpShape('hang_analyze'),
   async (args) => {
     const r = await hng().analyze(args.id, { wait: args.wait !== false, waitMs: args.waitMs ?? 300000, refresh: args.refresh === true })
     if (r.ok === false && r.status === 'error') {
@@ -1033,13 +1016,8 @@ server.tool(
 
 server.tool(
   'hang_delete',
-  'Delete hang evidence packs (LOCAL, irreversible — dumps are hundreds of MB). confirm=true is required. ' +
-    'Give id to delete one pack, or all=true to clear every pack.',
-  {
-    id: z.string().optional().describe('Pack id to delete'),
-    all: z.boolean().optional().describe('Delete every pack in the evidence dir'),
-    confirm: z.boolean().describe('Must be true — deletion is irreversible'),
-  },
+  mcpDescription('hang_delete'),
+  mcpShape('hang_delete'),
   async (args) => {
     if (args.confirm !== true) {
       return text('Blocked: hang_delete is irreversible. Re-call with confirm=true after confirming with the user.')
