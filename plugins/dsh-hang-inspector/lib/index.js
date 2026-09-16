@@ -118,6 +118,7 @@ const tools = (hang) => [
     name: 'hang_status',
     description: dshDescription('hang_status'),
     parameters: dshParameters('hang_status'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderStatus(v) }] },
     timeoutMs: 30 * 1000,
     async execute() {
@@ -149,6 +150,7 @@ const tools = (hang) => [
     name: 'hang_packs',
     description: dshDescription('hang_packs'),
     parameters: dshParameters('hang_packs'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderPacks(v, { now: Date.now() }) }] },
     timeoutMs: 30 * 1000,
     async execute() {
@@ -160,6 +162,7 @@ const tools = (hang) => [
     name: 'hang_pack',
     description: dshDescription('hang_pack'),
     parameters: dshParameters('hang_pack'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderPack(v) }] },
     timeoutMs: 60 * 1000,
     async execute(args) {

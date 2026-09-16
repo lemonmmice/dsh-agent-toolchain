@@ -88,6 +88,7 @@ const tools = () => [
     name: 'memory_search',
     description: dshDescription('memory_search'),
     parameters: dshParameters('memory_search'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: {
       schema: {
         type: 'object', additionalProperties: true,
@@ -155,6 +156,7 @@ const tools = () => [
     name: 'memory_recall',
     description: dshDescription('memory_recall'),
     parameters: dshParameters('memory_recall'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: { type: 'object', additionalProperties: true, properties: { found: { type: 'boolean' }, key: { type: 'string' }, value: { type: 'string' } } },
       render: (_args, value) => [{ type: 'text', text: value.found ? (`${value.key} = ${value.value}`) : (`没有找到记忆：${value.key}`) }] },
     async execute(args) {
@@ -177,6 +179,7 @@ const tools = () => [
     name: 'memory_status',
     description: dshDescription('memory_status'),
     parameters: dshParameters('memory_status'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: { type: 'object', additionalProperties: true, properties: { chunks: { type: 'integer' }, kvEntries: { type: 'integer' }, embed: { type: 'string' }, embedEndpoint: { type: 'string' }, note: { type: 'string' } } },
       // BV-07：`embedEndpoint`/`note` 一直在数据层（MCP 面的 jtext 能看见），但 DSH 面的渲染
       // 只印 `embed` 标签 —— 于是 agent 看到"（MiniMax embo-01）"，**无从判断内容有没有出本机**，

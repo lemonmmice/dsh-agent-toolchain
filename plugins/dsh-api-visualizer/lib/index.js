@@ -1805,6 +1805,7 @@ function apiQueryTool(capture) {
     name: 'api_capture_query',
     description: dshDescription('capture_query'),
     parameters: dshParameters('capture_query'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: {
       schema: {
         type: 'object',
@@ -2332,6 +2333,7 @@ function captureControlTools(capture) {
     name: 'api_capture_status',
     description: dshDescription('capture_status'),
     parameters: dshParameters('capture_status'),
+    isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: {
       schema: { type: 'object', additionalProperties: true, properties: { ok: { type: 'boolean', required: true }, running: { type: 'boolean' }, summary: { type: 'string' } } },
       render: (_a, v) => [{ type: 'text', text: v && v.summary ? v.summary : captureStatusSummary(v) }],
