@@ -9,6 +9,8 @@
  *  - Web 路由（仅回环）：证据浏览 / 截图直出，为后续 GUI 面板预留
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
+// W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name）。
+import { dshParameters, dshDescription } from '../../lib/tool-registry.mjs'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, join, extname } from 'node:path'
 import { homedir } from 'node:os'
@@ -154,11 +156,8 @@ const READ_ONLY_NOTE = '。注意：点击/输入是真实副作用操作（可�
 const tools = () => [
   defineTool({
     name: 'ui_status',
-    description: '只报**进程与窗口的存在性**（是否运行/PID/窗口标题/位置大小）——**它不反映界面里有什么、也不反映是否卡死**；要看界面内容/焦点请用 ui_state 或 ui_observe(action="state")。只读。未运行时用 ui_launch 拉起。Triggers: 客户端状态 / 客户端开着吗 / client status.',
-    parameters: {
-      // G1 黑盒 #1：ui_status 原**无参数**，多实例时无法消歧（而 ui_launch 会因多实例拒绝执行 ⇒ 口径不一致）。
-      procId: { type: 'number', description: '指定进程 PID（多实例消歧；默认自动找）' },
-    },
+    description: dshDescription('ui_status'),
+    parameters: dshParameters('ui_status'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.running ? ('客户端运行中 pid=' + v.pid + ' 窗口=' + v.title) : (v.unknown ? ('客户端状态未知：' + (v.error || '查询超时')) : '客户端未运行') }] },
     async execute(args) {
       // 传下去才算真的支持（参数存在但被忽略 = 最坏的一种）
@@ -167,14 +166,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_launch',
-    description: '启动目标桌面客户端（构建产物（DSH_UI_CLIENT_EXE 指定））并等待主窗口出现；已运行则直接返回现有进程。⚠ **客户端刚卡死时先别用 force**：`force=true` 会**杀掉进程、销毁唯一现场**（dump / 线程栈 / 证据包都没了）。正确顺序是先取证（`perf_dump` 抓快照，或 `hang_run` 挂监测等复现）→ 证据到手 → 再 `force=true` 重启。extraArgs 可传额外启动参数（如 --remote-debugging-port=9222 --remote-allow-origins=* 用于 CEF 内嵌页调试）。**force=true 是唯一的"重启"通道**：先结束正在运行的目标进程再启动，会如实回报杀了哪些 PID、等了多久；同名进程有多个且未配 DSH_UI_CLIENT_EXE 时**拒绝执行**（不误杀）。Triggers: 启动客户端 / 重启客户端 / launch client.',
-    parameters: {
-      extraArgs: { type: 'string', description: '额外启动参数（空格分隔），可为空' },
-      waitMs: { type: 'number', description: '等待主窗口超时毫秒，默认 60000' },
-      force: { type: 'boolean', description: 'true = 先结束正在运行的目标客户端再启动（卡死重启用）。破坏性操作：会真的杀掉客户端进程，先跟用户确认。' },
-      allowSensitive: { type: 'boolean', description: '启动后那张界面截图默认会做视觉描述；若焦点在密码/验证码控件上则**默认拒绝**描述（像素无法脱敏），需要时传 true' },
-
-    },
+    description: dshDescription('ui_launch'),
+    parameters: dshParameters('ui_launch'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: launchText(v) + (v.uiState && v.uiState.description ? '\n当前界面：' + v.uiState.description : '') }] },
     timeoutMs: 120000,
     async execute(args) {
@@ -259,10 +252,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_windows',
-    description: '列出目标客户端进程的所有顶层窗口（类型/标题/handle/位置/是否离屏），**以及主窗口内部的嵌套窗口元素**（登录窗/许可协议/模态对话框常常是这种形态，它们不出现在顶层清单里却会遮住下面的控件）。只读。动态界面（登录、切页、弹窗）第一步先看这个，再决定在哪操作。Triggers: 有哪些窗口 / 登录窗口 / 弹窗在哪 / list windows.',
-    parameters: {
-      procId: { type: 'number', description: '指定进程 PID（多实例消歧；默认自动找）' },
-    },
+    description: dshDescription('ui_windows'),
+    parameters: dshParameters('ui_windows'),
     output: {
       schema: OBJECT,
       render: (_a, v) => {
@@ -288,16 +279,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_state',
-    description: '界面快照（只读，一步看清「现在是什么状态」）：当前主窗口名 + 当前焦点元素 + 交互型控件清单（按钮/输入框/页签/勾选/列表项，带 #序号、aid、enabled、真实输入值）。' +
-      '动态界面每做一步之后先看它，比反复 read 省上下文（read 会连文本一起返回几百行）。match 可按控件名正则过滤，max 限制条数（默认 40）。结果恒带 skipped=N：本次枚举里读不到状态而被跳过的元素数，>0 时附 warn 明说「清单不完整」。Triggers: 现在什么界面 / 界面状态 / 焦点在哪 / ui state.',
-    parameters: {
-      match: { type: 'string', description: '按控件名正则过滤（如 登录|验证码）' },
-      max: { type: 'number', description: '最多返回几条，默认 40' },
-      // G1 黑盒 #1 指出：ui_drive/ui_observe 有 procId 而它没有 ⇒ 多实例时**无法消歧**。
-      // 而 ui_launch 又会在"同名多进程且未配 DSH_UI_CLIENT_EXE"时拒绝执行 —— 口径不一致。
-      procId: { type: 'number', description: '指定进程 PID（多实例消歧；默认自动找）' },
-      winHandle: { type: 'number', description: '按顶层窗口 handle 定位（ui_windows 返回的 handle 直接用）——跨窗口读状态时比 winTitle 稳' },
-    },
+    description: dshDescription('ui_state'),
+    parameters: dshParameters('ui_state'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderState(v) }] },
     timeoutMs: 60000,
     async execute(args) {
@@ -410,16 +393,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_tree',
-    description: '进程内视觉树 dump：注入只读探针进客户端进程，输出真实控件类型 + Name + AutomationId + DataContext 类型（比 UIA 信息全，深度定位绑定/模板问题）。只读，不弹窗。' +
-      '**注入不可用时自动降级为 UIA 层级树**（本机实测：Snoop 注入器不存在/DSH_SNOOP_DIR 未配置时就是这条路），' +
-      '此时返回 `source:\'uia\'` 且只有 类型/Name/aid/enabled/offscreen/位置尺寸/层级 —— **没有** DataContext 与 WPF 真实类型，' +
-      '别把它当成最全的那份树；要 DataContext 需配置 DSH_SNOOP_DIR 指向 Snoop 安装目录。' +
-      '两个隐性上限（maxDepth 切断、节点数上限）与正文截断**都会如实回报**（truncated/depthLimited/nodeCapHit）。Triggers: 视觉树 / 控件结构 / dump-tree.',
-    parameters: {
-      maxDepth: { type: 'number', description: '最大深度，默认 8，上限 20。被它切断时会返回 depthLimited=true（**不是完整的树**）' },
-      inAid: { type: 'string', description: '限定到某个容器（AutomationId），只 dump 它内部的子树。**大树的正文会撞 14000 字符上限** —— 先 ui_observe(read/state) 找到容器 aid，再带 inAid 深挖，是拿到完整子树的唯一办法（树会回报 narrowed/scope）。注意：指定范围时走 UIA 路径（注入探针不支持范围限定）。' },
-      inName: { type: 'string', description: '限定到某个容器（Name），同 inAid' },
-    },
+    description: dshDescription('ui_tree'),
+    parameters: dshParameters('ui_tree'),
     output: {
       schema: OBJECT,
       /**
@@ -511,21 +486,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_live',
-    description: 'agent 实时看见客户端界面：后台循环持续抓「窗口内容」帧（不抢前台、不恢复最小化），随时取最新一帧截图 + 控件状态摘要 + 帧变化感知。' +
-      'action：start（启动后台循环，intervalMs 默认 1500ms；幂等）/ stop / status（当前快照）/ frame（取最新帧信息，fresh=true 强制新抓一帧；未启动时退化为一次性捕获）/ wait（阻塞到帧变化，fromHash 为基线 hash，timeoutMs 默认 30000）。' +
-      '拿到 frame 后 read_image(frame.pathAbs) 即「看见」客户端当前画面（**pathAbs 才是绝对路径**；frame.path 只是文件名，直接喂给 read_image 会在当前工作目录里找、必然失败。截图只在 E 盘证据目录）。wait 返回 changed=true 时 hash 变了=画面变了（行情动画也会触发，多看一眼无害；要语义结论时对 pathAbs 按需做视觉描述——循环内绝不自动调视觉模型）。' +
-      '敏感帧：焦点在密码/验证码/token 控件时 frame.secretFocused=true，默认不返回任何路径（path 与 pathAbs 都为 null，像素无法脱敏），需显式 allowSensitive=true 才给。' +
-      '图形/脚本消费：/api/dsh-ui-drive/live/start|stop|status|frame|frame.png（回环）。Triggers: 实时看见 / 实时视图 / 看现在的界面 / 等界面变化 / live view.',
-    parameters: {
-      action: { type: 'string', required: true, enum: ['start', 'stop', 'status', 'frame', 'wait'], description: 'start | stop | status | frame | wait' },
-      intervalMs: { type: 'number', description: '截图间隔毫秒，默认 1500' },
-      stateIntervalMs: { type: 'number', description: '控件状态采集间隔毫秒，默认 3000' },
-      maxControls: { type: 'number', description: 'state 最多返回控件数，默认 40' },
-      fresh: { type: 'boolean', description: 'frame 时强制新抓一帧' },
-      fromHash: { type: 'string', description: 'wait：基线帧 hash（区间的起点）' },
-      timeoutMs: { type: 'number', description: 'wait：最大等待毫秒，默认 30000' },
-      allowSensitive: { type: 'boolean', description: '敏感帧（焦点=密码/验证码）也返回 path（默认拒出）' },
-    },
+    description: dshDescription('ui_live'),
+    parameters: dshParameters('ui_live'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderLive(v) }] },
     timeoutMs: 120000,
     async execute(args) {

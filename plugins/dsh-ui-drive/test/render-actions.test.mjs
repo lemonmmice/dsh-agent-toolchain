@@ -33,9 +33,16 @@ function check(name, cond, extra = '') {
 const HERE = dirname(fileURLToPath(import.meta.url))
 const INDEX = readFileSync(join(HERE, '..', 'index.js'), 'utf8')
 const DRIVER = readFileSync(join(HERE, '..', 'lib', 'driver.mjs'), 'utf8')
+// W1：已迁进注册表的工具，其 action enum 从注册表读；未迁移的仍扫 index.js 源码（内联 enum）。
+const { REGISTRY } = await import('../../../lib/tool-registry.mjs')
 
-/** 从 index.js 的工具块里读 action enum（不手抄）。 */
+/** 读工具的 action enum（不手抄）：优先注册表（已迁移），回落 index.js 源码正则（未迁移）。 */
 function actionEnum(tool) {
+  const entry = REGISTRY[tool]
+  if (entry) {
+    const p = (entry.params || []).find((x) => x.name === 'action' && Array.isArray(x.enum))
+    if (p) return p.enum.slice()
+  }
   const at = INDEX.indexOf("name: '" + tool + "'")
   if (at < 0) return null
   const seg = INDEX.slice(at, at + 4000)
