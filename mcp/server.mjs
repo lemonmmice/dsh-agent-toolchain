@@ -43,6 +43,7 @@ import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote } f
 import { makeVerificationReport } from '../lib/verify/report.mjs'
 import { attachInlineImage } from './inline-image.mjs'
 import { makeToolTrace, wrapToolArgs } from '../lib/tool-trace.mjs'
+import { makeOutputBudget, outputMaxTokens } from '../lib/output-budget.mjs'
 // W1：工具描述/参数结构收进单一真源（lib/tool-registry.mjs）；MCP 侧的 zod shape 由 mcp/registry-zod.mjs 生成。
 // 工具名仍以字面量出现在下面各 server.tool 调用的第一个实参（守卫要求名字是字面量、静态扫描须等于运行时）。
 import { mcpDescription } from '../lib/tool-registry.mjs'
@@ -63,8 +64,12 @@ const _toolTrace = makeToolTrace({
   enabled: /^(1|true|yes|on)$/i.test(process.env.DSH_TOOL_TRACE || ''),
   dir: process.env.DSH_TOOL_TRACE_DIR || join(homedir(), '.dsh-agent-toolchain', 'tool-trace'),
 })
+// W2（第二块）—— 统一输出预算信封（token-budget，见 lib/output-budget.mjs）：同一 chokepoint 上把 handler
+// 的返回结果过一遍 token 预算，超了就截并追加 originalTokenCount 说明块。默认关（DSH_OUTPUT_MAX_TOKENS 未设/<=0
+// → 恒等，零回归）。与追踪 compose：预算改结果、追踪观测——两者都关时净身份，注册的仍是原 handler。
+const _outputBudget = makeOutputBudget({ maxTokens: outputMaxTokens({}, process.env) })
 const _origTool = server.tool.bind(server)
-server.tool = (...args) => _origTool(...wrapToolArgs(args, _toolTrace.wrap))
+server.tool = (...args) => _origTool(...wrapToolArgs(args, (name, handler) => _toolTrace.wrap(name, _outputBudget.wrap(name, handler))))
 
 // ---------------------------------------------------------------- shared
 
