@@ -1,0 +1,192 @@
+<Events>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntime" Guid="{e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}" />
+		<EventID>9</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>10</Opcode>
+		<Keywords>0x1</Keywords>
+		<TimeCreated SystemTime="2026-09-16T15:33:14.878234700+07:59" />
+		<Correlation ActivityID="{a4f52b9d-44c1-0000-f76b-1da5c144dd01}" />
+		<Execution ProcessID="3068" ThreadID="28052" ProcessorID="7" KernelTime="45" UserTime="15" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<GCSuspendEE_V1 xmlns='myNs'><Reason>1</Reason><Count>0</Count><ClrInstanceID>10</ClrInstanceID></GCSuspendEE_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>SuspendEEStart </Opcode>
+		<Keywords>
+			<Keyword>GC </Keyword>
+		</Keywords>
+		<Task>GC </Task>
+		<Message>Reason=SuspendForGC ;
+Count=0;
+ClrInstanceID=10 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntime" Guid="{e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}" />
+		<EventID>1</EventID>
+		<Version>2</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>1</Opcode>
+		<Keywords>0x1</Keywords>
+		<TimeCreated SystemTime="2026-09-16T15:33:14.878251200+07:59" />
+		<Correlation ActivityID="{a4f52b9d-44c1-0000-f76b-1da5c144dd01}" />
+		<Execution ProcessID="3068" ThreadID="28052" ProcessorID="7" KernelTime="45" UserTime="15" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<GCStart_V1 xmlns='myNs'><Count>1</Count><Depth>0</Depth><Reason>0</Reason><Type>0</Type><ClrInstanceID>10</ClrInstanceID><ClientSequenceNumber>0</ClientSequenceNumber></GCStart_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>Start </Opcode>
+		<Keywords>
+			<Keyword>GC </Keyword>
+		</Keywords>
+		<Task>GC </Task>
+		<Message>Count=1;
+Depth=0;
+Reason=AllocSmall ;
+Type=NonConcurrentGC ;
+ClrInstanceID=10;
+ClientSequenceNumber=0 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntime" Guid="{e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}" />
+		<EventID>2</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>2</Opcode>
+		<Keywords>0x1</Keywords>
+		<TimeCreated SystemTime="2026-09-16T15:33:14.887251100+07:59" />
+		<Correlation ActivityID="{a4f52b9d-44c1-0000-f76b-1da5c144dd01}" />
+		<Execution ProcessID="3068" ThreadID="28052" ProcessorID="4" KernelTime="45" UserTime="30" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<GCEnd_V1 xmlns='myNs'><Count>1</Count><Depth>0</Depth><ClrInstanceID>10</ClrInstanceID></GCEnd_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>Stop </Opcode>
+		<Keywords>
+			<Keyword>GC </Keyword>
+		</Keywords>
+		<Task>GC </Task>
+		<Message>Count=1;
+Depth=0;
+ClrInstanceID=10 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntime" Guid="{e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}" />
+		<EventID>4</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>133</Opcode>
+		<Keywords>0x1</Keywords>
+		<TimeCreated SystemTime="2026-09-16T15:33:14.887251500+07:59" />
+		<Correlation ActivityID="{a4f52b9d-44c1-0000-f76b-1da5c144dd01}" />
+		<Execution ProcessID="3068" ThreadID="28052" ProcessorID="4" KernelTime="45" UserTime="30" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<GCHeapStats_V1 xmlns='myNs'><GenerationSize0>0x18</GenerationSize0><TotalPromotedSize0>0x317780</TotalPromotedSize0><GenerationSize1>0x323080</GenerationSize1><TotalPromotedSize1>0x0</TotalPromotedSize1><GenerationSize2>0x18</GenerationSize2><TotalPromotedSize2>0x0</TotalPromotedSize2><GenerationSize3>0xFAB20</GenerationSize3><TotalPromotedSize3>0x0</TotalPromotedSize3><FinalizationPromotedSize>0x280E</FinalizationPromotedSize><FinalizationPromotedCount>120</FinalizationPromotedCount><PinnedObjectCount>2</PinnedObjectCount><SinkBlockCount>38</SinkBlockCount><GCHandleCount>462</GCHandleCount><ClrInstanceID>10</ClrInstanceID></GCHeapStats_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>HeapStats </Opcode>
+		<Keywords>
+			<Keyword>GC </Keyword>
+		</Keywords>
+		<Task>GC </Task>
+		<Message>GenerationSize0=0x18;
+TotalPromotedSize0=0x317780;
+GenerationSize1=0x323080;
+TotalPromotedSize1=0x0;
+GenerationSize2=0x18;
+TotalPromotedSize2=0x0;
+GenerationSize3=0xFAB20;
+TotalPromotedSize3=0x0;
+FinalizationPromotedSize=0x280E;
+FinalizationPromotedCount=120;
+PinnedObjectCount=2;
+SinkBlockCount=38;
+GCHandleCount=462;
+ClrInstanceID=10 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntime" Guid="{e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}" />
+		<EventID>7</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>136</Opcode>
+		<Keywords>0x1</Keywords>
+		<TimeCreated SystemTime="2026-09-16T15:33:14.887253500+07:59" />
+		<Correlation ActivityID="{a4f52b9d-44c1-0000-f76b-1da5c144dd01}" />
+		<Execution ProcessID="3068" ThreadID="28052" ProcessorID="4" KernelTime="45" UserTime="30" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<GCNoUserData xmlns='myNs'><ClrInstanceID>10</ClrInstanceID></GCNoUserData>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>RestartEEStart </Opcode>
+		<Keywords>
+			<Keyword>GC </Keyword>
+		</Keywords>
+		<Task>GC </Task>
+		<Message>ClrInstanceID=10 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntime" Guid="{e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}" />
+		<EventID>3</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>132</Opcode>
+		<Keywords>0x1</Keywords>
+		<TimeCreated SystemTime="2026-09-16T15:33:14.887300200+07:59" />
+		<Correlation ActivityID="{a4f52b9d-44c1-0000-f76b-1da5c144dd01}" />
+		<Execution ProcessID="3068" ThreadID="28052" ProcessorID="4" KernelTime="45" UserTime="30" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<GCNoUserData xmlns='myNs'><ClrInstanceID>10</ClrInstanceID></GCNoUserData>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>RestartEEStop </Opcode>
+		<Keywords>
+			<Keyword>GC </Keyword>
+		</Keywords>
+		<Task>GC </Task>
+		<Message>ClrInstanceID=10 </Message>
+	</RenderingInfo>
+</Event>
+</Events>
