@@ -184,8 +184,7 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_drive',
-    description: '对正在运行的目标客户端执行单步 UIA 操作（实时、有状态）。动作：find 定位控件；read 读可见控件（含输入框真实 value 与 #序号，序号可当 index 复用）；windows 列出该进程所有顶层窗口（**顶层窗口**各自一行；⚠ 登录窗/许可协议/模态框常常是主窗口**内部的嵌套窗口元素**、**不在顶层清单里** —— 那种情况用 ui_windows，它会额外列出来）；shot 截主窗口 PNG（describe=true 直接返回视觉描述）；waitfor 等条件成立（state=appear|gone|enabled|disabled）；click 点击；setvalue ValuePattern 写值；key 键盘输入（中文走剪贴板粘贴）；type 键盘序列（{ENTER}/{TAB}/{ESC}/{DOWN}/^a 等，用于回车提交、Tab 跳转、下拉选择）；drag 鼠标拖拽（滑块验证码）。read/state 结果恒带 skipped=N（读不到状态被跳过的元素数），>0 时附 warn 提示「清单不完整」。' +
-      '动态界面三件套：waitFor={ms,interval,state,match,index} 让 click/setvalue/key/type/find/expect/read/state 先等条件成立再动手（不再靠猜 sleep）；index 取同名控件的第 N 个；inAid/inName 把查找限定在某个容器内（read/state 同样生效，结果会标 范围=…，**没标就是整个窗口**）。' + READ_ONLY_NOTE + '。click/setvalue/key/type/drag/clickat/doubleclick 必须传 allowSideEffects=true 才执行。截图一律写入证据目录（DSH_UI_EVIDENCE_DIR），不写仓库；需要视觉复核时用 `describe_image` 读返回的 path（该工具由宿主提供、**本面不一定有**；没有它就 `read_image`）。Triggers: 驱动客户端 / 点一下 / 输入 / 截图验证 / UI self-verify.',
+    description: dshDescription('ui_drive'),
     parameters: {
       action: { type: 'string', required: true, enum: ['find', 'read', 'state', 'windows', 'shot', 'waitfor', 'click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext', 'move', 'wheel', 'capture', 'state-live'], description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag | clickat | doubleclick | pattern | scroll | selecttext | move | wheel | capture | state-live（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位——坐标脆弱，窗口一移动就失效；doubleclick=元素级双击（UIA GetClickablePoint，不是坐标）；pattern=调用元素**真正暴露**的 UIA pattern：动作名放 value/keys，支持 Expand|Collapse|Increment|Decrement|Select|AddToSelection|RemoveFromSelection|ScrollIntoView|Toggle|Invoke|Focus|Close|Minimize|Maximize|Restore（展开树节点/自增数字/多选/最大化窗口——比盲点击稳得多，元素不支持会明确报错而不是回退成点击）；scroll=语义滚动，对元素或最近可滚动祖先调 ScrollPattern，方向放 value（up/down/left/right），页数放 count；selecttext=TextPattern 精确选区，text 放 value、prefix 放 match、suffix 放 expectValue、selectionType 放 state（text|cursor_before|cursor_after）；move/wheel=移动鼠标/滚轮，只读白名单、不需 allowSideEffects；capture=抓一帧窗口内容；state-live=免前台状态采样）' },
       name: { type: 'string', description: '控件 Name（与 aid 二选一或都传）' },
@@ -290,11 +289,7 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_observe',
-    description: '只读观察（推荐入口，无需 allowSideEffects）：find 定位 / read 读控件与真实输入值 / state 界面快照（窗口+焦点+交互控件）/ windows 顶层窗口 / waitfor 等条件成立 / expectwindow 窗口出现或消失 / expecttext 文本出现 / waitany 多条件竞速 / shot 截图。' +
-      'read/state 结果恒带 skipped=N（本次枚举里读不到状态被跳过的元素数），>0 时附 warn 明说「清单不完整」——「没读到」不等于「界面上没有」。' +
-      '动态界面（登录、验证码、按界面情况分支）的循环就是：ui_observe 看现状 → 决定 → ui_act 动手 → 再 ui_observe 确认。' +
-      '范围与等待（UD-04）：read/state 也认 inAid/inName（限定容器）与 winTitle（跨窗口），以及 waitFor（等条件成立再读，最常用于「等列表刷出来再读」）；被限定过的清单会标 narrowed+scope，**没标就是整个窗口**。' +
-      'waitany 是判定登录结果的关键：一次同时押注「主窗口出现」「错误文本出现」「登录窗口还在」三支，返回命中的那支。Triggers: 看界面 / 等条件 / 判断登录结果 / observe.',
+    description: dshDescription('ui_observe'),
     parameters: {
       action: { type: 'string', required: true, enum: ['find', 'read', 'state', 'windows', 'waitfor', 'expectwindow', 'expecttext', 'waitany', 'shot', 'move', 'wheel', 'capture', 'state-live'], description: 'find | read | state | windows | waitfor | expectwindow | expecttext | waitany | shot | move | wheel | capture | state-live（move/wheel=移动鼠标/滚轮、capture=抓帧、state-live=免前台状态采样，都是只读白名单）' },
       name: { type: 'string', description: '控件 Name' },
@@ -346,10 +341,7 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_act',
-    description: '真实操作客户端（副作用，必须 allowSideEffects=true）：click 点击 / setvalue 写值（受限输入框如手机号框走它，绕开按键过滤）/ key 键盘输入（中文走剪贴板）/ type 键盘序列（{ENTER}/{TAB}/{ESC}，回车提交、Tab 跳转）/ drag 鼠标拖拽（滑块验证码）。' +
-      '写输入后驱动会回读校验，值没进去直接报错（不再假成功）；密码/验证码类控件的值不回显、不落证据；' +
-      '「按名硬拒」名单**只在运维显式配置 DSH_UI_DENY_RE 后才生效**——默认为空（什么都不拦），所以"能点得动"不等于"该点"，别把它当护栏。' +
-      'observe=true 时动作后直接附带界面快照（窗口+焦点+交互控件），省一次往返。凭据用 ${cred:name} 占位符（驱动进程从环境变量 DSH_CRED_name 展开，模型看不到明文）。' + READ_ONLY_NOTE + '。Triggers: 点一下 / 输入 / 登录 / 拖滑块 / ui act.',
+    description: dshDescription('ui_act'),
     parameters: {
       action: { type: 'string', required: true, enum: ['click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext', 'move', 'wheel'], description: 'click | setvalue | key | type | drag | clickat | doubleclick | pattern | scroll | selecttext | move | wheel（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位，坐标脆弱；doubleclick=元素级双击；pattern=调用元素真正暴露的 UIA pattern，动作名放 value/keys（Expand/Collapse/Increment/Decrement/Select/ScrollIntoView/Toggle/Invoke/Focus/Minimize/Maximize/Restore 等）；scroll=语义滚动（方向 value、页数 count）；selecttext=精确选区（text=value、prefix=match、suffix=expectValue、selectionType=state）；drag/clickat/doubleclick/pattern/scroll/selecttext 都能致效，必须 allowSideEffects=true；move/wheel 只移动鼠标/滚轮，无需副作用授权）' },
       name: { type: 'string', description: '控件 Name' },
@@ -458,10 +450,7 @@ const tools = () => [
   }),
   defineTool({
     name: 'ui_flow',
-    description: '按步骤序列驱动客户端并收集自验证据：steps 数组每步 {action: find|click|setvalue|key|type|drag|read|windows|shot|wait|waitfor|expect, name?, aid?, value?, keys?, ascii?, match?, index?, inAid?, inName?, waitFor?, state?, fromX?/fromY?/toX?/toY?, waitMs?, label?, expectEnabled?, expectMatch?}；' +
-      'expect/waitfor 步做断言并计入 passed/failed（waitfor 等条件成立：state=appear|gone|enabled|disabled）；waitFor 可挂在任意动作上（先等再动，替代固定 sleep）；index 取同名控件第 N 个，inAid/inName 限定容器。' +
-      '每步输出+截图写入证据目录 steps.json，返回 transcript。默认只读（find/read/windows/shot/wait/waitfor/expect），含 click/setvalue/key/type/drag 必须传 allowSideEffects=true。failFast=true 时断言失败即停。整段序列在一个 PowerShell 进程里批量执行（步间无进程启动开销），waitMs 只在动作需要静默时传（默认 250ms，find/read/shot/expect/windows 不等待）。' +
-      '需要「看一步再做下一步」的复杂流程（登录、验证码、按界面情况分支）用 ui_drive 逐步走，别用 ui_flow 预排。Triggers: UI 自验 / 自动验证流程 / 端到端验证 / ui flow.',
+    description: dshDescription('ui_flow'),
     parameters: {
       steps: { type: 'array', required: true, description: '步骤数组（每步一个对象，action 必填）' },
       tag: { type: 'string', description: '证据目录标签（如 verify-etf-dialog），默认 flow' },

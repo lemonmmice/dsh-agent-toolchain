@@ -350,16 +350,7 @@ server.tool(
 
 server.tool(
   'ui_drive',
-  'Drive the running desktop client via Windows UIA (real-time, stateful). Actions: find (locate a control) / ' +
-    'read (visible controls, with the real input value and a #index reusable as `index`) / windows (all top-level windows) / ' +
-    'shot (PNG; describe=true returns a vision description) / waitfor (block until a condition holds: state=appear|gone|enabled|disabled) / ' +
-    'click / setvalue (ValuePattern) / key (clipboard paste for CJK) / type (SendKeys sequence: {ENTER} {TAB} {ESC} {DOWN} ^a …) / ' +
-    'drag (mouse drag, e.g. a slider captcha). ' +
-    'For dynamic UIs: pass waitFor={ms,interval,state,match,index} on click/setvalue/key/type/find to wait for the condition ' +
-    'BEFORE acting (no more guessing sleeps); use index for the Nth same-named control and inAid/inName to scope the search to a container. ' +
-    'read/state also honour inAid/inName (container scope), winTitle (cross-window) and waitFor (wait for the list to render before reading); ' +
-    'a scoped listing is labelled narrowed+scope — an unlabelled listing covers the whole window. ' +
-    'find / read / windows / shot / waitfor are read-only; click / setvalue / key / type / drag are real side effects and REQUIRE allowSideEffects=true.',
+  mcpDescription('ui_drive'),
   {
     action: uiAction,
     name: z.string().optional().describe('Control Name'),
@@ -439,12 +430,7 @@ server.tool(
 
 server.tool(
   'ui_flow',
-  'Run a whole UI verification sequence and collect evidence (find/read/windows/shot/wait/waitfor/expect are read-only; ' +
-    'click/setvalue/key/type/drag need allowSideEffects=true). Steps: {action, name?, aid?, value?, keys?, ascii?, match?, index?, inAid?, inName?, waitFor?, state?, fromX?/fromY?/toX?/toY?, waitMs?, label?, expectEnabled?, expectMatch?}. ' +
-    'waitFor on any action waits for a condition first (state=appear|gone|enabled|disabled); expect/waitfor count toward passed/failed. ' +
-    'The sequence runs inside ONE PowerShell process (no per-step process start), so a 10-step flow takes ~1-2s. ' +
-    'Every step output + screenshot is written to the evidence dir (steps.json); the returned transcript has passed/failed counts. ' +
-    'For flows that must look at the screen between steps (login, captcha, branch on UI state), use ui_drive step by step instead.',
+  mcpDescription('ui_flow'),
   {
     steps: z.array(z.object({
       // Ground truth is the driver's FLOW_ACTIONS (driver.mjs) — every verb it can run must be
@@ -545,13 +531,7 @@ server.tool(
 
 server.tool(
   'ui_observe',
-  'Read-only UI observation (recommended entry point; no allowSideEffects needed). Actions: find / read (controls + real input values) / ' +
-    'state (snapshot: window + focus + interactive controls) / windows / waitfor / expectwindow / expecttext / waitany / shot. ' +
-    'The dynamic-UI loop is: ui_observe -> decide -> ui_act -> ui_observe. ' +
-    'read/state also honour inAid/inName (container scope), winTitle (cross-window) and waitFor (e.g. wait for a list to render before reading); ' +
-    'a scoped listing is labelled narrowed+scope — an unlabelled listing covers the whole window. ' +
-    'waitany is how you adjudicate a login: bet on "main window appeared", "error text appeared" and "login window still there" at once ' +
-    'and get back which one hit (with stableCount confirmation to avoid transient states).',
+  mcpDescription('ui_observe'),
   {
     action: z.enum([
       'find', 'read', 'state', 'windows', 'waitfor', 'expectwindow', 'expecttext', 'waitany', 'shot',
@@ -667,19 +647,7 @@ server.tool(
 
 server.tool(
   'ui_act',
-  'Real UI action (side effects; allowSideEffects=true required): click / setvalue (use this for key-filtered fields such as a phone box) / ' +
-    'key / type ({ENTER} {TAB} sequences) / drag (slider captcha) / clickat (client-area coordinates, for table rows or chart points where UIA ' +
-    'cannot give a stable element - fragile, invalidated when the window moves) / doubleclick (element-level) / ' +
-    'pattern (invoke a UIA pattern the element actually exposes; put the action name in value, e.g. Expand|Collapse|Increment|Decrement|Select|' +
-    'AddToSelection|RemoveFromSelection|ScrollIntoView|Toggle|Invoke|Focus|Close|Minimize|Maximize|Restore; unsupported patterns report an error ' +
-    'instead of falling back to a click) / scroll (semantic ScrollPattern: direction in value, pages in count) / ' +
-    'selecttext (TextPattern selection: text in value, prefix in match, suffix in expectValue, selectionType in state). ' +
-    'Input is read back and verified — a value that did not land is ok:false, never a silent success. Password/captcha fields are never echoed. ' +
-    'A name-based hard-deny list is enforced in the driver and allowSideEffects cannot unlock it: any control whose name/AutomationId matches ' +
-    'DSH_UI_DENY_RE is refused. The list is EMPTY by default (nothing is denied unless the operator configures it), so the refusal always ' +
-    'names the control, prints the active list, and says how to fix a false positive. ' +
-    'observe=true attaches a UI snapshot after the action. Credentials: pass ${cred:name}; the driver expands DSH_CRED_name from its own environment, ' +
-    'so the secret never enters the model context or the evidence files.',
+  mcpDescription('ui_act'),
   {
     action: z.enum([
       'click', 'setvalue', 'key', 'type', 'drag',
