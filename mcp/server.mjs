@@ -43,6 +43,10 @@ import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote } f
 import { makeVerificationReport } from '../lib/verify/report.mjs'
 import { attachInlineImage } from './inline-image.mjs'
 import { makeToolTrace, wrapToolArgs } from '../lib/tool-trace.mjs'
+// W1：工具描述/参数结构收进单一真源（lib/tool-registry.mjs）；MCP 侧的 zod shape 由 mcp/registry-zod.mjs 生成。
+// 工具名仍以字面量出现在下面各 server.tool 调用的第一个实参（守卫要求名字是字面量、静态扫描须等于运行时）。
+import { mcpDescription } from '../lib/tool-registry.mjs'
+import { mcpShape } from './registry-zod.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -260,23 +264,8 @@ function bld() {
 
 server.tool(
   'build_run',
-  'Run a build (incremental Build or full Rebuild) and return structured errors. ' +
-    'Use after changing code to verify it compiles. WARNING: zero errors does NOT prove that a newly added file was actually compiled (a legacy .csproj needs an explicit <Compile Include>; the build passes while the file is never compiled), and an empty project argument auto-detects a solution that may not contain your change — always check the returned target / log path. Requires DSH_BUILD_CLIENT_ROOT/DSH_BUILD_REPO_ROOT (solution dir) or the clientRoot/repoRoot argument. ' +
-    'Both engines auto-detect the default solution when project is empty: a repo containing WholeSolution.sln keeps the legacy client defaults (WholeSolution.sln + platform x86); otherwise the .sln/.slnx is detected (repo root, then one level deep) and the platform comes from the solution (Any CPU preferred) — ambiguity is an explicit error asking for project. engine=msbuild (default) uses VS MSBuild; engine=dotnet builds with `dotnet build` (restores by default) — prefer it for modern .NET repos. (dotnet only: a repo with no solution at all falls back to the cwd default.)',
-  {
-    target: z.enum(['Build', 'Rebuild']).default('Build').describe('Build (incremental, fast) or Rebuild (full)'),
-    project: z.string().optional().describe('Optional csproj/sln path relative to the repo root; empty = auto-detected default solution (both engines; dotnet falls back to the cwd default when the repo has no solution)'),
-    configuration: z.string().default('Debug'),
-    platform: z.string().optional().describe('msbuild engine: default auto (legacy x86 for the WholeSolution.sln layout, otherwise detected from the solution); dotnet engine: ignored'),
-    engine: z.enum(['msbuild', 'dotnet']).optional().describe('Build engine; env DSH_BUILD_ENGINE sets the default'),
-    clientRoot: z.string().optional().describe('Solution root dir (env DSH_BUILD_CLIENT_ROOT)'),
-    repoRoot: z.string().optional().describe('Repository root dir (env DSH_BUILD_REPO_ROOT)'),
-    killClient: z.boolean().optional().describe('Kill the running client process before building (breaks the user UI — confirm first). ' +
-      'WARNING: like ui_launch(force=true) this DESTROYS the only crime scene — if the client is hung or stuttering, capture evidence first ' +
-      '(perf_dump / hang_run), otherwise the dump, thread stacks and evidence bundle are gone.'),
-    runId: z.string().optional().describe('Optional run id: the build log and the per-run record (run-<runId>.json) are named with it — the evidence-pack spine'),
-    background: z.boolean().optional().describe('Run the build in the BACKGROUND (non-blocking). true returns a jobId (= runId) immediately and runs build() in a detached child; poll with build_status (state=running→done/crashed). Default false (synchronous, unchanged). Use for a full Rebuild (5-10 min) so the agent can keep observing the client / do other work while it runs.'),
-  },
+  mcpDescription('build_run'),
+  mcpShape('build_run'),
   async (args) => {
     // Per-call argument overrides (clientRoot/repoRoot/engine) still win; the shared instance
     // supplies the env-derived defaults. build() does no I/O at construction, so reusing it is safe.
@@ -1182,34 +1171,22 @@ server.tool(
 
 server.tool(
   'build_status',
-  'Status of the most recent build: target, configuration, duration, error/warning counts and the ' +
-    'log path. Use it to re-read a build result without re-running the build.',
-  {},
+  mcpDescription('build_status'),
+  mcpShape('build_status'),
   async () => jtext(bld().status())
 )
 
 server.tool(
   'build_errors',
-  'Re-parse the structured error/warning list (file / line / column / code / message) out of the ' +
-    'last build log. Use after build_run reports errors, or to re-read them later without rebuilding. ' +
-    'WARNING: it reads the LAST log, which is not guaranteed to be from YOUR run (a concurrent agent may have overwritten it) - an empty list is NOT proof there were no errors.',
-  {},
+  mcpDescription('build_errors'),
+  mcpShape('build_errors'),
   async () => jtext(bld().errorsOfLast())
 )
 
 server.tool(
   'build_compile_check',
-  'Check whether ONE source file is actually part of a project\'s compile set (read-only) - the question "zero build errors" cannot answer. ' +
-    'KNOWN TRAP: a legacy .csproj does NOT auto-include .cs files, so a newly added file without a <Compile Include> builds fine while never being compiled ' +
-    '("zero errors" and "my change is in" are different claims). verdict=(kind="file") only proves the file EXISTS and can give a false pass. ' +
-    'Rules: legacy project requires an explicit compile item (wildcards supported); SDK-style includes .cs by default unless EnableDefaultCompileItems is false; <Compile Remove> beats Include. ' +
-    'THREE-STATE HONESTY: it says "included" only when provable, "not included" only when provable, and returns ok:false with the reason when it cannot tell ' +
-    '(file/project missing, several projects in one directory, unparsable) - never silently "not included". MSBuild Condition attributes are NOT evaluated, and the count is reported.',
-  {
-    file: z.string().describe('Source file path (absolute, or relative to repoRoot/cwd)'),
-    project: z.string().optional().describe('Optional: the project file (*.csproj). Omitted = search upward from the file; several candidates return an ambiguity error instead of guessing'),
-    repoRoot: z.string().optional().describe('Optional boundary for the upward search (defaults to the build client/repo root)'),
-  },
+  mcpDescription('build_compile_check'),
+  mcpShape('build_compile_check'),
   async (args) => {
     // ⚠ F-051：`bld().config` 是**对象**（`makeBuilder` 返回 `{ config: c, … }`），不是函数。
     //   这里原来的写法是 `bld().config ? bld().config() : {}` —— 守卫判的是**真值**而不是**是不是函数**，

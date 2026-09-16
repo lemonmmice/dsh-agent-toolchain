@@ -12,6 +12,9 @@ import { renderBuild, renderErrors, renderStatus } from './lib/render.mjs'
 import { makeBuilder } from './lib/builder.mjs'
 import { checkCompileMembership, renderMembership } from '../../lib/compile-membership.mjs'
 import { envOr } from '../../lib/env-fallback.mjs'
+// W1：工具名/描述/参数结构收进单一真源（lib/tool-registry.mjs）—— 名字仍以字面量出现在下面
+// 各 defineTool 的 name 字段（守卫要求名字是字面量），描述与参数由注册表生成，两面不再各写一份。
+import { dshParameters, dshDescription } from '../../lib/tool-registry.mjs'
 
 export const name = 'dsh-build'
 
@@ -73,20 +76,8 @@ const OBJECT = { type: 'object', additionalProperties: true }
 const tools = () => [
   defineTool({
     name: 'build_run',
-    description: '运行 MSBuild 构建并结构化解析错误。默认增量 Build（快检，秒级~2分钟）；最终结论用 Rebuild（全量，5-10分钟）；project 可定向单工程/.sln（相对仓库根），**空=自动探测默认解决方案**（可能探测到**不含你改动**的那个 .sln，而"0 错误"照旧成立 ⇒ 请核对返回的目标与日志路径）。⚠ **错误数 0 ≠ 你新加的文件进了编译**（legacy .csproj 要手工 <Compile Include>，漏加时构建通过但文件根本没编）—— 要证这件事得自己验编译项或产物，本工具不替你证。返回错误列表（file/line/col/code/message）+ 日志路径。Triggers: 编译验证 / 增量编译 / 帮我编译 / 构建验证 / build.',
-    parameters: {
-      target: { type: 'string', enum: ['Build', 'Rebuild'], description: 'Build（增量，默认）或 Rebuild（全量）' },
-      project: { type: 'string', description: '可选：定向工程/.sln（相对仓库根）；空=自动探测默认解决方案（WholeSolution.sln 优先）' },
-      configuration: { type: 'string', description: '默认 Debug' },
-      platform: { type: 'string', description: '可选：默认按布局自动解析（老布局 x86 / 从 .sln 探测，Any CPU 优先）' },
-      engine: { type: 'string', enum: ['msbuild', 'dotnet'], description: '可选：msbuild（默认，VS MSBuild）或 dotnet（dotnet build，现代 SDK 仓库推荐）' },
-      repoRoot: { type: 'string', description: '可选：仓库根目录（默认 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT）' },
-      // R42：MCP 面一直有 clientRoot，DSH 面没有（同一个调用在一面能指定、在另一面只能退化成环境变量）。
-      clientRoot: { type: 'string', description: '可选：客户端/解决方案根目录（等价于 repoRoot，优先于环境变量 DSH_BUILD_CLIENT_ROOT）' },
-      killClient: { type: 'boolean', description: '客户端在运行时强制结束它再构建（会打断用户界面，需先确认）。⚠ **与 ui_launch(force=true) 同样会销毁唯一现场**：客户端卡死/卡顿要先取证（perf_dump 抓快照、hang_run 挂监测），证据到手再杀；否则 dump/线程栈/证据包都没了' },
-      runId: { type: 'string', description: '可选：本次任务的 runId。传了才会写 run-<runId>.json 凭证记录（verify_report 的 build 类 claim 正是读这个文件；不传则只写 last.json，多 agent 并发时会互相覆盖）。建议用 who-task-n 形式，如 dsh-logon-fix-1' },
-      background: { type: 'boolean', description: '可选：后台构建，**不阻塞**。true 时立即返回 jobId（=runId），真正的构建交给分离子进程去跑，用 build_status 轮询（state=running→done/crashed）。默认 false（同步，行为不变）。适合 Rebuild 这种 5-10 分钟的全量构建：先起后台，期间可继续观察客户端/干别的' },
-    },
+    description: dshDescription('build_run'),
+    parameters: dshParameters('build_run'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderBuild(v) }] },
     timeoutMs: 16 * 60 * 1000,
     async execute(args) {
@@ -102,8 +93,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'build_status',
-    description: '查最近一次构建结果（目标/耗时/错误数/日志路径）。Triggers: 上次编译结果 / build status.',
-    parameters: {},
+    description: dshDescription('build_status'),
+    parameters: dshParameters('build_status'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderStatus(v) }] },
     async execute() {
       return bld().status()
@@ -111,8 +102,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'build_errors',
-    description: '从**最近一次**构建日志重新解析错误/警告列表（结构化 file/line/col/code/message）。⚠ 它读的是"最近一次日志"、**不保证是本次 run**（多 agent 并发时会读到别人的）：空 ≠ 没有错误，先看返回值里的日志路径/时间是不是你要的那次；要绑定本次请用 build_run 的 runId + verify_report(kind="build")。Triggers: 解析编译错误 / 查看编译错误.',
-    parameters: {},
+    description: dshDescription('build_errors'),
+    parameters: dshParameters('build_errors'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderErrors(v) }] },
     async execute() {
       return bld().errorsOfLast()
@@ -120,18 +111,8 @@ const tools = () => [
   }),
   defineTool({
     name: 'build_compile_check',
-    description:
-      '核对**一个源码文件到底进没进编译**（只读）—— 回答"编译 0 错误"答不出的那个问题。' +
-      '⚠ 本仓已知陷阱：**legacy .csproj 不会自动包含 .cs**，新增文件漏写 `<Compile Include>` 时' +
-      '**构建通过、文件根本没编**；而 `verify_report(kind="file")` 只验"文件存在"，会给**假 pass**（G1 黑盒 agent 原话）。' +
-      '本工具按工程风格判定：legacy ⇒ 必须有显式编译项（含通配符）；SDK ⇒ 默认 glob 包含，除非显式关掉 `EnableDefaultCompileItems`；' +
-      '`<Compile Remove>` 优先于 Include。**三态**：能证明"在"才说在、能证明"不在"才说不在、**读不到（文件/工程不存在、同层多工程、解析不了）一律 ok:false + 原因**，绝不说成"不在"。' +
-      '不数 = 不求值 MSBuild `Condition`，条数会如实带出。Triggers: 新文件进没进编译 / 文件被编译了吗 / Compile Include / compiled?.',
-    parameters: {
-      file: { type: 'string', required: true, description: '源码文件路径（绝对路径，或相对 repoRoot/当前工作目录）。' },
-      project: { type: 'string', description: '可选：显式指定工程文件（*.csproj）。不给就从这个文件往上找；找到多个会**返回歧义**而不是随便挑一个。' },
-      repoRoot: { type: 'string', description: '可选：向上查找工程的边界（默认 DSH_BUILD_CLIENT_ROOT / DSH_BUILD_REPO_ROOT / git 根）。' },
-    },
+    description: dshDescription('build_compile_check'),
+    parameters: dshParameters('build_compile_check'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderMembership(v) }] },
     async execute(args) {
       // ⚠ F-051：`makeBuilder()` 返回的是 `{ config: c, … }` —— **`config` 是对象，不是函数**。
