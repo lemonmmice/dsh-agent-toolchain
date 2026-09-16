@@ -13,12 +13,30 @@
 // the drift: a declared-but-unregistered tool now fails, and so does a
 // registered-but-undeclared one.
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { tmpdir } from 'node:os'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const serverPath = join(here, 'server.mjs')
+
+// ---------------------------------------------------------------------------
+// 给 perf_clean 一个**确定的**证据目录，而不是赌运行机器上恰好有没有。
+//
+// 起因：perf_clean 的干跑在没有证据目录时会**如实**报错（`ok:false` +「证据目录不存在」，
+// 见 plugins/dsh-perf/lib/evidence-clean.mjs:36）—— 那是诚实，不是缺陷。但 CI runner 是干净
+// 机器，默认目录 `~/.dsh-agent-toolchain/perf-evidence` 压根不存在，于是冒烟里那条
+// `expect:'ok'` 必红（run 35082781794 就是这么挂的，而本机因为有 junction 到 E: 才一直是绿的）。
+//
+// 这里选择**建一个临时目录、并把 DSH_PERF_EVIDENCE_DIR 指过去**，而不是把断言降级成
+// `expect:'any'`。理由：降级只是让 CI 少测一点；指过去则让「空目录干跑」这条**成功路径**
+// 在任何机器上都真的跑一次 —— CI 以前从来没跑到过它。
+// ⚠ 必须在 `spawn` **之前**设：子进程是继承 `process.env` 的。
+const smokeEvidenceDir = mkdtempSync(join(tmpdir(), 'dsh-mcp-smoke-evidence-'))
+process.env.DSH_PERF_EVIDENCE_DIR = smokeEvidenceDir
+process.on('exit', () => { try { rmSync(smokeEvidenceDir, { recursive: true, force: true }) } catch { /* best effort */ } })
+
 const child = spawn(process.execPath, [serverPath], { stdio: ['pipe', 'pipe', 'pipe'] })
 
 /** Every tool name statically declared by `server.tool('...')` in server.mjs. */
@@ -78,6 +96,9 @@ const READONLY_CALLS = {
   //   不拿它当失败判据；真正的"能答上来"路径见下面的 src 那条（有源码根时才跑）。
   build_compile_check: { tool: 'build_compile_check', args: { file: 'lib/toolchain-status.mjs' }, expect: 'any' },
   // 默认 dry-run（只看不删）：这里绝不传 confirm
+  // 默认 dry-run（只看不删）：这里绝不传 confirm。
+  // ⚠ 它的证据目录由本文件顶部的 smokeEvidenceDir 指定（临时空目录）⇒ 任何机器上走的都是
+  //   「0 个文件命中」的成功路径；**别**把这条降级成 expect:'any'（那只会让 CI 少测一点）。
   perf_clean: { tool: 'perf_clean', args: {}, expect: 'ok' },
   // expect:'any' —— 依赖客户端在跑 / 依赖上一次运行留下的报告，允许如实报"没做成"
   ui_status: { tool: 'ui_status', args: {}, expect: 'any' },
