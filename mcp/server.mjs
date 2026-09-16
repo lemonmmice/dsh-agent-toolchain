@@ -46,7 +46,7 @@ import { makeToolTrace, wrapToolArgs } from '../lib/tool-trace.mjs'
 import { makeOutputBudget, outputMaxTokens } from '../lib/output-budget.mjs'
 // W1：工具描述/参数结构收进单一真源（lib/tool-registry.mjs）；MCP 侧的 zod shape 由 mcp/registry-zod.mjs 生成。
 // 工具名仍以字面量出现在下面各 server.tool 调用的第一个实参（守卫要求名字是字面量、静态扫描须等于运行时）。
-import { mcpDescription } from '../lib/tool-registry.mjs'
+import { mcpDescription, mcpAnnotations } from '../lib/tool-registry.mjs'
 import { mcpShape } from './registry-zod.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -69,7 +69,24 @@ const _toolTrace = makeToolTrace({
 // → 恒等，零回归）。与追踪 compose：预算改结果、追踪观测——两者都关时净身份，注册的仍是原 handler。
 const _outputBudget = makeOutputBudget({ maxTokens: outputMaxTokens({}, process.env) })
 const _origTool = server.tool.bind(server)
-server.tool = (...args) => _origTool(...wrapToolArgs(args, (name, handler) => _toolTrace.wrap(name, _outputBudget.wrap(name, handler))))
+// P1-1c —— 只读工具注解（readOnlyHint）。单一 chokepoint 同处注入：从注册表读该工具是否只读，
+// 是则在 handler 前插入 { readOnlyHint: true } 作 annotations 实参（SDK 支持 tool(name,desc,shape,annotations,cb)
+// 且注解原样进 tools/list，已实证；非只读工具不注解）。客户端据此可对只读工具并行分发。名字仍取自第一个字面量实参。
+// 注入在 wrapToolArgs 之前：wrapToolArgs 只包**最后一个函数**参数，注解对象在其之前，互不影响。
+function injectAnnotations(args) {
+  const name = typeof args[0] === 'string' ? args[0] : null
+  const ann = name ? mcpAnnotations(name) : undefined
+  if (!ann) return args
+  const last = args.length - 1
+  if (last >= 0 && typeof args[last] === 'function') {
+    // 在 handler 之前插入 annotations（若调用方已自带 annotations 对象则不重复插）
+    const prev = args[last - 1]
+    const hasAnn = prev && typeof prev === 'object' && ('readOnlyHint' in prev || 'destructiveHint' in prev || 'openWorldHint' in prev)
+    if (!hasAnn) args.splice(last, 0, ann)
+  }
+  return args
+}
+server.tool = (...args) => _origTool(...wrapToolArgs(injectAnnotations(args), (name, handler) => _toolTrace.wrap(name, _outputBudget.wrap(name, handler))))
 
 // ---------------------------------------------------------------- shared
 
