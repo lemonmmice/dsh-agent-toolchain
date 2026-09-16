@@ -27,17 +27,17 @@ function check(name, cond, extra = '') {
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const INDEX = readFileSync(join(HERE, '..', 'index.js'), 'utf8')
+// W1：工具描述/参数已迁进单一真源 lib/tool-registry.mjs —— action enum 从注册表读，不再从 index.js 源码正则抠。
+const { REGISTRY } = await import('../../../lib/tool-registry.mjs')
 
 // ---------------------------------------------------------------- 生产者的 action enum
 
-/** 从 `index.js` 的 `perf_trace` 工具块里读 `action` 的 enum（**不手抄**：两边抄一份必然漂移）。 */
+/** 读注册表里 `perf_trace` 的 `action` 参数 enum（**不手抄**：注册表是两面唯一真源）。 */
 function perfTraceActionEnum() {
-  const at = INDEX.indexOf("name: 'perf_trace'")
-  if (at < 0) return null
-  const seg = INDEX.slice(at, at + 4000)
-  const m = seg.match(/action:\s*\{[^}]*enum:\s*\[([^\]]+)\]/)
-  if (!m) return null
-  return m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
+  const entry = REGISTRY.perf_trace
+  if (!entry) return null
+  const p = (entry.params || []).find((x) => x.name === 'action' && Array.isArray(x.enum))
+  return p ? p.enum.slice() : null
 }
 
 const ACTIONS = perfTraceActionEnum()
@@ -210,20 +210,27 @@ for (const [action, c] of Object.entries(CASES)) {
   const KNOWN_UNCOVERED = []   // 钉子：只许缩短（已空；新工具带 action enum 就会立刻红）
   const enumTools = []
   {
+    // W1：迁进注册表的工具，其 action enum 从注册表读；尚未迁移的工具仍扫 index.js 源码（内联 enum）。
+    // 两条来源合并 —— 迁移是逐工具进行的，这里必须两边都认，才不会漏掉任一形态。
     const { readdirSync, existsSync } = await import('node:fs')
+    const seen = new Set()
+    for (const [name, entry] of Object.entries(REGISTRY)) {
+      if ((entry.params || []).some((x) => x.name === 'action' && Array.isArray(x.enum))) { enumTools.push(name); seen.add(name) }
+    }
     for (const d of readdirSync(join(HERE, '..', '..'))) {
-      const p = join(HERE, '..', '..', d, 'index.js')
-      if (!existsSync(p)) continue
-      const src = readFileSync(p, 'utf8')
-      const re = /defineTool\(\s*\{/g
-      let m
-      while ((m = re.exec(src))) {
-        // 大括号配平取整个工具块（简易但足够：源文件是定型的）
-        let i = re.lastIndex - 1, depth = 0, j = i
-        for (; j < src.length; j++) { const c = src[j]; if (c === '{') depth++; else if (c === '}') { depth--; if (depth === 0) break } }
-        const block = src.slice(i, j + 1)
-        const nm = block.match(/name:\s*'([^']+)'/)
-        if (nm && /action:\s*\{[^}]*enum:\s*\[/.test(block)) enumTools.push(nm[1])
+      for (const rel of ['index.js', join('lib', 'index.js')]) {
+        const p = join(HERE, '..', '..', d, rel)
+        if (!existsSync(p)) continue
+        const src = readFileSync(p, 'utf8')
+        const re = /defineTool\(\s*\{/g
+        let m
+        while ((m = re.exec(src))) {
+          let i = re.lastIndex - 1, depth = 0, j = i
+          for (; j < src.length; j++) { const c = src[j]; if (c === '{') depth++; else if (c === '}') { depth--; if (depth === 0) break } }
+          const block = src.slice(i, j + 1)
+          const nm = block.match(/name:\s*'([^']+)'/)
+          if (nm && !seen.has(nm[1]) && /action:\s*\{[^}]*enum:\s*\[/.test(block)) { enumTools.push(nm[1]); seen.add(nm[1]) }
+        }
       }
     }
   }

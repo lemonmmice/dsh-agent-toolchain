@@ -829,28 +829,8 @@ async function attachVision(r, args) {
 
 server.tool(
   'perf_probe',
-  // F-041（2026-09-12 r35，G1 黑盒测试抓出）：路由句必须放在**第一句**。
-  //   黑盒测试的原话：这是三题里唯一"按名字与 Triggers 选、但会选错"的工具，
-  //   而且误用**不报错** —— 它会返回"0 stalls"，让 agent 拿假阴性去下"客户端不卡"的结论。
-  '**UI-thread stutter DETECTOR (produces no call chain).** To answer "**which code / which call chain** ' +
-    'causes the stutter", do NOT use this tool — go straight to `perf_trace` then `perf_hotstacks`. ' +
-    'What this tool does: loops a window-message round trip against the target client main window, ' +
-    'reports P50/P95/P99 and every event over the threshold. capture=log (default) only records; ' +
-    'capture=shot screenshots the stall; capture=dump grabs a full dump on the first stall (hundreds of MB). ' +
-    'MEASUREMENT SCOPE (calibrated on this machine 2026-09-11 — read before concluding): it only measures the ' +
-    'UI-thread message pump, so (a) non-UI-thread stalls (GC / IO / worker / background threads) are structurally ' +
-    'invisible (calibration: background thread blocked 2000ms every 3s -> 0 hits over 110-191 samples, max 8-9ms, ' +
-    'indistinguishable from idle); (b) a block falling entirely between two samples is missed (120ms block with ' +
-    '100ms sampling -> 1/5 hits); (c) P50 is normally 0ms even while stalling - judge by max and hit count; ' +
-    '(d) "0 stutters" only means no UI-thread block above the threshold, NOT that the client is smooth. ' +
-    'Tuning: to catch >=500ms stalls use thresholdMs 200-300 (a 500ms block measures ~492ms, so a 500 threshold ' +
-    'can reject it) and intervalMs 100-150. The JSON result carries measurementScope with these limits.',
-  {
-    seconds: z.number().default(60).describe('Sampling duration in seconds'),
-    thresholdMs: z.number().default(500).describe('Stutter threshold in ms. 500 can miss a ~500ms block (measures 492-513ms) - use 200-300 to catch those'),
-    capture: z.enum(['log', 'shot', 'dump']).default('log'),
-    intervalMs: z.number().default(300).describe('Sampling interval in ms. Hit rate collapses when the block is the same order as the interval (120ms block + 100ms sampling -> 1/5)'),
-  },
+  mcpDescription('perf_probe'),
+  mcpShape('perf_probe'),
   async (args) => {
     const r = await prf().probe(args)
     // perf reports stalls as stutterCount (not stallCount) — read the real field
@@ -863,47 +843,29 @@ server.tool(
 
 server.tool(
   'perf_report',
-  'Read the most recent perf_probe report (P50/P95/P99 + stall events).',
-  {},
+  mcpDescription('perf_report'),
+  mcpShape('perf_report'),
   async () => jtext(prf().report())
 )
 
 server.tool(
   'perf_dump',
-  'Capture a full memory dump of the running client (procdump -ma — this SUSPENDS the process for ' +
-    'a few seconds, so the user sees a brief freeze) and immediately analyse it: UI thread managed ' +
-    'stack + top lock-holding threads, and returns dumpPath (absolute dump path — feed it to perf_analyze / perf_heap). It answers only "who is on the stack RIGHT NOW", NOT "who keeps calling it": for intermittent freezes / repaint storms use perf_trace then perf_hotstacks; if the client is frozen right now, capture BEFORE ui_launch(force=true) destroys the scene. Dumps are hundreds of MB and land in the perf evidence dir; ' +
-    'ask the user before deleting. SOURCE LINES come from THIS path: dump analysis also maps frames to source ' +
-    '(with DSH_PERF_SRC_ROOT configured it prints "← relative/path.cs:line") — that is where a file:line answer comes from. ' +
-    'The ETW path (perf_hotstacks) resolves symbols to module!type.method only and does NOT map to source lines.',
-  {
-    note: z.string().optional().describe('Scenario note written alongside the evidence'),
-  },
+  mcpDescription('perf_dump'),
+  mcpShape('perf_dump'),
   async (args) => jtext(await prf().dump(args))
 )
 
 server.tool(
   'perf_analyze',
-  'Re-run the ClrMD analysis (UI thread stack + hot lock threads) on an existing dump file.',
-  {
-    dumpPath: z.string().describe('Absolute path to the .dmp file'),
-  },
+  mcpDescription('perf_analyze'),
+  mcpShape('perf_analyze'),
   async (args) => jtext(await prf().analyzeDump(args.dumpPath))
 )
 
 server.tool(
   'perf_heap',
-  '**Managed** heap type census (object count / total bytes per type, Top N) — the first cut of a memory ' +
-    'leak hunt: take two dumps and compare the same type across them. MEASUREMENT SCOPE (read before concluding): ' +
-    '(a) MANAGED heap only — a WPF client\'s growth is often UNMANAGED (bitmaps, font handles, COM, native buffers) or ' +
-    'address-space fragmentation, none of which this can see, so "the managed heap did not grow" does NOT prove "no leak"; ' +
-    '(b) garbage not yet collected between the two samples reads as growth (let the client settle / force a GC, or widen the interval); ' +
-    '(c) the output has types and byte counts only — NO retention paths / GC roots — so it cannot answer "which code leaks"; ' +
-    '(d) when the user says "memory", they usually mean the working set in Task Manager, which is a different measurement — report both separately.',
-  {
-    dumpPath: z.string().describe('Absolute path to the .dmp file'),
-    topN: z.number().optional().describe('Top N types (default 30)'),
-  },
+  mcpDescription('perf_heap'),
+  mcpShape('perf_heap'),
   async (args) => jtext(await prf().heapStats(args.dumpPath, args.topN))
 )
 
@@ -913,43 +875,15 @@ server.tool(
 //   恰好把 agent 推向"猜"）。清单里 E4 是 P0：**DSH 有的，MCP 也要到**。
 server.tool(
   'perf_trace',
-  'ETW sampling profiler — **use this to get from "the UI stutters" to a full call chain** instead of guessing. ' +
-    'action=start begins sampling (you reproduce the problem), action=stop produces the .etl, action=run does start→wait seconds→stop. ' +
-    'Difference from perf_dump: a dump is ONE instant and can only say "who was on the stack"; this samples continuously, so it can say ' +
-    '**who keeps calling what** — which is what intermittent stutter / repaint storms need. ' +
-    'Captures CPU + DotNet presets together (without DotNet, managed method names will not resolve). ' +
-    'Requires DSH to run as ADMIN (ETW kernel session). The .etl can be hundreds of MB. ' +
-    'Then call perf_hotstacks on the .etl to get the chains.',
-  {
-    action: z.enum(['start', 'stop', 'run', 'cancel', 'status']).optional().describe('start | stop | run (default) | cancel | status = is a session running (running comes from our own session marker, not from querying xperf; samplerProcessFound is corroborating and null means unknown)'),
-    seconds: z.number().optional().describe('For action=run: how long to sample (default 20)'),
-    profile: z.enum(['cpu', 'dotnet', 'general']).optional().describe('cpu (default: CPU+DotNet, resolves managed names) | dotnet | general'),
-    tag: z.string().optional().describe('Evidence-dir suffix tag, e.g. repaint-storm'),
-    etlPath: z.string().optional().describe('For action=stop: which .etl to stop into (the etlPath returned by start)'),
-    engine: z.enum(['auto', 'wpr', 'xperf']).optional().describe('Capture engine (default auto): auto = use WPR unless the pre-start self-check says WPR cannot finish a trace on this machine, in which case it switches to xperf; wpr = force WPR; xperf = force xperf. The xperf path does an extra `xperf -merge` on stop BECAUSE module attribution is only produced during that merge (an unmerged trace reports nothing but ***unknown***, not even module names).'),
-    skipPreflight: z.boolean().optional().describe('Skip the pre-start self-check (default false). The check starts a tiny WPR session and immediately stops it to verify that WPR on this machine can finish a trace; with engine=auto its verdict ALSO routes the capture channel (broken WPR -> xperf); with an explicit engine="wpr" start still runs but the result carries a warning (the etl will most likely never appear).'),
-  },
+  mcpDescription('perf_trace'),
+  mcpShape('perf_trace'),
   async (args) => jtext(await trc().trace(args))
 )
 
 server.tool(
   'perf_hotstacks',
-  'Turn a .etl into a **call chain**: hottest-function ranking (who burns CPU) + butterfly view ' +
-    '(each function\'s **callers <-- and --> callees**, with hit counts). ' +
-    'focus keeps only functions whose name matches the regex (e.g. "SciChart|KLine|<your suspect layer>"), ' +
-    'compressing a multi-MB report into one readable causal chain. ' +
-    'NOTE: the **unresolved-symbol ratio is reported on the first line** — if it is high, fix symbols ' +
-    '(DSH_PERF_SYMBOL_PATH) before drawing conclusions, otherwise "symbols did not resolve" gets misread as "that code was never called".',
-  {
-    etlPath: z.string().describe('Absolute path to the .etl produced by perf_trace'),
-    focus: z.string().optional().describe('Regex: keep only matching functions (module or method fragment)'),
-    process: z.string().optional().describe('Process name regex (recommended; defaults to DSH_UI_PROC_NAME)'),
-    topN: z.number().optional().describe('Ranking/chain count, default 15'),
-    minHits: z.number().optional().describe('Butterfly-view minimum hits, default 5'),
-    offline: z.boolean().optional().describe('true = skip the symbol server (fast, but native frames stay unknown)'),
-    timeoutMs: z.number().optional().describe('Report timeout in ms, default 900000'),
-    debugSymbols: z.boolean().optional().describe('true = let xperf print symbol-lookup details (returned in xperfRaw on success and failure alike)'),
-  },
+  mcpDescription('perf_hotstacks'),
+  mcpShape('perf_hotstacks'),
   async (args) => jtext(await trc().hotstacks(args))
 )
 
@@ -1416,16 +1350,8 @@ server.tool(
 
 server.tool(
   'perf_clean',
-  'Clean the perf evidence dir (the .dmp / .etl heavy files). Why it exists: a memory or perf investigation leaves hundreds of MB ' +
-    'and nothing in the toolchain could remove them (G1 black-box finding). DRY-RUN by default (it lists what would go and the total ' +
-    'bytes) and only deletes when confirm=true; only .dmp/.etl are touched, never recursively, never the directory itself; while a trace ' +
-    'session marker (trace-session.json) is present it skips .etl because that may be the file being written. ' +
-    'what=dumps|etls|all (default all), keepDays=N keeps anything newer than N days.',
-  {
-    confirm: z.boolean().optional().describe('REQUIRED true to actually delete. Omit/false = list only (dry run). Deletion is not recoverable'),
-    what: z.enum(['dumps', 'etls', 'all']).optional().describe('Which files: dumps = .dmp only, etls = .etl only, all = both (default)'),
-    keepDays: z.number().optional().describe('Only delete files older than N days (default: no age filter)'),
-  },
+  mcpDescription('perf_clean'),
+  mcpShape('perf_clean'),
   async (args) => jtext(cleanEvidence({ dir: prf().evidenceDir(), confirm: args.confirm === true, what: args.what, keepDays: args.keepDays }))
 )
 
