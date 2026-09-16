@@ -86,12 +86,46 @@ for (const f of walk(root)) {
 // 2. forbidden-reference scan over text files
 //    (skip this script itself and CONTRIBUTING.md, which legitimately
 //     mention the forbidden patterns as examples of what NOT to include)
+//
+//    Scanned by CONTENT SNIFF, not by extension whitelist. The old whitelist
+//    (.js/.mjs/.ps1/.md/.json/.yaml/.yml/.cs) silently skipped every other text
+//    format, and a real leak rode out through that hole: clr-rundown.wprp named
+//    the client in its comments for days while this gate reported PASSED.
+//    A text file is now anything without a NUL byte in its first 4 KB.
+//
+//    Only *committable* files are scanned (tracked + untracked-but-not-ignored),
+//    because that is what "would this leak into the public repo?" means. Local
+//    gitignored junk (e.g. *.log scratch files) can never be committed and must
+//    not turn the gate red — that was the false-positive the sniff first hit.
 const SKIP_SCAN = new Set([join(root, 'scripts', 'check.mjs'), join(root, 'CONTRIBUTING.md')])
+const SIZE_CAP = 2 * 1024 * 1024
+function looksBinary(buf) {
+  const n = Math.min(buf.length, 4096)
+  for (let i = 0; i < n; i++) if (buf[i] === 0) return true
+  return false
+}
+/** Tracked + untracked-not-ignored, as absolute paths. Falls back to null (scan everything). */
+function committableFiles() {
+  try {
+    const r = spawnSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    if (r.status !== 0 || typeof r.stdout !== 'string') return null
+    return new Set(r.stdout.split('\0').filter(Boolean).map((p) => join(root, p)))
+  } catch {
+    return null
+  }
+}
+const COMMITTABLE = committableFiles()
 for (const f of walk(root)) {
   if (SKIP_SCAN.has(f) || isLocalOnly(f)) continue
-  const ext = extname(f)
-  if (!['.js', '.mjs', '.ps1', '.md', '.json', '.yaml', '.yml', '.cs'].includes(ext)) continue
-  const text = readFileSync(f, 'utf8')
+  if (COMMITTABLE !== null && !COMMITTABLE.has(f)) continue
+  let buf
+  try {
+    buf = readFileSync(f)
+  } catch {
+    continue
+  }
+  if (buf.length > SIZE_CAP || looksBinary(buf)) continue
+  const text = buf.toString('utf8')
   for (const pat of FORBIDDEN) {
     if (text.includes(pat)) {
       // Proxy-Authenticate legitimately contains "-Authe..." pattern; skip line-level noise
