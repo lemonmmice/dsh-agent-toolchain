@@ -4,7 +4,7 @@
  */
 import { envOr } from '../../../lib/env-fallback.mjs'
 import { spawn, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join, basename, dirname as dirNameOf } from 'node:path'
 import { homedir } from 'node:os'
 import { decodeBuffer } from '../../../lib/decode.mjs'
@@ -14,6 +14,8 @@ import { fileURLToPath as fileUrlToPath } from 'node:url'
 
 /** 本插件目录（仓库与 profile 两种布局下都成立）。 */
 const BUILD_PLUGIN_DIR = dirNameOf(dirNameOf(fileUrlToPath(import.meta.url)))
+/** 本插件 lib/ 目录 —— 后台构建执行器（build-bg-runner.mjs）与本文件同级。 */
+const BUILD_LIB_DIR = dirNameOf(fileUrlToPath(import.meta.url))
 import {
   isSolutionPath,
   isProjectPath,
@@ -765,6 +767,99 @@ export function makeBuilder(cfg) {
     return null
   }
 
+  // ------------------------------------------------------------ 后台构建（W4：不阻塞）
+  //
+  // 病：`build()` 是**同步阻塞** 8~15 分钟（Rebuild 更久），一次 build_run 期间整个 agent 卡死，
+  // 既不能观察客户端、也不能干别的。抄 Codex `exec_command` 的 yield-or-handle 形状：
+  // background=true 时立刻返回 jobId + 标记文件，真正的 build() 交给一个**分离子进程**去跑，
+  // 用 build_status 轮询（state=running/done/crashed）。**构建逻辑一行未改** —— 后台只是薄壳。
+  //
+  // 诚实三态（沿用本仓风格）：子进程写不出结果又已退出 ⇒ crashed（未完成），绝不当成"通过"。
+  const BG_RUNNER = join(BUILD_LIB_DIR, 'build-bg-runner.mjs')
+  function bgMarkerPath(jobId) { return join(c.logsDir, 'bg-' + jobId + '.json') }
+
+  /** 启动一次后台构建，立即返回（不阻塞）。opts 与 build() 同形。 */
+  function startBackground(opts = {}) {
+    try { mkdirSync(c.logsDir, { recursive: true }) } catch { /* 建不了让下面写标记时如实报错 */ }
+    const suppliedRunId = String(opts.runId ?? '').replace(/[^\w.-]+/g, '_').slice(0, 60)
+    const jobId = suppliedRunId || ('auto-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14))
+    const target = opts.target === 'Rebuild' ? 'Rebuild' : 'Build'
+    const markerPath = bgMarkerPath(jobId)
+    // 显式列出转发给子进程的构建入参（**不**把整包 opts 原样落进标记文件）：标记文件会被读日志的人看到，
+    // 逐字段列出既避免把无关字段写进去，也让"每个参数都有归宿"这件事对参数级守卫可见。
+    // runId 钉成 jobId：子进程 build() 会写 run-<jobId>.json，证据脊柱与前台一致。
+    const buildOpts = {
+      target,
+      project: opts.project,
+      configuration: opts.configuration,
+      platform: opts.platform,
+      engine: opts.engine,
+      repoRoot: opts.repoRoot,
+      clientRoot: opts.clientRoot,
+      killClient: opts.killClient,
+      runId: jobId,
+    }
+    const marker = { jobId, state: 'running', startedAt: new Date().toISOString(), pid: null, target, buildOpts, cfg: c }
+    try {
+      writeFileSync(markerPath, JSON.stringify(marker, null, 2), 'utf8')
+    } catch (e) {
+      return failResult('无法写后台构建标记文件：' + (e && e.message ? e.message : String(e)), { runId: jobId, target, background: true })
+    }
+    let child
+    try {
+      // 分离子进程 + unref：父进程（宿主）不等它、也不持有它，MCP 调用立即返回。
+      child = spawn(process.execPath, [BG_RUNNER, markerPath], { detached: true, stdio: 'ignore', windowsHide: true })
+    } catch (e) {
+      return failResult('无法启动后台构建进程：' + (e && e.message ? e.message : String(e)), { runId: jobId, target, background: true })
+    }
+    child.unref()
+    return {
+      ok: true, background: true, state: 'running', jobId, runId: jobId, target,
+      marker: markerPath,
+      // 给出与 failResult 同形的"安全空壳"：任何读 errors.length 的渲染器都不会因缺字段而崩。
+      errors: [], warnings: [], envErrors: [], errorCount: 0, warningCount: 0, envErrorCount: 0, truncated: false,
+      hint: '后台构建已启动（不阻塞）。用 build_status 轮询：state=running→done/crashed；'
+        + 'done 后结果照常写进 last.json 与 run-' + jobId + '.json（verify_report(kind=build) 可直接用这个 runId）。',
+    }
+  }
+
+  /** 最近一次后台构建任务的状态（没有则 null）。crashed = 进程没了但没写出结果。 */
+  function backgroundStatus() {
+    let files
+    try { files = readdirSync(c.logsDir).filter((f) => /^bg-.*\.json$/.test(f)) } catch { return null }
+    if (!files || files.length === 0) return null
+    let newest = null
+    let newestMs = -1
+    for (const f of files) {
+      try { const st = statSync(join(c.logsDir, f)); if (st.mtimeMs > newestMs) { newestMs = st.mtimeMs; newest = f } } catch { /* ignore */ }
+    }
+    if (!newest) return null
+    const markerPath = join(c.logsDir, newest)
+    let m
+    try { m = JSON.parse(readFileSync(markerPath, 'utf8')) } catch {
+      return { jobId: newest.replace(/^bg-|\.json$/g, ''), state: 'unreadable', marker: markerPath, note: '后台标记文件读不出（可能正在写）—— 稍后再查。' }
+    }
+    const startedMs = m.startedAt ? Date.parse(m.startedAt) : NaN
+    const elapsedMs = Number.isFinite(startedMs) ? Date.now() - startedMs : null
+    let state = m.state || 'running'
+    let pidAlive = null
+    if (state === 'running' && m.pid) {
+      pidAlive = isPidAlive(m.pid)
+      if (!pidAlive) state = 'crashed' // 子进程没了却没写出 done/failed ⇒ 崩了（未完成）
+    }
+    const r = m.result || null
+    return {
+      jobId: m.jobId, state, marker: markerPath,
+      startedAt: m.startedAt || null, finishedAt: m.finishedAt || null,
+      elapsedMs, pid: m.pid ?? null, pidAlive,
+      ...(r ? { ok: r.ok, errorCount: r.errorCount, codeErrorCount: r.codeErrorCount, logPath: r.logPath, runId: r.runId } : {}),
+      ...(m.error ? { error: m.error } : {}),
+      ...(state === 'crashed'
+        ? { note: '后台构建进程已不在，但没有写出结果 —— 视为**崩溃/未完成**，不要当成"通过"。用 build_run 重跑（可去掉 background 看同步报错）。' }
+        : {}),
+    }
+  }
+
   function lastPath() { return join(c.logsDir, 'last.json') }
 
   function persistLast(result) {
@@ -772,12 +867,14 @@ export function makeBuilder(cfg) {
   }
 
   function status() {
+    // W4：轮询后台构建也走 build_status —— 有在跑/刚跑完的后台任务时把它一并带出（附加字段，不改既有字段）。
+    const bg = backgroundStatus()
     try {
       const r = JSON.parse(readFileSync(lastPath(), 'utf8'))
       // F-007：宿主不热加载 —— 每次读"最近一次构建"都顺带说清"这份结论是不是用旧代码读的"。
-      return { hasRun: true, ...r, ...(staleCodeInfo(moduleRoots(BUILD_PLUGIN_DIR)) || {}) }
+      return { hasRun: true, ...r, ...(staleCodeInfo(moduleRoots(BUILD_PLUGIN_DIR)) || {}), ...(bg ? { backgroundJob: bg } : {}) }
     } catch {
-      return { hasRun: false, ...(staleCodeInfo(moduleRoots(BUILD_PLUGIN_DIR)) || {}) }
+      return { hasRun: false, ...(staleCodeInfo(moduleRoots(BUILD_PLUGIN_DIR)) || {}), ...(bg ? { backgroundJob: bg } : {}) }
     }
   }
 
@@ -822,5 +919,5 @@ export function makeBuilder(cfg) {
     return { hasRun: true, logPath: s.logPath, errors, warnings }
   }
 
-  return { config: c, build, status, errorsOfLast, parseErrors, isEnvError, findMsbuild, decodeBuffer, clientProcess, clientInstances, isPidAlive, exePathOf, killClientProcess, listClientPids, lockedFilesOf, logsDir: () => c.logsDir }
+  return { config: c, build, startBackground, backgroundStatus, status, errorsOfLast, parseErrors, isEnvError, findMsbuild, decodeBuffer, clientProcess, clientInstances, isPidAlive, exePathOf, killClientProcess, listClientPids, lockedFilesOf, logsDir: () => c.logsDir }
 }

@@ -115,8 +115,27 @@ export function renderErrors(v) {
  *     汇总行里的数字，两者口径不同（实测 15 vs 32）。直接并排显示会让人以为其中一个是错的。
  *     现在两者都保留，但**明说它们是不同口径**，而不是让调用方去猜。
  */
+/** W4：后台构建任务一行摘要（无则空串）。running/done/failed/crashed/unreadable 都如实说。 */
+function backgroundLine(bg) {
+  if (!bg || typeof bg !== 'object') return ''
+  const age = Number.isFinite(bg.elapsedMs) ? '，已 ' + ageText(bg.elapsedMs) : ''
+  if (bg.state === 'running') return '\n\n后台构建 jobId=' + bg.jobId + '：**运行中**' + age + '（再 build_status 轮询）。'
+  if (bg.state === 'crashed') return '\n\n后台构建 jobId=' + bg.jobId + '：⚠ **崩溃/未完成**' + age + ' —— ' + (bg.note || '进程没了却没写出结果，别当成通过。')
+  if (bg.state === 'unreadable') return '\n\n后台构建 jobId=' + bg.jobId + '：标记文件暂读不出（可能正在写），稍后再查。'
+  if (bg.state === 'done' || bg.state === 'failed') {
+    return '\n\n后台构建 jobId=' + bg.jobId + '：' + (bg.ok ? '**完成（通过）**' : '**完成（失败）**') +
+      (Number.isFinite(bg.codeErrorCount) ? '（' + bg.codeErrorCount + ' 代码错误）' : '') +
+      (bg.logPath ? '，日志 ' + bg.logPath : '') + '，runId=' + (bg.runId || bg.jobId) + '。'
+  }
+  return ''
+}
+
 export function renderStatus(v, now = Date.now()) {
-  if (!v || v.hasRun !== true) return '还没有构建记录（先 build_run；或设置了 DSH_BUILD_LOGS_DIR 指向别处）'
+  if (!v || v.hasRun !== true) {
+    // 没有前台构建记录，但可能有后台任务在跑 —— 那也得说出来。
+    const bgOnly = v && v.backgroundJob ? backgroundLine(v.backgroundJob) : ''
+    return '还没有构建记录（先 build_run；或设置了 DSH_BUILD_LOGS_DIR 指向别处）' + bgOnly
+  }
   const when = v.at ? new Date(v.at) : null
   const ageMs = when && Number.isFinite(when.getTime()) ? now - when.getTime() : null
   const ageTag = ageMs !== null ? '（' + ageText(ageMs) + '）' : ''
@@ -159,7 +178,7 @@ export function renderStatus(v, now = Date.now()) {
   //   没有条目时这段是空串（`entriesSection` 自己判），所以旧行为里的"通过"路径一字未变。
   const errSection = entriesSection('关键错误（解析自日志）', v.errors, 10, '完整日志 ' + (v.logPath || '?'))
   const warnSection = v.errors && v.errors.length ? '' : entriesSection('警告（解析自日志）', v.warnings, 10, '完整日志 ' + (v.logPath || '?'))
-  return [head, ...notes].join('\n') + errSection + warnSection
+  return [head, ...notes].join('\n') + errSection + warnSection + backgroundLine(v.backgroundJob)
 }
 
 /**
@@ -201,6 +220,11 @@ export function renderBuild(v) {
 
 function renderBuildCore(v) {
   if (!v) return '构建没有返回结果（工具执行异常）'
+  // W4：后台启动结果（不阻塞）。build() 还没跑，只是把它交给了分离子进程。
+  if (v.background === true && v.state === 'running') {
+    return '后台构建已启动（jobId=' + (v.jobId || '?') + '，target=' + (v.target || '?') + '）—— **不阻塞**，本次调用立即返回。\n' +
+      '用 build_status 轮询：state=running→done/crashed；done 后结果照常写进 last.json 与 run-' + (v.runId || v.jobId || '?') + '.json。'
+  }
   if (v.clientRunning && !v.killClient) {
     return '客户端正在运行（PID ' + v.clientPid + '），输出文件被锁无法构建：' + v.error + hintsFor(v.error)
   }

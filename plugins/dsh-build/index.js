@@ -85,10 +85,13 @@ const tools = () => [
       clientRoot: { type: 'string', description: '可选：客户端/解决方案根目录（等价于 repoRoot，优先于环境变量 DSH_BUILD_CLIENT_ROOT）' },
       killClient: { type: 'boolean', description: '客户端在运行时强制结束它再构建（会打断用户界面，需先确认）。⚠ **与 ui_launch(force=true) 同样会销毁唯一现场**：客户端卡死/卡顿要先取证（perf_dump 抓快照、hang_run 挂监测），证据到手再杀；否则 dump/线程栈/证据包都没了' },
       runId: { type: 'string', description: '可选：本次任务的 runId。传了才会写 run-<runId>.json 凭证记录（verify_report 的 build 类 claim 正是读这个文件；不传则只写 last.json，多 agent 并发时会互相覆盖）。建议用 who-task-n 形式，如 dsh-logon-fix-1' },
+      background: { type: 'boolean', description: '可选：后台构建，**不阻塞**。true 时立即返回 jobId（=runId），真正的构建交给分离子进程去跑，用 build_status 轮询（state=running→done/crashed）。默认 false（同步，行为不变）。适合 Rebuild 这种 5-10 分钟的全量构建：先起后台，期间可继续观察客户端/干别的' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderBuild(v) }] },
     timeoutMs: 16 * 60 * 1000,
     async execute(args) {
+      // W4：后台构建立即返回 jobId，不阻塞（构建逻辑不变，只是换到分离子进程里跑）。
+      if (args.background === true) return bld().startBackground(args)
       const r = await bld().build(args)
       if (r.codeErrorCount > 0) {
         const first = (r.errors && r.errors[0]) || {}
