@@ -41,6 +41,8 @@ import { buildToolchainStatus } from '../lib/toolchain-status.mjs'
 import { queryPage, appendRecords, readAll, readRetention } from '../lib/capture-store.mjs'
 import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote } from '../plugins/dsh-api-visualizer/lib/query-view.mjs'
 import { makeVerificationReport } from '../lib/verify/report.mjs'
+import { attachInlineImage } from './inline-image.mjs'
+import { makeToolTrace, wrapToolArgs } from '../lib/tool-trace.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -48,6 +50,17 @@ const server = new McpServer({
   name: 'dsh-agent-toolchain',
   version: '0.1.0',
 })
+
+// W2 —— 工具调用追踪（见 CODEX-STEAL-ANALYSIS-20260916.md / lib/tool-trace.mjs）。
+// 单一 chokepoint：包住 server.tool 的 handler，记录 {tool, runId, 起止时间, ms, ok, errorCode}
+// 到 tool-trace.jsonl（**不记参数/输出**，隐私安全，对齐 Codex call_trace）。
+// 默认关（env DSH_TOOL_TRACE 未开 → wrap 是恒等，注册的仍是原 handler，零开销/零回归）。
+const _toolTrace = makeToolTrace({
+  enabled: /^(1|true|yes|on)$/i.test(process.env.DSH_TOOL_TRACE || ''),
+  dir: process.env.DSH_TOOL_TRACE_DIR || join(homedir(), '.dsh-agent-toolchain', 'tool-trace'),
+})
+const _origTool = server.tool.bind(server)
+server.tool = (...args) => _origTool(...wrapToolArgs(args, _toolTrace.wrap))
 
 // ---------------------------------------------------------------- shared
 
@@ -66,6 +79,11 @@ const jtext = (o) => {
   if (isError) r.isError = true
   return r
 }
+
+// W5 —— 截图内联（见 CODEX-STEAL-ANALYSIS-20260916.md / mcp/inline-image.mjs）。
+// UI 只读/动作结果的统一出口：文本 JSON（含截图 path，零回归）之上，按需（env DSH_UI_INLINE_IMAGE，
+// 默认关）追加一个 MCP image 块，让有视觉能力的客户端一步看到界面，省掉「回路径→再开读图工具」两轮往返。
+const uiJtext = (r) => attachInlineImage(jtext(withHint(r)), r)
 
 let driver = null
 function drv() {
@@ -428,7 +446,7 @@ server.tool(
     // r44：`describe=true` 以前是**幽灵参数**（声明了、handler 从不实现 ⇒ 模型以为拿到了描述，其实没有）。
     // 现在真的接上：vision 模块是自包含的（读 ~/.dsh/settings.yaml + .credentials.yaml），不需要宿主 API。
     await attachVision(r, args)
-    return jtext(withHint(r))
+    return uiJtext(r)
   }
 )
 
@@ -587,7 +605,7 @@ server.tool(
   },
   async (args) => {
     const r = await drv().drive({ ...args, action: args.action })
-    return jtext(withHint(r))
+    return uiJtext(r)
   }
 )
 
@@ -640,7 +658,7 @@ server.tool(
         l.uiState = { error: String((e && e.message) || e) }
       }
     }
-    return jtext(l)
+    return attachInlineImage(jtext(l), l)
   }
 )
 
@@ -775,7 +793,7 @@ server.tool(
     }
     const r = await drv().drive(args)
     if (!r.ok) autoRecord('tool-error', 'ui_act', `ui_act ${args.action} failed: ${String(r.error ?? 'unknown').slice(0, 200)}`)
-    return jtext(withHint(r))
+    return uiJtext(r)
   }
 )
 
@@ -907,6 +925,8 @@ server.tool(
     profile: z.enum(['cpu', 'dotnet', 'general']).optional().describe('cpu (default: CPU+DotNet, resolves managed names) | dotnet | general'),
     tag: z.string().optional().describe('Evidence-dir suffix tag, e.g. repaint-storm'),
     etlPath: z.string().optional().describe('For action=stop: which .etl to stop into (the etlPath returned by start)'),
+    engine: z.enum(['auto', 'wpr', 'xperf']).optional().describe('Capture engine (default auto): auto = use WPR unless the pre-start self-check says WPR cannot finish a trace on this machine, in which case it switches to xperf; wpr = force WPR; xperf = force xperf. The xperf path does an extra `xperf -merge` on stop BECAUSE module attribution is only produced during that merge (an unmerged trace reports nothing but ***unknown***, not even module names).'),
+    skipPreflight: z.boolean().optional().describe('Skip the pre-start self-check (default false). The check starts a tiny WPR session and immediately stops it to verify that WPR on this machine can finish a trace; with engine=auto its verdict ALSO routes the capture channel (broken WPR -> xperf); with an explicit engine="wpr" start still runs but the result carries a warning (the etl will most likely never appear).'),
   },
   async (args) => jtext(await trc().trace(args))
 )
@@ -1068,10 +1088,15 @@ server.tool(
 server.tool(
   'memory_index',
   'Index a local directory into the long-term memory vector store (incremental: skips unchanged files by mtime; skips bin/obj/node_modules). ' +
+    'BOUNDED: each call stops at a time budget (budgetMs, default 60000) and reports how many files remain — call it again with the same path to continue (finished files are skipped by mtime, so nothing is redone). ' +
+    'A file is indexed all-or-nothing: if the budget runs out mid-file the partial chunks are rolled back, so a half-indexed file can never silently disappear from search. ' +
     'PRIVACY: when a MiniMax API key is configured, file chunks are embedded via the REMOTE api.minimax.chat endpoint — indexed content leaves this machine. ' +
     'Fail-closed: files containing tokens/secrets are skipped before embedding and counted as sensitiveSkipped. Multiple roots coexist; indexing one directory never deletes another directory\'s chunks.',
-  { path: z.string().describe('Absolute directory to index') },
-  async (args) => jtext(await mem().indexWorkspace(args.path))
+  {
+    path: z.string().describe('Absolute directory to index'),
+    budgetMs: z.number().optional().describe('Time budget for this call in ms (default 60000). When it runs out the call stops and reports the remaining files; call again to continue.'),
+  },
+  async (args) => jtext(await mem().indexWorkspace(args.path, { budgetMs: args.budgetMs }))
 )
 
 server.tool(
