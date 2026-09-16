@@ -1101,8 +1101,7 @@ server.tool(
 
 server.tool(
   'failure_record',
-  'Record one failure / human-handoff event into the local failure corpus (JSONL, local-only, never uploaded). ' +
-    'Call this every time a task fails, verification disagrees with a claim, a tool malfunctions, or a human had to take over. Facts, not blame.',
+  mcpDescription('failure_record'),
   {
     task: z.string().describe('One-line task name'),
     failureClass: z.enum(FAILURE_CLASSES).describe('Failure class from the fixed taxonomy: ' + FAILURE_CLASSES.join(' | ')),
@@ -1123,27 +1122,15 @@ server.tool(
 
 server.tool(
   'failure_query',
-  'Query the local failure corpus: substring q (task/description/resolution), failureClass, tag, time range. Returns newest-first records. ' +
-    'Records that were later shown to be recorded wrongly are EXCLUDED by default (see `retractedExcluded` in the response); ' +
-    'pass includeRetracted=true to see them with their retraction reason. Reads ALL shards (active + rotated archives).',
-  {
-    q: z.string().optional(),
-    failureClass: z.enum(FAILURE_CLASSES).optional(),
-    tag: z.string().optional(),
-    fromTs: z.number().optional().describe('Earliest ts (epoch ms)'),
-    toTs: z.number().optional().describe('Latest ts (epoch ms)'),
-    limit: z.number().optional().describe('Max records, default 50, max 500'),
-    offset: z.number().optional(),
-    includeRetracted: z.boolean().optional().describe('Include records that were retracted (each carries retractedReason). Default false.'),
-  },
+  mcpDescription('failure_query'),
+  mcpShape('failure_query'),
   async (args) => jtext(fc().query(args))
 )
 
 server.tool(
   'failure_stats',
-  'Failure corpus stats: total/last 7-30 days/per-class counts (ACTIVE shard only — the corpus contract), plus totalAllShards / ' +
-    'archivedRecords / filesScanned so a shrinking `total` is explainable, and `retracted` so withdrawn records are visible rather than silently dropped.',
-  {},
+  mcpDescription('failure_stats'),
+  mcpShape('failure_stats'),
   async () => jtext(fc().stats())
 )
 
@@ -1153,29 +1140,15 @@ server.tool(
 //   后果很具体：源码根没配 ⇒ 只能给方法名、给不出 文件:行号 —— 而用户最想要的就是那一行。
 server.tool(
   'toolchain_status',
-  '**Run this first.** One call that answers "can I actually get code-level evidence right now?", and tells you what each missing ' +
-    'precondition is and how to fix it. Checks: is the target client running (pid) / source roots (DSH_HANG_SRC_ROOT, DSH_PERF_SRC_ROOT — ' +
-    'these decide whether you get `file:line`) / the dump trio (procdump + DumpStack + DAC — decides whether a hang yields a thread stack) / ' +
-    'symbol path / **admin rights** (required for ETW sampling) / evidence dirs. ' +
-    'Every value carries its **source** (process env / user registry / not configured), so "configured but not inherited" and "never configured" ' +
-    'are two different statements; anything that cannot be checked says so instead of pretending to pass. ' +
-    'Typical use: when hang_analyze gives you a method name but no line number, check here for a missing source root — do not guess by trial and error.',
-  {
-    deep: z.boolean().optional().describe('true = also do the heavier work (count .cs files under the source root, count evidence-dir entries). Default false: existence checks only, returns immediately.'),
-  },
+  mcpDescription('toolchain_status'),
+  mcpShape('toolchain_status'),
   async (args) => jtext(await buildToolchainStatus({ deep: args && args.deep === true }))
 )
 
 server.tool(
   'failure_retract',
-  'Mark a failure-corpus record as WRONGLY recorded (append-only: the original line stays on disk for audit; query/stats then stop counting it). ' +
-    'Use when evidence later proves a recorded failure was itself a false positive (e.g. a verification tool that misjudged a true claim). ' +
-    'A reason is REQUIRED. Retracting a non-existent id is refused.',
-  {
-    id: z.string().describe('The record id to retract, e.g. fc-20260911-5729'),
-    reason: z.string().describe('Why this record is wrong. Required — a retraction without a reason is not auditable.'),
-    by: z.string().optional().describe('Who retracts it (free text).'),
-  },
+  mcpDescription('failure_retract'),
+  mcpShape('failure_retract'),
   async (args) => jtext(fc().retract(args))
 )
 
@@ -1316,20 +1289,7 @@ server.tool(
 
 server.tool(
   'verify_report',
-  'Assemble the verification report for one runId and adjudicate each claim FROM EVIDENCE, not self-rating: ' +
-    'kind=build reads the per-run build record (run-<runId>.json); kind=api queries the **dsh-api-visualizer capture store** ' +
-  '(NOT the dsh-postman panel history — two different stores); ' +
-    'kind=file checks path existence (⚠ existence only — a file nobody compiles still passes), kind=compiled checks project compile membership, ' +
-  'kind=gate runs a command (exit 0 = pass), kind=git checks repo state, kind=manual is an explicit agent-supplied status ' +
-  '(SELF-RATING: verdict=pass means the claim matched the status you supplied, NOT that the fact was independently verified). ' +
-  'Per-kind fields: build {statement, runId?} / api {statement, filter?, expect?} / file {statement, path} / compiled {statement, path, project?, repoRoot?} / ' +
-  'gate {statement, cmd, cwd?} / git {statement, ref?, gitConfig?} / manual {statement, evidence?}. ' +
-  'Pick ONE runId first and reuse it verbatim in build_run / capture_append / verify_report — a mismatch fails the claim and is recorded as agent-misjudge. ' +
-    'An api claim is automatically bound to this runId (BV-01: another run traffic must not certify this one), so filter alone still only ' +
-    'matches THIS run; to claim "interfaces were exercised", record evidence first with capture_append({runId}). ' +
-    'Prefer kind=gate (a real command) whenever one exists. ' +
-    'Verdict: pass / incomplete / fail. Evidence-contradicted claims auto-record as agent-misjudge in the failure corpus. ' +
-    'This is the physical carrier of "evidence over claims" — call it before declaring a task done.',
+  mcpDescription('verify_report'),
   {
     runId: z.string().describe('Unique run id (e.g. task-2-toolchain-1)'),
     task: z.string().describe('One-line task name'),
