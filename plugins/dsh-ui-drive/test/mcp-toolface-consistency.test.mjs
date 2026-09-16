@@ -195,13 +195,18 @@ for (const t of TOOLS) {
 
 // ------------------------------------------------- 5. 过时措辞：MCP 面不得再出现"交易专用"话术
 //    12d1be6 已把「按名硬拒」更正为通用机制；MCP 面当时被漏掉，这里钉死。
+//    W1：ui_act 描述已迁进单一真源 lib/tool-registry.mjs —— 安全语义随描述迁移，这里对
+//        "serverSrc + 注册表的 ui_act 描述(中/英)" 合并后查（描述在哪，语义检查就跟到哪）。
 {
-  check('mcp/server.mjs 不再出现 "Trading controls … hard-denied" 旧话术',
-    !/Trading controls/i.test(serverSrc))
-  check('mcp/server.mjs 不再把硬拒说成 buy/sell/order/pay 专用',
-    !/buy\/sell\/order\/pay/i.test(serverSrc))
-  check('mcp/server.mjs 说明了硬拒名单可由 DSH_UI_DENY_RE 覆盖（通用机制）',
-    /DSH_UI_DENY_RE/.test(serverSrc))
+  const { REGISTRY } = await import('../../../lib/tool-registry.mjs')
+  const uiActDesc = (REGISTRY.ui_act?.descZh || '') + '\n' + (REGISTRY.ui_act?.descEn || '')
+  const combined = serverSrc + '\n' + uiActDesc
+  check('MCP 面（含注册表 ui_act 描述）不再出现 "Trading controls … hard-denied" 旧话术',
+    !/Trading controls/i.test(combined))
+  check('MCP 面不再把硬拒说成 buy/sell/order/pay 专用',
+    !/buy\/sell\/order\/pay/i.test(combined))
+  check('MCP 面（注册表 ui_act 描述）说明了硬拒名单可由 DSH_UI_DENY_RE 覆盖（通用机制）',
+    /DSH_UI_DENY_RE/.test(combined))
 }
 
 // ------------------------------------------------- 6. 缺失工具必须显式记录（当前是"支持缺失"，不是 bug，但不能沉默）

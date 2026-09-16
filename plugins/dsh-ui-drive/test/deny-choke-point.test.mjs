@@ -157,10 +157,15 @@ function T([string]$n) { $el = New-Object PSObject -Property @{ Current = (New-O
 }
 
 // ------------------------------------------------- 5. 文档与代码一致（原先 drag 的承诺没兑现）
+//   W1：ui_act/ui_drive 的描述已迁进单一真源 lib/tool-registry.mjs —— 这两条文档不变量对
+//       "index.js + 注册表里 ui_act/ui_drive 描述" 合并后查（描述在哪，文档检查就跟到哪）。
 {
   const idx = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.js'), 'utf8')
-  check('工具说明把 drag 列入必须授权的动作', /click\/setvalue\/key\/type\/drag\/clickat\/doubleclick 必须传 allowSideEffects/.test(idx))
-  check('工具说明不再声称 doubleclick 是"坐标双击"', !/doubleclick=坐标双击/.test(idx))
+  const { REGISTRY } = await import('../../../lib/tool-registry.mjs')
+  const descs = ['ui_act', 'ui_drive'].map((t) => (REGISTRY[t]?.descZh || '') + '\n' + (REGISTRY[t]?.descEn || '')).join('\n')
+  const combined = idx + '\n' + descs
+  check('工具说明把 drag 列入必须授权的动作', /click\/setvalue\/key\/type\/drag\/clickat\/doubleclick 必须传 allowSideEffects/.test(combined))
+  check('工具说明不再声称 doubleclick 是"坐标双击"', !/doubleclick=坐标双击/.test(combined))
 }
 
 try { rmSync(scriptsDir, { recursive: true, force: true }); rmSync(evidenceDir, { recursive: true, force: true }) } catch { }
