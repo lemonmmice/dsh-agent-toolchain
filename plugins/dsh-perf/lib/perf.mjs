@@ -3,7 +3,7 @@
  */
 import { envOr } from '../../../lib/env-fallback.mjs'
 import { spawn, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 // 帧 → 源码「文件:行号」的映射（F-009）。独立成模块以便离线单测。
@@ -33,6 +33,15 @@ const TOOLS = resolveDumpTools({
 const PROCDUMP = TOOLS.procdump
 const DUMPSTACK = TOOLS.dumpstack
 const DAC_DIR = TOOLS.dacDir
+// HeapRoots（#2 GC root/保留链，ClrMD）：显式 env 优先；否则**从 DumpStack 同目录派生**
+// —— 交付时把 HeapRoots.exe 放在 DumpStack.exe 旁边，这样零新增配置、重启即生效（不必改 ~/.claude.json）。
+const HEAPROOTS = envOr('DSH_PERF_HEAPROOTS') || (DUMPSTACK ? join(dirNameOf(DUMPSTACK), 'HeapRoots.exe') : '')
+// PerfView（真·采集，/threadTime）+ UiFreezeStacks（TraceEvent 提取器，复刻 dotTrace UI Freeze）：
+// 显式 env 优先，否则**从 procdump 同目录派生**（交付时把 PerfView.exe / UiFreezeStacks.exe 放 procdump 旁边，零新增配置）。
+const PERFVIEW = envOr('DSH_PERF_PERFVIEW') || (PROCDUMP ? join(dirNameOf(PROCDUMP), 'PerfView.exe') : '')
+// UiFreezeStacks 是 framework-dependent 发布（apphost 自寻全局 .NET 运行时；`amd64/msdia140.dll` 读 pdb 必需，
+// 单文件自包含发布会丢它 → 必须整个发布**文件夹**部署到 `<tools>/uifreeze-bin/`）。
+const UIFREEZE_EXE = envOr('DSH_PERF_UIFREEZE') || (PROCDUMP ? join(dirNameOf(PROCDUMP), 'uifreeze-bin', 'UiFreezeStacks.exe') : '')
 
 export function makePerf(cfg) {
   const c = {
@@ -44,6 +53,9 @@ export function makePerf(cfg) {
     procdump: PROCDUMP,
     dumpstack: DUMPSTACK,
     dacDir: DAC_DIR,
+    heapRoots: HEAPROOTS,
+    perfView: PERFVIEW,
+    uiFreezeStacks: UIFREEZE_EXE,
     ...cfg,
   }
   // 空字符串不是「配置」：调用方习惯写 evidenceDir: process.env.X || ''，
@@ -52,6 +64,7 @@ export function makePerf(cfg) {
   if (!c.procdump) c.procdump = PROCDUMP
   if (!c.dumpstack) c.dumpstack = DUMPSTACK
   if (!c.dacDir) c.dacDir = DAC_DIR
+  if (!c.heapRoots) c.heapRoots = HEAPROOTS
   if (!c.srcRoot) c.srcRoot = envOr('DSH_PERF_SRC_ROOT')
   // 源根的取值顺序：本插件专用 → 客户端通用（DSH_API_SRC_ROOT 由宿主启动脚本注入）
   // → 构建插件用的客户端根。三者都没有时 srcmap 会如实报 usable=false，
@@ -442,6 +455,107 @@ export function makePerf(cfg) {
     return (mapped[0] && mapped[0].src) || null
   }
 
+  /**
+   * `perf_gcroot` —— 堆 GC root / 保留链（#2，补 PerfView 那条 perf_heap 答不了的「谁 keep 住了对象」）。
+   * 走自建的 HeapRoots.exe（ClrMD）：无 type 时给托管堆 Top 类型；给 type 时额外报该类型对象的
+   * root → 对象 保留链（root 种类 + 沿途类型名）。DAC 复用 findDac（与 dump 分析同一套）。
+   * 口径诚实（渲染层再强化一次）：只看**托管堆**；单次快照 count/bytes 大 ≠ 泄漏（要跨时间对比）。
+   */
+  async function gcRoots(dumpPath, opts = {}) {
+    if (!dumpPath || !existsSync(dumpPath)) return { ok: false, error: 'dump 不存在：' + String(dumpPath) }
+    if (!existsSync(c.heapRoots)) {
+      return { ok: false, error: 'HeapRoots 不可用：' + c.heapRoots +
+        '（ClrMD 分析器；交付时应与 DumpStack.exe 同目录，或用 DSH_PERF_HEAPROOTS 指定）',
+        toolDiagnostics: { heapRoots: c.heapRoots, dumpstack: c.dumpstack } }
+    }
+    const args = [dumpPath, '--top', String(Math.min(Math.max(Number(opts.top) || 30, 5), 100))]
+    if (opts.type) { args.push('--type', String(opts.type)); args.push('--paths', String(Math.min(Math.max(Number(opts.paths) || 5, 1), 50))) }
+    const dac = findDac(dumpPath)
+    if (dac) { args.push('--dac', dac) }
+    const r = await runExe(c.heapRoots, args, 300000)
+    if (r.timedOut) return { ok: false, error: 'HeapRoots 超时（堆很大时可调小 --top / 只查一个 --type）' }
+    let data
+    try { data = JSON.parse(String(r.stdout).trim().split('\n').pop()) } catch {
+      return { ok: false, error: 'HeapRoots 输出解析失败', tail: (r.stdout + r.stderr).slice(-600) }
+    }
+    if (!data || data.ok !== true) return { ok: false, error: (data && data.error) || 'HeapRoots 失败', tail: (r.stdout + r.stderr).slice(-400) }
+    // 口径钉进数据（与 heapStats 同源）：单次快照不判泄漏；仅托管堆。
+    return {
+      ...data,
+      snapshot: true,
+      scopeNote: '**单次快照 + 仅托管堆**：count/bytes 大只表示"当前占用多"，**不等于泄漏**（泄漏要同一类型跨时间增长，隔段时间再抓一份对比）；' +
+        '非托管内存（bitmap/字体句柄/COM/native buffer）与工作集（任务管理器那个数）本工具看不到，别用它下"没有泄漏"的结论。',
+      queriedType: opts.type || null,
+    }
+  }
+
+  // ── perf_uifreeze 后端：真 PerfView 采集(/threadTime) + UiFreezeStacks 提取（dotTrace「消息泵间隙>200ms」判据）。
+  //    两段式：start 起采集 → 你手动复现卡顿 → stop 停+合并+分析，出「UI 线程冻结 N 次、每次多久、卡在哪条托管调用链」。
+  //    UI 线程**自动认**（UiFreezeStacks 取泵消息最多的那条），不再需要 detectUiThread 回调/抓 dump。
+  //    符号默认 /symcached（只用本地缓存、不连 msdl，避免本机 msdl 极慢卡死）；托管方法名靠 etl 里的 rundown 不依赖 msdl。
+  async function uiFreeze(opts = {}) {
+    const action = String(opts.action || '').toLowerCase()
+    if (!existsSync(c.perfView)) {
+      return { ok: false, error: 'PerfView.exe 不可用：' + c.perfView + '（放到 procdump 同目录，或 DSH_PERF_PERFVIEW 指定）',
+        toolDiagnostics: { perfView: c.perfView, uiFreezeStacks: c.uiFreezeStacks } }
+    }
+    const dir = join(c.evidenceDir, 'uifreeze')
+    const etl = join(dir, 'uifreeze.etl')
+    const zip = etl + '.zip'
+    const sessionFile = join(c.evidenceDir, 'uifreeze-pv-session.json')
+
+    if (action === 'start') {
+      try { mkdirSync(dir, { recursive: true }) } catch { /* ignore */ }
+      await runExe(c.perfView, ['abort', '/nogui', '/accepteula'], 60000) // 清残留会话（无则忽略）
+      const r = await runExe(c.perfView, ['start', '/threadTime', '/nogui', '/accepteula', '/BufferSizeMB:256', '/CircularMB:1024', '/DataFile:' + etl], 120000)
+      if (r.code !== 0) return { ok: false, error: 'PerfView start 失败（需管理员权限起 ETW 内核会话）', tail: (r.stdout + r.stderr).slice(-500) }
+      try { writeFileSync(sessionFile, JSON.stringify({ dir, etl, zip, startedAt: Date.now(), process: String(opts.process || c.procName || '') }), 'utf8') } catch { /* ignore */ }
+      return { ok: true, started: true, dir, etl,
+        hint: '已起 PerfView /threadTime 采集。现在去**复现卡顿**（冷启点进那个页面/按钮）；页面一出来就调 perf_uifreeze(action="stop")。窗口越短、解析越快越干净。' }
+    }
+    if (action !== 'stop') return { ok: false, error: 'action 必须是 start 或 stop' }
+
+    // stop：停 + 合并 + 分析
+    let session = null
+    try { session = JSON.parse(readFileSync(sessionFile, 'utf8')) } catch { session = null }
+    const useDir = (session && session.dir) || dir
+    const useEtl = (session && session.etl) || etl
+    const useZip = (session && session.zip) || zip
+    const proc = String(opts.process || (session && session.process) || c.procName || '').trim()
+
+    const sr = await runExe(c.perfView, ['stop', '/nogui', '/accepteula', '/DataFile:' + useEtl], 300000)
+    try { rmSync(sessionFile, { force: true }) } catch { /* ignore */ }
+    if (!existsSync(useZip)) return { ok: false, error: 'PerfView stop 没产出 ' + basename(useZip) + '（是否没先 action="start"，或采集被别的会话打断？）', tail: (sr.stdout + sr.stderr).slice(-500) }
+    if (!existsSync(c.uiFreezeStacks)) return { ok: false, error: 'UiFreezeStacks.exe 不可用：' + c.uiFreezeStacks + '（放到 procdump 同目录，或 DSH_PERF_UIFREEZE 指定）', etlZip: useZip }
+
+    // pid：UiFreezeStacks 用 /pid 精确过滤（也顺带让 census 只含目标进程）；查不到就用 /process 名字。
+    let pid = opts.pid || null
+    if (!pid && proc) {
+      try { const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + proc + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true }); const m = /"[^"]*","(\d+)"/.exec(out); if (m) pid = m[1] } catch { /* ignore */ }
+    }
+
+    const jsonOut = join(useDir, 'uifreeze.json')
+    const args = [useZip]
+    if (pid) args.push('/pid:' + String(pid)); else if (proc) args.push('/process:' + proc)
+    if (opts.tid) args.push('/tid:' + String(opts.tid))
+    const sym = String(opts.symbols || 'cached').toLowerCase()
+    if (sym === 'off') args.push('/nosym'); else if (sym === 'full') { /* 默认白名单+msdl，慢 */ } else args.push('/symcached')
+    args.push('/top:' + String(Math.min(Math.max(Number(opts.top) || 15, 3), 50)))
+    args.push('/json:' + jsonOut)
+    const r = await runExe(c.uiFreezeStacks, args, Number(opts.timeoutMs) || 900000)
+    if (r.timedOut) return { ok: false, error: 'UiFreezeStacks 超时（trace 太大 / 采集窗口开太久 / full 符号在下 msdl）', etlZip: useZip }
+    let data
+    try { data = JSON.parse(readFileSync(jsonOut, 'utf8')) } catch {
+      return { ok: false, error: 'UiFreezeStacks 输出解析失败', etlZip: useZip, tail: (r.stdout + r.stderr).slice(-600) }
+    }
+    if (opts.keepEtl === false) { try { rmSync(useZip, { force: true }) } catch { /* ignore */ } }
+    return {
+      ...data, // freezeThresholdMs, freezeCount, freezeTotalMs, freezes[], threads[], target{}, sessionMs
+      ok: true, etlZip: existsSync(useZip) ? useZip : null, jsonPath: jsonOut,
+      process: proc || null, pid: pid || null, symbols: sym,
+    }
+  }
+
   function listEvidence(limit = 20) {
     try {
       return readdirSync(c.evidenceDir, { withFileTypes: true })
@@ -458,7 +572,7 @@ export function makePerf(cfg) {
     }
   }
 
-  return { config: c, probe, report, dump, analyzeDump, heapStats, locateType, listEvidence, evidenceDir: () => c.evidenceDir, srcMap }
+  return { config: c, probe, report, dump, analyzeDump, heapStats, gcRoots, uiFreeze, locateType, listEvidence, evidenceDir: () => c.evidenceDir, srcMap }
 }
 
 /**

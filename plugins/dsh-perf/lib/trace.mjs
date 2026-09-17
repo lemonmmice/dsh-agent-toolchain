@@ -28,14 +28,43 @@
  *   2. **绝不把原始 HTML 丢回去**：几 MB 的 HTML 对模型毫无价值，必须压缩成可读的调用链文本。
  */
 import { envOr } from '../../../lib/env-fallback.mjs'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { parseClrEvents, parseTraceSummary, summarizeClr } from './clr-events.mjs'
+import { foldDumperCsv, foldAllocCsv, foldedToText, buildTree, renderFlameHtml } from './flame.mjs'
+import { buildJitMapStreaming } from './jitmap.mjs'
+import { analyzeThreadWaits } from './uifreeze.mjs'
 
 const PROGRAM_FILES_X86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
-export const DEFAULT_WPR = process.env.DSH_PERF_WPR || join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wpr.exe')
+const SYSTEM32 = join(process.env.SystemRoot || 'C:\\Windows', 'System32')
+export const DEFAULT_WPR = process.env.DSH_PERF_WPR || join(SYSTEM32, 'wpr.exe')
 export const DEFAULT_XPERF = process.env.DSH_PERF_XPERF || join(PROGRAM_FILES_X86, 'Windows Kits', '10', 'Windows Performance Toolkit', 'xperf.exe')
+/** tracerpt.exe：把 .etl 解码成可解析的 XML（CLR 事件那条线全靠它）。 */
+export const DEFAULT_TRACERPT = process.env.DSH_PERF_TRACERPT || join(SYSTEM32, 'tracerpt.exe')
+/** logman.exe：起一条**独立**的 CLR 用户态会话（不依赖 WPR —— 本机 WPR 收不了尾）。 */
+export const DEFAULT_LOGMAN = process.env.DSH_PERF_LOGMAN || join(SYSTEM32, 'logman.exe')
+
+/**
+ * CLR 采集会话（`perf_trace(clr=true)`）挂的 provider —— **只挂一个**。
+ *
+ * ⚠ 为什么不是三个：`logman start` **不接受第二个 `-p`**。实测（2026-09-17）：
+ *     `logman start x -p A 0x18 0x5 -p B 0x18 0x5 -o f.etl -ets`
+ *     → `Argument 'p' has been defined too many times.`，退出码 `0x80070057`。
+ *   要挂多个 provider 就得起**多条会话**（spike v2 就是这么做的：两条会话各一个 provider，各自成 etl）。
+ *
+ * ⚠ 为什么现在只挂 GC 这条：`0x18`（Loader|JIT）与 `...Rundown` 的产出是给**尚末接线的**
+ *   「地址→方法」join 用的（见 docs/perfview-parity.md §4）。接线之前先挂上它们 = 白付磁盘开销，
+ *   而且会**多背一份尚未测量的观测者开销**（clr-rundown.wprp 那次已经证明采集能把被观测进程搞热：
+ *   46% 的包含命中落在 ETW 投递帧上）。等 join 真做、污染也量过，再按需加会话。
+ *
+ * keyword `0x4001` = GC(0x1) | Contention(0x4000)；level `0x5` = Verbose。三者都是 spike 验过的。
+ */
+export const CLR_PROVIDERS = [
+  { provider: 'Microsoft-Windows-DotNETRuntime', keywords: '0x4001', level: '0x5' },
+]
+
 
 /** wpr 预设名映射（wpr -profiles 里的大小写就是这些）。 */
 export const PROFILES = { cpu: 'CPU', dotnet: 'DotNet', general: 'GeneralProfile' }
@@ -175,6 +204,8 @@ export function makeTrace(cfg = {}) {
     evidenceDir: join(homedir(), '.dsh-agent-toolchain', 'perf-evidence'),
     wpr: DEFAULT_WPR,
     xperf: DEFAULT_XPERF,
+    tracerpt: DEFAULT_TRACERPT,
+    logman: DEFAULT_LOGMAN,
     procName: envOr('DSH_UI_PROC_NAME'),
     symbolPath: envOr('DSH_PERF_SYMBOL_PATH') || process.env._NT_SYMBOL_PATH || '',
     // 符号缓存根（跨运行共享）。空 = evidenceDir/symbol-cache。
@@ -273,6 +304,217 @@ export function makeTrace(cfg = {}) {
    * action=start → 起采样（等你复现）; stop → 停并产出 etl; run → 起→等 seconds 秒→停。
    * @returns {ok, etlPath?, seconds?, profile?, error?, hint?}
    */
+  // ---------------------------------------------------------------- CLR 用户态会话（perf_trace(clr=true)）
+  //
+  // 为什么是**独立会话**、而不是给 WPR 加一份自定义档：
+  //   · 本机 WPR 收不了尾（engine=auto 会路由到 xperf），而 xperf 那条通道的参数
+  //     `PROC_THREAD+LOADER+PROFILE+CSWITCH` 是**纯内核 flag** —— 实测 276 MB 的 trace.etl 经
+  //     tracerpt 汇总**连 e13c0d23 都没有**（CLR provider 从没被打开过）。
+  //   · logman 起一条只挂 CLR provider 的用户态会话：不依赖 WPR、etl 小、tracerpt 可控，
+  //     与内核会话**并行互不干扰** ⇒ 对既有 xperf/WPR 路径**零改动**（这是刻意的：那条路很脆）。
+  //   · 这正是 clr-events-spike FINDINGS.md 给出的形状（"已验证机制，未接入 trace.mjs"）。
+
+  /** logman 会话名（机器全局唯一；同一时刻不支持两次并行 CLR 采集，第二次会先停掉第一次）。 */
+  const CLR_SESSION = 'dshperfclr'
+
+  async function clrSessionStop() {
+    const r = await runExe(c.logman, ['stop', CLR_SESSION, '-ets'], { timeoutMs: 120000 })
+    const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 300)
+    return { ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw }
+  }
+
+  async function clrSessionStart(etlPath) {
+    // 上一次崩掉会留下同名会话，直接 start 会因"已存在"失败 ⇒ 先无条件停一次（停不掉也无所谓）。
+    await clrSessionStop()
+    const args = ['start', CLR_SESSION]
+    for (const p of CLR_PROVIDERS) args.push('-p', p.provider, p.keywords, p.level)
+    args.push('-o', etlPath, '-ets')
+    const r = await runExe(c.logman, args, { timeoutMs: 60000 })
+    const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 500)
+    return {
+      ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw,
+      session: CLR_SESSION, etlPath, command: 'logman ' + args.join(' '),
+    }
+  }
+
+  // ---------------------------------------------------------------- CLR 方法/rundown 会话（perf_trace(jit=true)）
+  //
+  // 用途：给 §4 的「地址→方法」映射供数据。Rundown provider `Microsoft-Windows-DotNETRuntimeRundown`
+  // keyword `0x118`（EndRundown 0x100 | Jit 0x10 | Loader 0x8）—— DCEnd 在**会话停止那一刻**触发，
+  // 一次性枚举当前所有已 JIT 方法（含采样窗口内新 JIT 的，只要停止时还活着）。
+  // ★ 为什么低污染（回应 docs §4.4）：keyword **不含** StartRundown(0x40) ⇒ 采样窗口内它基本不产事件，
+  //   只在 stop 那一刻集中吐 —— 不会像自定义采样档那样把被观测进程搞热。实测（2026-09-17）15s 窗口内
+  //   rundown 会话产出的采样期事件≈0，方法记录全部集中在 stop（devenv 单进程 46619 方法）。
+  const JIT_SESSION = 'dshperfjit'
+
+  async function jitSessionStop() {
+    const r = await runExe(c.logman, ['stop', JIT_SESSION, '-ets'], { timeoutMs: 120000 })
+    const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 300)
+    return { ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw }
+  }
+
+  async function jitSessionStart(etlPath) {
+    await jitSessionStop()
+    const args = ['start', JIT_SESSION, '-p', 'Microsoft-Windows-DotNETRuntimeRundown', '0x118', '0x5', '-o', etlPath, '-ets']
+    const r = await runExe(c.logman, args, { timeoutMs: 60000 })
+    const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 500)
+    return {
+      ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw,
+      session: JIT_SESSION, etlPath, command: 'logman ' + args.join(' '),
+    }
+  }
+
+  // ---------------------------------------------------------------- CLR 分配采样会话（perf_trace(alloc=true)）
+  //
+  // AllocationTick（GC keyword 0x1, Verbose）每分配约 100KB 采一次，带 TypeName + 字节；配 `:'stack'`
+  // 让 xperf 给**每个 AllocationTick 附一条调用栈** —— 就能折出「谁在分配/制造 GC 压力」的分配火焰图
+  // （PerfView 的 GC Heap Alloc Stacks）。用 **xperf 命名用户会话**（logman 不便给用户态事件附栈）。
+  // ★ 关键语法（实测）：栈限定符是**字面量 `'stack'`（带单引号）**，是 provider 串的第 4 段：
+  //   `Provider:Keywords:Level:'stack'`。spawn 不过 shell ⇒ 这里的单引号原样传给 xperf（对）。
+  //   ⚠ 只对**能解出 manifest 的 CLR**有效：本机 .NET Framework 客户端（ClientApp/OtherApp，manifest 已注册）
+  //   会正常解成 GCAllocationTick；.NET Core/5+ 进程会落成 UnknownEvent/Crimson（manifest 未注册）——
+  //   我们的目标客户端是 .NET Framework 4.5.2，正是能解的那类。
+  const ALLOC_SESSION = 'dshperfalloc'
+  const ALLOC_PROVIDER = 'Microsoft-Windows-DotNETRuntime:0x1:0x5:\'stack\''
+
+  async function allocSessionStop(mergedEtl) {
+    // -d 合并：把原始 etl 合成带模块归属的最终 etl（原生帧才有模块名）。给了 mergedEtl 才合并。
+    const args = mergedEtl ? ['-stop', ALLOC_SESSION, '-d', mergedEtl] : ['-stop', ALLOC_SESSION]
+    const r = await runExe(c.xperf, args, { timeoutMs: 300000 })
+    const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 300)
+    return { ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw }
+  }
+
+  async function allocSessionStart(rawEtl) {
+    await allocSessionStop() // 清掉可能残留的同名会话
+    const args = ['-start', ALLOC_SESSION, '-on', ALLOC_PROVIDER, '-f', rawEtl]
+    const r = await runExe(c.xperf, args, { timeoutMs: 120000 })
+    const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 500)
+    return {
+      ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw,
+      session: ALLOC_SESSION, etlPath: rawEtl, command: 'xperf ' + args.join(' '),
+    }
+  }
+
+  /**
+   * `perf_clrevents` —— 从 .etl 汇总 CLR 运行期事件（GC 停顿 / 各代次数 / 托管堆 / 锁争用）。
+   *
+   * 补的是 perf_probe（只测 UI 消息泵）与 perf_dump（冻结抓一瞬间）之间那条缝：
+   * **「GC 暂停导致的卡顿」** —— 实时行情 WPF 客户端最典型的卡顿成因之一。
+   *
+   * ★ 本工具最重要的一条是**三态**，不是数字：
+   *     ① etl 里根本没有 CLR provider（e13c0d23 / a669021c 都没出现）⇒ **"没采"**，
+   *        不是"没有 GC"。这是最容易把 agent 带沟里的一种：他会据此断言"客户端没有 GC 停顿"。
+   *     ② provider 在、窗口内 GC/Start = 0 ⇒ 那**才**叫"这段窗口确实没发生 GC"。
+   *     ③ 解码失败/超时 ⇒ "未知"，不许回落成 0。
+   *   所以 `state` 字段是结果的主语，数字只在 ①/② 分清楚之后才有意义。
+   */
+  async function clrEvents(args = {}) {
+    const etl = args.etlPath ? String(args.etlPath) : ''
+    if (!etl) return { ok: false, state: 'etl-missing', error: '需要 etlPath（perf_trace 产出的 .etl）' }
+    if (!existsSync(etl)) return { ok: false, state: 'etl-missing', etlPath: etl, error: 'etlPath 不存在：' + etl }
+    if (!existsSync(c.tracerpt)) {
+      return { ok: false, state: 'tracerpt-missing', etlPath: etl, error: 'tracerpt.exe 不存在：' + c.tracerpt + '（可用 DSH_PERF_TRACERPT 指定）' }
+    }
+    const timeoutMs = Math.min(Math.max(Number(args.timeoutMs) || 900000, 10000), 3600000)
+    const dir = dirname(etl)
+    const stem = basename(etl).replace(/\.etl$/i, '')
+    const summaryPath = args.summaryPath ? String(args.summaryPath) : join(dir, stem + '.clr-summary.txt')
+    const etlBytes = statSync(etl).size
+
+    // ① 便宜的先跑：`-summary` 且**不带 `-o`** ⇒ 不生成 XML。实测 79.5 MB 的 etl 14 秒出结果，
+    //    足够回答"这个 etl 里到底有没有 CLR provider"这个真正的前置问题。
+    const g = await runExe(c.tracerpt, [etl, '-summary', summaryPath, '-y'], { timeoutMs })
+    const gateRaw = (((g && g.stdout) || '') + ((g && g.stderr) || '')).trim().slice(-500)
+    if (!g || g.timedOut) {
+      return { ok: false, state: 'tracerpt-timeout', etlPath: etl, etlBytes, summaryPath, raw: gateRaw, error: 'tracerpt 读摘要超时' }
+    }
+    if (g.code !== 0 || !existsSync(summaryPath)) {
+      return {
+        ok: false, state: 'tracerpt-failed', etlPath: etl, etlBytes, summaryPath,
+        exitCode: g.code, raw: gateRaw,
+        error: 'tracerpt 读摘要失败（exit ' + g.code + '）—— **未解码，所以"有没有 GC"是未知，不是 0**。',
+      }
+    }
+    let summary = null
+    try { summary = parseTraceSummary(readFileSync(summaryPath, 'utf8')) } catch (e) {
+      return { ok: false, state: 'summary-unreadable', etlPath: etl, summaryPath, error: '摘要读不出来：' + e }
+    }
+
+    // ② 闸门：provider 不在就**到此为止**，不再花几分钟解 XML（几百 MB 的 etl 能解出 GB 级）
+    if (!summary.hasClr) {
+      // 名字直接用 tracerpt 摘要表里 Event Name 列的原值 —— 那是 etl 自己带的信息。
+      // （早先版本走 `logman query providers` 反查，真机发现内核 GUID 全查不到、全成"(未收录)"。）
+      const known = summary.providers
+        .map((p) => ({ guid: p.guid, events: p.events, name: p.name || null }))
+        .sort((a, b) => b.events - a.events)
+      return {
+        ok: false, state: 'no-clr-provider', etlPath: etl, etlBytes, summaryPath, summary,
+        providers: known,
+        error: '这个 etl 里**没有 CLR provider**（e13c0d23 / a669021c 都没出现）—— ' +
+          '这是「**没采**」，**不是「没有 GC 停顿」**。当前 etl 只含 ' + summary.providerCount + ' 个 provider（共 ' +
+          (summary.totalEvents === null ? '未读到' : summary.totalEvents) + ' 条事件）。',
+        hint: '要拿 GC 数据，用 perf_trace(action="run", seconds=N, clr=true) 采一份带 CLR 会话的；' +
+          '或直接把已有的 CLR etl 喂给本工具。',
+      }
+    }
+
+    // ③ 解码 XML。解码体积实测是 etl 的 4~6×（303 KB→1.80 MB、2.9 MB→12.7 MB、13.4 MB→53.7 MB），
+    //    几百 MB 的系统 trace 会变成 GB 级 —— 所以默认设闸，并把估算值如实报出来。
+    const estXmlBytes = Math.round(etlBytes * 6)
+    const maxXmlBytes = (Number(args.maxXmlMb) > 0 ? Number(args.maxXmlMb) : 2048) * 1024 * 1024
+    if (estXmlBytes > maxXmlBytes) {
+      return {
+        ok: false, state: 'xml-too-large', etlPath: etl, etlBytes, summaryPath, summary,
+        estimatedXmlBytes: estXmlBytes, maxXmlBytes,
+        error: '预计解码出 ' + Math.round(estXmlBytes / 1048576) + ' MB XML，超过上限 ' +
+          Math.round(maxXmlBytes / 1048576) + ' MB（实测解码体积 ≈ etl × 4~6）⇒ 未解码。' +
+          '**"有没有 GC"因此是未知，不是 0。**',
+        hint: '三种走法：① 用 perf_trace(clr=true) 采一份**provider 独占**的小 etl（CLR 事件只占总量的极小部分）；' +
+          '② 传更大的 maxXmlMb；③ 传 xmlPath 直接复用已解好的 XML。',
+      }
+    }
+    const xmlPath = args.xmlPath ? String(args.xmlPath) : join(dir, stem + '.clr.xml')
+    const d = await runExe(c.tracerpt, [etl, '-o', xmlPath, '-of', 'XML', '-y'], { timeoutMs })
+    const decRaw = (((d && d.stdout) || '') + ((d && d.stderr) || '')).trim().slice(-500)
+    if (!d || d.timedOut) {
+      return { ok: false, state: 'decode-timeout', etlPath: etl, summaryPath, summary, xmlPath, estimatedXmlBytes: estXmlBytes, raw: decRaw, error: '解码 XML 超时（**未解码 ⇒ 未知，不是 0**）' }
+    }
+    if (d.code !== 0 || !existsSync(xmlPath)) {
+      return { ok: false, state: 'decode-failed', etlPath: etl, summaryPath, summary, xmlPath, exitCode: d.code, raw: decRaw, error: '解码 XML 失败（exit ' + d.code + '）—— **未解码 ⇒ 未知，不是 0**' }
+    }
+    const xmlBytes = statSync(xmlPath).size
+    let events = []
+    try { events = parseClrEvents(readFileSync(xmlPath, 'utf8')) } catch (e) {
+      return { ok: false, state: 'xml-unreadable', etlPath: etl, xmlPath, error: '解码后的 XML 读不出来：' + e }
+    }
+    const s = summarizeClr(events)
+    const counts = new Map()
+    for (const e of events) counts.set(e.kind, (counts.get(e.kind) || 0) + 1)
+    const eventsByKind = [...counts.entries()]
+      .map(([kind, n]) => ({ kind, n }))
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 15)
+    // ③ 与 ② 的分界：provider 在、但窗口内一条 GC/Start 都没有 —— 这是**真的没有 GC**，要说清楚。
+    const noGcInWindow = s.gcCount === 0
+    return {
+      ok: true, state: 'clr-present', etlPath: etl, etlBytes, xmlPath, xmlBytes, summaryPath,
+      clrRuntimeEvents: summary.clrRuntimeEvents, clrRundownEvents: summary.clrRundownEvents,
+      parsedEvents: events.length, eventsByKind,
+      noGcInWindow,
+      ...s,
+      note: '停顿口径：GC/SuspendEEStart → 其后第一个 GC/RestartEEStop（= 托管线程被冻结→恢复的真实时长）。'
+        + (noGcInWindow
+          ? '⚠ 本 etl **有 CLR provider 但窗口内 0 条 GC/Start** ⇒ 这是"这段窗口确实没发生 GC"（**与"没采"是两回事**）。'
+          : ''),
+    }
+  }
+
+  // ⚠ 曾经有过一个 `providerNameMap()`（`logman query providers` 反查 GUID→名字），**已删除**：
+  //   真机实测内核那几个 GUID 在注册表里查不到，10 个 provider 全落成「(未收录)」——
+  //   名字改从 tracerpt 摘要表的 Event Name 列取（etl 自己带的信息，更准也更省一次子进程）。
+  //   留这段是因为"反查注册表"是个很自然会想再犯一次的念头。
+
   async function trace(args = {}) {
     const action = String(args.action || 'run').toLowerCase()
     const key = String(args.profile || 'cpu').toLowerCase()
@@ -297,6 +539,10 @@ export function makeTrace(cfg = {}) {
       const target = (session && session.etlPath) || etl
       let sizeBytes = null
       try { if (existsSync(target)) sizeBytes = statSync(target).size } catch { sizeBytes = null }
+      // CLR 那条独立会话也一并报出来：它和内核会话是**两条**，一条在跑不代表另一条也在。
+      const clrEtl = session && session.clrEtl ? String(session.clrEtl) : null
+      let clrSizeBytes = null
+      try { if (clrEtl && existsSync(clrEtl)) clrSizeBytes = statSync(clrEtl).size } catch { clrSizeBytes = null }
       return {
         ok: true, action: 'status',
         running: session !== null,            // ⚠ 这是**我们自己记的标记**，不是查 xperf 得到的（见下）
@@ -304,6 +550,9 @@ export function makeTrace(cfg = {}) {
         elapsedMs: session && session.startedAt ? (Date.now() - Number(session.startedAt)) : null,
         etlPath: target, sizeBytes,
         profile: (session && session.profile) || null,
+        clr: session && session.clrSession
+          ? { session: session.clrSession, etlPath: clrEtl, sizeBytes: clrSizeBytes, basis: '会话标记' }
+          : null,
         samplerProcessFound: samplerRunning(),  // true/false/**null=查不到**（null 不等于没在跑）
         hint: session
           ? '采样进行中（按标记）——复现完成后调 perf_trace(action="stop", etlPath="' + target + '") 停并产出 etl。'
@@ -321,6 +570,33 @@ export function makeTrace(cfg = {}) {
       const engine = (session0 && session0.engine === 'xperf') ? 'xperf' : 'wpr'
       const rawEtlPath = session0 && session0.rawPath ? String(session0.rawPath) : null
       const cancelOnly = action === 'cancel'
+      // ★ CLR 会话**必须在这里就停**：stop 分支后面有 6 条早返回（合并失败 / 收尾坏 / 没产出 etl …），
+      //   任何一条漏停都会留下一个**一直在写 etl 的 logman 孤儿会话** —— 而 ETW 会话在运行中
+      //   不会自己收尾（同族的 F-056/R1-02：跟踪日志运行中不自动轮转），孤儿会话会一直吃盘。
+      //   CLR etl 路径是**确定的**（dirname(etl)/clr-events.etl），所以即使标记丢了也找得回来。
+      const clrFixed = join(dirname(etl), 'clr-events.etl')
+      const clrEtlPath = session0 && session0.clrEtl
+        ? String(session0.clrEtl)
+        : (existsSync(clrFixed) ? clrFixed : null)
+      const clrStop = (session0 && session0.clrSession) ? await clrSessionStop() : null
+      const clrFields = clrEtlPath ? { clrEtlPath, ...(clrStop ? { clrStop } : {}) } : {}
+      // start 时若 CLR 会话没起来，警告在这里**补回来**（`action="run"` 只看得到最终结果）。
+      if (session0 && session0.clrWarning && !clrFields.clrWarning) clrFields.clrWarning = session0.clrWarning
+      // ★ JIT/rundown 会话同理**必须在这里就停**（否则同样留孤儿会话）；DCEnd 就在这一停里吐出方法记录。
+      //   路径确定为 dirname(etl)/jit-methods.etl ⇒ 标记丢了也找得回。
+      const jitFixed = join(dirname(etl), 'jit-methods.etl')
+      const jitEtlPath = session0 && session0.jitEtl
+        ? String(session0.jitEtl)
+        : (existsSync(jitFixed) ? jitFixed : null)
+      const jitStop = (session0 && session0.jitSession) ? await jitSessionStop() : null
+      const jitFields = jitEtlPath ? { jitEtlPath, ...(jitStop ? { jitStop } : {}) } : {}
+      if (session0 && session0.jitWarning && !jitFields.jitWarning) jitFields.jitWarning = session0.jitWarning
+      // ★ 分配会话（xperf 用户会话）同样必须在这里停；-d 合并成带模块归属的 alloc-events.etl（否则孤儿会话吃盘）。
+      const allocMerged = join(dirname(etl), 'alloc-events.etl')
+      const allocStop = (session0 && session0.allocSession) ? await allocSessionStop(allocMerged) : null
+      const allocEtlPath = existsSync(allocMerged) ? allocMerged : null
+      const allocFields = allocEtlPath ? { allocEtlPath, ...(allocStop ? { allocStop } : {}) } : {}
+      if (session0 && session0.allocWarning && !allocFields.allocWarning) allocFields.allocWarning = session0.allocWarning
       let r = null
       let mergeRun = null
       if (engine === 'xperf') {
@@ -345,7 +621,7 @@ export function makeTrace(cfg = {}) {
         if (s && String(s.etlPath || '').toLowerCase() === String(etl).toLowerCase()) rmSync(legacy, { force: true })
       } catch { /* 没有孤儿标记 / 不属于本次：都不动 */ }
       if (cancelOnly) {
-        return { ok: Boolean(r) && r.code === 0, cancelled: true, engine, raw: (r ? (r.stdout + r.stderr) : '').slice(0, 400) }
+        return { ok: Boolean(r) && r.code === 0, cancelled: true, engine, ...clrFields, raw: (r ? (r.stdout + r.stderr) : '').slice(0, 400) }
       }
       if (!existsSync(etl)) {
         const rTxt = r ? (r.stdout + r.stderr) : ''
@@ -353,7 +629,7 @@ export function makeTrace(cfg = {}) {
         //    否则调用方会把"没合并 ⇒ 报告没有模块归属"读成"客户端没有热点"。
         if (engine === 'xperf' && rawEtlPath && existsSync(rawEtlPath)) {
           return {
-            ok: false, engine,
+            ok: false, engine, ...clrFields,
             error: '**已采到原始 etl，但 `xperf -merge` 没产出合并文件**' +
               '⇒ 直接拿原始 etl 出报告会**一个模块名都没有**（不是"没有热点"）。',
             rawPath: rawEtlPath,
@@ -368,7 +644,7 @@ export function makeTrace(cfg = {}) {
         let cleanup = null
         try { const cr = await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 }); cleanup = (cr.stdout + cr.stderr).trim().slice(0, 200) } catch { /* ignore */ }
         return {
-          ok: false, engine,
+          ok: false, engine, ...clrFields,
           error: '停止后未生成 etl' + (sig
             ? '（**这台机器的 WPR 收尾坏了**：' + sig + '，wpr -stop 实测退出码 ' + exitCode + '，不产出文件）'
             : (exitCode === null ? '' : '（wpr -stop 退出码 ' + exitCode + '）')),
@@ -386,11 +662,31 @@ export function makeTrace(cfg = {}) {
         }
       }
       const size = statSync(etl).size
+      let clrEtlBytes = null
+      if (clrEtlPath && existsSync(clrEtlPath)) { try { clrEtlBytes = statSync(clrEtlPath).size } catch { clrEtlBytes = null } }
+      let jitEtlBytes = null
+      if (jitEtlPath && existsSync(jitEtlPath)) { try { jitEtlBytes = statSync(jitEtlPath).size } catch { jitEtlBytes = null } }
       return {
         ok: true, etlPath: etl, sizeBytes: size, profile: key, profiles, engine,
         ...(engine === 'xperf' && rawEtlPath ? { rawPath: rawEtlPath } : {}),
+        ...clrFields,
+        ...(clrEtlPath ? { clrEtlBytes } : {}),
+        ...jitFields,
+        ...(jitEtlPath ? { jitEtlBytes } : {}),
+        ...allocFields,
         hint: '下一步用 perf_hotstacks(etlPath) 出调用链；可加 focus 只保留包含某模块/函数名的栈' +
-          (engine === 'xperf' ? '（本次走 xperf 通道，收尾已做 `-merge`：**模块归属只在合并时产生**，省了这步报告会全是 ***unknown***）' : ''),
+          (allocEtlPath ? '\n本次带了分配采样会话 ⇒ `perf_allocflame(etlPath="' + allocEtlPath + '")` 出「谁在分配」的分配火焰图（按字节加权）。' : '') +
+          (engine === 'xperf' ? '（本次走 xperf 通道，收尾已做 `-merge`：**模块归属只在合并时产生**，省了这步报告会全是 ***unknown***）' : '') +
+          (jitEtlPath
+            ? '\n本次带了 JIT 会话 ⇒ `perf_flame(etlPath="' + etl + '")` 会**自动**用同目录的 jit-methods.etl 把客户端方法名解出来（§4）' +
+              (jitEtlBytes === 0 ? '（⚠ 该 etl **是 0 字节**：JIT 会话没写进东西 —— 客户端方法名会解不出，别读成"没有客户端代码"）' : '')
+            : '') +
+          (clrEtlPath
+            ? '\n本次带了 CLR 会话 ⇒ 另有 `perf_clrevents(etlPath="' + clrEtlPath + '")` 可出 GC 停顿/各代/堆/争用；' +
+              (clrEtlBytes === null ? '（该 etl 现在读不到大小，注意它可能没产出）'
+                : clrEtlBytes === 0 ? '（⚠ 该 etl **是 0 字节**：CLR 会话没写进东西 —— 别把"没有 GC 数据"读成"没有 GC"）'
+                : '（' + clrEtlBytes + ' 字节）')
+            : ''),
       }
     }
 
@@ -454,13 +750,64 @@ export function makeTrace(cfg = {}) {
     if (started.code !== 0) {
       return { ok: false, engine, error: engine + ' -start 失败', raw: (started.stdout + started.stderr).slice(0, 500), profiles, ...(preflight ? { preflight } : {}) }
     }
+    // CLR 会话（`clr=true`，默认关）。
+    // ★ 它**失败不推翻**主采集：内核那条已经采上了，为了一个附加会话把整次采样判失败，
+    //   只会让调用方白跑一轮复现。失败如实带 clrWarning，并明确写出「没有 GC 数据 ≠ 没有 GC 停顿」。
+    let clr = null
+    let clrWarning = null
+    if (args.clr === true) {
+      const clrEtl = join(dir, 'clr-events.etl')
+      clr = await clrSessionStart(clrEtl)
+      if (!clr.ok) {
+        clrWarning = '⚠ **CLR 会话没起来**（' + (clr.exitCode === null ? '未拿到退出码' : 'logman 退出码 ' + clr.exitCode) + '）：' +
+          (clr.raw || '(logman 无输出)') +
+          '\n⇒ 本次**没有 GC 数据** —— 那是「没采」，**不是「客户端没有 GC 停顿」**。' +
+          '内核会话不受影响，perf_hotstacks 照常可用。'
+      }
+    }
+    // JIT/rundown 会话（`jit=true`，默认关）—— 给 perf_flame 的 §4 地址→方法映射供数据。
+    // ★ 同 CLR：失败不推翻主采集；DCEnd 在 stop 才吐 ⇒ 采样窗口内低污染（见 jitSessionStart 注释）。
+    let jit = null
+    let jitWarning = null
+    if (args.jit === true) {
+      const jitEtl = join(dir, 'jit-methods.etl')
+      jit = await jitSessionStart(jitEtl)
+      if (!jit.ok) {
+        jitWarning = '⚠ **JIT/rundown 会话没起来**（' + (jit.exitCode === null ? '未拿到退出码' : 'logman 退出码 ' + jit.exitCode) + '）：' +
+          (jit.raw || '(logman 无输出)') +
+          '\n⇒ 本次**没有方法映射** —— perf_flame 里客户端自己的方法会解不出（聚成 [unknown]），' +
+          '那是「没采映射」，**不是「没有客户端代码在跑」**。内核采样不受影响。'
+      }
+    }
+    // 分配采样会话（`alloc=true`，默认关）—— 给 perf_allocflame 供数据（AllocationTick + 栈）。
+    // ★ 同 CLR/JIT：失败不推翻主采集。它是 xperf **命名用户会话**，与内核会话并存。
+    let alloc = null
+    let allocWarning = null
+    if (args.alloc === true) {
+      const allocRaw = join(dir, 'alloc-events-raw.etl')
+      alloc = await allocSessionStart(allocRaw)
+      if (!alloc.ok) {
+        allocWarning = '⚠ **分配采样会话没起来**（xperf 退出码 ' + (alloc.exitCode === null ? '未知' : alloc.exitCode) + '）：' +
+          (alloc.raw || '(xperf 无输出)') +
+          '\n⇒ 本次**没有分配栈** —— perf_allocflame 无数据。那是「没采」，**不是「没有分配」**。内核采样不受影响。'
+      }
+    }
     // start 成功后落一个会话标记（status 靠它；stop/cancel 清掉）。
     // 写**证据目录根**下的固定路径 —— 与 evidence-clean.mjs 的读者端对齐（R1-04）。
     // ★ R1-14：标记里**必须记 engine**（stop 靠它决定找谁收尾）+ xperf 的原始 etl 路径（合并要用）。
+    // ★ CLR 同理：标记里记下会话名与 etl，stop 才能把它停掉（否则留下一直在写盘的孤儿会话）。
     try {
       writeFileSync(sessionFile, JSON.stringify({
         etlPath: etl, startedAt: Date.now(), profile: key, tag: args.tag || null, dir, engine,
         ...(engine === 'xperf' ? { rawPath: rawEtl } : {}),
+        ...(clr && clr.ok ? { clrSession: clr.session, clrEtl: clr.etlPath } : {}),
+        // ★ clrWarning 也要进标记：`action="run"` 是**一次性**调用，用户只读得到最后一个结果 ——
+        //   警告只挂在 start 的返回值上，那种调用就看 **不到** CLR 会话起不来这件事（真机 e2e 抓到）。
+        ...(clrWarning ? { clrWarning } : {}),
+        ...(jit && jit.ok ? { jitSession: jit.session, jitEtl: jit.etlPath } : {}),
+        ...(jitWarning ? { jitWarning } : {}),
+        ...(alloc && alloc.ok ? { allocSession: alloc.session, allocRaw: alloc.etlPath } : {}),
+        ...(allocWarning ? { allocWarning } : {}),
       }), 'utf8')
     } catch { /* 标记写不进去要在 status 里如实体现 */ }
     if (action === 'start') {
@@ -468,9 +815,21 @@ export function makeTrace(cfg = {}) {
         ok: true, started: true, profile: key, profiles, etlPath: etl, engine,
         ...(engine === 'xperf' ? { rawPath: rawEtl, captureArgs: 'xperf -on PROC_THREAD+LOADER+PROFILE+CSWITCH -stackwalk PROFILE+CSWITCH' } : {}),
         ...(preflight ? { preflight } : {}),
+        ...(clr ? { clr: { ok: clr.ok, session: clr.session, etlPath: clr.etlPath, exitCode: clr.exitCode, command: clr.command }, clrEtlPath: clr.etlPath } : {}),
+        ...(jit ? { jit: { ok: jit.ok, session: jit.session, etlPath: jit.etlPath, exitCode: jit.exitCode, command: jit.command }, jitEtlPath: jit.etlPath } : {}),
+        ...(alloc ? { alloc: { ok: alloc.ok, session: alloc.session, etlPath: alloc.etlPath, exitCode: alloc.exitCode, command: alloc.command } } : {}),
         ...(preflightWarning ? { warning: preflightWarning } : {}),
+        ...(clrWarning ? { clrWarning } : {}),
+        ...(jitWarning ? { jitWarning } : {}),
+        ...(allocWarning ? { allocWarning } : {}),
         hint: '复现问题后调用 perf_trace(action="stop", etlPath="' + etl + '")；期间可用 perf_trace(action="status") 确认采样还在跑（按标记文件判断）。' +
-          (preflightWarning ? '\n' + preflightWarning : ''),
+          (clr && clr.ok ? '\nCLR 会话已并行起来（' + clr.etlPath + '）⇒ 停完用 perf_clrevents 出 GC 停顿/各代/堆/争用。' : '') +
+          (jit && jit.ok ? '\nJIT/rundown 会话已并行起来（' + jit.etlPath + '）⇒ 停完 perf_flame 会自动用它解客户端方法名（§4）。' : '') +
+          (alloc && alloc.ok ? '\n分配采样会话已并行起来 ⇒ 停完用 perf_allocflame 出「谁在分配」的分配火焰图。' : '') +
+          (preflightWarning ? '\n' + preflightWarning : '') +
+          (clrWarning ? '\n' + clrWarning : '') +
+          (jitWarning ? '\n' + jitWarning : '') +
+          (allocWarning ? '\n' + allocWarning : ''),
       }
     }
     const seconds = Math.min(Math.max(Number(args.seconds) || 20, 3), 600)
@@ -663,7 +1022,343 @@ export function makeTrace(cfg = {}) {
     }, symFields, s)
   }
 
-  return { trace, hotstacks, isElevated, parseStackReport, symbolEnv, symbolPathInfo, config: () => c }
+  /**
+   * 从 etl 出**火焰图**（folded stacks + 自包含可交互 HTML）。
+   *
+   * 与 hotstacks 的分工：hotstacks 给「谁最热 + 蝶形（调用者/被调用者对）」的**文本**；
+   * flame 给「从根到叶的一整棵 CPU 时间树」的**可点开图**（补 PerfView §1 那条"交互式 GUI"）。
+   * 走的是 `xperf -a dumper`（逐样本 + Stack 事件含完整帧），流式折叠、按进程过滤（见 flame.mjs 顶部）。
+   *
+   * @param args.etlPath   perf_trace 产出的 .etl（必填）
+   * @param args.process   只折叠该进程名（正则，默认 DSH_UI_PROC_NAME）
+   * @param args.symbols   true = dumper 带 -symbols 解析原生/框架帧（慢、走符号服务器）；默认 false = 模块级（快）
+   * @param args.csvPath   复用一份已生成的 dumper CSV（跳过重新解码，省几分钟 + 省 GB 级重复落盘）
+   * @param args.keepCsv   true = 折叠后保留那份 GB 级 dumper CSV（默认删掉，folded/html 已落好）
+   * @param args.jitEtl    CLR 方法/rundown 会话产出的 etl（perf_trace(jit=true) 的 jit-methods.etl）。
+   *                       传了（或自动发现 kernel etl 旁的同名文件）就把客户端 JIT 帧解成**真实托管方法名**（§4）。
+   * @param args.noJit     true = 即便旁边有 jit-methods.etl 也不用（只要模块级火焰图）
+   * @param args.timeoutMs dumper 解码超时（默认 900000）
+   */
+  async function flame(args = {}) {
+    const etl = args.etlPath
+    if (!etl || !existsSync(etl)) return { ok: false, error: 'etlPath 不存在：' + String(etl) }
+    if (!existsSync(c.xperf)) return { ok: false, error: 'xperf.exe 不存在：' + c.xperf + '（可用 DSH_PERF_XPERF 指定）' }
+    const proc = String(args.process || c.procName || '').trim()
+    if (!proc) {
+      return { ok: false, error: '没有目标进程名：请传 process，或配 DSH_UI_PROC_NAME。' +
+        '火焰图**必须按进程折叠** —— 不然会把整机所有进程的栈混成一锅（dumper 是系统级的）。' }
+    }
+    let processRe
+    try { processRe = new RegExp(proc, 'i') } catch { return { ok: false, error: 'process 不是合法正则：' + proc } }
+    const symbols = args.symbols === true
+    const frameMode = symbols ? 'symbols' : 'module'
+    const dir = dirname(etl)
+    const csv = args.csvPath || join(dir, 'flame-dumper.csv')
+    const reusing = Boolean(args.csvPath) && existsSync(csv)
+
+    // ── JIT 映射（§4）：把客户端自己的 `"Unknown"!0xADDR` JIT 帧解成真实托管方法名。
+    //    默认自动发现 kernel etl 旁的 jit-methods.etl（perf_trace(jit=true) 的产出）；noJit 可关。
+    let jitMap = null
+    let jitInfo = null
+    const jitEtl = args.noJit === true ? null : (args.jitEtl || (existsSync(join(dir, 'jit-methods.etl')) ? join(dir, 'jit-methods.etl') : null))
+    if (jitEtl) {
+      const decoded = await jitMapFromEtl(jitEtl, { timeoutMs: Number(args.timeoutMs) || 900000, processRe })
+      jitInfo = decoded.info
+      if (decoded.ok) jitMap = decoded.map
+    }
+
+    const t0 = Date.now()
+    let dumperMs = null
+    if (!reusing) {
+      // dumper 会把 etl 里的原始事件逐条打出来（含每帧一行的 Stack 事件）。symbols=true 才连符号服务器。
+      const cmd = []
+      if (symbols) cmd.push('-symbols')
+      cmd.push('-i', etl, '-o', csv, '-a', 'dumper')
+      const r = await runExe(c.xperf, cmd, { timeoutMs: Number(args.timeoutMs) || 900000, env: symbolEnv(!symbols) })
+      dumperMs = Date.now() - t0
+      if (r.timedOut) {
+        // 超时会留一份**残缺** CSV（可能几 GB）：删掉，别让下一次看到"CSV 在"就以为好了。
+        try { if (existsSync(csv)) rmSync(csv, { force: true }) } catch { /* ignore */ }
+        return { ok: false, timedOut: true, etlPath: etl,
+          error: 'xperf -a dumper 解码超时（' + dumperMs + 'ms）。dumper 的 CSV 是 etl 的 ~7×，大 etl 很慢 —— ' +
+            '建议用更短的采集时长重采，或加大 timeoutMs。', raw: (r.stdout + '\n' + r.stderr).slice(-500) }
+      }
+      if (!existsSync(csv)) {
+        return { ok: false, etlPath: etl, error: 'xperf -a dumper 未产出 CSV', raw: (r.stdout + '\n' + r.stderr).slice(-600) }
+      }
+    }
+    const csvBytes = existsSync(csv) ? statSync(csv).size : null
+
+    const fold = await foldDumperCsv(csv, { processRe, frameMode, jitMap })
+    const cleanupCsv = () => { if (!reusing && args.keepCsv !== true) { try { rmSync(csv, { force: true }) } catch { /* ignore */ } } }
+
+    if (fold.samplesTarget === 0) {
+      cleanupCsv()
+      return { ok: false, etlPath: etl, process: proc, samplesAll: fold.samplesAll,
+        error: '目标进程「' + proc + '」在这段采样里 **0 个 CPU 采样点** —— 可能：① 采样期间它没在跑 / 没吃 CPU；' +
+          '② 进程名/正则不对（本次全机共 ' + fold.samplesAll + ' 个 CPU 采样）。**别读成「它不占 CPU」**。' }
+    }
+
+    // 解析率（只有 symbols 模式有意义）：叶子帧带 `!`（= 有函数名）的采样占比。
+    let resolvedLeafSamples = 0
+    for (const [stack, n] of fold.folded) {
+      const leaf = stack.slice(stack.lastIndexOf(';') + 1)
+      if (leaf.includes('!')) resolvedLeafSamples += n
+    }
+    const resolvedLeafRatio = fold.stacksFolded ? resolvedLeafSamples / fold.stacksFolded : 0
+
+    const tree = buildTree(fold.folded, proc + ' (CPU)')
+    const foldedPath = join(dir, 'flame.folded')
+    const htmlPath = join(dir, 'flame.html')
+    const jitSub = fold.jit && fold.jit.attempted
+      ? ' · JIT 解析 ' + fold.jit.resolved + '/' + fold.jit.attempted + ' 帧'
+      : ''
+    writeFileSync(foldedPath, foldedToText(fold.folded), 'utf8')
+    writeFileSync(htmlPath, renderFlameHtml(tree, {
+      title: proc + ' CPU 火焰图',
+      subtitle: fold.stacksFolded + ' 采样 · ' + fold.uniqueStacks + ' 唯一栈 · ' + (symbols ? '符号模式' : '模块模式') + jitSub + ' · ' + basename(etl),
+    }), 'utf8')
+
+    cleanupCsv()
+    return {
+      ok: true, etlPath: etl, process: proc, symbols, frameMode,
+      foldedPath, htmlPath,
+      samplesAll: fold.samplesAll, samplesTarget: fold.samplesTarget,
+      stacksFolded: fold.stacksFolded, uniqueStacks: fold.uniqueStacks,
+      topLeaves: fold.topLeaves, topModules: fold.topModules,
+      resolvedLeafRatio,
+      jit: fold.jit, jitEtl: jitEtl || null, jitInfo,
+      csvBytes, csvKept: Boolean(reusing || args.keepCsv === true), csvPath: (reusing || args.keepCsv === true) ? csv : null,
+      dumperMs, elapsedMs: Date.now() - t0,
+      hint: '产物：flame.html（浏览器打开，可点击缩放 / 悬停 / 搜索）；flame.folded（可直接拖进 https://speedscope.app，或喂 flamegraph.pl）。' +
+        (jitMap ? '\n已接 JIT 映射：客户端 `"Unknown"` 帧尽量解成了真实托管方法名（' + (fold.jit ? fold.jit.resolved + '/' + fold.jit.attempted : '0/0') + '）。'
+          : (jitEtl ? '\n⚠ 找到 jit-methods.etl 但映射没建起来（见 jitInfo）——客户端 JIT 帧仍是 [unknown]。'
+            : '\n未接 JIT 映射：客户端自己的方法名会聚成 [unknown]（JIT，见 §3）。要真实方法名，采集时带 perf_trace(jit=true)。')) +
+        (symbols ? '' : '\n本次是**模块模式**（快）：原生/框架帧想要函数名可加 symbols=true 重跑。'),
+    }
+  }
+
+  /**
+   * 从**分配采样** etl（perf_trace(alloc=true) 的 alloc-events.etl）出**分配火焰图**（#3）。
+   * AllocationTick + 栈 → 按字节加权折叠 → 自包含可交互 alloc-flame.html + .folded + Top 分配类型。
+   * 复用 §4 的 JIT 映射（默认自动发现同目录 jit-methods.etl）把客户端分配路径解成真实方法名。
+   * @param args.etlPath  alloc-events.etl（perf_trace(alloc=true) 产出）
+   * @param args.process  只折该进程名（正则，默认 DSH_UI_PROC_NAME）
+   * @param args.symbols  true = dumper 带 -symbols 解原生/框架帧名（慢）
+   * @param args.jitEtl / args.noJit  同 flame()：JIT 方法名映射
+   */
+  async function allocFlame(args = {}) {
+    const etl = args.etlPath
+    if (!etl || !existsSync(etl)) return { ok: false, error: 'etlPath 不存在：' + String(etl) + '（需要 perf_trace(alloc=true) 产出的 alloc-events.etl）' }
+    if (!existsSync(c.xperf)) return { ok: false, error: 'xperf.exe 不存在：' + c.xperf }
+    const proc = String(args.process || c.procName || '').trim()
+    if (!proc) return { ok: false, error: '没有目标进程名：请传 process，或配 DSH_UI_PROC_NAME（分配火焰图必须按进程折叠）。' }
+    let processRe
+    try { processRe = new RegExp(proc, 'i') } catch { return { ok: false, error: 'process 不是合法正则：' + proc } }
+    const symbols = args.symbols === true
+    const frameMode = symbols ? 'symbols' : 'module'
+    const dir = dirname(etl)
+    const csv = args.csvPath || join(dir, 'alloc-dumper.csv')
+    const reusing = Boolean(args.csvPath) && existsSync(csv)
+
+    // ★ 分配采样是 xperf 用户会话 ⇒ AllocationTick 行进程名多为 `"Unknown" (PID)`：必须按 **PID** 过滤。
+    //   优先用显式传入的 pid；否则按进程名 live 查 tasklist（采集刚停、进程通常还在）。查不到就回退按名。
+    let pidSet = null
+    if (args.pid) pidSet = new Set(String(args.pid).split(/[,\s]+/).filter(Boolean))
+    else {
+      try {
+        const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + proc + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
+        const pids = [...out.matchAll(/"[^"]*","(\d+)"/g)].map((m) => m[1])
+        if (pids.length) pidSet = new Set(pids)
+      } catch { /* 进程已退 / tasklist 不可用 ⇒ pidSet 留空，回退按名 */ }
+    }
+
+    let jitMap = null, jitInfo = null
+    const jitEtl = args.noJit === true ? null : (args.jitEtl || (existsSync(join(dir, 'jit-methods.etl')) ? join(dir, 'jit-methods.etl') : null))
+    if (jitEtl) { const d = await jitMapFromEtl(jitEtl, { timeoutMs: Number(args.timeoutMs) || 900000 }); jitInfo = d.info; if (d.ok) jitMap = d.map }
+
+    const t0 = Date.now()
+    let dumperMs = null
+    if (!reusing) {
+      const cmd = []
+      if (symbols) cmd.push('-symbols')
+      cmd.push('-i', etl, '-o', csv, '-a', 'dumper')
+      const r = await runExe(c.xperf, cmd, { timeoutMs: Number(args.timeoutMs) || 900000, env: symbolEnv(!symbols) })
+      dumperMs = Date.now() - t0
+      if (r.timedOut) { try { if (existsSync(csv)) rmSync(csv, { force: true }) } catch { /* ignore */ } ; return { ok: false, timedOut: true, etlPath: etl, error: 'xperf -a dumper 解码超时（' + dumperMs + 'ms）' } }
+      if (!existsSync(csv)) return { ok: false, etlPath: etl, error: 'xperf -a dumper 未产出 CSV', raw: (r.stdout + '\n' + r.stderr).slice(-600) }
+    }
+    const csvBytes = existsSync(csv) ? statSync(csv).size : null
+
+    const fold = await foldAllocCsv(csv, { processRe, pidSet, frameMode, jitMap })
+    const cleanupCsv = () => { if (!reusing && args.keepCsv !== true) { try { rmSync(csv, { force: true }) } catch { /* ignore */ } } }
+    if (fold.ticksTarget === 0) {
+      cleanupCsv()
+      return { ok: false, etlPath: etl, process: proc, ticksAll: fold.ticksAll,
+        error: '目标进程「' + proc + '」在这段采样里 **0 个 AllocationTick**（全机共 ' + fold.ticksAll + ' 个）—— ' +
+          '可能：① 采样期间它没怎么分配；② 进程名/正则不对；③ 它是 .NET Core/5+，其 GCAllocationTick 在本机解不出 manifest（落成 UnknownEvent）。**别读成"它不分配内存"**。' }
+    }
+    const tree = buildTree(fold.folded, proc + ' (alloc bytes)')
+    const foldedPath = join(dir, 'alloc-flame.folded')
+    const htmlPath = join(dir, 'alloc-flame.html')
+    const jitSub = fold.jit && fold.jit.attempted ? ' · JIT 解析 ' + fold.jit.resolved + '/' + fold.jit.attempted + ' 帧' : ''
+    writeFileSync(foldedPath, foldedToText(fold.folded), 'utf8')
+    writeFileSync(htmlPath, renderFlameHtml(tree, {
+      title: proc + ' 分配火焰图（按字节）',
+      subtitle: fold.ticksTarget + ' 个 AllocationTick · ~' + Math.round(fold.totalBytes / 1048576) + 'MB 采样分配 · ' + (symbols ? '符号模式' : '模块模式') + jitSub + ' · ' + basename(etl),
+    }), 'utf8')
+    cleanupCsv()
+    return {
+      ok: true, etlPath: etl, process: proc, symbols, frameMode,
+      foldedPath, htmlPath,
+      ticksAll: fold.ticksAll, ticksTarget: fold.ticksTarget, totalBytes: fold.totalBytes,
+      topTypes: fold.topTypes, jit: fold.jit, jitEtl: jitEtl || null, jitInfo,
+      csvBytes, dumperMs, elapsedMs: Date.now() - t0,
+      hint: '产物：alloc-flame.html（浏览器打开，按**分配字节**加权，可点击缩放/搜索）；alloc-flame.folded（可拖进 speedscope）。' +
+        '\n口径：AllocationTick 每 ~100KB 采一次 ⇒ 这是**采样**、权重是字节近似；**分配多 ≠ 泄漏**（泄漏看 perf_gcroot），它答的是"谁在制造 GC 压力/churn"。' +
+        (jitMap ? '' : '\n未接 JIT 映射：客户端分配路径的自有方法会聚成 [unknown]（采集时带 perf_trace(jit=true) 可解名）。'),
+    }
+  }
+
+  /**
+   * 把 CLR 方法/rundown 会话的 etl 解成「pid → 排序方法数组」的 JIT 映射（§4）。
+   * 复用 tracerpt（与 clrEvents 同一把解码器）。带体积闸门：rundown 的 etl 体量由**方法数**决定、
+   * 与采样时长无关，通常不大；但仍设上限，超了如实报而不是默默解出个 GB 级 XML。
+   */
+  async function jitMapFromEtl(jitEtl, opts = {}) {
+    if (!existsSync(jitEtl)) return { ok: false, info: { state: 'etl-missing', jitEtl } }
+    if (!existsSync(c.tracerpt)) return { ok: false, info: { state: 'tracerpt-missing', tracerpt: c.tracerpt } }
+    const timeoutMs = Math.min(Math.max(Number(opts.timeoutMs) || 900000, 10000), 3600000)
+    const etlBytes = statSync(jitEtl).size
+    const estXmlBytes = Math.round(etlBytes * 6)
+    const maxXmlBytes = 4096 * 1024 * 1024
+    if (estXmlBytes > maxXmlBytes) {
+      return { ok: false, info: { state: 'xml-too-large', jitEtl, etlBytes, estXmlBytes } }
+    }
+    const xmlPath = join(dirname(jitEtl), basename(jitEtl).replace(/\.etl$/i, '') + '.jit.xml')
+    const d = await runExe(c.tracerpt, [jitEtl, '-o', xmlPath, '-of', 'XML', '-y'], { timeoutMs })
+    if (!d || d.timedOut) return { ok: false, info: { state: 'decode-timeout', jitEtl, xmlPath } }
+    if (d.code !== 0 || !existsSync(xmlPath)) {
+      return { ok: false, info: { state: 'decode-failed', jitEtl, xmlPath, exitCode: d ? d.code : null, raw: (((d && d.stdout) || '') + ((d && d.stderr) || '')).slice(-400) } }
+    }
+    const xmlBytes = statSync(xmlPath).size
+    let map
+    try {
+      // 只留有采样的目标进程那几张表也行，但 rundown 通常不大 ⇒ 全收，按 pid 分桶后由折叠端按需取。
+      map = await buildJitMapStreaming(xmlPath)
+    } catch (e) {
+      return { ok: false, info: { state: 'parse-failed', jitEtl, xmlPath, error: String(e) } }
+    }
+    let totalMethods = 0
+    for (const [, arr] of map) totalMethods += arr.length
+    // 解完就删 XML（可能几百 MB，映射已在内存）。
+    try { rmSync(xmlPath, { force: true }) } catch { /* ignore */ }
+    return {
+      ok: true, map,
+      info: { state: 'ok', jitEtl, etlBytes, xmlBytes, pids: map.size, methods: totalMethods },
+    }
+  }
+
+  /**
+   * UI 冻结的**等待时间分析**（perf_uifreeze）—— 复刻 PerfView 的 UI Freeze 视图。
+   * 两段式（贴合"手动复现冻结"的现场）：
+   *   action=start：起带 **CSwitch** 的内核会话（这是等待分析的数据源，与 CPU trace 不同）；你去复现冻结；
+   *   action=stop ：停+合并 → dumper → analyzeThreadWaits(目标 UI 线程) → 输出「冻结 N 秒，其中 M 秒卡在 X」。
+   * UI 线程 tid：优先用传入的 tid；否则 stop 时**抓一张瞬时 dump 自动认 UI 线程**（perf_dump 的 uiThread.osId）。
+   */
+  const UIFREEZE_KERNEL = 'PROC_THREAD+LOADER+CSWITCH+DISPATCHER'
+  const UIFREEZE_STACK = 'CSwitch+ReadyThread'
+
+  async function uiFreeze(args = {}) {
+    const action = String(args.action || 'run').toLowerCase()
+    if (!existsSync(c.xperf)) return { ok: false, error: 'xperf.exe 不存在：' + c.xperf }
+    if (action !== 'start' && !(await isElevated())) {
+      // start 也需要提权，但 stop 前若没提权更要早说
+    }
+    const dir = args.dir || runDir(args.tag || 'uifreeze')
+    const rawEtl = join(dir, 'uifreeze-raw.etl')
+    const etl = join(dir, 'uifreeze.etl')
+    const sessionFile = join(c.evidenceDir, 'uifreeze-session.json')
+
+    if (action === 'start') {
+      if (!(await isElevated())) return { ok: false, needsElevation: true, error: 'ETW 内核会话需要管理员权限' }
+      mkdirSync(dir, { recursive: true })
+      // 先无条件停掉可能残留的内核会话
+      await runExe(c.xperf, ['-stop'], { timeoutMs: 60000 })
+      const r = await runExe(c.xperf, ['-on', UIFREEZE_KERNEL, '-stackwalk', UIFREEZE_STACK, '-f', rawEtl], { timeoutMs: 120000 })
+      if (r.code !== 0) return { ok: false, error: 'xperf -start（CSwitch）失败', raw: (r.stdout + r.stderr).slice(0, 500) }
+      try { writeFileSync(sessionFile, JSON.stringify({ dir, rawEtl, etl, startedAt: Date.now(), tid: args.tid || null, process: args.process || c.procName || null }), 'utf8') } catch { /* ignore */ }
+      return { ok: true, started: true, dir, rawEtl, etl,
+        hint: '现在去**复现那个卡顿**（例如冷加载点进 ETF量化）；结束后调 perf_uifreeze(action="stop")。' +
+          '\n⚠ CSwitch 采集数据量大（每秒 ~15MB etl，dumper CSV 更大），别开太久——复现完尽快 stop。' }
+    }
+
+    // stop（或一体化 run）
+    let session = null
+    try { session = JSON.parse(readFileSync(sessionFile, 'utf8')) } catch { session = null }
+    const useDir = (session && session.dir) || dir
+    const useRaw = (session && session.rawEtl) || rawEtl
+    const useEtl = (session && session.etl) || etl
+    const proc = String(args.process || (session && session.process) || c.procName || '').trim()
+
+    // 停 + 合并（模块归属只在 merge 产生）
+    await runExe(c.xperf, ['-stop'], { timeoutMs: 300000 })
+    if (existsSync(useRaw) && !existsSync(useEtl)) {
+      await runExe(c.xperf, ['-merge', useRaw, useEtl], { timeoutMs: 900000 })
+    }
+    try { rmSync(sessionFile, { force: true }) } catch { /* ignore */ }
+    if (!existsSync(useEtl)) return { ok: false, error: '停止后没有合并出 etl（是否没先 action="start"？）', rawExists: existsSync(useRaw) }
+
+    // 认 UI 线程 tid：显式 > 会话记录 > detectUiThread 回调（由 index.js 注入 perf.dump 能力）
+    let tid = args.tid || (session && session.tid) || null
+    let tidSource = tid ? 'given' : null
+    let uiDumpPath = null
+    if (!tid && typeof args.detectUiThread === 'function') {
+      try {
+        const det = await args.detectUiThread(useDir)
+        if (det && det.osId) { tid = String(det.osId); tidSource = 'auto-dump'; uiDumpPath = det.dumpPath || null }
+      } catch { /* 识别失败下面统一报 */ }
+    }
+    if (!tid) return { ok: false, error: '无法确定 UI 线程 tid：请传 tid（目标 UI 线程 os id），或让调用方提供 detectUiThread 回调（自动抓 dump 识别）', etlPath: useEtl }
+
+    // dumper 解码
+    const csv = join(useDir, 'uifreeze-dumper.csv')
+    const t0 = Date.now()
+    const dr = await runExe(c.xperf, ['-i', useEtl, '-o', csv, '-a', 'dumper'], { timeoutMs: Number(args.timeoutMs) || 1200000, env: symbolEnv(true) })
+    if (dr.timedOut || !existsSync(csv)) { try { if (existsSync(csv)) rmSync(csv, { force: true }) } catch { /* ignore */ } ; return { ok: false, error: 'dumper 解码失败/超时', etlPath: useEtl } }
+
+    // JIT 映射（可选，解客户端方法名）
+    let jitMap = null
+    const jitEtl = args.jitEtl || (existsSync(join(useDir, 'jit-methods.etl')) ? join(useDir, 'jit-methods.etl') : null)
+    if (jitEtl && args.noJit !== true) { const d = await jitMapFromEtl(jitEtl, {}); if (d.ok) jitMap = d.map }
+
+    let pid = args.pid || null
+    if (!pid && proc) { try { const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + proc + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true }); const m = /"[^"]*","(\d+)"/.exec(out); if (m) pid = m[1] } catch { /* ignore */ } }
+
+    const wa = await analyzeThreadWaits(csv, { tid, pid, frameMode: args.moduleOnly === true ? 'module' : 'symbols', jitMap })
+    if (args.keepCsv !== true) { try { rmSync(csv, { force: true }) } catch { /* ignore */ } }
+
+    // 出等待火焰图（按等待时长加权）
+    let htmlPath = null, foldedPath = null
+    if (wa.waitFolded && wa.waitFolded.size) {
+      const tree = buildTree(wa.waitFolded, 'UI thread ' + tid + ' (wait)')
+      htmlPath = join(useDir, 'uifreeze-flame.html')
+      foldedPath = join(useDir, 'uifreeze.folded')
+      writeFileSync(foldedPath, foldedToText(wa.waitFolded), 'utf8')
+      writeFileSync(htmlPath, renderFlameHtml(tree, { title: 'UI 冻结等待火焰图（线程 ' + tid + '）', subtitle: '按阻塞时长加权 · 冻结 ' + wa.waitMs + 'ms / 运行 ' + wa.runMs + 'ms · ' + basename(useEtl) }), 'utf8')
+    }
+    return {
+      ok: true, etlPath: useEtl, tid, tidSource, uiDumpPath, process: proc || null,
+      spanMs: wa.spanMs, waitMs: wa.waitMs, runMs: wa.runMs, switches: wa.switches,
+      waitSpanCount: wa.waitSpanCount, longestWaitMs: wa.longestWaitMs,
+      topWaits: wa.topWaits, byReason: wa.byReason, jit: wa.jit,
+      htmlPath, foldedPath,
+      dumperMs: Date.now() - t0,
+      hint: '等待火焰图（按阻塞时长加权）：' + (htmlPath || '(无等待栈)') + '；topWaits = UI 线程醒来点（阻塞返回处）按等待 ms 排行。',
+    }
+  }
+
+  return { trace, hotstacks, clrEvents, flame, allocFlame, uiFreeze, isElevated, parseStackReport, symbolEnv, symbolPathInfo, config: () => c }
 }
 
 // ---------------------------------------------------------------- 报告解析

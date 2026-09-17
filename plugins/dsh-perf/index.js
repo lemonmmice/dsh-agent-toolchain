@@ -14,7 +14,7 @@ import { makePerf } from './lib/perf.mjs'
 import { makeTrace } from './lib/trace.mjs'
 import { cleanEvidence, renderClean } from './lib/evidence-clean.mjs'
 // 渲染层单独成模块：它是 agent 唯一看得见的契约，必须能离线单测（见 lib/render.mjs 顶部说明）。
-import { renderProbe, renderReport, renderTrace, renderHotstacks, renderAnalysis } from './lib/render.mjs'
+import { renderProbe, renderReport, renderTrace, renderHotstacks, renderClrEvents, renderFlame, renderAllocFlame, renderUiFreeze, renderGcRoot, renderAnalysis } from './lib/render.mjs'
 import { envOr } from '../../lib/env-fallback.mjs'
 // W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name）。
 import { dshParameters, dshDescription } from '../../lib/tool-registry.mjs'
@@ -127,6 +127,18 @@ const tools = () => [
     },
   }),
   defineTool({
+    name: 'perf_gcroot',
+    description: dshDescription('perf_gcroot'),
+    parameters: dshParameters('perf_gcroot'),
+    isConcurrencySafe: () => true, // P1-1c 只读（读 dump，起 HeapRoots.exe 不落盘；真源 lib/tool-registry READ_ONLY）
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderGcRoot(v) }] },
+    timeoutMs: 6 * 60 * 1000,
+    // ★ 逐参接线，不整包转发（棘轮闸门钉死"免检转发"= 28）。
+    async execute(args) {
+      return await prf().gcRoots(args.dumpPath, { type: args.type, top: args.top, paths: args.paths })
+    },
+  }),
+  defineTool({
     name: 'perf_trace',
     description: dshDescription('perf_trace'),
     parameters: dshParameters('perf_trace'),
@@ -153,6 +165,82 @@ const tools = () => [
     timeoutMs: 30 * 60 * 1000,
     async execute(args) {
       return await trc().hotstacks(args)
+    },
+  }),
+  defineTool({
+    name: 'perf_clrevents',
+    description: dshDescription('perf_clrevents'),
+    parameters: dshParameters('perf_clrevents'),
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderClrEvents(v) }] },
+    // 两步 tracerpt（摘要闸门 + 解码）+ 可能几百 MB 的 etl ⇒ 给足时间，与 perf_hotstacks 同档。
+    timeoutMs: 30 * 60 * 1000,
+    // ★ 逐参接线，**不整包转发 args**：本仓的棘轮闸门把"整包转发（免检）"的工具数**钉死在 28**
+    //   （lib/toolface-params.test.mjs）—— 新工具必须让每个参数在调用点被**按名读到**，
+    //   否则"声明了却没接上"这类缺陷（F-051/F-055 那一族）会安静地混进来。
+    async execute(args) {
+      return await trc().clrEvents({
+        etlPath: args.etlPath,
+        xmlPath: args.xmlPath,
+        maxXmlMb: args.maxXmlMb,
+        timeoutMs: args.timeoutMs,
+      })
+    },
+  }),
+  defineTool({
+    name: 'perf_flame',
+    description: dshDescription('perf_flame'),
+    parameters: dshParameters('perf_flame'),
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderFlame(v) }] },
+    // dumper 解码大 etl + 流式两遍折叠 ⇒ 给足时间，与 perf_hotstacks 同档。
+    timeoutMs: 30 * 60 * 1000,
+    // ★ 逐参接线，不整包转发（棘轮闸门钉死"免检转发"= 28）。
+    async execute(args) {
+      return await trc().flame({
+        etlPath: args.etlPath,
+        process: args.process,
+        symbols: args.symbols,
+        csvPath: args.csvPath,
+        keepCsv: args.keepCsv,
+        jitEtl: args.jitEtl,
+        noJit: args.noJit,
+        timeoutMs: args.timeoutMs,
+      })
+    },
+  }),
+  defineTool({
+    name: 'perf_allocflame',
+    description: dshDescription('perf_allocflame'),
+    parameters: dshParameters('perf_allocflame'),
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderAllocFlame(v) }] },
+    timeoutMs: 30 * 60 * 1000,
+    // ★ 逐参接线，不整包转发（棘轮闸门钉死"免检转发"= 28）。
+    async execute(args) {
+      return await trc().allocFlame({
+        etlPath: args.etlPath,
+        process: args.process,
+        pid: args.pid,
+        symbols: args.symbols,
+        noJit: args.noJit,
+      })
+    },
+  }),
+  defineTool({
+    name: 'perf_uifreeze',
+    description: dshDescription('perf_uifreeze'),
+    parameters: dshParameters('perf_uifreeze'),
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderUiFreeze(v) }] },
+    timeoutMs: 30 * 60 * 1000,
+    // ★ 后端 = 真 PerfView 采集(/threadTime) + UiFreezeStacks 提取（prf().uiFreeze）。
+    //   UI 线程**自动认**（取泵消息最多的线程），不再需要 detectUiThread/抓 dump。逐参接线。
+    async execute(args) {
+      return await prf().uiFreeze({
+        action: args.action,
+        process: args.process,
+        tid: args.tid,
+        symbols: args.symbols,
+        top: args.top,
+        keepEtl: args.keepEtl,
+      })
     },
   }),
 ]

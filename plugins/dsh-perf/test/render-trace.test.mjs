@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { renderTrace } from '../lib/render.mjs'
+import { renderTrace, renderUiFreeze } from '../lib/render.mjs'
 
 let failures = 0
 function check(name, cond, extra = '') {
@@ -195,6 +195,44 @@ for (const [action, c] of Object.entries(CASES)) {
   }
 }
 
+// ---------------------------------------------------------------- perf_uifreeze 渲染（dotTrace 200ms 判据）
+//   后端换成真 PerfView + UiFreezeStacks 后，返回形状变了（freezes[] + target + dotTrace 阈值）。
+//   同 perf_trace 的口径：结构化数据必须进人话、不许编造、无冻结要如实说"没冻结"（不能读成没问题=有热点）。
+{
+  const started = renderUiFreeze({ ok: true, started: true, hint: '已起 PerfView /threadTime 采集。现在去复现卡顿；页面一出来就 action="stop"。' })
+  check('★ uifreeze start ⇒ 说"已开始 PerfView"并带下一步提示',
+    /已开始 PerfView/.test(started) && /stop/.test(started), JSON.stringify(started.slice(0, 120)))
+
+  const frozen = renderUiFreeze({
+    ok: true, freezeThresholdMs: 200, freezeCount: 2, freezeTotalMs: 641,
+    sessionMs: 38316, symbols: 'cached', process: 'ClientApp', pid: 13196,
+    target: { tid: 29600, pid: 13196, process: 'ClientApp' },
+    etlZip: 'C:\\ev\\uifreeze.etl.zip',
+    freezes: [
+      { startMs: 20443, durMs: 361, leaf: 'ntoskrnl!?', managed: ['clientapp!ClientApp.Client.AppMain.Main(class System.String[])', 'ClientApp.DataManager!ClientApp.DataManager.Apis.TradeDayApi.GetLatestTradeDate(value class System.DateTime)', 'ClientApp.DataManager!ClientApp.DataManager.Common.HttpUtility.HttpGet(class System.String)'] },
+      { startMs: 20164, durMs: 279, leaf: 'ntoskrnl!?', managed: ['ClientApp.DataManager!ClientApp.DataManager.Apis.UsersApi.BatchGetSigned(class System.String)', 'ClientApp.DataManager!ClientApp.DataManager.Common.HttpUtility.HttpGet(class System.String)'] },
+    ],
+  })
+  check('★★ uifreeze 有冻结 ⇒ 印出次数/合计/阈值（结构化进人话）',
+    /UI 冻结 2 次/.test(frozen) && /641ms/.test(frozen) && /200ms/.test(frozen), JSON.stringify(frozen.slice(0, 200)))
+  check('★★ uifreeze 印出单段时长 + 托管主因链（HttpGet 那条 —— 这是本工具的价值）',
+    /361ms/.test(frozen) && /GetLatestTradeDate/.test(frozen) && /HttpGet/.test(frozen), JSON.stringify(frozen.slice(0, 400)))
+  check('★ uifreeze 主 UI 线程 tid/进程可核对',
+    /29600/.test(frozen) && /ClientApp/.test(frozen), JSON.stringify(frozen.slice(0, 160)))
+  check('★ uifreeze 托管帧要精简（去掉 module! 前缀与参数表，别糊一大坨）',
+    !/class System\.String\[\]/.test(frozen) && !/clientapp!/.test(frozen), JSON.stringify(frozen.slice(0, 400)))
+
+  const noFreeze = renderUiFreeze({
+    ok: true, freezeThresholdMs: 200, freezeCount: 0, freezeTotalMs: 0,
+    sessionMs: 12000, symbols: 'cached', target: { tid: 111, pid: 222, process: 'Foo' }, freezes: [],
+  })
+  check('★★ uifreeze 无冻结 ⇒ 如实说"无 UI 冻结"（不许编造冻结，也别读成"没问题=有热点"）',
+    /无 UI 冻结/.test(noFreeze) && !/UI 冻结 \d+ 次/.test(noFreeze), JSON.stringify(noFreeze.slice(0, 200)))
+
+  const failed = renderUiFreeze({ ok: false, error: 'PerfView.exe 不可用' })
+  check('★ uifreeze 失败态说原因', /UI 冻结分析失败：PerfView\.exe 不可用/.test(failed), JSON.stringify(failed.slice(0, 120)))
+}
+
 // ---------------------------------------------------------------- 覆盖面登记（只许缩小）
 //
 // 同族风险不止 perf_trace 一个：**任何声明了 `action` enum 的工具，只要渲染层新增/改动分支就可能踩同一个坑**。
@@ -206,7 +244,7 @@ for (const [action, c] of Object.entries(CASES)) {
   //   用同一套做法（从生产者读 enum + 手写真实返回形状 + 不许出现编造的量）把它们核了一遍，
   //   并且**一核就抓到 5 处**（capture / expectwindow / expecttext / waitany 掉进 default 渲染成「完成」，
   //   结构化数据被吞）。所以钉子按"只许缩短"的规矩拔掉 —— 这四个工具现在必须在 COVERED 里。
-  const COVERED = new Set(['perf_trace', 'ui_drive', 'ui_observe', 'ui_act', 'ui_live'])
+  const COVERED = new Set(['perf_trace', 'perf_uifreeze', 'ui_drive', 'ui_observe', 'ui_act', 'ui_live'])
   const KNOWN_UNCOVERED = []   // 钉子：只许缩短（已空；新工具带 action enum 就会立刻红）
   const enumTools = []
   {
