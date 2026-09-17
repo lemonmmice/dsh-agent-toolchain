@@ -801,6 +801,15 @@ server.tool(
   async (args) => jtext(await prf().heapStats(args.dumpPath, args.topN))
 )
 
+// #2 堆 GC root / 保留链：补 perf_heap 答不了的「谁 keep 住了对象」。走自建 ClrMD 分析器 HeapRoots.exe。
+// 只读（读 dump、不落盘）⇒ readOnlyHint 由 READ_ONLY 集自动注入。
+server.tool(
+  'perf_gcroot',
+  mcpDescription('perf_gcroot'),
+  mcpShape('perf_gcroot'),
+  async (args) => jtext(await prf().gcRoots(args.dumpPath, { type: args.type, top: args.top, paths: args.paths }))
+)
+
 // F-003 / E4（2026-09-12 r35）：这两个工具原先**只有 DSH 面**有（plugins/dsh-perf/index.js），
 //   MCP 面拿不到 —— 也就是说「谁在反复重绘」这条**间歇性卡顿唯一有效的通路**，
 //   对 MCP 连接的 agent 是关着的（而 perf_dump 那种"抓一个瞬间"的反而开着，
@@ -817,6 +826,69 @@ server.tool(
   mcpDescription('perf_hotstacks'),
   mcpShape('perf_hotstacks'),
   async (args) => jtext(await trc().hotstacks(args))
+)
+
+// GC 那条线：perf_trace(clr=true) 起的**第二条独立会话**产出 clr-events.etl，由本工具汇总。
+// 它在 DSH 面上线同一天就补到 MCP 面 —— E4 的教训（"DSH 有的，MCP 也要到"）不再重犯。
+server.tool(
+  'perf_clrevents',
+  mcpDescription('perf_clrevents'),
+  mcpShape('perf_clrevents'),
+  // 同 DSH 面：逐参接线，不整包转发（棘轮闸门钉死"免检转发"工具数 = 28）。
+  async (args) => jtext(await trc().clrEvents({
+    etlPath: args.etlPath,
+    xmlPath: args.xmlPath,
+    maxXmlMb: args.maxXmlMb,
+    timeoutMs: args.timeoutMs,
+  }))
+)
+
+// 火焰图：perf_trace 的 etl → xperf -a dumper 流式折叠 → 自包含可交互 flame.html + flame.folded。
+// 补 PerfView §1「交互式 GUI」那条；与 hotstacks（文本蝶形）互补。DSH 面同日补到 MCP 面（E4 教训）。
+server.tool(
+  'perf_flame',
+  mcpDescription('perf_flame'),
+  mcpShape('perf_flame'),
+  async (args) => jtext(await trc().flame({
+    etlPath: args.etlPath,
+    process: args.process,
+    symbols: args.symbols,
+    csvPath: args.csvPath,
+    keepCsv: args.keepCsv,
+    jitEtl: args.jitEtl,
+    noJit: args.noJit,
+    timeoutMs: args.timeoutMs,
+  }))
+)
+
+// 分配火焰图：perf_trace(alloc=true) 的 alloc-events.etl → AllocationTick+栈 按字节折叠 → 谁在分配/造 GC 压力。
+server.tool(
+  'perf_allocflame',
+  mcpDescription('perf_allocflame'),
+  mcpShape('perf_allocflame'),
+  async (args) => jtext(await trc().allocFlame({
+    etlPath: args.etlPath,
+    process: args.process,
+    pid: args.pid,
+    symbols: args.symbols,
+    noJit: args.noJit,
+  }))
+)
+
+// UI 冻结分析（复刻 dotTrace/PerfView UI Freeze）：真 PerfView 采集(/threadTime) + UiFreezeStacks 提取
+// （dotTrace「消息泵间隙>200ms」判据）。两段式 start/stop；UI 线程自动认（取泵消息最多的线程）。
+server.tool(
+  'perf_uifreeze',
+  mcpDescription('perf_uifreeze'),
+  mcpShape('perf_uifreeze'),
+  async (args) => jtext(await prf().uiFreeze({
+    action: args.action,
+    process: args.process,
+    tid: args.tid,
+    symbols: args.symbols,
+    top: args.top,
+    keepEtl: args.keepEtl,
+  }))
 )
 
 // ---------------------------------------------------------------- hang inspector

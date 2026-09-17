@@ -1,0 +1,459 @@
+<?xml version="1.0"?>
+<Events>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789666500+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="16132" ThreadID="29804" ProcessorID="5" KernelTime="0" UserTime="30" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4EAE4EC8</MethodID><ModuleID>0x7FFB4E0541B8</ModuleID><MethodStartAddress>0x7FFB4EBE0080</MethodStartAddress><MethodSize>0x58</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>GetSource</MethodName><MethodSignature>class System.Object  (class System.Object)</MethodSignature><ClrInstanceID>8</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4EAE4EC8;
+ModuleID=0x7FFB4E0541B8;
+MethodStartAddress=0x7FFB4EBE0080;
+MethodSize=0x58;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=GetSource;
+MethodSignature=class System.Object  (class System.Object);
+ClrInstanceID=8 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789668500+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="21356" ThreadID="18404" ProcessorID="13" KernelTime="0" UserTime="15" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4E202FE8</MethodID><ModuleID>0x7FFB4E202778</ModuleID><MethodStartAddress>0x7FFB4E220080</MethodStartAddress><MethodSize>0x51</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>lambda_method</MethodName><MethodSignature>pMT: 00007FFB4E1FEDE8  (pMT: 00007FFBA78946F8,pMT: 00007FFB4E1FE100)</MethodSignature><ClrInstanceID>8</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4E202FE8;
+ModuleID=0x7FFB4E202778;
+MethodStartAddress=0x7FFB4E220080;
+MethodSize=0x51;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=lambda_method;
+MethodSignature=pMT: 00007FFB4E1FEDE8  (pMT: 00007FFBA78946F8,pMT: 00007FFB4E1FE100);
+ClrInstanceID=8 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789668800+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="4500" ThreadID="24376" ProcessorID="14" KernelTime="0" UserTime="0" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4E1D0040</MethodID><ModuleID>0x7FFBAFCA1000</ModuleID><MethodStartAddress>0x7FFB4E1E0080</MethodStartAddress><MethodSize>0x1162</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>ReadTelemetrySessionSettingsFromJson</MethodName><MethodSignature>class System.Object  (pMT: 00007FFBAFCB7958,pMT: 00007FFBAFCA6E80,pMT: 00007FFBAFCB4FD8,pMT: 00007FFBAFCB4FD8[])</MethodSignature><ClrInstanceID>8</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4E1D0040;
+ModuleID=0x7FFBAFCA1000;
+MethodStartAddress=0x7FFB4E1E0080;
+MethodSize=0x1162;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=ReadTelemetrySessionSettingsFromJson;
+MethodSignature=class System.Object  (pMT: 00007FFBAFCB7958,pMT: 00007FFBAFCA6E80,pMT: 00007FFBAFCB4FD8,pMT: 00007FFBAFCB4FD8[]);
+ClrInstanceID=8 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789669900+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="26472" ThreadID="26576" ProcessorID="4" KernelTime="0" UserTime="15" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4E210040</MethodID><ModuleID>0x7FFB4E1CF588</ModuleID><MethodStartAddress>0x7FFB4E220080</MethodStartAddress><MethodSize>0x5C</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>lambda_method</MethodName><MethodSignature>pMT: 00007FFB396E9518  (pMT: 00007FFBA78946F8)</MethodSignature><ClrInstanceID>10</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4E210040;
+ModuleID=0x7FFB4E1CF588;
+MethodStartAddress=0x7FFB4E220080;
+MethodSize=0x5C;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=lambda_method;
+MethodSignature=pMT: 00007FFB396E9518  (pMT: 00007FFBA78946F8);
+ClrInstanceID=10 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789670800+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="16132" ThreadID="29804" ProcessorID="5" KernelTime="0" UserTime="30" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4EAE4F38</MethodID><ModuleID>0x7FFB4E0541B8</ModuleID><MethodStartAddress>0x7FFB4EBE0140</MethodStartAddress><MethodSize>0x59</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>GetType</MethodName><MethodSignature>class System.Object  (class System.Object)</MethodSignature><ClrInstanceID>8</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4EAE4F38;
+ModuleID=0x7FFB4E0541B8;
+MethodStartAddress=0x7FFB4EBE0140;
+MethodSize=0x59;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=GetType;
+MethodSignature=class System.Object  (class System.Object);
+ClrInstanceID=8 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789673200+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="14644" ThreadID="22556" ProcessorID="10" KernelTime="0" UserTime="0" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4E0354E8</MethodID><ModuleID>0x7FFB4E0341B8</ModuleID><MethodStartAddress>0x7FFB4E140B80</MethodStartAddress><MethodSize>0x5F</MethodSize><MethodToken>0x6000039</MethodToken><MethodFlags>8</MethodFlags><MethodNamespace>&lt;Module&gt;</MethodNamespace><MethodName>.cctor</MethodName><MethodSignature>void  ()</MethodSignature><ClrInstanceID>24</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4E0354E8;
+ModuleID=0x7FFB4E0341B8;
+MethodStartAddress=0x7FFB4E140B80;
+MethodSize=0x5F;
+MethodToken=0x6000039;
+MethodFlags=Jitted ;
+MethodNamespace=&lt;Module&gt;;
+MethodName=.cctor;
+MethodSignature=void  ();
+ClrInstanceID=24 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789673200+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="21356" ThreadID="18404" ProcessorID="13" KernelTime="0" UserTime="15" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4E203020</MethodID><ModuleID>0x7FFB4E202778</ModuleID><MethodStartAddress>0x7FFB4E220130</MethodStartAddress><MethodSize>0x101</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>lambda_method</MethodName><MethodSignature>pMT: 00007FFB4E1FF448  (pMT: 00007FFBA78946F8,pMT: 00007FFB4E1FE100)</MethodSignature><ClrInstanceID>8</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4E203020;
+ModuleID=0x7FFB4E202778;
+MethodStartAddress=0x7FFB4E220130;
+MethodSize=0x101;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=lambda_method;
+MethodSignature=pMT: 00007FFB4E1FF448  (pMT: 00007FFBA78946F8,pMT: 00007FFB4E1FE100);
+ClrInstanceID=8 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789673200+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="19208" ThreadID="19240" ProcessorID="0" KernelTime="0" UserTime="15" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4E200040</MethodID><ModuleID>0x7FFB4E1CF558</ModuleID><MethodStartAddress>0x7FFB4E210080</MethodStartAddress><MethodSize>0x5C</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>lambda_method</MethodName><MethodSignature>pMT: 00007FFB396E9518  (pMT: 00007FFBA78946F8)</MethodSignature><ClrInstanceID>10</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4E200040;
+ModuleID=0x7FFB4E1CF558;
+MethodStartAddress=0x7FFB4E210080;
+MethodSize=0x5C;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=lambda_method;
+MethodSignature=pMT: 00007FFB396E9518  (pMT: 00007FFBA78946F8);
+ClrInstanceID=10 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789674400+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="16132" ThreadID="29804" ProcessorID="5" KernelTime="0" UserTime="30" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4EAE4F70</MethodID><ModuleID>0x7FFB4E0541B8</ModuleID><MethodStartAddress>0x7FFB4EBE0200</MethodStartAddress><MethodSize>0x58</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>GetSourceType</MethodName><MethodSignature>class System.Object  (class System.Object)</MethodSignature><ClrInstanceID>8</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4EAE4F70;
+ModuleID=0x7FFB4E0541B8;
+MethodStartAddress=0x7FFB4EBE0200;
+MethodSize=0x58;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=GetSourceType;
+MethodSignature=class System.Object  (class System.Object);
+ClrInstanceID=8 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789674900+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="12092" ThreadID="31996" ProcessorID="11" KernelTime="0" UserTime="15" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4E230040</MethodID><ModuleID>0x7FFB4E1FF558</ModuleID><MethodStartAddress>0x7FFB4E240080</MethodStartAddress><MethodSize>0x5C</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>lambda_method</MethodName><MethodSignature>pMT: 00007FFB396E9518  (pMT: 00007FFBA78946F8)</MethodSignature><ClrInstanceID>10</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4E230040;
+ModuleID=0x7FFB4E1FF558;
+MethodStartAddress=0x7FFB4E240080;
+MethodSize=0x5C;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=lambda_method;
+MethodSignature=pMT: 00007FFB396E9518  (pMT: 00007FFBA78946F8);
+ClrInstanceID=10 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789676000+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="26472" ThreadID="26576" ProcessorID="4" KernelTime="0" UserTime="15" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4E210078</MethodID><ModuleID>0x7FFB4E1CF588</ModuleID><MethodStartAddress>0x7FFB4E2201F0</MethodStartAddress><MethodSize>0x8E</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>lambda_method</MethodName><MethodSignature>class System.Object  (pMT: 00007FFBA78946F8,class System.Object)</MethodSignature><ClrInstanceID>10</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4E210078;
+ModuleID=0x7FFB4E1CF588;
+MethodStartAddress=0x7FFB4E2201F0;
+MethodSize=0x8E;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=lambda_method;
+MethodSignature=class System.Object  (pMT: 00007FFBA78946F8,class System.Object);
+ClrInstanceID=10 </Message>
+	</RenderingInfo>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+	<System>
+		<Provider Name="Microsoft-Windows-DotNETRuntimeRundown" Guid="{a669021c-c450-4609-a035-5af59af4df18}" />
+		<EventID>144</EventID>
+		<Version>1</Version>
+		<Level>4</Level>
+		<Task>1</Task>
+		<Opcode>40</Opcode>
+		<Keywords>0x30</Keywords>
+		<TimeCreated SystemTime="2026-09-17T12:47:19.789677000+07:59" />
+		<Correlation ActivityID="{00000000-0000-0000-0000-000000000000}" />
+		<Execution ProcessID="4500" ThreadID="24376" ProcessorID="14" KernelTime="0" UserTime="0" />
+		<Channel />
+		<Computer />
+	</System>
+	<UserData>
+		<MethodLoadUnloadRundownVerbose_V1 xmlns='myNs'><MethodID>0x7FFB4E1D0078</MethodID><ModuleID>0x7FFBAFCA1000</ModuleID><MethodStartAddress>0x7FFB4E1E1290</MethodStartAddress><MethodSize>0x182</MethodSize><MethodToken>0x0</MethodToken><MethodFlags>9</MethodFlags><MethodNamespace>dynamicClass</MethodNamespace><MethodName>ReadArrayOfBucketFilterFromJson</MethodName><MethodSignature>class System.Object  (pMT: 00007FFBAFCB7958,pMT: 00007FFBAFCA6E80,pMT: 00007FFBAFCB4FD8,pMT: 00007FFBAFCB4FD8,pMT: 00007FFBAFCB5CB8)</MethodSignature><ClrInstanceID>8</ClrInstanceID></MethodLoadUnloadRundownVerbose_V1>
+	</UserData>
+	<RenderingInfo Culture="zh-CN">
+		<Level>Information </Level>
+		<Opcode>DCStopVerbose </Opcode>
+		<Keywords>
+			<Keyword>Jit </Keyword>
+			<Keyword>NGen </Keyword>
+		</Keywords>
+		<Task>Method </Task>
+		<Message>MethodID=0x7FFB4E1D0078;
+ModuleID=0x7FFBAFCA1000;
+MethodStartAddress=0x7FFB4E1E1290;
+MethodSize=0x182;
+MethodToken=0x0;
+MethodFlags=Dynamic |Jitted ;
+MethodNamespace=dynamicClass;
+MethodName=ReadArrayOfBucketFilterFromJson;
+MethodSignature=class System.Object  (pMT: 00007FFBAFCB7958,pMT: 00007FFBAFCA6E80,pMT: 00007FFBAFCB4FD8,pMT: 00007FFBAFCB4FD8,pMT: 00007FFBAFCB5CB8);
+ClrInstanceID=8 </Message>
+	</RenderingInfo>
+</Event>
+</Events>

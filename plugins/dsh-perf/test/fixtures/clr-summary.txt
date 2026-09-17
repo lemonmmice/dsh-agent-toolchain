@@ -1,0 +1,59 @@
+Files Processed:
+	<redacted-by-fixture-copy>.etl
+Total Buffers Processed 37
+Total Events  Processed 1550
+Total Events  Lost      0
+Start Time              2026916
+End Time                2026916
+Elapsed Time            0 sec
++-------------------------------------------------------------------------------------------------------------------------+
+|Event Count   Event Name           Task            Opcode          Version         Guid                                  |
++-------------------------------------------------------------------------------------------------------------------------+
+|          1   EventTrace           0               PartitionInfoExtension 2               {68fdd900-4a3e-11d1-84f4-0000f80464e3}|
+|          1   EventTrace           0               Header          2               {68fdd900-4a3e-11d1-84f4-0000f80464e3}|
+|        305   Microsoft-Windows-DotNETRuntime 1               FinalizeObject  0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|          2   Microsoft-Windows-DotNETRuntime 1               DecreaseMemoryPressure  0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         42   Microsoft-Windows-DotNETRuntime 1               RestartEEStop   1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         42   Microsoft-Windows-DotNETRuntime 1               RestartEEStart  1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 1               HeapStats       1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 1               Stop            1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 1               PerHeapHistory  3               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 1               GlobalHeapHistory  2               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|        402   Microsoft-Windows-DotNETRuntime 1               PinObjectAtGCTime  0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|        124   Microsoft-Windows-DotNETRuntime 1               Mark            0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 1               Start           2               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 1               Triggered       0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         42   Microsoft-Windows-DotNETRuntime 1               SuspendEEStop   1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         42   Microsoft-Windows-DotNETRuntime 1               SuspendEEStart  1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         16   Microsoft-Windows-DotNETRuntime 1               IncreaseMemoryPressure  0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         46   Microsoft-Windows-DotNETRuntime 1               FinalizersStop  1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         46   Microsoft-Windows-DotNETRuntime 1               FinalizersStart  1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|        190   Microsoft-Windows-DotNETRuntime 1               AllocationTick  3               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|          2   Microsoft-Windows-DotNETRuntime 1               CreateSegment   1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|          1   Microsoft-Windows-DotNETRuntime 19              Start           0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
++-------------------------------------------------------------------------------------------------------------------------+
++---------------------------------------------------------------------------------------------------------+
+|Event Count   Event Name           Event ID        Version         Guid                                  |
++---------------------------------------------------------------------------------------------------------+
+|          2   EventTrace           0               2               {68fdd900-4a3e-11d1-84f4-0000f80464e3}|
+|         41   Microsoft-Windows-DotNETRuntime 1               2               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 2               1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         42   Microsoft-Windows-DotNETRuntime 3               1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 4               1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|          2   Microsoft-Windows-DotNETRuntime 5               1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         42   Microsoft-Windows-DotNETRuntime 7               1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         42   Microsoft-Windows-DotNETRuntime 8               1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         42   Microsoft-Windows-DotNETRuntime 9               1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|        190   Microsoft-Windows-DotNETRuntime 10              3               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         46   Microsoft-Windows-DotNETRuntime 13              1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         46   Microsoft-Windows-DotNETRuntime 14              1               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|        305   Microsoft-Windows-DotNETRuntime 29              0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|        402   Microsoft-Windows-DotNETRuntime 33              0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 35              0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|          1   Microsoft-Windows-DotNETRuntime 187             0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         16   Microsoft-Windows-DotNETRuntime 200             0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|          2   Microsoft-Windows-DotNETRuntime 201             0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|        124   Microsoft-Windows-DotNETRuntime 202             0               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 204             3               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
+|         41   Microsoft-Windows-DotNETRuntime 205             2               {e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}|
++---------------------------------------------------------------------------------------------------------+

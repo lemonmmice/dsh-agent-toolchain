@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    HeapRoots —— dsh-perf 的 #2「堆 GC root / 保留链」分析器（ClrMD）。
+    DumpStack.exe 无源码、只做线程栈；perf_heap 只给类型 census（答不了"谁 keep 住了对象"）。
+    本工具补上：托管堆 Top 类型 + 对指定类型的对象**从 GC root 到它的保留链**（回答"哪段代码/哪个 root 拿着它不放"）。
+    与 DumpStack 对齐：net10.0 + ClrMD 4.0.732401（同一 DAC 解析路径）。
+    GC root 路径用自实现的有界 BFS（只用 EnumerateRoots + EnumerateReferences，稳定 API），不赌 GCRoot 类的方法签名。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>HeapRoots</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="4.0.732401" />
+  </ItemGroup>
+</Project>

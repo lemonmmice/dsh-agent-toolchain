@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    UiFreezeStacks —— dsh-perf 的「UI Freeze / 等待时间分析」提取器（真·PerfView 引擎）。
+
+    背景：用户那张 PerfView UI Freeze 截图（UI 线程 98.5% 在 waiting、CPU 0.2%、元凶同步 HttpGet）
+    是 **wall-clock / thread-time** 视图。我们此前手搓的 perf_uifreeze 走 xperf CSwitch CSV，栈卡在
+    两处解不动：① 32 位客户端在 WOW64 边界断栈；② 内核/native 帧全是裸地址。这两件事正是
+    Microsoft.Diagnostics.Tracing.TraceEvent（PerfView 的引擎本体）的看家本领：
+      · TraceLog.OpenOrConvert 转 .etlx 时**自动拼接 WOW64 栈**、**自动建托管方法映射**（吃 etl 里的 CLR rundown）；
+      · ThreadTimeStackComputer 就是 PerfView「Thread Time (with StartStop Activities)」那张图的计算器；
+      · SymbolReader 走 msdl 解内核/native 符号（托管帧不依赖它，靠 rundown）。
+    我们只做一件 TraceEvent 没直接给的事：把 thread-time 栈**按目标线程聚合成"冻结 N 秒、其中 M 秒卡在 X"**，
+    并**区分消息泵空闲（等用户输入）与真卡顿**（PerfView 也这么看——只算"界面该响应却在等"的时间）。
+
+    与 HeapRoots 同套路：net10.0 控制台工具，发布到 tools 目录，dsh-perf 从 JS 侧 spawn、读它的 JSON。
+    读 etl 与目标进程位数无关（不 attach），所以本工具用 x64/AnyCPU 即可，无需匹配 32 位客户端。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>UiFreezeStacks</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- ThreadTimeStackComputer 标了 [Obsolete("experimental")]，是警告不是弃用；照用。 -->
+    <NoWarn>$(NoWarn);CS0618</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.2.6" />
+  </ItemGroup>
+</Project>

@@ -196,7 +196,13 @@ function failureTail(v) {
 
 export function renderTrace(v) {
   if (!v || !v.ok) {
-    return '采集失败：' + ((v && v.error) || '原因未回报') + failureTail(v)
+    // ⚠ 失败路径也可能**已经有 CLR etl**：CLR 是第二条独立会话，主采集（内核/WPR）挂了不代表它没数据。
+    //   不点明的话，那份好数据会跟着主采集一起被读成"这次什么都没有"。
+    return '采集失败：' + ((v && v.error) || '原因未回报') + failureTail(v) +
+      (v && v.clrEtlPath
+        ? '\n（注意：CLR 会话的 ' + v.clrEtlPath + ' 里可能已经有数据，不受这次失败影响 —— 可以直接 perf_clrevents 读它。）'
+        : '') +
+      (v && v.clrWarning ? '\n' + v.clrWarning : '')
   }
   const prof = (v.profiles || []).join('+')
   // ★ R1-14：**通道必须印出来**。engine 是新增的结构化字段，第一版只把它放进返回值、**没放进渲染** ——
@@ -210,18 +216,107 @@ export function renderTrace(v) {
   // ★ R1-12：`start` 成功**也可能是个陷阱** —— 采集前自检发现这台机器的 WPR 收不了尾时，
   //   采样照起（决定权在调用方），但**必须当场说出来**：否则用户会照着"请复现问题"去白跑一轮。
   const warn = v.warning ? '\n' + v.warning : ''
+  // CLR 会话（`clr=true`）是**第二条独立会话**：一条在跑不代表另一条也在跑，
+  // 所以它的成败必须单独出现；`clrWarning` 里已经写明"没有 GC 数据 ≠ 没有 GC 停顿"。
+  const clrWarn = v.clrWarning ? '\n' + v.clrWarning : ''
+  const clrLine = v.clrEtlPath
+    ? '\nCLR 会话：' + (v.clr && v.clr.ok === false ? '**没起来**' : '已并行启动') + ' → ' + v.clrEtlPath
+    : ''
   if (v.started) {
     const pf = v.preflight
     const pfLine = pf ? '\n（采集前自检：' + (pf.ok ? '通过' : '**不通过**') + '，' + (pf.elapsedMs != null ? pf.elapsedMs + 'ms' : '耗时未回报') +
       (pf.signature ? '，签名 ' + pf.signature : '') + '）' : ''
-    return '已开始采集（预设 ' + prof + engLine + '）。请复现问题，然后调用 perf_trace(action="stop", etlPath="' + v.etlPath + '")。' + pfLine + warn
+    return '已开始采集（预设 ' + prof + engLine + '）。请复现问题，然后调用 perf_trace(action="stop", etlPath="' + v.etlPath + '")。' +
+      clrLine + pfLine + warn + clrWarn
   }
   if (v.action === 'status') return renderTraceStatus(v) + warn
-  if (v.cancelled) return '已取消采集（wpr -cancel，**没有产出 etl**）。' + (v.raw ? '\n' + String(v.raw).slice(0, 300) : '') + warn
+  if (v.cancelled) {
+    return '已取消采集（wpr -cancel，**没有产出 etl**）。' + (v.raw ? '\n' + String(v.raw).slice(0, 300) : '') + clrLine + warn + clrWarn
+  }
   // run / stop 的完成路径
+  // ⚠ 失败路径（合并没成 / WPR 收尾坏）也可能**已经有 CLR etl** —— 那份数据是好的，别跟着主采集一起被读成失败。
+  if (!v.ok && v.clrEtlPath) {
+    return '采集失败：' + (v.error || '原因未回报') + failureTail(v) +
+      '\n（注意：CLR 会话的 ' + v.clrEtlPath + ' 里已经有数据，不受这次失败影响 —— 可以直接 perf_clrevents 读它。）' + clrWarn
+  }
   return 'trace 完成：' + (v.etlPath || '(路径未回报)') + '（' + fmtBytes(v.sizeBytes) +
-    (v.seconds ? '，采集 ' + v.seconds + 's' : '') + '，预设 ' + prof + engLine + '）\n' + (v.hint || '') + warn
+    (v.seconds ? '，采集 ' + v.seconds + 's' : '') + '，预设 ' + prof + engLine + '）\n' + (v.hint || '') +
+    (v.clrEtlPath ? '\nCLR 会话产出：' + v.clrEtlPath + '（' + (v.clrEtlBytes == null ? '大小未读到' : fmtBytes(v.clrEtlBytes)) + '）' : '') +
+    warn + clrWarn
 }
+
+/**
+ * `perf_clrevents` 渲染 —— CLR 运行期事件（GC 停顿 / 各代 / 托管堆 / 锁争用）。
+ *
+ * ★ 本函数存在的**首要理由不是把数字排好看，而是把三态说清楚**：
+ *   「这个 etl 里根本没有 CLR provider」必须与「provider 在、窗口内 0 次 GC」在**文字上**分开。
+ *   混起来的后果是具体的：agent 会拿"0"去回答"客户端有没有 GC 停顿"，而真相是"没采"。
+ *   所以失败/未解码的每一句都带"**未知，不是 0**"，成功且 0 次时则明说"确实没发生"。
+ */
+export function renderClrEvents(v) {
+  if (!v) return '（未产出 CLR 事件汇总）'
+  const state = String(v.state || 'unknown')
+  if (!v.ok) {
+    const head = {
+      'etl-missing': '读不了：',
+      'tracerpt-missing': '环境缺件：',
+      'tracerpt-timeout': '读摘要超时 —— **未知，不是 0**：',
+      'tracerpt-failed': '读摘要失败 —— **未知，不是 0**：',
+      'summary-unreadable': '摘要解析失败 —— **未知，不是 0**：',
+      'no-clr-provider': '⚠ 这个 etl 里**没有 CLR provider** —— 这是「**没采**」，不是「没有 GC 停顿」：',
+      'xml-too-large': '解码体积超限，**未解码 ⇒ 未知，不是 0**：',
+      'decode-timeout': '解码超时 —— **未知，不是 0**：',
+      'decode-failed': '解码失败 —— **未知，不是 0**：',
+      'xml-unreadable': '解码产物读不出来 —— **未知，不是 0**：',
+    }[state] || ('失败（state=' + state + '）：')
+    const lines = [head + (v.error || '原因未回报')]
+    if (v.etlPath) lines.push('  etl：' + v.etlPath + (v.etlBytes != null ? '（' + fmtBytes(v.etlBytes) + '）' : ''))
+    if (Array.isArray(v.providers) && v.providers.length) {
+      lines.push('  这个 etl 里实际有的 provider（名字用本机注册表反查；查不到的按 GUID 原样列）：')
+      for (const p of v.providers.slice(0, 12)) {
+        lines.push('    ' + String(p.events).padStart(9) + '  ' + (p.name || '(未收录)') + '   ' + p.guid)
+      }
+      if (v.providers.length > 12) lines.push('    …（共 ' + v.providers.length + ' 个 provider，此处只列前 12）')
+    }
+    if (v.hint) lines.push('  下一步：' + v.hint)
+    if (v.raw) lines.push('  tracerpt 原话：' + String(v.raw).slice(-400))
+    return lines.join('\n')
+  }
+  const g = v.byGen || { gen0: 0, gen1: 0, gen2: 0 }
+  const p = v.pauseMs || { count: 0, totalMs: 0, maxMs: 0, p99Ms: 0 }
+  const h = v.heap
+  const lines = []
+  lines.push('CLR 事件汇总（' + v.etlPath + '，' + fmtBytes(v.etlBytes) + ' → 解码 ' + fmtBytes(v.xmlBytes) + '）')
+  lines.push('  采集证据：runtime ' + v.clrRuntimeEvents + ' 条 / rundown ' + v.clrRundownEvents + ' 条；解析出 ' + v.parsedEvents + ' 条 CLR 事件')
+  lines.push('  GC：共 ' + v.gcCount + ' 次（gen0 ' + g.gen0 + ' / gen1 ' + g.gen1 + ' / gen2 ' + g.gen2 + '）' +
+    '，其中**显式触发** ' + v.inducedCount + ' 次' +
+    (v.inducedCount > 0 ? '（GC.Collect / Induced —— 通常是代码在手动调，值得看一眼）' : ''))
+  lines.push('  停顿（GC/SuspendEEStart → 其后第一个 GC/RestartEEStop = 托管线程被冻结→恢复的真实时长）：' +
+    p.count + ' 段，合计 ' + p.totalMs + 'ms，最长 ' + p.maxMs + 'ms，P99 ' + p.p99Ms + 'ms')
+  lines.push('  托管堆（末次 GC/HeapStats 尾值）：' +
+    (h
+      ? 'gen0 ' + fmtBytes(h.gen0) + ' / gen1 ' + fmtBytes(h.gen1) + ' / gen2 ' + fmtBytes(h.gen2) +
+        ' / LOH ' + fmtBytes(h.lohGen3) + '；GC 句柄 ' + h.gcHandleCount
+      : '**没有 HeapStats 事件**（这一项未知，不是 0）'))
+  lines.push('  锁争用（Contention/Start）：' + v.contentionCount + ' 次')
+  if (Array.isArray(v.topPauses) && v.topPauses.length) {
+    lines.push('  最长的几段停顿落在（用于跟你看到的卡对上号）：')
+    for (const t of v.topPauses) {
+      lines.push('    ' + new Date(t.atMs).toISOString() + '   ' + round1(t.ms) + 'ms')
+    }
+    // ★ 实测（2026-09-17）：本机时区 +08:00，而 tracerpt 把**全部** SystemTime 渲染成 +07:59
+    //   ⇒ 绝对时刻系统性偏约 1 分钟。停顿时长是**差值**，不受影响 —— 但拿绝对时刻去跟别的日志对齐会说错。
+    lines.push('    ⚠ 绝对时刻来自 tracerpt 渲染的 SystemTime，本机实测它把偏移写成 +07:59（真值 +08:00）' +
+      '⇒ **绝对时刻可能有约 1 分钟误差**；上面各段**时长是差值，不受影响**。')
+  }
+  if (Array.isArray(v.eventsByKind) && v.eventsByKind.length) {
+    lines.push('  事件构成 Top ' + v.eventsByKind.length + '：' + v.eventsByKind.map((e) => e.kind + '×' + e.n).join('，'))
+  }
+  if (v.note) lines.push('  ' + v.note)
+  return lines.join('\n')
+}
+
+function round1(n) { return Math.round(Number(n) * 10) / 10 }
 
 export function renderHotstacks(v) {
   if (!v.ok) {
@@ -251,6 +346,189 @@ export function renderHotstacks(v) {
     (v.symbolPath ? '\n 生效符号路径：' + v.symbolPath : '') +
     (v.modulesTruncated ? '\n 模块表共 ' + v.modulesTotal + ' 个（此处只列前 30；"没列出"≠"不在报告里"）' : '') + '）' +
     symNote + rawBlock
+}
+
+/**
+ * `perf_flame` 渲染 —— CPU 火焰图（folded stacks + 自包含可交互 HTML）。
+ *
+ * 诚实性要求（与本文件其它渲染同源）：
+ *  1. **失败要出声**：0 采样、超时、没产出 CSV 各有各的说法，且都不能被读成"它不占 CPU"；
+ *  2. **`[unknown]` 必须解释**：模块模式下客户端自己的方法（JIT 代码，见 docs/perfview-parity.md §3）
+ *     会聚成一条 `[unknown]` 带 —— 不点破的话，用户会以为"有一大坨不知道是什么的开销"，
+ *     其实那多半就是**客户端自己的代码**，只是符号还没接线（§4 的 JIT 地址→方法映射）。
+ *  3. 口径要标：模块模式（快、只到模块）vs 符号模式（慢、原生/框架帧有函数名）；成本（CSV 体积/耗时）。
+ */
+export function renderFlame(v) {
+  if (!v) return '（未产出火焰图）'
+  if (!v.ok) {
+    return '火焰图失败：' + (v.error || '原因未回报') +
+      (v.timedOut ? '' : '') + rawTail(v)
+  }
+  const N = v.samplesTarget || 0
+  const pct = (h) => N ? (100 * h / N).toFixed(1) + '%' : '?'
+  const mods = Array.isArray(v.topModules) ? v.topModules : []
+  const leaves = Array.isArray(v.topLeaves) ? v.topLeaves : []
+  const lines = []
+  lines.push('CPU 火焰图已生成 → **' + v.htmlPath + '**（浏览器打开：可点击缩放 / 悬停看详情 / 搜索高亮，颜色=模块）')
+  lines.push('  进程「' + v.process + '」：' + N + ' 个 CPU 采样（全机 ' + v.samplesAll + '），折叠成 ' + v.uniqueStacks + ' 条唯一栈' +
+    '（' + (v.symbols ? '符号模式' : '模块模式') + '）')
+  if (mods.length) {
+    lines.push('  最热模块（**包含命中**：采样的栈里出现过该模块的比例）：')
+    for (const m of mods.slice(0, 10)) lines.push('    ' + pct(m.hits).padStart(6) + '  ' + m.name)
+  }
+  if (leaves.length) {
+    lines.push('  最热叶子（采样**落点**所在帧）：')
+    for (const l of leaves.slice(0, 8)) lines.push('    ' + pct(l.hits).padStart(6) + '  ' + l.name)
+  }
+  // JIT 映射（§4）：接上了就报解析率；没接上就告诉怎么接。
+  const jit = v.jit
+  if (jit && jit.attempted) {
+    lines.push('  JIT 符号（§4）：客户端 `"Unknown"` 帧解出 ' + jit.resolved + '/' + jit.attempted +
+      '（= ' + (100 * jit.resolved / jit.attempted).toFixed(0) + '%）真实托管方法名。' +
+      (jit.resolved < jit.attempted ? '未解出的多为分层重编译搬了地址 / 调用桩 —— 属机制损耗，不是漏采。' : ''))
+  } else if (v.jitEtl && v.jitInfo && v.jitInfo.state !== 'ok') {
+    lines.push('  ⚠ JIT 映射没建起来（' + v.jitInfo.state + '）：客户端 JIT 帧仍是 [unknown]。')
+  } else if (!v.jitEtl) {
+    lines.push('  · 未接 JIT 映射：客户端自己的方法名会聚成 [unknown]。要真实方法名，采集时带 `perf_trace(jit=true)`（stop 时低污染出方法表，perf_flame 自动接上）。')
+  }
+  // `[unknown]` 说明 —— 只在它确实占了份量、且没被 JIT 映射解掉时出声，避免噪音。
+  const unk = mods.find((m) => m.name === '[unknown]')
+  if (unk && N && unk.hits / N > 0.03) {
+    lines.push('  ⚠ `[unknown]` 占 ' + pct(unk.hits) + '：**没有镜像的 JIT 代码** —— ' +
+      '大概率就是**客户端自己的方法**（客户端程序集是 JIT 的，dbghelp 认地址认不出方法，见 §3）。' +
+      (jit && jit.attempted ? '本次已接 JIT 映射、尽力解了；剩下这些是没进 rundown 的（分层重编译/桩）。' : '带 `perf_trace(jit=true)` 采一份，这条带就会显出真实方法名。') +
+      '它诚实地聚成一格，**不是「未知开销」**。')
+  }
+  if (!v.symbols) {
+    lines.push('  · 本次**模块模式**（快）：只到模块级。原生/框架帧想要函数名，加 symbols=true 重跑（会连符号服务器，慢）。')
+  } else if (typeof v.resolvedLeafRatio === 'number') {
+    lines.push('  · 符号模式：叶子帧解析率 ' + (100 * v.resolvedLeafRatio).toFixed(0) + '%（客户端 JIT 帧仍解不出，见 §3/§4）。')
+  }
+  lines.push('  · 另有 flame.folded（' + v.foldedPath + '）：可直接拖进 https://speedscope.app，或喂 flamegraph.pl。')
+  if (v.csvBytes) {
+    lines.push('  · 成本：dumper CSV ' + fmtBytes(v.csvBytes) + '（' + (v.csvKept ? '已保留：' + v.csvPath : '已删') + '），' +
+      'dumper ' + (v.dumperMs != null ? Math.round(v.dumperMs / 1000) + 's' : '?') + ' / 合计 ' + Math.round((v.elapsedMs || 0) / 1000) + 's。')
+  }
+  return lines.join('\n')
+}
+
+/**
+ * `perf_uifreeze` 渲染 —— UI 冻结的等待时间分析（复刻 PerfView UI Freeze）。
+ * 核心是回答"UI 线程冻了多久、其中多少时间卡在哪个调用"——所以要突出 wait 占比 + topWaits + 等待火焰图。
+ */
+function uiSimpleFrame(f) {
+  if (!f) return '?'
+  const bang = f.indexOf('!')
+  let s = bang >= 0 ? f.slice(bang + 1) : f
+  const paren = s.indexOf('(')
+  if (paren >= 0) s = s.slice(0, paren)
+  return s
+}
+
+export function renderUiFreeze(v) {
+  if (!v) return '（未产出 UI 冻结分析）'
+  if (v.started) {
+    return '已开始 PerfView /threadTime 采集。\n' + (v.hint || '复现卡顿后调 perf_uifreeze(action="stop")。')
+  }
+  if (!v.ok) return 'UI 冻结分析失败：' + (v.error || '原因未回报') + (v.needsElevation ? '\n（需要管理员权限起 ETW 内核会话）' : '') + rawTail(v)
+  const lines = []
+  const t = v.target || {}
+  const thr = Math.round(v.freezeThresholdMs || 200)
+  lines.push('主 UI 线程：os tid ' + (t.tid != null ? t.tid : '?') + '（进程 ' + (t.process || v.process || '?') + '，pid ' + (t.pid != null ? t.pid : (v.pid != null ? v.pid : '?')) + '）｜ 采样窗口 ' + Math.round(v.sessionMs || 0) + 'ms ｜ 符号 ' + (v.symbols || 'cached'))
+  const n = v.freezeCount || 0
+  if (!n) {
+    lines.push('**判据（dotTrace）：主 UI 线程消息泵间隙 > ' + thr + 'ms = UI 冻结。结果：本次无 UI 冻结。**')
+    lines.push('该 UI 线程全程在正常泵消息/响应，没有 > ' + thr + 'ms 的卡顿段。')
+    lines.push('（若你确定刚才卡了：可能卡在别的进程/线程；或采集窗口没覆盖到那一下；或该动作走异步、没同步卡 UI。）')
+  } else {
+    lines.push('**UI 冻结 ' + n + ' 次，合计 ' + Math.round(v.freezeTotalMs || 0) + 'ms（dotTrace 判据：消息泵间隙 > ' + thr + 'ms）**')
+    const fs = Array.isArray(v.freezes) ? v.freezes : []
+    for (const f of fs.slice(0, 12)) {
+      lines.push('  • **' + Math.round(f.durMs) + 'ms** @ t=' + Math.round(f.startMs) + 'ms')
+      const m = Array.isArray(f.managed) ? f.managed : []
+      if (m.length) {
+        lines.push('      托管调用链（越往下越接近卡住点）：')
+        for (const fr of m) lines.push('        → ' + uiSimpleFrame(fr))
+      } else {
+        lines.push('      （无托管帧——纯 native/等待，或该段符号未解到应用层）')
+      }
+      lines.push('      阻塞点(leaf): ' + (f.leaf || '?'))
+    }
+  }
+  if (v.etlZip) lines.push('\n证据：' + v.etlZip + '（symbols="full" 可补内核符号重跑；也可用 PerfView GUI 直接打开）')
+  lines.push('\n口径：UI 冻结按 **dotTrace 判据**（主 UI 线程消息泵间隙 > ' + thr + 'ms）——一直泵消息的空闲**不算**卡顿。' +
+    '托管调用链来自 CLR rundown（不依赖 msdl，故 symbols=off 也有名）；阻塞点(leaf) 是 native 等待（socket/锁/GC），symbols="full" 才解出内核函数名。')
+  return lines.join('\n')
+}
+
+/**
+ * `perf_allocflame` 渲染 —— 分配火焰图（#3，PerfView 的 GC Heap Alloc Stacks）。
+ * 口径必须打印：AllocationTick 是**采样**（每~100KB 一次）、权重是字节、**分配多 ≠ 泄漏**。
+ */
+export function renderAllocFlame(v) {
+  if (!v) return '（未产出分配火焰图）'
+  if (!v.ok) return '分配火焰图失败：' + (v.error || '原因未回报') + rawTail(v)
+  const mb = (n) => (Number(n) / 1048576).toFixed(1) + 'MB'
+  const lines = []
+  lines.push('分配火焰图已生成 → **' + v.htmlPath + '**（浏览器打开，按**分配字节**加权，可点击缩放/搜索）')
+  lines.push('  进程「' + v.process + '」：' + v.ticksTarget + ' 个 AllocationTick（全机 ' + v.ticksAll + '），采样分配约 ' + mb(v.totalBytes) +
+    '（' + (v.symbols ? '符号模式' : '模块模式') + '）')
+  const tt = Array.isArray(v.topTypes) ? v.topTypes : []
+  if (tt.length) {
+    lines.push('  分配大头类型（按字节）：')
+    for (const t of tt.slice(0, 12)) lines.push('    ' + mb(t.bytes).padStart(8) + '  ×' + t.ticks + '  ' + t.type)
+  }
+  const jit = v.jit
+  if (jit && jit.attempted) lines.push('  JIT 符号：分配路径的客户端帧解出 ' + jit.resolved + '/' + jit.attempted + ' 个真实方法名。')
+  else if (!v.jitEtl) lines.push('  · 未接 JIT 映射：客户端的分配调用路径会聚成 [unknown]。采集时带 `perf_trace(jit=true, alloc=true)` 可解出是**哪段代码**在分配。')
+  lines.push('  · 另有 ' + v.foldedPath + '（可拖进 https://speedscope.app）。')
+  lines.push('\n⚠ 口径：AllocationTick **每分配约 100KB 采一次** ⇒ 这是**采样**、权重是字节近似；' +
+    '**分配多 ≠ 泄漏**（多数分配很快被 GC 回收）——它答的是"**谁在制造 GC 压力/churn**"（这类才是 WPF 卡顿常见成因）；要查泄漏用 perf_gcroot。')
+  return lines.join('\n')
+}
+
+/**
+ * `perf_gcroot` 渲染 —— 堆 GC root / 保留链（#2）。
+ *
+ * 两件事必须说清（否则又变成"看起来像结论、其实不是"）：
+ *  1. 保留链是**答"谁 keep 住了对象"**的（root → … → 对象），不是泄漏判定；
+ *  2. 口径：只看托管堆、单次快照 —— 大 ≠ 泄漏（渲染层再强调一次，和 perf_heap 同源）。
+ */
+export function renderGcRoot(v) {
+  if (!v) return '（未产出 GC root 分析）'
+  if (!v.ok) return 'GC root 分析失败：' + (v.error || '原因未回报') + rawTail(v)
+  const lines = []
+  const mb = (n) => (Number(n) / 1024 / 1024).toFixed(1) + 'MB'
+  lines.push('托管堆（' + (v.bitness || '?') + '，CLR ' + (v.clr || '?') + '）：' +
+    v.managedTotalObjects + ' 对象 / ' + mb(v.managedTotalBytes) +
+    (v.cappedWalk ? '（⚠ 遍历到上限就停了，未走完整个堆）' : ''))
+  const top = Array.isArray(v.topTypes) ? v.topTypes : []
+  if (top.length) {
+    lines.push('Top 类型（按占用）：')
+    for (const t of top.slice(0, 15)) lines.push('  ' + mb(t.bytes) + '  ×' + t.count + '  ' + t.type)
+  }
+  if (v.queriedType) {
+    const paths = Array.isArray(v.rootPaths) ? v.rootPaths : []
+    lines.push('')
+    lines.push('「' + v.queriedType + '」匹配 ' + v.typeMatchedObjects + ' 个对象；保留链（GC root → 对象，答"谁 keep 住了它"）：')
+    if (!paths.length) {
+      lines.push('  ⚠ 没找到到 root 的路径（可能：匹配到 0 个、或 BFS 在上限内没触达 —— 不代表它没被引用）。')
+    } else {
+      for (const p of paths) {
+        const chain = Array.isArray(p.chain) ? p.chain.map((c) => c.type).join('  →  ') : ''
+        lines.push('  [root:' + p.rootKind + '] ' + chain)
+      }
+      lines.push('  读法：最左是 GC root（' + rootKindHint() + '），顺箭头往右直到目标类型 —— 把这条链上的持有者断开，对象才能被回收。')
+    }
+  } else {
+    lines.push('（要查"谁持有某类型"：perf_gcroot(dumpPath, type="你的类型名子串")）')
+  }
+  if (v.scopeNote) lines.push('\n⚠ ' + v.scopeNote)
+  return lines.join('\n')
+}
+
+function rootKindHint() {
+  return 'StrongHandle/Pinned=GC 句柄（常是 static 字段或 P/Invoke 固定）、Stack=某线程栈上的局部、Finalizer=终结队列、RefCount=COM 引用'
 }
 
 /**

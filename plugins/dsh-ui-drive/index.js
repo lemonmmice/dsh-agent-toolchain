@@ -153,6 +153,15 @@ async function shotWithVision({ workspace = '', label = 'state', waitBeforeMs = 
 const OBJECT = { type: 'object', additionalProperties: true }
 const READ_ONLY_NOTE = '。注意：点击/输入是真实副作用操作（可能落库），必须先报按钮名给用户确认再执行；「按名硬拒」名单默认为空（未配 DSH_UI_DENY_RE 时什么都不拦），别拿它当兜底；运维若配了急停（DSH_UI_ESTOP_FILE）或策略表（DSH_UI_APP_POLICY），被拦时返回带 policyCode，复位走运维路径 /api/dsh-ui-drive/estop/reset'
 
+/** R-01（2026-09-17）：把「没有界面描述」的原因显示出来 —— 旧写法只渲染 description，
+ *  视觉调用失败时**什么都不显示**，于是 agent/用户只看到"等了半天、什么都没有"。 */
+function launchVisionNote(v) {
+  const s = v && v.uiState
+  if (!s || s.description) return ''
+  const why = s.visionError || s.describeSkipped || s.note || '未产出描述（原因未回报）'
+  return '\n（没有界面描述：' + why + '）'
+}
+
 const tools = () => [
   defineTool({
     name: 'ui_status',
@@ -169,15 +178,24 @@ const tools = () => [
     name: 'ui_launch',
     description: dshDescription('ui_launch'),
     parameters: dshParameters('ui_launch'),
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: launchText(v) + (v.uiState && v.uiState.description ? '\n当前界面：' + v.uiState.description : '') }] },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: launchText(v) + (v.uiState && v.uiState.description ? '\n当前界面：' + v.uiState.description : '') + launchVisionNote(v) }] },
     timeoutMs: 120000,
     async execute(args) {
       const l = await drv().launch({ extraArgs: args.extraArgs || '', waitMs: args.waitMs || 60000, force: args.force === true })
       // 视觉即返：等窗口渲染 3.5s 再截图描述（带黑屏重试），agent 一步知道当前在哪个页面。
       // UD-06：只在**窗口真的可用**（ok）时才截图 —— 半成功时没有主窗口，
       // 截图要么失败、要么抓到别的窗口（闪屏/其它进程），把一张不相干的画面当成"客户端界面"。
-      if (l.ok === true) {
-        const st = await shotWithVision({ workspace: args.workspace || '', label: 'launch-state', waitBeforeMs: l.started ? 3500 : 0, allowSensitive: args.allowSensitive === true })
+      //
+      // R-01（2026-09-17，用户报障「客户端都启动半天了，ui_launch 还在等待」）：
+      //   **只有"这次真的启动了"才做视觉即返**。旧写法只判 `l.ok === true`，而"客户端已在运行"
+      //   这条路径同样返回 ok:true（driver.launch 走到 432-435 行 ⇒ alreadyRunning:true /
+      //   started:false / waitedMs:0，判启动本身是 0 秒），于是**什么都没启动也照样**跑完
+      //   「截图 → 焦点检查 → 远程视觉描述」三步。
+      //   真机实测（2026-09-17 16:09，客户端早已在跑）：建证据目录 16:09:39 → 截图落盘 16:09:55
+      //   → 焦点检查 16:10:12 → 之后才调视觉模型，整轮 ≈33s，而 GUI 上看起来就是"还在等"。
+      //   现在：started !== true ⇒ 直接返回；要看当前界面请走 ui_status / ui_drive(shot, describe=true)。
+      if (l.ok === true && l.started === true) {
+        const st = await shotWithVision({ workspace: args.workspace || '', label: 'launch-state', waitBeforeMs: 3500, allowSensitive: args.allowSensitive === true })
         if (st) l.uiState = st
       }
       return l

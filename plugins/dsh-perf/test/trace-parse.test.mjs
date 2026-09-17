@@ -254,7 +254,7 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
 // ------------------------------------------------- 8. F-043/F-044：符号路径的语义 + "未知"里剩下的那层信息
 //
 // 现场（2026-09-11，真机三连测）：
-//   ① 客户端自己的 pdb **就在磁盘上**（Product\Bin，16 个），把它接进符号路径后，
+//   ① 客户端自己的 pdb **就在磁盘上**（产物目录，16 个），把它接进符号路径后，
 //      系统 DLL（mscorlib / WindowsBase / PresentationFramework）全出名字，
 //      **客户端自己的托管帧依然一条都不出**（unknownRatio 0.129，unknown=700/5416，
 //      其中最热列表里 159 条是 ***unknown***）。
