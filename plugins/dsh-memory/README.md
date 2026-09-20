@@ -17,12 +17,43 @@ through the MCP server (`memory_index` / `memory_search` / `memory_save` /
 - `memory_save` / `memory_recall` / `memory_forget` — cross-session KV
   conventions, scoped per project (e.g. the project name).
 
+## Native vector store
+
+From the monorepo root, build with Rust and the platform linker (Windows:
+Visual C++ build tools):
+
+```powershell
+npm run build:memory-store
+npm run test:memory-native
+node scripts/run-tests.mjs dsh-memory
+```
+
+Deploy the whole plugin including `bin/<platform>-<Node architecture>/memory-store.node`.
+Consumers do not need Rust. `DSH_MEMORY_STORE_NATIVE` optionally overrides the
+module path. The same adapter is used by DSH and MCP; restart both after deployment.
+Windows x64 is validated; Linux GNU/macOS build targets are provided but untested.
+
+Rust caches the vector index, computes dense/sparse similarity, selects stable
+top-k hits, indexes ID prefixes and writes JSONL through staged replacement and
+`.bak` backup. The JSONL file remains the source of truth; external changes cause
+reloads, while conflicting unflushed batches fail instead of overwriting them.
+File embedding results are published as complete files; failed reindexing keeps
+the previous complete snapshot. Final flush errors reach the caller.
+
+Local bigram Maps are serialized as objects so new vectors survive restarts.
+Previously saved empty sparse objects cannot recover lost terms automatically;
+reindex the source into a new project namespace if affected (unchanged-file
+mtime skipping otherwise retains the old index). No user index is rewritten on
+read. See [validation and timings](../../docs/memory-store-rust.md).
+
 ## Hygiene guarantees
 
-- **Stale chunks never linger**: indexing a changed file replaces all of its
-  previous chunks (chunks are keyed by `file:<absPath>:<mtime>`); indexing a
+- **Successful reindexing replaces stale chunks**: indexing a changed file replaces all of its
+  previous chunks after embedding succeeds (chunks are keyed by `file:<absPath>:<mtime>`); indexing a
   workspace also evicts chunks belonging to files that no longer exist on
   disk.
+  Failed reindexing retains the last complete snapshot, and search freshness
+  metadata identifies changed/deleted sources.
 - **Secrets never land on disk — and never leave the machine**: `memory_save`
   runs a fail-closed sensitive-string filter (GitHub tokens, OpenAI-style
   keys, AWS access keys, bearer tokens, private-key blocks, labeled secrets).

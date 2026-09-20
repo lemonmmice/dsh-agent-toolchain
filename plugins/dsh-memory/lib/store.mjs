@@ -1,114 +1,143 @@
-// 向量库：JSONL 持久化 + 余弦相似度（零依赖，几千块规模足够）
-import fs from "node:fs";
-import path from "node:path";
+// Rust owns the resident vector index, prefix index and atomic JSONL writes.
+// JS parses only on load and for selected hits, preserving existing JSON semantics.
+import fs from 'node:fs'
+import path from 'node:path'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 
-import { similarity } from "./embed-provider.mjs";
-import { writeJsonlAtomic } from "./atomic-write.mjs";
+const require = createRequire(import.meta.url)
+let Binding
+function binding() {
+  if (Binding) return Binding
+  const file = process.env.DSH_MEMORY_STORE_NATIVE || fileURLToPath(new URL(
+    `../bin/${process.platform}-${process.arch}/memory-store.node`, import.meta.url))
+  try { Binding = require(file).MemoryStore }
+  catch (cause) { throw new Error('Memory native module unavailable. Run npm run build:memory-store and deploy the dsh-memory bin directory.', { cause }) }
+  return Binding
+}
+const keyOf = value => Array.from({ length: value.length }, (_, i) => value.charCodeAt(i))
+function idOf(key) {
+  let text = ''
+  for (let i = 0; i < key.length; i += 4096) text += String.fromCharCode(...key.slice(i, i + 4096))
+  return text
+}
+function vectorInput(v) {
+  const empty = { kind: 0, dense: new Float64Array(0), keys: [], values: [], norm: 0 }
+  if (Array.isArray(v)) return { ...empty, kind: 1, dense: Float64Array.from(v) }
+  if (v?.kind === 'bigram') {
+    const entries = v.sparse instanceof Map ? [...v.sparse] : Object.entries(v.sparse || {})
+    return { ...empty, kind: 2, keys: entries.map(([k]) => keyOf(k)), values: entries.map(([, n]) => Number(n)), norm: Number(v.norm) }
+  }
+  return empty
+}
+function storedVector(v) {
+  return v?.kind === 'bigram' && v.sparse instanceof Map ? { ...v, sparse: Object.fromEntries(v.sparse) } : v
+}
+function encode(row, alreadyPersisted = false, originalJson = null) {
+  if (typeof row?.id !== 'string') throw new TypeError('Memory row id must be a string')
+  const json = originalJson ?? JSON.stringify({ ...row, vector: storedVector(row.vector) })
+  // Match the persisted representation (NaN/Infinity/null, sparse keys, toJSON).
+  const persisted = alreadyPersisted ? row : JSON.parse(json)
+  return { key: keyOf(persisted.id), json, vector: vectorInput(persisted.vector) }
+}
+const changed = error => String(error.message).includes('MEMORY_STORE_CHANGED:')
 
 export class VectorStore {
-  constructor(dir, namespace = "default") {
-    this.namespace = namespace;
-    this.dir = dir;
-    this.file = path.join(dir, namespace + ".jsonl");
-    fs.mkdirSync(dir, { recursive: true });
-    // 批量模式（F-053）：见 beginBatch 的说明
-    this._rows = null;
-    this._pending = 0;
-    this._flushEvery = 200;
+  constructor(dir, namespace = 'default') {
+    this.namespace = namespace
+    this.dir = dir
+    this.file = path.join(dir, namespace + '.jsonl')
+    fs.mkdirSync(dir, { recursive: true })
+    this._native = null
+    this._batch = false
+    this._pending = 0
+    this._flushEvery = 200
   }
 
-  _read() {
-    if (this._rows) return this._rows;           // 批量模式：以内存为准（避免每块都重读 43MB）
-    if (!fs.existsSync(this.file)) return [];
-    return fs.readFileSync(this.file, "utf-8").split("\n").filter(Boolean).map(l => JSON.parse(l));
-  }
-
-  /**
-   * 原子写（F-053）。**不再用 `writeFileSync` 原地覆盖** —— 那会在"截断之后、写完之前"
-   * 被打断时把整个索引清零（2026-09-14 真事故：43.9MB / 2182 块 → 0 字节）。
-   */
-  _write(rows) {
-    return writeJsonlAtomic(this.file, rows);
-  }
-
-  /**
-   * 批量模式（F-053 的第二半）：索引一个工作区时，原来**每插一块**都会
-   * `_read()` 全量解析 + `_write()` 重写整个文件 ⇒ 2182 块要重写 2182 次 43MB（约 95GB I/O），
-   * **这才是"慢到会被打断"的根因**。现在在批量里只读一次、按 `flushEvery` 定期落盘、结束时收尾。
-   *
-   * ⚠ 中断语义：批量期间**已 flush 的部分**是完整的（每次 flush 都是原子的），
-   *   未 flush 的部分丢掉 —— 也就是"少了一部分"，**不会再出现"全清"**。
-   */
-  beginBatch({ flushEvery = 200 } = {}) {
-    if (this._rows) return;
-    this._rows = this._read();
-    this._pending = 0;
-    this._flushEvery = Math.max(1, Number(flushEvery) || 200);
-  }
-
-  flushBatch() {
-    if (!this._rows) return null;
-    const rows = this._rows;
-    this._pending = 0;
-    return this._write(rows);
-  }
-
-  endBatch() {
-    if (!this._rows) return null;
-    const r = this.flushBatch();
-    this._rows = null;
-    return r;
-  }
-
-  _maybeFlush() {
-    if (!this._rows) return;
-    if (++this._pending >= this._flushEvery) this.flushBatch();
-  }
-
-  upsert(id, vector, meta = {}) {
-    const rows = this._read();
-    const idx = rows.findIndex(r => r.id === id);
-    const row = { id, vector, meta, updatedAt: Date.now() };
-    if (idx >= 0) rows[idx] = row; else rows.push(row);
-    if (this._rows) { this._maybeFlush(); return row; }   // 批量模式：延后落盘
-    this._write(rows);
-    return row;
-  }
-
-  remove(id) {
-    const rows = this._read();
-    const keep = rows.filter(r => r.id !== id);
-    if (this._rows) { this._rows = keep; this._maybeFlush(); return; }
-    this._write(keep);
-  }
-
-  clear() { if (this._rows) { this._rows = []; this._pending = 0; return; } this._write([]); }
-
-  ids() {
-    return this._read().map(r => r.id);
-  }
-
-  countPrefix(prefix) {
-    return this._read().filter(r => r.id.startsWith(prefix)).length;
-  }
-
-  removePrefix(prefix) {
-    const rows = this._read();
-    const keep = rows.filter(r => !r.id.startsWith(prefix));
-    const removed = rows.length - keep.length;
-    if (removed) {
-      if (this._rows) { this._rows = keep; this._maybeFlush(); }
-      else this._write(keep);
+  _ensure() {
+    if (!this._native) { const Native = binding(); this._native = new Native(path.resolve(this.file)) }
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const text = this._native.load()
+        if (text != null) {
+          const rows = text.split('\n').filter(line => line.trim() !== '').map(line => encode(JSON.parse(line), true, line))
+          this._native.hydrate(rows)
+        }
+        return this._native
+      } catch (error) {
+        // A dirty batch must be reported as conflicting, never silently reloaded.
+        if (!changed(error) || this._batch || attempt >= 2) throw error
+      }
     }
-    return removed;
   }
 
+  _read() { return this._ensure().rows().map(json => JSON.parse(json)) }
+  _write() { return this._native.flush() }
+
+  beginBatch({ flushEvery = 200 } = {}) {
+    if (this._batch) return
+    this._ensure()
+    this._batch = true
+    this._pending = 0
+    this._flushEvery = Math.max(1, Number(flushEvery) || 200)
+  }
+  flushBatch() {
+    if (!this._batch) return null
+    const result = this._write()
+    this._pending = 0
+    return result
+  }
+  endBatch() {
+    if (!this._batch) return null
+    const result = this.flushBatch()
+    this._batch = false
+    return result
+  }
+  abortBatch() {
+    this._native?.discard()
+    this._batch = false
+    this._pending = 0
+  }
+  _mutate(fn, weight = 1) {
+    const native = this._ensure()
+    try {
+      const result = fn(native)
+      if (this._batch) {
+        this._pending += Math.max(1, weight)
+        if (this._pending >= this._flushEvery) this.flushBatch()
+      } else this._write()
+      return result
+    } catch (error) {
+      // Failed publication must not leak phantom rows through later reads.
+      if (!this._batch) native.discard()
+      throw error
+    }
+  }
+  upsert(id, vector, meta = {}) {
+    const row = { id, vector: storedVector(vector), meta, updatedAt: Date.now() }
+    const encoded = encode(row)
+    this._mutate(native => native.upsert(encoded))
+    return row
+  }
+  replacePrefix(prefix, rows) {
+    const encoded = rows.map(row => encode(row)) // validate every row before mutation
+    this._mutate(native => native.replacePrefix(keyOf(prefix), encoded), rows.length)
+  }
+  remove(id) { this._mutate(native => native.removePrefix(keyOf(id), true)) }
+  clear() { this._mutate(native => native.removePrefix([], false)) }
+  ids() { return this._ensure().ids().map(idOf) }
+  countPrefix(prefix) { return this._ensure().countPrefix(keyOf(prefix)) }
+  removePrefix(prefix) { return this._mutate(native => native.removePrefix(keyOf(prefix), false)) }
+  count() { return this._ensure().count() }
   search(queryVector, k = 5) {
-    return this._read()
-      .map(r => ({ ...r, score: similarity(queryVector, r.vector) }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, k);
+    const native = this._ensure()
+    const length = native.count(), number = Number(k)
+    const end = Number.isNaN(number) ? 0 : Math.trunc(number)
+    const limit = end < 0 ? Math.max(0, length + end) : Math.min(length, end)
+    const result = native.search(vectorInput(queryVector), limit)
+    const hits = result.hits.map(({ json, score }) => ({ ...JSON.parse(json), score }))
+    // JS treats a NaN comparison as a tie. Keep its exact stable-sort behavior
+    // for malformed/unequal-dimensional legacy vectors rather than inventing scores.
+    return result.needsJsSort ? hits.sort((a, b) => b.score - a.score).slice(0, limit) : hits
   }
-
-  count() { return this._read().length; }
 }

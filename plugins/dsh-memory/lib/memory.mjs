@@ -52,7 +52,7 @@ export class DshMemory {
    *      为什么不是"能写多少写多少"：`indexWorkspace` 的增量跳过判据是
    *      `countPrefix("file:<路径>:<mtime>:") > 0`（只要有一块就当已索引）——
    *      半索引的文件**会被永久跳过**，那部分内容**静默地从检索里消失**。
-   *      所以预算用尽或被中断时，要把这次写进去的块**删掉**，让下一次干净重做。
+   *      新分块先暂存在内存，全部成功后一次替换；预算用尽或失败时保留旧文件的完整索引。
    *   ② **有界**：每个分块前检查 `deadline`，到点就停（返回 `deferred`），绝不"再等一会儿就完了"。
    *      并发有上界（串行是卡死主因；但仍要有限，别把远程 API 打爆）。
    */
@@ -64,16 +64,19 @@ export class DshMemory {
     // eviction sweep can judge existence on disk instead of on "is this file
     // part of the root being indexed right now" (which wiped other roots).
     const prefix = "file:" + filePath + ":";
-    if (evict) this.store.removePrefix(prefix); // 陈旧分块淘汰：文件更新后不留旧块
     const key = prefix + st.mtimeMs;
     const text = fs.readFileSync(filePath, "utf-8");
     // Fail-closed sensitive screening on the INDEX path, not just KV save:
     // a chunk containing a token/secret must never be embedded, because
     // embedding may egress to a remote API.
     const hits = findSensitive(text);
-    if (hits.length) return { chunks: 0, sensitive: hits.map((h) => h.name) };
+    if (hits.length) {
+      if (evict) this.store.removePrefix(prefix);
+      return { chunks: 0, sensitive: hits.map((h) => h.name) };
+    }
     const chunks = splitIntoChunks(text);
     let failed = null, done = 0, cursor = 0;
+    const pendingRows = new Array(chunks.length);
     const worker = async () => {
       for (;;) {
         if (failed) return;
@@ -83,15 +86,25 @@ export class DshMemory {
         const c = chunks[i];
         try {
           const vector = await this.embed.embed(c.text);
-          this.store.upsert(key + "#" + c.index, vector, { ...meta, chunkIndex: c.index, text: c.text });
+          // Commit a whole file only after all embeddings succeed; periodic
+          // batch flushes must never persist half of a file as 'already indexed'.
+          pendingRows[i] = { id: key + "#" + c.index, vector, meta: { ...meta, chunkIndex: c.index, text: c.text }, updatedAt: Date.now() };
           done++;
         } catch (e) { failed = e; return; }
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, chunks.length)) }, worker));
-    if (done === chunks.length) return { chunks: chunks.length, sensitive: [] };
-    // 没做完 ⇒ **回滚这一个文件**（不变量①）。回滚数量如实带出去，便于人核对"确实一块都没留"。
-    const removed = this.store.removePrefix(key);
+    if (done === chunks.length) {
+      const after = fs.statSync(filePath);
+      if (after.mtimeMs !== st.mtimeMs || after.size !== st.size) {
+        return { chunks: 0, sensitive: [], failed: 'source file changed during indexing; retry', rolledBack: done };
+      }
+      this.store.replacePrefix(evict ? prefix : key, pendingRows);
+      return { chunks: chunks.length, sensitive: [] };
+    }
+    // Incomplete work exists only in this temporary array; previous complete
+    // chunks remain available until a successful replacement is published.
+    const removed = done;
     if (failed) {
       return { chunks: 0, sensitive: [], failed: String((failed && failed.message) || failed).slice(0, 300), rolledBack: removed };
     }
@@ -136,7 +149,7 @@ export class DshMemory {
     const failedFiles = [], sizeSkippedFiles = [];
     // ⚠ F-053：整段索引放进**批量模式**。原来每插一块都会"全量解析 + 重写整个 43MB 文件"，
     //   2182 块 ⇒ 约 95GB I/O —— 这才是"慢到会被打断"的根因；而被打断又撞上非原子写 ⇒ 一次全清。
-    //   现在：只读一次、每 200 块原子落盘一次、结束时收尾。**中断最多丢最后一批，不会丢历史。**
+    //   现在：Rust 缓存只在文件变化后重载，按约 200 块落盘；每个文件完整提交后才允许 flush。
     //
     // ⚠ 2026-09-15（本机实测）：`beginBatch()` 要**读并解析整个索引文件**（实测 59 MB / 2953 块时，
     //   这一步本身就要一两分钟）—— 而 deadline 是从函数入口算起的**绝对时刻**，于是真机上出现过
@@ -171,9 +184,10 @@ export class DshMemory {
         }
       }
     } finally {
-      // 无论成功、抛错还是被中断，**已 flush 的分块都在盘上**（每次都原子）；
-      // 这里再收尾一次，把最后不足一批的部分落下去。
-      try { this.store.endBatch(); } catch { /* 收尾落盘失败不改变已落盘部分 */ }
+      // Never report success after final publication failed. Discard pending
+      // memory changes so the next call can reload and retry committed state.
+      try { this.store.endBatch(); }
+      catch (error) { this.store.abortBatch(); throw error; }
     }
     // 清理已从磁盘删除的文件的陈旧分块。判定只看"磁盘上文件是否还存在"，
     // 与当前索引的根无关——索引 B 仓库不再清掉 A 仓库的块。
@@ -204,7 +218,7 @@ export class DshMemory {
           '）：还剩 ' + remaining +
           ' 个文件。**再调一次 memory_index(同一个 path) 就能接着做** —— 已完成的文件按 mtime 被跳过，不会重做；' +
           '想一次多做一些可以传更大的 budgetMs（或设 DSH_MEMORY_INDEX_BUDGET_MS）。' +
-          (stoppedIn === 'load' ? '⚠ 索引文件越大装载越慢（实测 59MB/2953 块要一两分钟）—— 这种情况**再调一次也没用**，要么显著调大 budgetMs，要么把索引目录拆小。' : '')
+          (stoppedIn === 'load' ? '⚠ 本次预算在装载阶段用尽；同进程下次可复用缓存，冷启动时可调大 budgetMs 或拆小索引目录。' : '')
         : '本次已处理完全部文件。')(remaining > 0 || deferred > 0 || failedFiles.length > 0),
     };
   }
