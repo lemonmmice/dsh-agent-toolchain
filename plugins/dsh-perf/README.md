@@ -22,6 +22,10 @@ DSH（DeepSeek Harness）的**性能剖析插件**：与 dsh-hang-inspector（�
 - \`heapstats\` 子命令：托管堆按类型统计 Top N（对象数/总大小）
 - 自动匹配本机 DAC（\`tools/dac\`）
 
+- 托管栈之外还要**原生栈**时（"有没有线程卡在图形驱动里"这类问题托管栈答不了）：
+  `node lib/native-stacks.mjs <dump> --out <日志>` —— 走 64 位 cdb + `!wow64exts.sw`，
+  口径与局限见 [docs/native-stacks.md](../../docs/native-stacks.md)
+
 ## 环境变量
 
 | 项目 | 说明 |

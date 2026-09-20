@@ -20,6 +20,7 @@
     "bench:terminal-inspector": "node plugins/dsh-win-terminal-inspector/test/bench-process-table.mjs",
     "test": "node scripts/run-tests.mjs",
     "test:json": "node scripts/run-tests.mjs --json",
+    "native-stacks": "node lib/native-stacks.mjs",
     "check": "node scripts/check.mjs",
     "smoke": "node scripts/plugin-load-smoke.mjs",
     "smoke:json": "node scripts/plugin-load-smoke.mjs --json",

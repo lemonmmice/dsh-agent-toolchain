@@ -65,6 +65,11 @@ dsh-hang-inspector/
   用 `DumpStack.exe dacinfo <dump>` 取 clr.dll 的 `timestamp|size`，然后
   `https://msdl.microsoft.com/download/symbols/mscordacwks.dll/{ts}{size}/mscordacwks.dll`。
 
+- DumpStack 给的是**托管**栈。要判断"原生侧是谁在等、有没有线程卡在图形驱动里"，用
+  `node lib/native-stacks.mjs <dump> --out <日志>`（64 位 cdb + `!wow64exts.sw`；
+  32 位 dbgeng 改 `.effmach x86` 会 `E_INVALIDARG`，所以必须 64 位调试器）。
+  三态口径与局限见 [docs/native-stacks.md](../../docs/native-stacks.md)。
+
 ## 证据包来源
 
 `hang-loop.ps1`（监测模式：`-IntervalMs` 探测间隔、
