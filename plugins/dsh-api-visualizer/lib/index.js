@@ -16,16 +16,14 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 // W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name；capture 家族按 MCP 名索引）。
 import { dshParameters, dshDescription } from '../../../lib/tool-registry.mjs'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
-import { homedir } from 'node:os'
-import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { CaptureEngine, DEFAULT_LOG, DEFAULT_CALLER_LOG } from './capture-engine.mjs'
 import { captureStart, captureStop, captureStatus, captureStatusSummary, doubleWriteVerdict, sampleDeltaVerdict } from './capture-control.mjs'
 // AV-03：'这次该不该整库重写'的纯判定（可测；避免在 flush 热路径里做上百 MB 的同步 IO）
-import { shouldCompact, COMPACT_MIN_INTERVAL_MS, MAX_STORE_BYTES_DEFAULT, trimToCaps } from './compaction.mjs'
+import { shouldCompact, COMPACT_MIN_INTERVAL_MS, MAX_STORE_BYTES_DEFAULT } from './compaction.mjs'
 // F-007：宿主不热加载插件代码 —— 抓包/代理这些"看数据下结论"的工具必须自报代码是否陈旧。
 import { staleCodeInfo, moduleRoots } from '../../../lib/code-freshness.mjs'
 import { dirname as dirNameOf } from 'node:path'
@@ -35,6 +33,8 @@ const AV_PLUGIN_DIR = dirNameOf(dirNameOf(fileURLToPath(import.meta.url)))
 import { ProxyEngine, readSystemProxy } from './proxy-engine.mjs'
 import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote, renderQuery } from './query-view.mjs'
 import { envOr } from '../../../lib/env-fallback.mjs'
+import { storeDir, normalize, readAll, getCaptureStorage, writeTrimMarker, clearRecords as clearSharedRecords } from '../../../lib/capture-store.mjs'
+import { shardName } from '../../../lib/capture-storage.mjs'
 
 /** Stable cordis plugin name. */
 export const name = 'api-visualizer'
@@ -59,8 +59,6 @@ const MAX_STORE_BYTES = Number(process.env.DSH_API_CAPTURE_MAX_BYTES) > 0
 const MAX_BATCH = 500
 /** Cap on JSON request bodies (ingest batches can be sizable; 2MB per field). */
 const MAX_JSON_BODY_BYTES = 64 * 1024 * 1024
-/** Per-field body cap: Fiddler-like full bodies for normal API payloads. */
-const MAX_FIELD_BYTES = 2 * 1024 * 1024
 
 /** Order of the announcement section within the tool-guidance band. */
 const SECTION_ORDER = 140
@@ -78,91 +76,15 @@ const GUIDANCE =
   '限制：实时捕获依赖客户端已注入 system.diagnostics 跟踪配置（重启客户端后生效）；请求/响应体截断 ≤ 2MB；日志与记录含真实 token（本机本地存储，不外传，用户明确要求不脱敏）。' +
   '用户提到「接口可视化 / 抓接口 / 接口面板 / 接口捕获 / 实时抓包 / Fiddler」时即指本插件，请据此协作。'
 
-/** Primary store location (env override, then ~/.dsh). */
-function storeDir() {
-  // 与 lib/capture-store.mjs 用同一种读法（用户级配置必须经 env-fallback）：两处不一致就会出现
-  // "面板读得到、工具读不到"这种两面行为不同的假象。
-  if (envOr('DSH_API_CAPTURE_STORE')) return envOr('DSH_API_CAPTURE_STORE')
-  return join(envOr('DSH_HOME') || join(homedir(), '.dsh'), 'api-capture')
-}
 const storeFile = (ts) => join(storeDir(), shardName(ts ?? Date.now()))
 
-/** Day shard name for a record timestamp (local date). */
-function shardName(ts) {
-  const d = new Date(Number.isFinite(ts) ? ts : Date.now())
-  const p = (n) => String(n).padStart(2, '0')
-  return `records-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.jsonl`
-}
-
-/** All shard files: legacy single file first, then day shards ordered by name. */
-function shardFiles() {
-  const dir = storeDir()
-  if (!existsSync(dir)) return []
-  const out = []
-  const legacy = join(dir, 'records.jsonl')
-  if (existsSync(legacy)) out.push(legacy)
-  let names = []
-  try {
-    names = readdirSync(dir)
-  } catch {
-    return out
-  }
-  for (const name of names.sort()) {
-    if (/^records-\d{8}\.jsonl$/.test(name)) out.push(join(dir, name))
-  }
-  return out
-}
-
-/** Normalize one raw record; returns null when it cannot form a record. */
-function normalize(raw) {
-  if (typeof raw !== 'object' || raw === null) return null
-  const method = typeof raw.method === 'string' ? raw.method.toUpperCase() : ''
-  const url = typeof raw.url === 'string' ? raw.url : ''
-  if (method === '' || url === '') return null
-  const rec = {
-    id: typeof raw.id === 'string' && raw.id !== '' ? raw.id : randomUUID(),
-    ts: Number.isFinite(raw.ts) ? raw.ts : Date.now(),
-    source: typeof raw.source === 'string' && raw.source !== '' ? raw.source : 'agent',
-    method,
-    url,
-  }
-  if (typeof raw.process === 'string' && raw.process !== '') rec.process = raw.process
-  if (Number.isInteger(raw.status)) rec.status = raw.status
-  if (Number.isFinite(raw.durationMs)) rec.durationMs = raw.durationMs
-  if (typeof raw.reqHeaders === 'object' && raw.reqHeaders !== null) rec.reqHeaders = raw.reqHeaders
-  if (typeof raw.reqBody === 'string') rec.reqBody = raw.reqBody.slice(0, MAX_FIELD_BYTES)
-  if (typeof raw.resHeaders === 'object' && raw.resHeaders !== null) rec.resHeaders = raw.resHeaders
-  if (typeof raw.resBody === 'string') rec.resBody = raw.resBody.slice(0, MAX_FIELD_BYTES)
-  if (typeof raw.note === 'string' && raw.note !== '') rec.note = raw.note
-  if (typeof raw.contentType === 'string' && raw.contentType !== '') rec.contentType = raw.contentType
-  if (Number.isFinite(raw.firstByteMs)) rec.firstByteMs = raw.firstByteMs
-  if (Number.isFinite(raw.ttfbMs)) rec.ttfbMs = raw.ttfbMs
-  if (Number.isFinite(raw.connectMs)) rec.connectMs = raw.connectMs
-  if (Number.isFinite(raw.tlsMs)) rec.tlsMs = raw.tlsMs
-  if (typeof raw.ruleId === 'string' && raw.ruleId !== '') rec.ruleId = raw.ruleId
-  if (typeof raw.ws === 'object' && raw.ws !== null) rec.ws = raw.ws
-  if (Number.isFinite(raw.bytesReq)) rec.bytesReq = raw.bytesReq
-  if (Number.isFinite(raw.bytesRes)) rec.bytesRes = raw.bytesRes
-  if (Number.isInteger(raw.chunkCount)) rec.chunkCount = raw.chunkCount
-  if (typeof raw.complete === 'boolean') rec.complete = raw.complete
-  if (typeof raw.streaming === 'boolean') rec.streaming = raw.streaming
-  if (typeof raw.sessionId === 'string' && raw.sessionId !== '') rec.sessionId = raw.sessionId
-  if (typeof raw.traceId === 'string' && raw.traceId !== '') rec.traceId = raw.traceId
-  if (typeof raw.parentId === 'string' && raw.parentId !== '') rec.parentId = raw.parentId
-  if (typeof raw.caller === 'object' && raw.caller !== null) rec.caller = raw.caller
-  if (typeof raw.tag === 'string' && raw.tag !== '') rec.tag = raw.tag
-  if (raw.flag === 1 || raw.flag === true) rec.flag = 1
-  return rec
-}
-
-/** Parse the JSONL store into records (newest last); deduped by id, last occurrence wins. */
-let storeCache = { key: null, records: [], index: null }
 let duplicateAppendsSinceCompact = 0
 // AV-03：整库重写（compaction）的成本与库体积同阶，绝不能每次 flush 都做。
 // 这三项记录"上次何时压、压了几次、为什么压"，供诊断用 —— 没有它们，写放大是不可见的。
 let lastCompactAt = 0
 let compactCount = 0
 let lastCompactReason = null
+let lastCompactError = null
 // AV-03 补充：'条件成立但被节流'的累计次数必须可见（否则节流是不可观测的）。
 let compactThrottled = false
 let compactWantedButThrottled = 0
@@ -171,161 +93,16 @@ let lastCompactKeptBytes = null
 let lastCompactDropped = 0
 let lastCompactTruncatedBy = null
 
-function storeKey(files) {
-  let mtime = 0
-  let size = 0
-  for (const file of files) {
-    try {
-      const st = statSync(file)
-      if (st.mtimeMs > mtime) mtime = st.mtimeMs
-      size += st.size
-    } catch {
-      // file may vanish between list and stat
-    }
-  }
-  return `${mtime}:${size}:${files.length}`
-}
-
-function invalidateStoreCache() {
-  storeCache = { key: null, records: [], index: null }
-}
-
-function readAll() {
-  const files = shardFiles()
-  const key = storeKey(files)
-  if (storeCache.key === key) return storeCache.records
-  const byId = new Map()
-  const order = []
-  for (const file of files) {
-    let text = ''
-    try {
-      text = readFileSync(file, 'utf8')
-    } catch {
-      continue
-    }
-    for (const line of text.split('\n')) {
-      const t = line.trim()
-      if (t === '') continue
-      try {
-        const record = JSON.parse(t)
-        if (record && typeof record.id === 'string') {
-          if (!byId.has(record.id)) order.push(record.id)
-          byId.set(record.id, record)
-        }
-      } catch {
-        // skip malformed lines (manual edits, concurrent writers)
-      }
-    }
-  }
-  const out = order.map((id) => byId.get(id)).filter((record) => record !== undefined)
-  const index = new Map()
-  for (let i = 0; i < out.length; i++) index.set(out[i].id, i)
-  storeCache = { key, records: out, index }
-  return out
-}
-
-/**
- * Apply a just-appended batch to the in-memory cache without re-reading disk.
- * The host is the store's sole writer, so after appendToShards() the new state
- * = cached records + this batch (deduped by id, newest content wins, first-seen
- * order preserved — identical to readAll() semantics). This replaces a per-flush
- * invalidate + full re-parse of every shard (incl. 2MB bodies), which was ~O(N²)
- * over a capture session. The cache key is refreshed to the post-write disk stat,
- * so any later external edit still busts the cache through storeKey.
- */
-function applyAppendToCache(records) {
-  if (storeCache.key === null || storeCache.index === null) return // no valid base → next readAll rebuilds
-  const out = storeCache.records
-  const index = storeCache.index
-  for (const rec of records) {
-    const at = index.get(rec.id)
-    if (at === undefined) { index.set(rec.id, out.length); out.push(rec) }
-    else out[at] = rec
-  }
-  storeCache.key = storeKey(shardFiles())
-}
-
-/** Append normalized records into day shards (grouped by each record's own ts). */
-function appendToShards(records) {
-  if (records.length === 0) return
-  mkdirSync(storeDir(), { recursive: true })
-  const byFile = new Map()
-  for (const rec of records) {
-    const file = join(storeDir(), shardName(rec.ts))
-    if (!byFile.has(file)) byFile.set(file, [])
-    byFile.get(file).push(rec)
-  }
-  for (const [file, list] of byFile) {
-    appendFileSync(file, list.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8')
-  }
-}
-
-/** Migrate the legacy single-file store into day shards (once per process). */
-let legacyMigrated = false
-function migrateLegacy() {
-  if (legacyMigrated) return
-  legacyMigrated = true
-  const legacy = join(storeDir(), 'records.jsonl')
-  if (!existsSync(legacy)) return
-  const recs = []
-  for (const line of readFileSync(legacy, 'utf8').split('\n')) {
-    const t = line.trim()
-    if (t === '') continue
-    try {
-      const r = JSON.parse(t)
-      if (r && typeof r.id === 'string') recs.push(r)
-    } catch {
-      // skip
-    }
-  }
-  try {
-    rmSync(legacy, { force: true })
-  } catch {
-    // keep legacy as read-only archive if it cannot be removed
-  }
-  if (recs.length > 0) appendToShards(recs)
-}
-
-/** Rewrite the whole store: drop every shard, then write records grouped by day. */
+/** Persist explicit edits/deletions against the snapshot they were derived from. */
 function persistAll(records) {
-  const dir = storeDir()
-  if (!existsSync(dir)) {
-    if (records.length === 0) return
-    mkdirSync(dir, { recursive: true })
-  } else {
-    try {
-      const legacy = join(dir, 'records.jsonl')
-      if (existsSync(legacy)) rmSync(legacy, { force: true })
-      for (const name of readdirSync(dir)) {
-        if (/^records-\d{8}\.jsonl$/.test(name)) rmSync(join(dir, name), { force: true })
-      }
-    } catch {
-      // best effort; append below may still succeed
-    }
-  }
-  appendToShards(records)
+  getCaptureStorage().replace(records)
   duplicateAppendsSinceCompact = 0
-  invalidateStoreCache()
 }
 
-/**
- * Append normalized records; enforce the global newest-N cap across shards.
- *
- * Codex 第八轮指出的**两个 store 语义漂移**里最实质的一条：
- * MCP 共享 store（`lib/capture-store.mjs`）的 `appendRecords(rawRecords, { runId })` 支持
- * **注入 runId**（把一批记录绑到同一个证据 run 上），而宿主这份**完全不接受** runId ——
- * 于是「runId 证据链」只对 agent 自己 POST 的记录有效，
- * **实时捕获/代理捕获的真实客户端流量永远没有 runId**（正是最该被串起来的那部分）。
- * 现在两侧同签名：`opts.runId` 只给**缺 runId** 的记录补，不覆盖记录自带的。
- *
- * 另一条（迁移/压缩状态/缓存）确实只属于宿主运行时（宿主是唯一写者：它有 legacy 迁移、
- * 增量索引缓存与 AV-03 节流状态）；MCP 那份是无状态的读写器。这是**有意的分工**，
- * 已在两侧注释里写明，避免下次有人看到"不一样"就顺手改成一样而破坏其中一边。
- */
+/** Host capture batches keep their existing compaction throttle and counters. */
 function appendRecords(rawRecords, opts = {}) {
-  migrateLegacy()
   const records = []
-  const runId = typeof opts.runId === 'string' && opts.runId !== '' ? opts.runId : ''
+  const runId = typeof opts.runId === 'string' ? opts.runId : ''
   for (const raw of rawRecords) {
     const rec = normalize(raw)
     if (rec !== null) {
@@ -334,77 +111,49 @@ function appendRecords(rawRecords, opts = {}) {
     }
   }
   if (records.length === 0) return { ingested: 0, total: readAll().length }
-  // 宿主是 store 唯一写者：按已维护的 id 索引统计重复（供压缩阈值判断），
-  // 写盘后增量更新缓存，避免每次 flush 全量重读所有分片（含 2MB body）。
-  readAll() // 确保 storeCache 已就绪/有效，作为增量更新的基线
-  const seen = new Set()
-  for (const record of records) {
-    if ((storeCache.index !== null && storeCache.index.has(record.id)) || seen.has(record.id)) duplicateAppendsSinceCompact += 1
-    seen.add(record.id)
-  }
-  appendToShards(records)
-  applyAppendToCache(records)
-  let all = readAll()
-  let physicalBytes = 0
-  for (const file of shardFiles()) {
-    try { physicalBytes += statSync(file).size } catch { /* file may rotate between list/stat */ }
-  }
-  // AV-03（2026-09-11 审计确证）：这里的 `physicalBytes > 128MB` 是**状态型条件**，
-  // 而 persistAll 之后的物理大小 = 保留集（≤MAX_RECORDS 条）的大小。
-  // 一旦保留集本身超过 128MB，条件就**永真** → 每 800ms 的 flush 都整库重写一次
-  // （库越大越慢，且永远不会自愈）。flush 是由 800ms 定时器驱动的，等于持续做 128MB+ 的同步 IO。
-  //
-  // 修法：**节流**。真正必须立即执行的是硬上限（条数），其余（去重积压、体积）改为
-  // 最快每 COMPACT_MIN_INTERVAL_MS 一次；并留出 10% 余量，避免在阈值上下反复抖动。
+  const storage = getCaptureStorage()
+  const appended = storage.append(records)
+  duplicateAppendsSinceCompact += appended.duplicates
+  const stats = storage.stats()
   const verdict = shouldCompact({
-    allCount: all.length, maxRecords: MAX_RECORDS, physicalBytes, maxBytes: MAX_STORE_BYTES,
+    allCount: stats.count, maxRecords: MAX_RECORDS, physicalBytes: stats.physicalBytes, maxBytes: MAX_STORE_BYTES,
     duplicateAppends: duplicateAppendsSinceCompact, now: Date.now(), lastCompactAt,
   })
+  let trimError = null
   if (verdict.compact) {
-    // AV-03 剩余缺口（Claude 第六轮方案 A）：裁剪必须与触发**同维**。
-    // 旧写法只 `slice(0, MAX_RECORDS)`（条数），而触发看的是字节 ——
-    // 保留集自身 140MB 时每 5 分钟全量重写、回收 ≈0 字节、永不自愈（写放大只是被摊薄）。
-    // 现在双上限、最旧优先，且目标 0.9× 上限 → 裁剪后必定落到触发阈值以下。
-    const trimmed = trimToCaps(sortNewestFirst(all), { maxRecords: MAX_RECORDS, maxBytes: MAX_STORE_BYTES })
-    all = trimmed.keep.reverse() // 保留集仍按时间正序写回
-    persistAll(all)
-    all = readAll()
-    lastCompactAt = Date.now()
-    compactCount++
-    lastCompactReason = verdict.reason
-    // 字节维度的结果必须可观测：没有它，"按字节裁剪到底有没有回收"只能靠猜。
-    lastCompactKeptBytes = trimmed.keptBytes
-    lastCompactDropped = trimmed.dropped
-    lastCompactTruncatedBy = trimmed.truncatedBy
-    duplicateAppendsSinceCompact = 0
-    compactThrottled = false
-    compactWantedButThrottled = 0
+    const trimmed = storage.plan(MAX_RECORDS, MAX_STORE_BYTES) || {
+      keep: sortNewestFirst(readAll()), keptBytes: stats.retainedBytes, dropped: 0, truncatedBy: null,
+    }
+    try {
+      persistAll([...trimmed.keep].reverse())
+      if (trimmed.dropped > 0) writeTrimMarker(storeDir(), {
+        dropped: trimmed.dropped, truncatedBy: trimmed.truncatedBy,
+        maxRecords: MAX_RECORDS, maxBytes: MAX_STORE_BYTES,
+      })
+      lastCompactAt = Date.now()
+      compactCount++
+      lastCompactReason = verdict.reason
+      lastCompactError = null
+      lastCompactKeptBytes = trimmed.keptBytes
+      lastCompactDropped = trimmed.dropped
+      lastCompactTruncatedBy = trimmed.truncatedBy
+      compactThrottled = false
+      compactWantedButThrottled = 0
+    } catch (error) { trimError = error.message; lastCompactError = trimError }
   } else if (verdict.throttled) {
-    // AV-03 补充（Claude 第五轮指出）：`verdict.throttled` 过去在调用点**被丢弃** ——
-    // 于是"节流可观测"只是一句承诺，根本没到 /capture/status。纯函数的 12/12 测试
-    // 只证明了"函数会返回 throttled"，证明不了"这个值真的被用上"（那正是假信心）。
-    // 现在把它累计下来并对外暴露。
     compactThrottled = true
     compactWantedButThrottled++
   } else {
     compactThrottled = false
   }
-  return { ingested: records.length, total: all.length }
+  return { ingested: records.length, total: readAll().length,
+    ...(trimError !== null ? { trimFailed: true, trimError } : {}) }
 }
 
-/** Drop every record (all shards). */
 function clearRecords() {
-  const all = readAll()
-  for (const file of shardFiles()) {
-    try {
-      rmSync(file, { force: true })
-    } catch {
-      // best effort
-    }
-  }
+  const result = clearSharedRecords()
   duplicateAppendsSinceCompact = 0
-  invalidateStoreCache()
-  return { cleared: all.length }
+  return result
 }
 
 /** Store API, exported for capture backends and tests. */
@@ -1274,6 +1023,7 @@ function makeRoutes(capture, proxy) {
               lastCompactAt: lastCompactAt || null,
               lastCompactAgoMs: lastCompactAt ? Date.now() - lastCompactAt : null,
               lastCompactReason,
+              lastCompactError,
               duplicateAppendsSinceCompact,
               // AV-03 补充：把'被节流'如实暴露 —— 没有它，写放大在外部不可观测。
               throttled: compactThrottled,
@@ -1917,12 +1667,8 @@ function fmtAge(ms) {
 /**
  * 保留期信息（本进程视角）。
  *
- * ⚠ 本文件**有自己的一份 store 实现**（不 import lib/capture-store.mjs），所以"裁剪过多少"曾经只活在
- * 本进程的 `lastCompactDropped` 内存变量里 —— MCP 面与面板路由都拿不到（r17 主题自查发现）。
- * 现在两侧共用**同一个标记文件**（store 目录下的 trimmed.json）：
- *   · MCP 侧 `lib/capture-store.mjs` 裁剪时写它（readRetention 读它）；
- *   · 本文件读它 + 合并本进程的内存计数（本进程裁剪时也会写）。
- * 这样"库被裁剪过"这件事在**两个面**都看得见，不会一方说"没有"、另一方知道"被裁掉了"。
+ * 宿主与 MCP 已共用 Rust 存储；两条裁剪入口都写 trimmed.json。
+ * 合并内存计数，保留标记文件暂时无法写入时的本进程证据。
  */
 function retentionInfo() {
   let marker = null
@@ -1942,7 +1688,7 @@ function retentionInfo() {
     truncatedBy: marker ? (marker.truncatedBy || null) : null,
     oldestKeptTs: oldest,
     maxRecords: MAX_RECORDS,
-    maxBytes: MAX_STORE_BYTES_DEFAULT,
+    maxBytes: MAX_STORE_BYTES,
     note: droppedTotal > 0
       ? '库按上限裁剪过（累计 ' + droppedTotal + ' 条）—— 被裁掉的记录已不在库内，查不到 ≠ 没发生过；' +
         (oldest !== null ? '当前库内最早一条 ' + new Date(oldest).toLocaleString('zh-CN') + '。' : '')
@@ -2363,4 +2109,3 @@ function captureControlTools(capture) {
   }))
   return tools
 }
-

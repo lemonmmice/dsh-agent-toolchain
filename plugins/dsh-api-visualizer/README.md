@@ -24,6 +24,23 @@ dsh-api-visualizer/
 
 ## 安装（同事 / 新机器）
 
+本 monorepo 版本的抓包存储已接入 Rust。源码部署前，在仓库根运行：
+
+```powershell
+npm run build:capture-store
+npm run test:capture-native
+node scripts/deploy-plugins.mjs --only dsh-api-visualizer --profile <profile目录>
+```
+
+构建需要 Rust 与平台链接工具（Windows 为 Visual C++ build tools）。部署时须包含
+插件的 `bin/<平台>-<架构>/capture-store.node` 与仓库共享 `lib/`；运行端无需 Rust。
+宿主和 MCP 使用同一套存储格式，升级后应重启两者。下列独立仓库安装方式适用于
+其各自发布版本，不负责构建本 monorepo 的原生模块。
+
+现有 JSONL 无需转换。`DSH_CAPTURE_STORE_NATIVE` 可覆盖原生模块路径；默认按插件目录定位。
+共享锁只协调采用新存储层的写入者。验证、性能与冷加载取舍见
+[迁移报告](../../docs/capture-store-rust.md)。
+
 前提：已安装 DSH（`dsh` 命令可用），PowerShell 5+。
 
 **方式 A：一键脚本**（推荐；自动下载两个插件、解压进 profile 并写入注册，装完重启 DSH）：
