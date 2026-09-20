@@ -1,0 +1,30 @@
+[package]
+name = "dsh-trace-fold"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["addon"]
+addon = ["dep:napi", "dep:napi-derive"]
+
+[dependencies]
+memchr = "2"
+num-bigint = "0.4"
+napi = { version = "2.16", default-features = false, features = ["napi6", "dyn-symbols"], optional = true }
+napi-derive = { version = "2.16", optional = true }
+
+[build-dependencies]
+napi-build = "2.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
