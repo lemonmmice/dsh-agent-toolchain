@@ -10,6 +10,23 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **Native-stack unwinding is a tool capability now, not a manual adventure** —
+  `DumpStack` only returns the **managed** stack, so "is a thread stuck inside the graphics
+  driver?" stayed permanently unanswerable: two independent analyses of the same hang both
+  stopped at "native frames still unverified". `lib/native-stacks.mjs` closes that gap by
+  driving a **64-bit** `cdb` — the only debugger that can unwind the 32-bit stacks of an
+  x64-format WOW64 dump (a 32-bit dbgeng rejects `.effmach x86` with `E_INVALIDARG`) — and
+  parsing the result into per-thread stacks. Four traps are encoded in the module and pinned
+  by tests: the cdb shipped in the Store's WinDbg package **cannot be executed from
+  `…\WindowsApps\…`** (access denied — the module copies the debugger plus its extension
+  directories into a writable cache first), `!wow64exts.sw` is a **toggle** and is emitted
+  exactly once per run, thread selection must be written `~~[0n<decimal>]s` because WinDbg
+  parses numbers as hexadecimal, and vendor drivers ship no PDB (frames bottom out at
+  `igc32+0x1a2b3`). The summary is deliberately **three-state**: "no thread inside a vendor
+  driver" is never reported as "the driver is fine", and a run that parses zero frames
+  reports *unknown*, not *none*, next to the resolved/unresolved frame counts. See
+  [docs/native-stacks.md](./docs/native-stacks.md).
+
 - **`tools/dumpstack`: the dump analyzer's source is now in the repository, with
   x64-format WOW64 dump support** — DumpStack (`net10.0` + ClrMD 4.0.732401) is what the
   hang/perf routes call to turn a dump into managed thread stacks, yet its source had only

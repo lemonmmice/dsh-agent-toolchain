@@ -24,6 +24,9 @@ jobs:
           node scripts/run-tests.mjs capture-stor
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/run-tests.mjs dsh-api-visualizer
+      - name: Native-stack unwind parser unit test
+        run: node lib/native-stacks.test.mjs
+        shell: bash
       - name: Repo sanity gate (syntax + no private refs)
         run: node scripts/check.mjs
       - name: Failure corpus unit test
