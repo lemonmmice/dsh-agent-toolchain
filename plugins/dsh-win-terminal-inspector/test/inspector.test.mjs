@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { WindowsProcessInspector, buildProcessTree, parseTable, PS_TABLE_SCRIPT, defaultTableExec } from "../lib/inspector.js";
+import { WindowsProcessInspector, buildProcessTree, parseTable, defaultTableExec } from "../lib/inspector.js";
 
 const EXE = process.env.DSH_TEST_TREE_EXE || process.execPath;
 // Root: stay alive 60s. Child: same, spawned detached from the root's argv.

@@ -3,8 +3,8 @@
  * MacProcessInspector in @deepseek-ai/dsh-subprocess-local.
  *
  * Windows has neither /proc nor POSIX process groups/sessions, so the
- * implementation is built on one process-table query (Win32_Process via
- * powershell.exe CIM) and maps the POSIX concepts onto the Windows console
+ * implementation is built on one native process-table query (a Rust helper
+ * using Toolhelp32 + GetProcessTimes) and maps POSIX concepts onto the Windows console
  * model:
  *
  * - The whole ConPTY tree rooted at the shell is one "process group" whose
@@ -32,8 +32,9 @@
  * - SIGTERM/SIGKILL on a group: taskkill /PID <pgid> /T /F.
  */
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-/** One Win32_Process row normalized for the inspector. */
+/** One native process row normalized for the inspector. */
 export class WindowsProcessEntry {
   pid = 0;
   parentPid = 0;
@@ -42,46 +43,33 @@ export class WindowsProcessEntry {
   started = "";
 }
 
-/**
- * PowerShell script returning a JSON array of Win32_Process rows.
- * CreationDate arrives either as a .NET DateTime (locale strings) or as a
- * CIM datetime string depending on the provider/version, so both shapes are
- * handled; rows without a usable creation time keep `created = null`.
- */
-export const PS_TABLE_SCRIPT = String.raw`
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-Get-CimInstance Win32_Process | ForEach-Object {
-  $created = $null
-  $cd = $_.CreationDate
-  if ($cd -is [datetime]) {
-    $created = $cd.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-  } elseif ($cd -is [string] -and $cd.Length -gt 0) {
-    try { $created = ([System.Management.ManagementDateTimeConverter]::ToDateTime($cd)).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') } catch { $created = $null }
-  }
-  [PSCustomObject]@{
-    pid = [int]$_.ProcessId
-    ppid = [int]$_.ParentProcessId
-    session = [int]$_.SessionId
-    created = $created
-  }
-} | ConvertTo-Json -Compress
-`;
+export function processTableExecutable() {
+  return process.env.DSH_TERMINAL_PROCESS_TABLE_EXE || fileURLToPath(
+    new URL(`../bin/win32-${process.arch}/dsh-process-table.exe`, import.meta.url)
+  );
+}
 
-/** Run one process-table query with powershell.exe. */
-export function defaultTableExec(powershell = "powershell.exe") {
-  const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", PS_TABLE_SCRIPT], {
+/** Synchronous to match ProcessInspector.snapshot(); no shell or runtime compilation. */
+export function defaultTableExec(executable = processTableExecutable()) {
+  const result = spawnSync(executable, [], {
     encoding: "utf8",
     windowsHide: true,
     timeout: 20000,
+    maxBuffer: 16 * 1024 * 1024,
   });
-  if (result.error !== undefined) throw result.error;
+  if (result.error !== undefined) {
+    const hint = result.error.code === "ENOENT"
+      ? " Build it with npm run build:terminal-inspector and include the plugin bin directory when deploying."
+      : "";
+    throw new Error(`dsh-win-terminal-inspector: native process-table helper failed: ${result.error.message}.${hint}`, { cause: result.error });
+  }
   if (result.status !== 0) {
     throw new Error(`dsh-win-terminal-inspector: process-table query failed (exit ${result.status}): ${result.stderr ?? ""}`);
   }
   return result.stdout;
 }
 
-/** Parse the PowerShell JSON output into entries. */
+/** Parse the helper's JSON output into entries. */
 export function parseTable(stdout) {
   let value;
   try {
@@ -142,7 +130,8 @@ export function buildProcessTree(entries, rootPid) {
  * ProcessInspector implementation for Windows terminals.
  *
  * Options (all optional, for tests and tuning):
- * - exec(file, args): run one process-table query, return stdout string
+ * - exec(): run one process-table query, return stdout string
+ * - executable: override the native helper path (default: plugin-local bin)
  * - ttlMs: process-table cache lifetime
  * - now(): monotonic-ish clock
  * - taskkill(pid): force-terminate one process tree
@@ -160,7 +149,7 @@ export class WindowsProcessInspector {
   terminal;
 
   constructor(options = {}) {
-    this.exec = options.exec ?? (() => defaultTableExec(options.powershell));
+    this.exec = options.exec ?? (() => defaultTableExec(options.executable));
     this.ttlMs = options.ttlMs ?? 300;
     this.now = options.now ?? Date.now;
     this.taskkill = options.taskkill ?? defaultTaskkill;
@@ -175,7 +164,7 @@ export class WindowsProcessInspector {
     this.terminal = terminal;
   }
 
-  /** Cached Win32_Process table. */
+  /** Cached native process table. */
   processTable() {
     const elapsed = this.now() - this.#tableAt;
     if (this.#table !== undefined && elapsed >= 0 && elapsed < this.ttlMs) return this.#table;
@@ -228,7 +217,7 @@ export class WindowsProcessInspector {
       // 与 isAlive 同语义：必须匹配 pid **与** 启动标识，避免 PID 复用后误判
       alive: (identity) => {
         const found = byPid.get(identity.pid);
-        return found !== undefined && found.started === identity.started;
+        return found !== undefined && found.started !== "" && found.started === identity.started;
       },
     };
   }
@@ -239,7 +228,7 @@ export class WindowsProcessInspector {
 
   isAlive(identity) {
     const entry = this.entry(identity.pid);
-    return entry !== undefined && entry.started === identity.started;
+    return entry !== undefined && entry.started !== "" && entry.started === identity.started;
   }
 
   signalGroup(pgid, signal) {
