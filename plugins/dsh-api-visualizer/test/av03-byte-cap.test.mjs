@@ -14,9 +14,6 @@ import {
   shouldCompact, trimToCaps, recordBytes,
   MAX_STORE_BYTES_DEFAULT, BYTE_TRIM_TARGET_RATIO, COMPACT_MIN_INTERVAL_MS,
 } from '../lib/compaction.mjs'
-import { readFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 let failures = 0
 function check(name, cond, extra = '') {
@@ -128,21 +125,8 @@ const newestFirst = (n, bodyLen) => Array.from({ length: n }, (_, k) => rec(n - 
   check('两者都没超时 want=false（不产生自我维持的写放大）', shouldCompact({ allCount: 5, physicalBytes: 10, maxBytes, now: NOW, lastCompactAt: NOW }).compact === false)
 }
 
-// ------------------------------------------------- 7. 源码守卫：宿主插件必须真的把字节上限接上
-// 纯函数测试只证明"函数会按字节裁"，证明不了"宿主那条路真的调了它、且把 maxBytes 传了进去"——
-// 这正是 AV-03 第一版翻过车的地方（`verdict.throttled` 算出来却在调用点被丢弃）。
-// 宿主 index.js 依赖 `@deepseek-ai/dsh-tools`，普通 node 进程 import 不到，
-// 所以这里做源码级守卫；**端到端**验证在 `bench-runs/dbg-20260911/verify-live-av03.mjs`
-// （用 profile 里的真实副本 import 后真跑 appendRecords）。
-{
-  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'index.js'), 'utf8')
-  check('AV-03 宿主 import 了 trimToCaps', /import \{[^}]*trimToCaps[^}]*\} from '\.\/compaction\.mjs'/.test(src))
-  check('AV-03 宿主 import 了 MAX_STORE_BYTES_DEFAULT', /MAX_STORE_BYTES_DEFAULT/.test(src))
-  check('AV-03 宿主裁剪改用 trimToCaps（不再只有 slice）', /trimToCaps\(sortNewestFirst\(all\),\s*\{[^}]*maxRecords:\s*MAX_RECORDS[^}]*maxBytes:\s*MAX_STORE_BYTES/.test(src))
-  check('AV-03 宿主把 maxBytes 传给了 shouldCompact', /shouldCompact\(\{[^}]*maxBytes:\s*MAX_STORE_BYTES/s.test(src))
-  check('AV-03 /capture/status 暴露字节上限与上次裁剪结果', /maxBytes:\s*MAX_STORE_BYTES/.test(src) && /lastCompactKeptBytes/.test(src) && /lastCompactTruncatedBy/.test(src))
-  check('AV-03 旧写法（只有条数 slice）已消失', !/all = sortNewestFirst\(all\)\.slice\(0, MAX_RECORDS\)\.reverse\(\)/.test(src))
-}
+// Host wiring is exercised through the actual module in capture-native-parity.test.mjs.
+// Retention behavior is checked there instead of requiring a particular JS helper name.
 
 console.log(failures === 0 ? '\nPASS: dsh-api-visualizer AV-03 按字节裁剪（双上限 + 空转终结）' : '\nFAIL: ' + failures + ' check(s)')
 process.exitCode = failures === 0 ? 0 : 1
