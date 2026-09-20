@@ -61,6 +61,7 @@ let disposeRuntime = async () => {};
 {
   const ctx = {
     reflect: { provide: () => {} },
+    logger: { warn: (message) => console.log('  runtime: ' + message) },
     effect(fn) {
       let disposer;
       try {
@@ -101,6 +102,7 @@ const spec = {
   env: shellEnv,
   rows: 40,
   cols: 160,
+  terminalType: "dumb",
   graceMs: 3000,
 };
 
@@ -188,6 +190,7 @@ const liveHandles = [];
 try {
   const config = {
     backendType: "shell",
+    shellDialect: "bash",
     shellPath: BASH,
     shellArgs: ["--noprofile", "--norc", "-i"],
     rows: 40,
