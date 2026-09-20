@@ -27,6 +27,15 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   reports *unknown*, not *none*, next to the resolved/unresolved frame counts. See
   [docs/native-stacks.md](./docs/native-stacks.md).
 
+- **Correction to `--no-symbols`** (same day, caught by this feature's own verification gate):
+  the fast path cannot produce **32-bit** stacks at all. x86 unwind/FPO data lives in the
+  **PDB** — unlike x64, where it is in the PE's `RUNTIME_FUNCTION` — so with no symbols
+  dbghelp gives up and every thread collapses to a single frame. The summary now detects that
+  shape (fewer than 2 frames per thread across 5+ threads) and says so loudly, instead of
+  letting a one-frame stack be read as "nothing is in the driver". Use `--no-symbols` for
+  64-bit targets or as a 0.3 s "can cdb open this dump" probe; **32-bit answers require
+  symbols.**
+
 - **`tools/dumpstack`: the dump analyzer's source is now in the repository, with
   x64-format WOW64 dump support** — DumpStack (`net10.0` + ClrMD 4.0.732401) is what the
   hang/perf routes call to turn a dump into managed thread stacks, yet its source had only
