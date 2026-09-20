@@ -35,6 +35,24 @@ DSH（DeepSeek Harness）的**性能剖析插件**：与 dsh-hang-inspector（�
 
 ## 安装
 
+CPU/分配火焰图的 CSV 扫描与栈折叠已使用 Rust Node-API 模块。从仓库根构建：
+
+```powershell
+npm run build:trace-fold
+npm run test:trace-native
+node scripts/run-tests.mjs dsh-perf
+```
+
+构建需要 Rust 与平台链接工具；Windows 使用 Visual C++ build tools。部署须包含
+`bin/<平台>-<Node架构>/trace-fold.node`，运行端无需 Rust。可用
+`DSH_TRACE_FOLD_NATIVE` 指定模块路径；默认从插件目录定位。
+扫描与栈折叠在后台线程执行，进程正则、统计口径和 HTML 输出由原 JS 接口保留。
+分析期间若 CSV 变化会返回 `TRACE_CHANGED`，应等待 CSV 写完后重试。
+
+仅 Windows x64 已验证；离线解析提供 Linux GNU/macOS 构建入口，未验证。
+xperf 采集、符号下载及现有 C# 诊断工具继续沿用。详见
+[迁移与验证报告](../../docs/trace-fold-rust.md)。
+
 \`~/.dsh/profiles/web/cordis.patch.yml\` 追加：
 
 \`\`\`yaml
