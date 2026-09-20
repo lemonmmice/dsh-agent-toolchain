@@ -10,6 +10,23 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **`tools/dumpstack`: the dump analyzer's source is now in the repository, with
+  x64-format WOW64 dump support** — DumpStack (`net10.0` + ClrMD 4.0.732401) is what the
+  hang/perf routes call to turn a dump into managed thread stacks, yet its source had only
+  ever lived in the deployed tool directory, so it had no version history. Taking a dump of
+  a **32-bit** process from a **64-bit host** (64-bit Task Manager, 64-bit procdump) yields
+  an **x64-format** dump whose CLR is still 32-bit: both the minidump and the dbgeng reader
+  report AMD64/8 and the x86 DAC refuses to load (`0x80131c30`,
+  `CORDBG_E_UNCOMPATIBLE_PLATFORMS`). WinDbg's `.effmach x86` is not reachable from ClrMD
+  here (only the effective-processor *getter* is exposed; calling the raw
+  `SetEffectiveProcessorType` returns `E_INVALIDARG`), so the new `ClrMD-Minidump-Wow64X86`
+  engine decorates the reader instead: `Wow64X86Reader` reports `Architecture=X86` /
+  `PointerSize=4` and translates the AMD64 `CONTEXT` to x86. It is gated on the dump's CLR
+  core module living under `\Framework\`, so a genuine 64-bit dump can never be read as
+  WOW64. `auto` engine order: `ClrMD-Minidump` → `ClrMD-Minidump-Wow64X86` →
+  `ClrMD-DbgEng`. Verify: `dotnet build -c Release -r win-x86` under `tools/dumpstack/` —
+  the analyzer must run as a **32-bit host**, a 64-bit host cannot load the x86 DAC.
+
 - **dsh-ui-drive: dynamic-UI driving primitives (login / captcha / branch-on-screen)** —
   driving a real client is not "click a few buttons": the agent must log in, then keep
   acting on what the screen shows. Two independent external reviews (Claude Code +
