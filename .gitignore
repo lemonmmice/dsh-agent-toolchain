@@ -14,3 +14,12 @@ bench/local.env
 # from the repo root (build/perf/verify).
 last-probe.json
 last.json
+# Rust build cache stays outside the deployable plugin; only staged executables ship.
+/native/windows-process-table/target/
+/plugins/dsh-win-terminal-inspector/bin/
+/native/capture-store/target/
+/plugins/dsh-api-visualizer/bin/
+/native/memory-store/target/
+/plugins/dsh-memory/bin/
+/native/trace-fold/target/
+/plugins/dsh-perf/bin/
