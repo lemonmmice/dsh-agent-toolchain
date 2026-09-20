@@ -59,6 +59,33 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Changed
 
+- **dsh-perf: Rust CPU/allocation trace folding** — asynchronous native tasks
+  stream xperf CSV event batches and fold selected stacks, preserving JS process
+  regexes, duplicate-sample rules, byte weights, JIT mapping and output order.
+  Changed input files are rejected across the two passes. Includes a frozen JS
+  comparison oracle, randomized/edge-case tests, build/deploy checks and benchmarks.
+
+- **dsh-memory: Rust vector storage and search** — caches vectors across calls,
+  indexes ID prefixes, uses stable top-k similarity search and stages JSONL writes
+  with previous-generation backups. Existing JSONL remains readable. Local bigram
+  Maps now retain terms on disk; complete-file reindexing preserves old chunks
+  when embeddings fail, and final flush errors are reported. Includes native,
+  JS parity, interrupted-process, conflict and deployment tests.
+
+- **Capture storage: shared Rust core for DSH and MCP** — a Node-API module
+  maintains per-ID byte counts and retention ordering, batches JSONL appends,
+  coordinates writers with file locks and rejects stale snapshot replacements.
+  Existing JSONL, filtering and normalization are retained. Compaction stages
+  all shards before publication, and host trimming now writes the shared
+  retention marker. Includes build/deploy checks, native and multi-process tests,
+  and a reproducible comparison with the previous JS implementation.
+
+- **dsh-win-terminal-inspector: native process collection** — a Rust/Win32 helper
+  replaces synchronous PowerShell/CIM startup. The JS snapshot, process-tree and
+  ConPTY contracts remain in place; unreadable creation times cannot match a
+  process identity. Includes a reproducible build, CI artifact, CIM parity tests
+  and a read-only timing comparison. Build the helper before deploying the plugin.
+
 - **dsh-ui-drive: UI driving is now real-time (3 layers)** — the old design
   spawned a fresh PowerShell per action (process start + script parse + 5 UIA
   assembly loads ≈ 900ms fixed cost per step), so a 10-step flow took ~9s and

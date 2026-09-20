@@ -42,6 +42,37 @@ const targets = readdirSync(pluginsRoot, { withFileTypes: true })
   .map((d) => d.name)
   .filter((n) => (only ? n === only : true))
 
+// Validate the binary before copying anything: source-only deployment would
+// otherwise break the first terminal spawn in the destination host.
+if (process.platform === 'win32' && targets.includes('dsh-win-terminal-inspector')) {
+  const helper = join(pluginsRoot, 'dsh-win-terminal-inspector', 'bin', `win32-${process.arch}`, 'dsh-process-table.exe')
+  if (!existsSync(helper)) {
+    console.error('Terminal inspector helper missing. Run npm run build:terminal-inspector before deploying.')
+    process.exit(2)
+  }
+}
+if (targets.includes('dsh-api-visualizer')) {
+  const addon = join(pluginsRoot, 'dsh-api-visualizer', 'bin', `${process.platform}-${process.arch}`, 'capture-store.node')
+  if (!existsSync(addon)) {
+    console.error('Capture storage native module missing. Run npm run build:capture-store before deploying.')
+    process.exit(2)
+  }
+}
+if (targets.includes('dsh-memory')) {
+  const addon = join(pluginsRoot, 'dsh-memory', 'bin', `${process.platform}-${process.arch}`, 'memory-store.node')
+  if (!existsSync(addon)) {
+    console.error('Memory native module missing. Run npm run build:memory-store before deploying.')
+    process.exit(2)
+  }
+}
+if (targets.includes('dsh-perf')) {
+  const addon = join(pluginsRoot, 'dsh-perf', 'bin', `${process.platform}-${process.arch}`, 'trace-fold.node')
+  if (!existsSync(addon)) {
+    console.error('Trace native module missing. Run npm run build:trace-fold before deploying.')
+    process.exit(2)
+  }
+}
+
 const hashOf = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
 
 function listFiles(dir) {

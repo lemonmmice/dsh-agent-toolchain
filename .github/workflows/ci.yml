@@ -13,6 +13,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Set up Rust for native modules
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Build and test capture storage native module
+        run: |
+          npm run build:capture-store
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:capture-native
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-tests.mjs capture-stor
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-tests.mjs dsh-api-visualizer
       - name: Repo sanity gate (syntax + no private refs)
         run: node scripts/check.mjs
       - name: Failure corpus unit test
@@ -24,9 +35,13 @@ jobs:
       - name: Build target resolution unit test
         run: node lib/build-resolve.test.mjs
         shell: bash
-      - name: dsh-memory hygiene unit test
-        run: node plugins/dsh-memory/test/memory-hygiene.test.mjs
-        shell: bash
+      - name: Build and test memory native module
+        run: |
+          npm run build:memory-store
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:memory-native
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-tests.mjs dsh-memory
       - name: dsh-ui-drive flow batch unit test
         run: node plugins/dsh-ui-drive/test/flow-batch.test.mjs
         shell: bash
@@ -48,9 +63,30 @@ jobs:
       - name: Verification report unit test
         run: node lib/verify/report.test.mjs
         shell: bash
-      - name: dsh-win-terminal-inspector unit test
-        run: node plugins/dsh-win-terminal-inspector/test/inspector.test.mjs
-        shell: bash
+      - name: Build and test native terminal inspector
+        run: |
+          npm run build:terminal-inspector
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:terminal-native
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-tests.mjs dsh-win-terminal-inspector
+      - name: Build and test trace folding native module
+        run: |
+          npm run build:trace-fold
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:trace-native
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-tests.mjs dsh-perf
+      - name: Upload native modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-modules-windows
+          path: |
+            plugins/dsh-win-terminal-inspector/bin/
+            plugins/dsh-api-visualizer/bin/
+            plugins/dsh-memory/bin/
+            plugins/dsh-perf/bin/
+          if-no-files-found: error
       - name: MCP server install + smoke
         run: |
           cd mcp

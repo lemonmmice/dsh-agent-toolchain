@@ -8,7 +8,9 @@ The MCP transport and the evidence spine are cross-platform, but the tool set is
 
 | Tools | Scope |
 | --- | --- |
-| `verify_report`, `failure_*`, `capture_*`, `http_request`, `memory_*` | cross-platform (Node stdlib / HTTP only) |
+| `failure_*`, `http_request`, memory KV save/recall/forget | cross-platform (Node stdlib / HTTP only) |
+| `memory_index`, `memory_search`, `memory_status` | require the memory-store Node-API module built for the current platform/architecture; Windows x64 validated |
+| `capture_*`, API evidence in `verify_report` | require the capture-store Node-API module built for the current platform/architecture; Windows x64 validated, Linux/macOS builds supported by the build script but not yet validated |
 | `build_run` | cross-platform with `engine=dotnet` (SDK-style repos); the default `engine=msbuild` is Windows/VS only |
 | `ui_status` / `ui_windows` / `ui_state` / `ui_drive` / `ui_flow` | **Windows only** — they drive a Windows desktop client via PowerShell + UIA |
 | `perf_probe` / `perf_report` | **Windows only** — window-message latency sampling of the same client |
@@ -62,6 +64,16 @@ Same `DSH_*` variables as the plugins:
 | `DSH_VERIFY_DIR` | verify_report | report dir (default `~/.dsh-agent-toolchain/verify-reports`) |
 
 ## Run standalone
+
+Build memory indexing/search from the repository root with
+`npm run build:memory-store`. Keep `plugins/dsh-memory/bin/` with the checkout.
+KV-only operations remain implemented in JS.
+
+Build capture storage from the repository root before using capture tools or API
+verification: `npm run build:capture-store` (Rust plus the platform linker).
+The resulting module lives under `plugins/dsh-api-visualizer/bin/`; keep it with
+the checkout. Module loading is lazy, and missing binaries produce an explicit
+build instruction rather than an empty capture result.
 
 ```bash
 cd mcp && npm install && node server.mjs   # waits for JSON-RPC on stdin
