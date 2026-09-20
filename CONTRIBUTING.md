@@ -16,12 +16,25 @@ cd dsh-agent-toolchain
 node --check plugins/<plugin>/lib/*.mjs   # syntax gate (no build step required)
 ```
 Plugins are ESM Node.js with zero runtime deps except where noted in each `package.json`.
+The Windows terminal inspector also requires its Rust helper: run
+`npm run build:terminal-inspector` before testing or deploying that plugin.
+Build prerequisites are the Rust MSVC toolchain and Visual C++ build tools;
+`npm run test:terminal-native` runs the Rust tests.
+Capture storage uses a Rust Node-API module: `npm run build:capture-store`
+builds it for the current platform/Node architecture, and
+`npm run test:capture-native` tests the storage core without loading Node.
+Memory vectors use a separate Node-API module: `npm run build:memory-store` and
+`npm run test:memory-native`. Run `node scripts/run-tests.mjs dsh-memory` for
+the JS adapter, indexing and persistence regressions.
+CPU/allocation CSV folding uses `npm run build:trace-fold` and
+`npm run test:trace-native`. Its JS differential tests run with
+`node scripts/run-tests.mjs dsh-perf` against a frozen pre-migration oracle.
 
 ## Pull request checklist
 
 1. **Target one plugin** — the repo is a monorepo of independent plugins; keep PRs focused.
 2. **No environment leakage** — this repo must remain machine-agnostic:
-   - never hard-code paths like `E:\dsh-files\...` or user home directories;
+   - never hard-code absolute paths or user home directories;
    - configure via environment variables (`DSH_*`) with sane defaults;
    - never commit API keys, tokens, or company identifiers.
 3. **Syntax-check** — `node --check` every `.js`/`.mjs` you touch.

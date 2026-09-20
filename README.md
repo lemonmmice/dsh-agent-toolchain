@@ -52,6 +52,29 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
 
 ## Install
 
+CPU/allocation flame folding uses a Rust Node-API module. Run
+`npm run build:trace-fold` and deploy `plugins/dsh-perf/bin/` with the plugin.
+See the [trace-fold migration report](./docs/trace-fold-rust.md) for scope and timings.
+
+Memory indexing/search also uses a Rust Node-API module. Run
+`npm run build:memory-store` and include `plugins/dsh-memory/bin/` in deployments.
+Existing JSONL indexes remain readable; see the
+[memory migration report](./docs/memory-store-rust.md) for performance and limits.
+
+Capture storage (both DSH and MCP) uses a Rust Node-API module. Before first use,
+run `npm run build:capture-store` from the repository root with Rust and the
+platform linker installed. Deploy `plugins/dsh-api-visualizer/bin/` together with
+the shared `lib/` files. Windows builds require Visual C++ build tools; runtime
+consumers only need the built module. See the
+[capture-store migration report](./docs/capture-store-rust.md).
+
+When deploying `dsh-win-terminal-inspector` from source, first run
+`npm run build:terminal-inspector` on Windows with Rust (MSVC) and Visual C++ build
+tools installed. Copy the generated plugin `bin/` directory along with its JS
+files. End users do not need Rust or PowerShell for process inspection. See the
+[terminal inspector README](./plugins/dsh-win-terminal-inspector/README.md) for
+architecture, verification and benchmark commands.
+
 Each plugin is a drop-in host plugin. Copy the plugin directory into your DSH profile's `plugins/` (or `node_modules/@dsh-agent-toolchain/` for the panels) and register it in `cordis.patch.yml`:
 
 ```yaml

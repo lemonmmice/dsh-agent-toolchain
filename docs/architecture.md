@@ -1,9 +1,9 @@
 # Architecture
 
-dsh-agent-toolchain is a **monorepo of independent host plugins** for the
-DeepSeek Harness Web GUI. Each plugin composes the same way and never depends
-on another plugin's internals; the toolchain story is how they fit together in
-an agent's workflow, not a shared codebase.
+dsh-agent-toolchain is a monorepo of host plugins for the DeepSeek Harness Web
+GUI and shared framework-free libraries used by both DSH and MCP. Host adapters
+register tools and routes; storage and other reusable behavior live behind
+shared interfaces, with Rust components for selected native operations.
 
 ## Plugin anatomy
 
@@ -20,11 +20,20 @@ plugins/<name>/
 - **`index.js`** registers agent tools via `defineTool`, announces itself to the
   model via the `systemPrompt` injection (GUIDANCE), and mounts loopback-only
   Web routes (`/api/dsh-<plugin>/*`) for the GUI panel.
-- **`lib/*.mjs`** contain pure logic (driver, parser, store) that can be unit
+- **`lib/*.mjs`** contain framework-free logic (driver, parser, store) that can be unit
   tested without DSH — this is the testable seam.
 - **`scripts/*.ps1`** do the actual Windows work (UIA via PowerShell,
   MSBuild via process spawn, procdump/DumpStack via file paths).
 - **`test/`** offline scripts with hard-coded-free env configuration.
+- **`native/`** holds Rust components. The process-table helper is an executable;
+  capture storage is an in-process Node-API module behind `lib/capture-storage.mjs`.
+  DSH and MCP share the capture storage/index implementation. Generated binaries
+  ship under each plugin's `bin/`, while build caches stay outside the plugins.
+  Memory's Node-API module holds resident dense/sparse vectors and stages JSONL
+  replacements; its JS adapter retains JSON compatibility and embedding policy.
+  Trace folding uses native asynchronous tasks for bounded event scanning and
+  stack aggregation; process regular expressions and final report shaping stay
+  in JS. The same open file is checked for changes across the two trace passes.
 
 ## How the pieces compose (the loop)
 
