@@ -23,7 +23,7 @@ node lib/native-stacks.mjs --from-log <日志文件>
 # 机器可读
 node lib/native-stacks.mjs <dump> --json
 
-# 快速档：不下载任何符号，只到"模块级"——回答"有没有线程卡在 igc32/d3d9 里"通常足够
+# 快速档：不碰网络。64 位目标照样能出栈；**32 位目标请勿使用**（x86 回溯要 pdb，会只剩 1 帧/线程）
 node lib/native-stacks.mjs <dump> --no-symbols --out <日志>
 ```
 
@@ -70,14 +70,24 @@ node lib/native-stacks.mjs <dump> --no-symbols --out <日志>
 实测在慢网络下，一个只装了 PowerShell/CLR 的小 dump 也能为 `mscorlib.pdb` 这种大文件耗掉十几分钟，
 把超时用光（这时结论会带「⚠ 本次运行没有跑完」）。
 
-**所以先跑快速档**：`--no-symbols` 用**一个存在的空目录**覆盖符号路径，完全不碰网络，
-模块名来自 dump 自身的模块表，足以回答"有没有线程在 `igc32` / `d3d9` / `dxgi` 里"（这是最常见的问题）。
-导出符号（`ntdll!NtWaitForSingleObject` 这一级）是**免费**的，来自 PE 导出表；只有内部函数名
-（`wpfgfx_v0400!CMilChannel::WaitForNextMessage`）才需要 pdb。
-只有在需要那些内部函数名时才上符号。
+⚠ **32 位目标的栈回溯需要 PDB，没有符号就没有栈**：x86 的 FPO/展开信息在 **pdb 里**
+（不像 x64 放在 PE 的 `RUNTIME_FUNCTION` 里），所以 dbghelp 在没有符号时会直接放弃 ——
+实测同一份 32 位 dump，`--no-symbols` 每条线程只剩 **1 帧**
+（`wow64cpu!TurboDispatchJumpAddressEnd+0x515`，`RetAddr=00000000`），有符号档是 **1099 帧**。
+这不是"栈很浅"，是**没回溯出来**。工具会把这个形态标出来：
 
-⚠ 无符号档解出的**帧数会明显少**（同一份 dump 实测 245 帧 vs 有符号 1109 帧）：
-模块级结论不受影响，但**别拿它数帧数、也别据此判断"栈只有这么深"**。
+```text
+⚠ 解出的栈明显不完整（94 条线程共 94 帧，平均每条 1.0 帧）：32 位目标的栈回溯**需要 PDB**…
+  别拿这份结果判断"在不在驱动里"。
+```
+
+所以 `--no-symbols` 只用在这两处：① **64 位目标**（x64 展开信息在 PE 里，无符号也能走栈）；
+② 0.3 秒确认"这个 dump cdb 打得开"（完全不碰网络）。
+**要 32 位栈 —— 也就是要回答"有没有线程卡在图形驱动里" —— 必须让它下符号**：
+把 `DSH_NATIVE_SYMBOL_PATH` / `DSH_PERF_SYMBOL_PATH` 指到一份已经热过的符号缓存，
+首次跑前留足时间（慢网络下十几分钟很正常），必要时 `--timeout 0`。
+导出符号（`ntdll!NtWaitForSingleObject` 这一级）是免费的（PE 导出表）；
+**内部函数名与栈回溯本身都要 pdb**。
 
 ⚠ 坑（实测）：把符号路径传成**空串**并不能关掉下载 —— cdb 会回退到内置默认
 `<cdb目录>\sym*https://msdl.microsoft.com/download/symbols`，日志里出现
