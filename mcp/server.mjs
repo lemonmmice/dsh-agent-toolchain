@@ -44,6 +44,7 @@ import { makeVerificationReport } from '../lib/verify/report.mjs'
 import { attachInlineImage } from './inline-image.mjs'
 import { makeToolTrace, wrapToolArgs } from '../lib/tool-trace.mjs'
 import { makeOutputBudget, outputMaxTokens } from '../lib/output-budget.mjs'
+import { createJevClient, parseJevArguments } from '../lib/jev-client.mjs'
 // W1：工具描述/参数结构收进单一真源（lib/tool-registry.mjs）；MCP 侧的 zod shape 由 mcp/registry-zod.mjs 生成。
 // 工具名仍以字面量出现在下面各 server.tool 调用的第一个实参（守卫要求名字是字面量、静态扫描须等于运行时）。
 import { mcpDescription, mcpAnnotations } from '../lib/tool-registry.mjs'
@@ -229,6 +230,12 @@ function fc() {
   return corpus
 }
 
+let jev = null
+function jv() {
+  if (!jev) jev = createJevClient({ apiKey: envOr('TYPESAFE_API_KEY') })
+  return jev
+}
+
 /**
  * ETW tracer（F-003 / E4：DSH 面早就有 perf_trace/perf_hotstacks，MCP 面此前没有）。
  * 与 `plugins/dsh-perf/index.js` 的 `trc()` **同参构造** —— 两面的行为必须一致（E4 的判据）。
@@ -268,6 +275,20 @@ function autoRecord(failureClass, tool, message, extra = {}) {
 }
 
 // ---------------------------------------------------------------- build
+
+server.tool(
+  'jev_decide',
+  mcpDescription('jev_decide'),
+  mcpShape('jev_decide'),
+  async (args) => {
+    if (args.allowRemoteData !== true) return failure('jev_decide 默认不联网；确认 state/questions 已脱敏后重发并带 allowRemoteData=true', 'remote_data_not_allowed')
+    const parsed = parseJevArguments(args)
+    if (!parsed.ok) return jtext(parsed)
+    const result = await jv().evaluate(parsed.request)
+    if (!result.ok) return jtext(result)
+    return jtext({ ...result, advisoryOnly: true, executedActions: 0, remote: true })
+  },
+)
 
 /** Shared builder instance. Its constructor options are env-derived; build status and the last
  *  error list are read back from the logs dir on disk, so build_status/build_errors see the same

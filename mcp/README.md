@@ -11,6 +11,16 @@ they are liveness notifications, not completion percentages. Clients without a
 progress token retain ordinary request/response behavior. Display depends on
 the MCP client. Synchronous work can delay timer notifications.
 
+`jev_decide` is an optional advisory decision tool. It sends the supplied
+`stateJson` and `questionsJson` to TypeSafe only when the call includes
+`allowRemoteData=true`; without that flag it returns immediately without a
+network request. Set `TYPESAFE_API_KEY` in the MCP process environment and pin
+`model` to `jev-1.13.0` when thresholds depend on model behavior. The tool never
+executes the selected action and does not replace UI approval, snapshot
+freshness, build verification, or evidence adjudication. Keep inputs small and
+脱敏; Jev's primary language is English and its current model has known weak
+spots for arithmetic, dates, long irrelevant state, and adversarial content.
+
 Blocked actions, missing evidence packs and rejected writes return `isError:true`
 with JSON `{ok:false,errorCode,error}`. HTTP non-2xx responses remain successful
 transport observations; inspect their `status` separately. MCP request
@@ -71,6 +81,7 @@ every agent, not just DeepSeek Harness.
 | `failure_record` / `failure_query` / `failure_stats` | lib/failure-corpus.mjs | Local-only JSONL failure corpus: record handoffs/failures, query, stats |
 | `capture_query` / `capture_append` | lib/capture-store.mjs | Query/append the API-capture store — caller attribution (ViewModel→API→call-chain) + runId spine |
 | `verify_report` | lib/verify/report.mjs | Claims adjudicated from evidence (build/api/file checks, manual opt-out) → verdict; contradictions auto-record as agent-misjudge |
+| `jev_decide` | lib/jev-client.mjs | Optional remote typed decisions; advisory only, explicit remote-data opt-in |
 
 ## Configure (Claude Code)
 
@@ -96,6 +107,7 @@ Same `DSH_*` variables as the plugins:
 | `DSH_FAILURE_CORPUS_DIR` | failure tools | corpus dir (default `~/.dsh-agent-toolchain/failure-corpus`) |
 | `DSH_API_CAPTURE_STORE` | capture tools | capture store dir (default `~/.dsh/api-capture`, shared with the panel) |
 | `DSH_VERIFY_DIR` | verify_report | report dir (default `~/.dsh-agent-toolchain/verify-reports`) |
+| `TYPESAFE_API_KEY` | jev_decide | TypeSafe API key; used only when `allowRemoteData=true` |
 
 ## Run standalone
 
