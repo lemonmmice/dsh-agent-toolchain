@@ -15,9 +15,9 @@
 // Every repo plugin is deployed to <profile>/plugins/<name> (the same layout the
 // profile's cordis.patch.yml references). npm-installed plugin packages under
 // <profile>/node_modules are NOT touched — those are managed by `dsh plugin add`.
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, copyFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, copyFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { join, relative } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
@@ -117,8 +117,11 @@ for (const name of targets) {
   for (const m of missing.slice(0, 5)) console.log('    + ' + m)
   for (const c of changed.slice(0, 5)) console.log('    ~ ' + c)
   if (!check && status === 'drift') {
-    mkdirSync(dst, { recursive: true })
-    cpSync(src, dst, { recursive: true, force: true })
+    for (const rel of [...missing, ...changed]) {
+      const target = join(dst, rel)
+      mkdirSync(dirname(target), { recursive: true })
+      copyFileSync(join(src, rel), target)
+    }
     copied++
   }
 }
@@ -173,7 +176,10 @@ if (existsSync(sharedLib)) {
     for (const f of files) {
       const rel = relative(sharedLib, f)
       const df = join(dst, rel)
-      if (!existsSync(df) || hashOf(f) !== hashOf(df)) copyFileSync(f, df)
+      if (!existsSync(df) || hashOf(f) !== hashOf(df)) {
+        mkdirSync(dirname(df), { recursive: true })
+        copyFileSync(f, df)
+      }
     }
     for (const s of stale) {
       try { rmSync(join(dst, s), { force: true }) } catch { /* best effort */ }

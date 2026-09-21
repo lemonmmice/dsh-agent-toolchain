@@ -49,6 +49,8 @@ const MISSING_BACKOFF = 8
  * 放弃时**必须记账**（droppedBytes/droppedChunks + lastError），绝不静默跳过。
  */
 const MAX_PARSE_RETRY = 8
+export const MAX_TAIL_READ_BYTES = 1024 * 1024
+export const MAX_TAIL_LINE_BYTES = 32 * 1024 * 1024
 
 /** Soft cap on pending (unfinished) requests. */
 const MAX_PENDING = 1000
@@ -615,8 +617,11 @@ export class TraceParser {
 
 /** File tailer: emits appended trace text via onChunk; resilient to rotation. */
 export class LogTailer {
-  constructor({ logPath, pollMs = 750, replay = false, onChunk = () => {}, what = '日志' }) {
+  constructor({ logPath, pollMs = 750, replay = false, onChunk = () => {}, what = '日志', maxReadBytes = MAX_TAIL_READ_BYTES, maxLineBytes = MAX_TAIL_LINE_BYTES }) {
+    if (!Number.isSafeInteger(maxReadBytes) || maxReadBytes <= 0 || !Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0) throw new TypeError('LogTailer byte limits must be positive safe integers')
     this.logPath = logPath
+    this.maxReadBytes = maxReadBytes
+    this.maxLineBytes = maxLineBytes
     this.pollMs = pollMs
     this.onChunk = onChunk
     this.what = what
@@ -626,7 +631,9 @@ export class LogTailer {
     this.replay = replay
     this.timer = null
     this.errors = 0
-    this.remainder = '' // 未完整的行尾：hex 行被切在块边界时先拼回完整行
+    this.remainder = Buffer.alloc(0)
+    this.discardingLine = false
+    this.oversizedLines = 0
     // F-004b（2026-09-11 实测）：把「文件还不存在」与「读失败」分开计。
     // 旧实现两者都进同一个 catch → `this.errors++`，而 caller 旁路日志的**生产者
     // 在本例中根本不存在**（见下面 status().note），于是每 750ms 涨一次、
@@ -680,7 +687,8 @@ export class LogTailer {
       this.missingSince = Date.now()
     }
     this.startedAt = Date.now()
-    this.remainder = ''
+    this.remainder = Buffer.alloc(0)
+    this.discardingLine = false
     this.pump()
     // 缺文件时退避：每 MISSING_BACKOFF 个 tick 才真去看一次。
     // 文件出现后立刻恢复全速（pump 内部会把 missing 置回 false）。
@@ -708,25 +716,56 @@ export class LogTailer {
     try {
       if (st.size < this.offset) {
         this.offset = 0 // rotated / cleared
-        this.remainder = ''
+        this.remainder = Buffer.alloc(0)
+        this.discardingLine = false
+        this.parseFailures = 0
       }
       if (st.size > this.offset) {
         const fd = openSync(this.logPath, 'r')
         try {
-          const size = st.size - this.offset
+          const size = Math.min(st.size - this.offset, this.maxReadBytes)
           const buf = Buffer.alloc(size)
-          readSync(fd, buf, 0, size, this.offset)
-          const data = this.remainder + buf.toString('utf8')
-          const idx = data.lastIndexOf('\n')
-          if (idx === -1) {
-            // 还没凑出完整行：把这段挂到 remainder，offset 可以安全推进
-            // （remainder 里已经包含了这些字节，下次不会重复读）
-            this.remainder = data
-            this.offset = st.size
-            return
+          const bytesRead = readSync(fd, buf, 0, size, this.offset)
+          if (bytesRead === 0) return
+          const data = Buffer.concat([this.remainder, buf.subarray(0, bytesRead)])
+          const lines = []
+          let rest = Buffer.alloc(0)
+          let discarding = this.discardingLine
+          let droppedBytes = 0
+          let oversizedLines = 0
+          let cursor = 0
+          let rangeStart = 0
+          let rangeEnd = 0
+          while (cursor < data.length) {
+            const newline = data.indexOf(10, cursor)
+            const end = newline < 0 ? data.length : newline + 1
+            const length = end - cursor
+            if (discarding || length - (newline < 0 ? 0 : 1) > this.maxLineBytes) {
+              if (rangeEnd > rangeStart) lines.push(data.subarray(rangeStart, rangeEnd))
+              rangeStart = end
+              rangeEnd = end
+              if (!discarding) oversizedLines++
+              droppedBytes += length
+              discarding = newline < 0
+            } else if (newline >= 0) rangeEnd = end
+            else rest = Buffer.from(data.subarray(cursor, end))
+            cursor = end
           }
-          const complete = data.slice(0, idx + 1)
-          const rest = data.slice(idx + 1)
+          if (rangeEnd > rangeStart) lines.push(data.subarray(rangeStart, rangeEnd))
+          const complete = lines.length === 1 ? lines[0] : Buffer.concat(lines)
+          const commit = () => {
+            this.offset += bytesRead
+            this.remainder = rest
+            this.discardingLine = discarding
+            this.droppedBytes += droppedBytes
+            this.droppedChunks += oversizedLines
+            this.oversizedLines += oversizedLines
+            if (droppedBytes > 0) {
+              this.lastError = '日志行超过 ' + this.maxLineBytes + ' 字节，已丢弃到换行处；累计超长行 ' + this.oversizedLines + ' 条'
+              this.lastErrorAt = Date.now()
+            }
+          }
+          if (complete.length === 0) { commit(); return }
           // ────────────────────────────────────────────────────────────────
           // AV-07（2026-09-11 审计确证）：这里**先推进 offset 再 onChunk**，
           // 而 onChunk 里的解析异常被外层 catch 吞成计数 → **已消费的字节永不重放**，
@@ -734,9 +773,8 @@ export class LogTailer {
           // 现在改为：**解析成功才推进 offset**；失败则保持 offset 不变以便下次重试，
           // 连续失败到上限才放弃那一段，并且**明确记账**（droppedBytes/droppedChunks），绝不静默。
           try {
-            this.onChunk(complete)
-            this.offset = st.size
-            this.remainder = rest
+            this.onChunk(complete.toString('utf8'))
+            commit()
             this.parseFailures = 0
           } catch (e) {
             this.parseFailures++
@@ -744,10 +782,9 @@ export class LogTailer {
             this.lastError = '解析失败（第 ' + this.parseFailures + ' 次，未丢弃，将重试）：' + this.lastParseError
             this.lastErrorAt = Date.now()
             if (this.parseFailures >= MAX_PARSE_RETRY) {
+              commit()
               this.droppedBytes += complete.length
               this.droppedChunks++
-              this.offset = st.size
-              this.remainder = rest
               this.parseFailures = 0
               this.lastError = '解析连续失败 ' + MAX_PARSE_RETRY + ' 次，已跳过 ' + complete.length +
                 ' 字节（累计丢弃 ' + this.droppedBytes + ' 字节）——这段流量**没有入库**，不要当成"没有请求"。原因：' + this.lastParseError
@@ -795,8 +832,8 @@ export class LogTailer {
         '这项缺失**不影响**另一条日志的解析，但依赖它的能力当前不可用）'
     } else if (this.droppedBytes > 0) {
       note = '⚠ ' + this.what + '有 ' + this.droppedBytes + ' 字节（' + this.droppedChunks +
-        ' 段）**解析失败被跳过、没有入库** —— 这段时间的流量在结果里是缺失的，' +
-        '不要把它读成"没有请求"。最近原因：' + (this.lastParseError || this.lastError || '未知')
+        ' 段，超长行 ' + this.oversizedLines + ' 条）**因解析失败或超长被跳过、没有入库** —— 这段时间的流量在结果里是缺失的，' +
+        '不要把它读成"没有请求"。最近原因：' + (this.lastError || this.lastParseError || '未知')
     } else if (this.lastError) {
       note = this.what + '最近一次读取失败：' + this.lastError + (this.lastErrorAt ? '（' + new Date(this.lastErrorAt).toISOString() + '）' : '')
     } else {
@@ -808,6 +845,11 @@ export class LogTailer {
       logExists: exists,
       logSize: size,
       offset: this.offset,
+      pendingBytes: size == null ? null : Math.max(0, size - this.offset),
+      bufferedBytes: this.remainder.length,
+      discardingLine: this.discardingLine,
+      maxReadBytes: this.maxReadBytes,
+      maxLineBytes: this.maxLineBytes,
       replay: this.replay,
       startedAt: this.startedAt,
       errors: this.errors,
@@ -815,9 +857,10 @@ export class LogTailer {
       // AV-07：丢弃必须可数（status 是调用方唯一能自证"数据是否完整"的地方）
       droppedBytes: this.droppedBytes,
       droppedChunks: this.droppedChunks,
+      oversizedLines: this.oversizedLines,
       parseFailures: this.parseFailures,
       lastParseError: this.lastParseError,
-      dataComplete: this.droppedBytes === 0,
+      dataComplete: this.droppedBytes === 0 && exists && size === this.offset && this.remainder.length === 0 && !this.discardingLine,
       missing: !exists,
       missingSince: exists ? null : this.missingSince,
       lastError: this.lastError,

@@ -36,11 +36,44 @@ export function normalizeHeaders(headers) {
   return out
 }
 
+async function readResponseBody(response) {
+  if (!response.body) return { buffer: Buffer.alloc(0), size: 0, truncated: false }
+  const reader = response.body.getReader()
+  const chunks = []
+  let size = 0
+  let retained = 0
+  let truncated = false
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      const keep = Math.min(value.byteLength, MAX_RESP_BYTES - retained)
+      if (keep > 0) { chunks.push(Buffer.from(value.subarray(0, keep))); retained += keep }
+      if (size > MAX_RESP_BYTES) {
+        truncated = true
+        await reader.cancel()
+        break
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return { buffer: Buffer.concat(chunks, retained), size, truncated }
+}
+
+function safeFetchError(error) {
+  const cause = error && typeof error === 'object' ? error.cause : null
+  const code = typeof cause?.code === 'string' && /^[A-Z0-9_]+$/.test(cause.code) ? cause.code : ''
+  const redirect = /redirect count exceeded/i.test(String(cause?.message || ''))
+  return describeFetchError(new Error('HTTP request failed', { cause: { code, message: redirect ? 'redirect count exceeded' : 'transport or request validation failed' } }))
+}
+
 /**
  * Perform one HTTP request server-side and shape the result.
  * A non-2xx status is still ok:true (a response arrived); ok:false is reserved
  * for transport failures (invalid URL, DNS, connection, timeout).
- * @param spec - { method, url, headers, body, timeoutMs }
+ * @param spec - { method, url, headers, body, timeoutMs, signal }
  */
 export async function sendRequest(spec) {
   const method = (typeof spec.method === 'string' && spec.method.trim() !== '' ? spec.method.trim() : 'GET').toUpperCase()
@@ -51,7 +84,7 @@ export async function sendRequest(spec) {
   try {
     parsed = new URL(url)
   } catch {
-    return { ok: false, error: `invalid url: ${url === '' ? '(empty)' : url}`, durationMs: 0 }
+    return { ok: false, error: url === '' ? 'invalid url: (empty)' : 'invalid url', durationMs: 0 }
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return { ok: false, error: `unsupported protocol: ${parsed.protocol}`, durationMs: 0 }
@@ -61,6 +94,10 @@ export async function sendRequest(spec) {
   const hasBody = bodyAllowed(method) && typeof spec.body === 'string' && spec.body !== ''
   const timeoutMs = clampTimeout(spec.timeoutMs)
   const controller = new AbortController()
+  let cancelled = false
+  const cancel = () => { if (!controller.signal.aborted) { cancelled = true; controller.abort() } }
+  if (spec.signal?.aborted) return { ok: false, cancelled: true, error: 'request cancelled', durationMs: 0 }
+  spec.signal?.addEventListener('abort', cancel, { once: true })
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const res = await fetch(url, {
@@ -70,14 +107,12 @@ export async function sendRequest(spec) {
       signal: controller.signal,
       redirect: 'follow',
     })
-    const buf = Buffer.from(await res.arrayBuffer())
+    const { buffer: buf, size, truncated } = await readResponseBody(res)
     const durationMs = Date.now() - started
     const resHeaders = {}
     res.headers.forEach((value, key) => {
       resHeaders[key] = value
     })
-    const size = buf.length
-    const truncated = size > MAX_RESP_BYTES
     // PM-03（2026-09-11 真机确证，Claude 独立复现 11/11）：
     // fetch 默认 redirect:'follow'，302 → 别的 200 会被**当成你请求的那个接口的 200** ——
     // status/headers/body 全是跳转目标的，而"发生过跳转"这件事在结果里一个痕迹都没有。
@@ -94,10 +129,13 @@ export async function sendRequest(spec) {
       statusText: res.statusText,
       durationMs,
       size,
+      sizeExact: !truncated,
+      retainedBytes: buf.length,
       truncated,
       contentType: resHeaders['content-type'] ?? '',
       headers: resHeaders,
-      body: buf.subarray(0, MAX_RESP_BYTES).toString('utf8'),
+      body: new TextDecoder('utf-8').decode(buf, { stream: truncated }),
+      ...(truncated ? { truncationNote: '响应体超过 2 MiB，已停止读取；size 为已收到字节数下限，总大小未知。' } : {}),
       requestedUrl: url,
       finalUrl,
       redirected,
@@ -115,11 +153,13 @@ export async function sendRequest(spec) {
     const aborted = error !== null && typeof error === 'object' && error.name === 'AbortError'
     return {
       ok: false,
-      error: aborted ? `timeout after ${timeoutMs}ms` : describeFetchError(error),
+      error: cancelled ? 'request cancelled' : (aborted || controller.signal.aborted ? `timeout after ${timeoutMs}ms` : safeFetchError(error)),
       durationMs,
+      ...(cancelled ? { cancelled: true } : {}),
     }
   } finally {
     clearTimeout(timer)
+    spec.signal?.removeEventListener('abort', cancel)
   }
 }
 

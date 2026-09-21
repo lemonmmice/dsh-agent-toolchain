@@ -2,6 +2,40 @@
 
 The same engineering-quality tools the DSH plugins expose — now available to **any MCP client** (Claude Code, Cursor, Cline, custom agents) over stdio.
 
+## Responsiveness and diagnostics
+
+Requests carrying `_meta.progressToken` receive `notifications/progress` at
+dispatch, every two seconds while asynchronous work remains pending, and when
+the call finishes. Messages contain only the tool name, state and elapsed time;
+they are liveness notifications, not completion percentages. Clients without a
+progress token retain ordinary request/response behavior. Display depends on
+the MCP client. Synchronous work can delay timer notifications.
+
+Blocked actions, missing evidence packs and rejected writes return `isError:true`
+with JSON `{ok:false,errorCode,error}`. HTTP non-2xx responses remain successful
+transport observations; inspect their `status` separately. MCP request
+cancellation now aborts `http_request`, including response-body reading.
+Cancellation of an HTTP request does not prove that the remote server undid it.
+Other tools retain their existing per-operation timeouts and stop controls.
+
+`DSH_OUTPUT_MAX_TOKENS` remains opt-in. When positive, all text blocks share the
+estimated token budget, including a truncation notice. Truncated JSON is a valid
+`{outputBudget:{truncated:true,originalFormat:"json"},previewText:...}` envelope,
+not the original complete payload. Tiny budgets report their minimum metadata
+overhead. Images, resources and `structuredContent` are preserved outside this
+text budget; narrow large queries at their source whenever possible.
+
+`node mcp/probe.mjs --seq '[["memory_status",{}],["failure_stats",{}]]'`
+executes calls in order in one session, shows progress on stderr, and stops with
+exit code 1 on a failed call. It does not print request arguments.
+
+Run `npm run bench:mcp -- --output bench-runs/mcp-benchmark.json` to measure
+startup/discovery, repeat-call latency, response size and first feedback using
+temporary stores and a loopback HTTP fixture. The benchmark disables environment
+fallback; its unconfigured UI timings are not live application timings.
+See [the evaluation](../docs/agent-toolchain-evaluation.md) for measurements and
+remaining limitations.
+
 ## Platform scope (honest)
 
 The MCP transport and the evidence spine are cross-platform, but the tool set is not:
@@ -12,7 +46,7 @@ The MCP transport and the evidence spine are cross-platform, but the tool set is
 | `memory_index`, `memory_search`, `memory_status` | require the memory-store Node-API module built for the current platform/architecture; Windows x64 validated |
 | `capture_*`, API evidence in `verify_report` | require the capture-store Node-API module built for the current platform/architecture; Windows x64 validated, Linux/macOS builds supported by the build script but not yet validated |
 | `build_run` | cross-platform with `engine=dotnet` (SDK-style repos); the default `engine=msbuild` is Windows/VS only |
-| `ui_status` / `ui_windows` / `ui_state` / `ui_drive` / `ui_flow` | **Windows only** — they drive a Windows desktop client via PowerShell + UIA |
+| `ui_status` / `ui_windows` / `ui_state` / `ui_drive` / `ui_flow` / `ui_replay` | **Windows only** — they drive a Windows desktop client via PowerShell + UIA |
 | `perf_probe` / `perf_report` | **Windows only** — window-message latency sampling of the same client |
 | `hang_status` / `hang_run` / `hang_stop` / `hang_packs` / `hang_pack` / `hang_analyze` / `hang_delete` | **Windows only** — hang-monitor control, evidence packs, ClrMD dump analysis |
 
@@ -30,7 +64,7 @@ every agent, not just DeepSeek Harness.
 | Tool | Backed by | Notes |
 | --- | --- | --- |
 | `build_run` | dsh-build/lib/builder.mjs | Incremental/Rebuild MSBuild with structured errors |
-| `ui_status` / `ui_drive` / `ui_flow` | dsh-ui-drive/lib/driver.mjs | Windows UIA: find/read/shot read-only; click/setvalue/key need `allowSideEffects=true`; `ui_flow` runs a whole sequence in one process |
+| `ui_status` / `ui_drive` / `ui_flow` / `ui_replay` | dsh-ui-drive/lib/driver.mjs | Signed app identity, scoped approvals, desktop-state gates, action/observation records, identity-bound replay and opt-in visual fallback; guarded flows validate each action |
 | `perf_probe` / `perf_report` | dsh-perf/lib/perf.mjs | Window-message latency sampling: P50/P95/P99 + stall events |
 | `http_request` | dsh-postman/lib/http.mjs | Host-side HTTP (no CORS), non-2xx is a normal result |
 | `memory_index` / `memory_search` / `memory_save` / `memory_recall` / `memory_status` | dsh-memory/lib/memory.mjs | Vector search + cross-session KV |

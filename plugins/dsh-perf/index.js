@@ -180,6 +180,7 @@ const tools = () => [
     async execute(args) {
       return await trc().clrEvents({
         etlPath: args.etlPath,
+        pid: args.pid,
         xmlPath: args.xmlPath,
         maxXmlMb: args.maxXmlMb,
         timeoutMs: args.timeoutMs,

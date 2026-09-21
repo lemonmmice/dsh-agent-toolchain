@@ -145,7 +145,7 @@ function callTool(name, args, id = 2) {
         if (msg.id !== id || !msg.result) continue
         const rawText = (msg.result.content && msg.result.content[0] && msg.result.content[0].text) || ''
         let payload = null
-        try { payload = JSON.parse(rawText) } catch { payload = null } // 非 JSON（如 pre-check 的 "Blocked:" 文本）→ payload=null
+        try { payload = JSON.parse(rawText) } catch { payload = null }
         finish(resolve, { payload, rawText, isError: msg.result.isError === true })
       }
     })
@@ -170,15 +170,13 @@ if (existsSync(sdkPath) && existsSync(serverPath)) {
     check('ui_act：陈旧/未知快照结果带 isError', b.isError === true, 'isError=' + b.isError)
 
     // Task 1a：ui_drive 的 pre-check 必须覆盖 type/drag（老版本只列 click/setvalue/key，漏了这两个）。
-    // pre-check 命中会返回明文 "Blocked: action ..."（非 JSON）；老版本会放行到驱动层（返回 JSON payload），
-    // 所以匹配这条明文能干净区分"pre-check 拦住了" vs "漏过 pre-check"。
     for (const act of ['type', 'drag']) {
       const p = await callTool('ui_drive', { action: act, name: 'x' }) // 不带 allowSideEffects
-      check(`ui_drive pre-check 拦截 ${act}（无 allowSideEffects）`, /^Blocked: action/.test(p.rawText), (p.rawText || JSON.stringify(p.payload)).slice(0, 160))
+      check(`ui_drive pre-check 拦截 ${act}（无 allowSideEffects）`, p.isError === true && p.payload?.ok === false && p.payload?.errorCode === 'side_effect_not_authorized', (p.rawText || JSON.stringify(p.payload)).slice(0, 160))
     }
     // 对照：只读动作不得被 pre-check 拦（find 应放过 pre-check，落到驱动层）
     const f = await callTool('ui_drive', { action: 'find', name: 'x' })
-    check('ui_drive pre-check 不拦只读 find（对照）', !/^Blocked: action/.test(f.rawText), (f.rawText || '').slice(0, 120))
+    check('ui_drive pre-check 不拦只读 find（对照）', f.payload?.errorCode !== 'side_effect_not_authorized', (f.rawText || '').slice(0, 120))
   } catch (e) {
     check('MCP stdio 透传用例执行完成', false, String(e).slice(0, 200))
   }

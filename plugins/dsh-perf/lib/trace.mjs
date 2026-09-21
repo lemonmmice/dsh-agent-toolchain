@@ -410,6 +410,10 @@ export function makeTrace(cfg = {}) {
    *   所以 `state` 字段是结果的主语，数字只在 ①/② 分清楚之后才有意义。
    */
   async function clrEvents(args = {}) {
+    const pidText = args.pid == null || args.pid === '' ? '' : String(args.pid).trim()
+    if ((args.pid != null && args.pid !== '' && !/^\d+$/.test(pidText)) || (pidText && (Number(pidText) < 1 || Number(pidText) > 4294967295))) return { ok: false, state: 'invalid-pid', error: 'pid 必须是一个有效的 Windows 进程 ID（正整数）' }
+    const pid = pidText ? Number(pidText) : null
+    const scope = pid == null ? 'machine-wide' : 'process'
     const etl = args.etlPath ? String(args.etlPath) : ''
     if (!etl) return { ok: false, state: 'etl-missing', error: '需要 etlPath（perf_trace 产出的 .etl）' }
     if (!existsSync(etl)) return { ok: false, state: 'etl-missing', etlPath: etl, error: 'etlPath 不存在：' + etl }
@@ -488,6 +492,15 @@ export function makeTrace(cfg = {}) {
     try { events = parseClrEvents(readFileSync(xmlPath, 'utf8')) } catch (e) {
       return { ok: false, state: 'xml-unreadable', etlPath: etl, xmlPath, error: '解码后的 XML 读不出来：' + e }
     }
+    const originalParsedEvents = events.length
+    const availableProcessIds = [...new Set(events.map(event => event.processId).filter(processId => processId != null))].sort((left, right) => left - right)
+    if (pid != null) events = events.filter(event => event.processId === pid)
+    const eventScope = { scope, pid, originalParsedEvents, parsedEvents: events.length, filteredEvents: events.length, excludedEvents: originalParsedEvents - events.length, availableProcessIds }
+    if (pid != null && events.length === 0) return {
+      ok: false, state: 'not-captured-for-target', etlPath: etl, etlBytes, xmlPath, xmlBytes, summaryPath,
+      ...eventScope,
+      error: '该 ETL 没有 PID ' + pid + ' 的 CLR runtime 事件；目标进程的 GC/停顿未知，不能解释为 0。',
+    }
     const s = summarizeClr(events)
     const counts = new Map()
     for (const e of events) counts.set(e.kind, (counts.get(e.kind) || 0) + 1)
@@ -500,10 +513,11 @@ export function makeTrace(cfg = {}) {
     return {
       ok: true, state: 'clr-present', etlPath: etl, etlBytes, xmlPath, xmlBytes, summaryPath,
       clrRuntimeEvents: summary.clrRuntimeEvents, clrRundownEvents: summary.clrRundownEvents,
-      parsedEvents: events.length, eventsByKind,
+      ...eventScope, eventsByKind,
       noGcInWindow,
       ...s,
-      note: '停顿口径：GC/SuspendEEStart → 其后第一个 GC/RestartEEStop（= 托管线程被冻结→恢复的真实时长）。'
+      note: (pid == null ? '统计范围：整份 ETL 中全部进程（machine-wide），未归因于目标客户端；停顿合计为各进程停顿之和，不是整机共同冻结时长。' : '统计范围：仅 PID ' + pid + '。')
+        + '停顿按同一 PID 与 CLR 实例的 GC/SuspendEEStart → GC/RestartEEStop 配对；堆值来自该范围内最后一条 HeapStats，归属见 heapProcessId。'
         + (noGcInWindow
           ? '⚠ 本 etl **有 CLR provider 但窗口内 0 条 GC/Start** ⇒ 这是"这段窗口确实没发生 GC"（**与"没采"是两回事**）。'
           : ''),
@@ -927,7 +941,8 @@ export function makeTrace(cfg = {}) {
       // 否则既有的源码级护栏断言（/cmd\.push\('-symbols'\)/）就失配了。
       if (args.debugSymbols) cmd.push('verbose')
     }
-    cmd.push('-i', etl, '-o', outHtml, '-a', 'stack', '-butterfly', String(minHits))
+    const eventScope = 'Sampled Profile'
+    cmd.push('-i', etl, '-o', outHtml, '-a', 'stack', '-butterfly', String(minHits), '-event', eventScope)
     if (args.process || c.procName) cmd.push('-process', String(args.process || c.procName))
     if (args.focus) cmd.push('-symbol', String(args.focus))
     const t0 = Date.now()
@@ -1015,6 +1030,7 @@ export function makeTrace(cfg = {}) {
     return Object.assign({
       ok: true, etlPath: etl, reportPath: outHtml, reportBytes: statSync(outHtml).size,
       focus: args.focus || null, process: args.process || c.procName || null,
+      eventScope, metric: 'stack-sample-count',
       symbols: !args.offline, elapsedMs: Date.now() - t0,
       symbolCacheDir: !args.offline ? join(c.symbolCacheDir || join(c.evidenceDir, 'symbol-cache'), 'symbols') : null,
       xperfRaw: rawInfo.raw, xperfRawBytes: rawInfo.rawBytes,

@@ -3,9 +3,10 @@
  */
 import { envOr } from '../../../lib/env-fallback.mjs'
 import { spawn, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, openSync, readSync, closeSync } from 'node:fs'
 import { join, basename } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, machine } from 'node:os'
+import { randomUUID } from 'node:crypto'
 // 帧 → 源码「文件:行号」的映射（F-009）。独立成模块以便离线单测。
 import { makeSrcMap, simpleName as srcSimpleName } from './srcmap.mjs'
 // F-007：宿主不热加载插件代码 —— 让工具自己说出"我跑的可能不是磁盘上那份"。
@@ -42,6 +43,49 @@ const PERFVIEW = envOr('DSH_PERF_PERFVIEW') || (PROCDUMP ? join(dirNameOf(PROCDU
 // UiFreezeStacks 是 framework-dependent 发布（apphost 自寻全局 .NET 运行时；`amd64/msdia140.dll` 读 pdb 必需，
 // 单文件自包含发布会丢它 → 必须整个发布**文件夹**部署到 `<tools>/uifreeze-bin/`）。
 const UIFREEZE_EXE = envOr('DSH_PERF_UIFREEZE') || (PROCDUMP ? join(dirNameOf(PROCDUMP), 'uifreeze-bin', 'UiFreezeStacks.exe') : '')
+
+export function perfViewEnvironment(env = process.env, nativeMachine = machine()) {
+  const result = { ...env }
+  const native = { x86_64: 'AMD64', amd64: 'AMD64', arm64: 'ARM64', aarch64: 'ARM64', ia32: 'x86', i386: 'x86', i686: 'x86', x86: 'x86' }[String(nativeMachine).toLowerCase()]
+  const architectureKey = Object.keys(result).find(key => key.toUpperCase() === 'PROCESSOR_ARCHITECTURE') || 'PROCESSOR_ARCHITECTURE'
+  const wowKey = Object.keys(result).find(key => key.toUpperCase() === 'PROCESSOR_ARCHITEW6432') || 'PROCESSOR_ARCHITEW6432'
+  if (!String(result[architectureKey] || '').trim() && native) result[architectureKey] = native
+  if (!String(result[wowKey] || '').trim() && String(result[architectureKey]).toLowerCase() === 'x86' && native && native !== 'x86') result[wowKey] = native
+  return result
+}
+
+export function runPerfExecutable(exe, args, timeoutMs, options = {}) {
+  return new Promise(resolve => {
+    let child
+    try { child = spawn(exe, args.map(String), { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: options.env || process.env }) }
+    catch (error) { resolve({ code: -1, stdout: '', stderr: 'spawn failed: ' + error, timedOut: false }); return }
+    const chunks = []
+    let stderr = ''
+    let settled = false
+    const finish = (code, timedOut, error = '') => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const buffer = Buffer.concat(chunks)
+      let stdout
+      try { stdout = new TextDecoder('utf-8', { fatal: true }).decode(buffer) }
+      catch { try { stdout = new TextDecoder('gbk').decode(buffer) } catch { stdout = buffer.toString('utf8') } }
+      resolve({ code, stdout, stderr: stderr + error, timedOut })
+    }
+    const timer = setTimeout(() => {
+      if (settled) return
+      if (process.platform === 'win32' && child.pid) {
+        const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+        killer.on('error', () => child.kill())
+      } else child.kill('SIGKILL')
+      finish(null, true, '\n[TIMEOUT]')
+    }, timeoutMs)
+    child.stdout.on('data', chunk => chunks.push(Buffer.from(chunk)))
+    child.stderr.on('data', chunk => { stderr += chunk.toString('utf8') })
+    child.on('error', error => finish(-1, false, '\n' + error))
+    child.on('close', code => finish(code, false))
+  })
+}
 
 export function makePerf(cfg) {
   const c = {
@@ -116,46 +160,8 @@ export function makePerf(cfg) {
   }
 
   /** 直接跑原生 exe（DumpStack/procdump），stdout 按 UTF-8/GBK 双解码。 */
-  function runExe(exe, args, timeoutMs) {
-    return new Promise((resolve) => {
-      let child
-      try {
-        child = spawn(exe, args.map(String), { windowsHide: true })
-      } catch (e) {
-        resolve({ code: -1, stdout: '', stderr: 'spawn failed: ' + e, timedOut: false })
-        return
-      }
-      const chunks = []
-      let err = ''
-      let settled = false
-      const timer = setTimeout(() => {
-        if (settled) return
-        settled = true
-        try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }) } catch { /* ignore */ }
-        resolve({ code: null, stdout: '', stderr: err + '\n[TIMEOUT]', timedOut: true })
-      }, timeoutMs)
-      child.stdout.on('data', (d) => chunks.push(Buffer.from(d)))
-      child.stderr.on('data', (d) => { err += d.toString('utf8') })
-      child.on('error', (e) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        resolve({ code: -1, stdout: '', stderr: err + '\n' + e, timedOut: false })
-      })
-      child.on('exit', (code) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        const buf = Buffer.concat(chunks)
-        let text
-        try {
-          text = new TextDecoder('utf-8', { fatal: true }).decode(buf)
-        } catch {
-          try { text = new TextDecoder('gbk').decode(buf) } catch { text = buf.toString('utf8') }
-        }
-        resolve({ code, stdout: text, stderr: err, timedOut: false })
-      })
-    })
+  function runExe(exe, args, timeoutMs, options = {}) {
+    return typeof c.runExe === 'function' ? c.runExe(exe, args, timeoutMs, options) : runPerfExecutable(exe, args, timeoutMs, options)
   }
 
   // ------------------------------------------------------------ 卡顿监测
@@ -499,18 +505,58 @@ export function makePerf(cfg) {
       return { ok: false, error: 'PerfView.exe 不可用：' + c.perfView + '（放到 procdump 同目录，或 DSH_PERF_PERFVIEW 指定）',
         toolDiagnostics: { perfView: c.perfView, uiFreezeStacks: c.uiFreezeStacks } }
     }
-    const dir = join(c.evidenceDir, 'uifreeze')
-    const etl = join(dir, 'uifreeze.etl')
-    const zip = etl + '.zip'
     const sessionFile = join(c.evidenceDir, 'uifreeze-pv-session.json')
+    const perfViewEnv = perfViewEnvironment()
+    const commandOptions = session => ['/SessionName:' + session.sessionName, '/nogui', '/accepteula', '/DataFile:' + session.etl, '/LogFile:' + session.logPath]
+    const logTail = file => {
+      let descriptor
+      try {
+        const size = statSync(file).size
+        descriptor = openSync(file, 'r')
+        const buffer = Buffer.alloc(Math.min(size, 8192))
+        const bytes = readSync(descriptor, buffer, 0, buffer.length, Math.max(0, size - buffer.length))
+        return buffer.subarray(0, bytes).toString('utf8')
+      } catch { return '' }
+      finally { if (descriptor !== undefined) closeSync(descriptor) }
+    }
+    const failed = (label, result, session) => ({
+      ok: false, error: label, exitCode: result.code ?? null, timedOut: result.timedOut === true,
+      tail: [logTail(session.logPath), result.stdout, result.stderr].filter(Boolean).join('\n').slice(-4000),
+      sessionName: session.sessionName, sessionFile, logPath: session.logPath, etl: session.etl,
+    })
+    const cleanup = async session => {
+      const result = await runExe(c.perfView, ['abort', ...commandOptions(session)], 60000, { env: perfViewEnv })
+      if (result.code === 0 && !result.timedOut) {
+        try { rmSync(sessionFile, { force: true }) }
+        catch (error) { return { ok: false, code: result.code, error: String(error.message) } }
+      } else {
+        try { writeFileSync(sessionFile, JSON.stringify({ ...session, state: 'cleanup-required' }), 'utf8') }
+        catch (error) { return { ok: false, code: result.code, error: String(error.message) } }
+      }
+      return { ok: result.code === 0 && !result.timedOut, code: result.code, timedOut: result.timedOut === true }
+    }
 
     if (action === 'start') {
-      try { mkdirSync(dir, { recursive: true }) } catch { /* ignore */ }
-      await runExe(c.perfView, ['abort', '/nogui', '/accepteula'], 60000) // 清残留会话（无则忽略）
-      const r = await runExe(c.perfView, ['start', '/threadTime', '/nogui', '/accepteula', '/BufferSizeMB:256', '/CircularMB:1024', '/DataFile:' + etl], 120000)
-      if (r.code !== 0) return { ok: false, error: 'PerfView start 失败（需管理员权限起 ETW 内核会话）', tail: (r.stdout + r.stderr).slice(-500) }
-      try { writeFileSync(sessionFile, JSON.stringify({ dir, etl, zip, startedAt: Date.now(), process: String(opts.process || c.procName || '') }), 'utf8') } catch { /* ignore */ }
-      return { ok: true, started: true, dir, etl,
+      const sessionName = 'DSHUiFreeze-' + randomUUID()
+      const dir = join(c.evidenceDir, 'uifreeze', tsDir() + '-' + sessionName)
+      const etl = join(dir, 'uifreeze.etl')
+      const session = { sessionName, dir, etl, zip: etl + '.zip', logPath: join(dir, 'perfview.log.txt'), startedAt: Date.now(), process: String(opts.process || c.procName || '').trim(), state: 'starting' }
+      try {
+        mkdirSync(c.evidenceDir, { recursive: true })
+        writeFileSync(sessionFile, JSON.stringify(session), { encoding: 'utf8', flag: 'wx' })
+      } catch (error) {
+        return { ok: false, alreadyRunning: error.code === 'EEXIST', sessionFile, error: error.code === 'EEXIST' ? '已有本工具会话标记，请先停止该会话；未启动第二份或终止其他采集' : '无法保存采集会话：' + error.message }
+      }
+      try { mkdirSync(dir, { recursive: true }) }
+      catch (error) { rmSync(sessionFile, { force: true }); return { ok: false, error: '无法创建采集目录：' + error.message } }
+      const result = await runExe(c.perfView, ['start', '/threadTime', '/BufferSizeMB:256', '/CircularMB:1024', ...commandOptions(session)], 120000, { env: perfViewEnv })
+      if (result.code !== 0 || result.timedOut) {
+        const failure = failed('PerfView start 失败，未进入复现阶段', result, session)
+        return { ...failure, cleanup: await cleanup(session) }
+      }
+      try { writeFileSync(sessionFile, JSON.stringify({ ...session, state: 'running' }), 'utf8') }
+      catch (error) { return { ...failed('无法更新采集会话标记：' + error.message, result, session), cleanup: await cleanup(session) } }
+      return { ok: true, started: true, dir, etl, sessionName, sessionFile, logPath: session.logPath,
         hint: '已起 PerfView /threadTime 采集。现在去**复现卡顿**（冷启点进那个页面/按钮）；页面一出来就调 perf_uifreeze(action="stop")。窗口越短、解析越快越干净。' }
     }
     if (action !== 'stop') return { ok: false, error: 'action 必须是 start 或 stop' }
@@ -518,14 +564,21 @@ export function makePerf(cfg) {
     // stop：停 + 合并 + 分析
     let session = null
     try { session = JSON.parse(readFileSync(sessionFile, 'utf8')) } catch { session = null }
-    const useDir = (session && session.dir) || dir
-    const useEtl = (session && session.etl) || etl
-    const useZip = (session && session.zip) || zip
-    const proc = String(opts.process || (session && session.process) || c.procName || '').trim()
+    if (!session || !/^DSHUiFreeze-[0-9a-f-]{36}$/.test(session.sessionName || '') || !session.etl || !session.zip || !session.dir || !session.logPath || !Number.isFinite(session.startedAt)) return { ok: false, error: '没有可识别的本工具采集会话，未停止其他会话或分析历史产物', sessionFile }
+    if (session.state === 'starting') return { ok: false, error: '采集仍在启动，请等待 start 返回后再停止', sessionFile }
+    const useDir = session.dir
+    const useEtl = session.etl
+    const useZip = session.zip
+    const proc = String(opts.process || session.process || c.procName || '').trim()
 
-    const sr = await runExe(c.perfView, ['stop', '/nogui', '/accepteula', '/DataFile:' + useEtl], 300000)
-    try { rmSync(sessionFile, { force: true }) } catch { /* ignore */ }
-    if (!existsSync(useZip)) return { ok: false, error: 'PerfView stop 没产出 ' + basename(useZip) + '（是否没先 action="start"，或采集被别的会话打断？）', tail: (sr.stdout + sr.stderr).slice(-500) }
+    const sr = await runExe(c.perfView, ['stop', '/Merge:true', '/Zip:true', ...commandOptions(session)], 300000, { env: perfViewEnv })
+    if (sr.code !== 0 || sr.timedOut) {
+      const failure = failed('PerfView stop 失败，未分析任何既有产物', sr, session)
+      return { ...failure, cleanup: await cleanup(session) }
+    }
+    try { rmSync(sessionFile, { force: true }) }
+    catch (error) { return { ...failed('采集已停止但会话标记无法清除：' + error.message, sr, session), captureStopped: true } }
+    if (!existsSync(useZip) || statSync(useZip).size === 0 || statSync(useZip).mtimeMs < session.startedAt) return failed('PerfView stop 没产出本次有效的 ' + basename(useZip), sr, session)
     if (!existsSync(c.uiFreezeStacks)) return { ok: false, error: 'UiFreezeStacks.exe 不可用：' + c.uiFreezeStacks + '（放到 procdump 同目录，或 DSH_PERF_UIFREEZE 指定）', etlZip: useZip }
 
     // pid：UiFreezeStacks 用 /pid 精确过滤（也顺带让 census 只含目标进程）；查不到就用 /process 名字。
@@ -535,6 +588,8 @@ export function makePerf(cfg) {
     }
 
     const jsonOut = join(useDir, 'uifreeze.json')
+    try { rmSync(jsonOut, { force: true }) }
+    catch (error) { return { ok: false, error: '无法清理旧分析输出：' + error.message, etlZip: useZip } }
     const args = [useZip]
     if (pid) args.push('/pid:' + String(pid)); else if (proc) args.push('/process:' + proc)
     if (opts.tid) args.push('/tid:' + String(opts.tid))
@@ -543,11 +598,12 @@ export function makePerf(cfg) {
     args.push('/top:' + String(Math.min(Math.max(Number(opts.top) || 15, 3), 50)))
     args.push('/json:' + jsonOut)
     const r = await runExe(c.uiFreezeStacks, args, Number(opts.timeoutMs) || 900000)
-    if (r.timedOut) return { ok: false, error: 'UiFreezeStacks 超时（trace 太大 / 采集窗口开太久 / full 符号在下 msdl）', etlZip: useZip }
+    if (r.timedOut || r.code !== 0) return { ...failed(r.timedOut ? 'UiFreezeStacks 超时，未采用分析结果' : 'UiFreezeStacks 执行失败，未采用分析结果', r, session), etlZip: useZip }
     let data
     try { data = JSON.parse(readFileSync(jsonOut, 'utf8')) } catch {
       return { ok: false, error: 'UiFreezeStacks 输出解析失败', etlZip: useZip, tail: (r.stdout + r.stderr).slice(-600) }
     }
+    if (!data || data.ok === false || !Number.isFinite(data.sessionMs) || !Number.isFinite(data.freezeCount) || !Array.isArray(data.freezes) || !Array.isArray(data.threads) || !data.target) return { ok: false, error: 'UiFreezeStacks 未返回有效目标线程与冻结分析', etlZip: useZip, jsonPath: jsonOut }
     if (opts.keepEtl === false) { try { rmSync(useZip, { force: true }) } catch { /* ignore */ } }
     return {
       ...data, // freezeThresholdMs, freezeCount, freezeTotalMs, freezes[], threads[], target{}, sessionMs

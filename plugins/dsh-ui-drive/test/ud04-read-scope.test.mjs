@@ -184,7 +184,7 @@ const LINES = ['#0 [Button] "HS300"', '#1 [Text] "自选"']
   const d = newDriver()
   const r = await d.drive({ action: 'state-live', inAid: 'MainTabPanel', index: 0 })
   check('Q1 state-live 透传 narrowed/scope', r.ok === true && r.narrowed === true && /MainTabPanel/.test(r.scope || ''), JSON.stringify(r).slice(0, 220))
-  check('Q1 state-live 保留 secretFocused 与免前台标记', r.secretFocused === false && r.snapshotAuthoritative === false, JSON.stringify({ s: r.secretFocused, a: r.snapshotAuthoritative }))
+  check('Q1 state-live 未回报敏感焦点时保留未知与免前台标记', r.secretFocused === null && r.snapshotAuthoritative === false, JSON.stringify({ s: r.secretFocused, a: r.snapshotAuthoritative }))
   d.warmShutdown()
 
   installFakeBatch({ ok: true, elapsedMs: 3, steps: [

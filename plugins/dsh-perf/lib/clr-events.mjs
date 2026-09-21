@@ -70,7 +70,7 @@ const hexOrNum = (v) => {
 }
 
 /**
- * 解析 tracerpt 的 XML 文本 → CLR 事件数组：{ timeMs, kind:'Task/Opcode', task, opcode, block }。
+ * 解析 tracerpt 的 XML 文本 → CLR 事件数组：{ timeMs, kind:'Task/Opcode', task, opcode, processId, clrInstanceId, block }。
  * 只保留 provider e13c0d23 的事件；其余（内核/其他 provider）跳过。
  */
 export function parseClrEvents(xmlText) {
@@ -85,7 +85,10 @@ export function parseClrEvents(xmlText) {
     const ri = (/<RenderingInfo[\s\S]*?<\/RenderingInfo>/.exec(b) || [''])[0]
     const task = tag(ri, 'Task') || 'Unknown'
     const opcode = tag(ri, 'Opcode') || 'Unknown'
-    out.push({ timeMs: time, kind: `${task}/${opcode}`, task, opcode, block: b })
+    const execution = /<Execution\b([^>]*)>/.exec(b)?.[1] || ''
+    const processId = hexOrNum(/\bProcessID=['"]([^'"]+)['"]/.exec(execution)?.[1])
+    const clrInstanceId = hexOrNum(dataField(b, 'ClrInstanceID'))
+    out.push({ timeMs: time, kind: `${task}/${opcode}`, task, opcode, processId, clrInstanceId, block: b })
   }
   return out
 }
@@ -93,7 +96,7 @@ export function parseClrEvents(xmlText) {
 /**
  * 汇总一组 CLR 事件：
  *   gcCount / byGen{gen0,gen1,gen2} / inducedCount / pauseMs{count,totalMs,maxMs,p99Ms} / heap{...} / contentionCount。
- * pauseMs：把每个 GC/SuspendEEStart 与其后**第一个** GC/RestartEEStop 配对（= 托管线程被冻结→恢复的真实停顿）。
+ * pauseMs：按进程与 CLR 实例，把 GC/SuspendEEStart 与同一实例后续 GC/RestartEEStop 配对。
  */
 export function summarizeClr(events) {
   const evs = (events || []).filter((e) => Number.isFinite(e.timeMs)).sort((a, b) => a.timeMs - b.timeMs)
@@ -110,16 +113,17 @@ export function summarizeClr(events) {
     const reason = hexOrNum(dataField(e.block, 'Reason'))
     if (reason === 1 || reason === 7) inducedCount++
   }
-  // GC 停顿：SuspendEEStart → 其后第一个 RestartEEStop
   const pauses = []
   const pauseSpans = []
-  let pendingSuspend = null
+  const pendingSuspends = new Map()
   for (const e of evs) {
-    if (e.task === 'GC' && isOp(e, /^SuspendEEStart$/i)) pendingSuspend = e.timeMs
+    const runtimeKey = `${e.processId ?? 'unknown'}:${e.clrInstanceId ?? 'unknown'}`
+    const pendingSuspend = pendingSuspends.get(runtimeKey)
+    if (e.task === 'GC' && isOp(e, /^SuspendEEStart$/i)) pendingSuspends.set(runtimeKey, e.timeMs)
     else if (e.task === 'GC' && isOp(e, /^RestartEEStop$/i) && pendingSuspend != null) {
       const d = e.timeMs - pendingSuspend
-      if (d >= 0) { pauses.push(d); pauseSpans.push({ atMs: pendingSuspend, ms: d }) }
-      pendingSuspend = null
+      if (d >= 0) { pauses.push(d); pauseSpans.push({ atMs: pendingSuspend, ms: d, processId: e.processId ?? null, clrInstanceId: e.clrInstanceId ?? null }) }
+      pendingSuspends.delete(runtimeKey)
     }
   }
   pauses.sort((a, b) => a - b)
@@ -145,7 +149,7 @@ export function summarizeClr(events) {
   // 要回答「你刚看到的那一下卡，是不是 GC」，需要它在时间轴上的位置。
   const topPauses = pauseSpans.slice().sort((a, b) => b.ms - a.ms).slice(0, 5)
   const window = evs.length ? { startMs: evs[0].timeMs, endMs: evs[evs.length - 1].timeMs } : null
-  return { gcCount: gcStarts.length, byGen, inducedCount, pauseMs, heap, contentionCount, topPauses, window }
+  return { gcCount: gcStarts.length, byGen, inducedCount, pauseMs, heap, heapProcessId: lastHeap?.processId ?? null, heapClrInstanceId: lastHeap?.clrInstanceId ?? null, contentionCount, topPauses, window }
 }
 
 function round2(n) { return Math.round(n * 100) / 100 }
@@ -255,4 +259,3 @@ export function parseTraceSummary(text) {
     hasClr: Boolean(rt || rd),
   }
 }
-

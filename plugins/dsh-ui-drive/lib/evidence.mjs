@@ -16,11 +16,12 @@ import { createHash } from 'node:crypto'
 
 /**
  * 证据包 schema 版本。结构变化必须 +1，且旧版本必须仍可被读回去。
+ * v3：增加统一动作/观测协议字段（actionId/observationId/replayId），并保留 v2 字段。
  * v2（独立复核打出的 P1-A）：`result` 增加 `applied`，并把 `executed` 明确为
  *   "**执行器是否被调用**"、允许为 `null`（未知，例如常驻进程超时：驱动自己都说"可能已执行"）。
  *   原实现把 `executed` 直接等于 `ok`，于是"执行器跑了但失败/超时"被记成"被拒/没执行" —— 账本自相矛盾。
  */
-export const EVIDENCE_VERSION = 2
+export const EVIDENCE_VERSION = 3
 
 /** 默认预算（字节）。required 不计入裁剪，超出直接抛错。 */
 export const DEFAULT_LIMITS = Object.freeze({
@@ -92,6 +93,12 @@ export function createEnvelope(input = {}, limits = DEFAULT_LIMITS) {
     // —— 谁在动、动的是什么（required，不裁剪） ——
     surface: requireFit(input.surface || 'unknown', 'surface', 64),
     action: requireFit(input.action || '', 'action', 64),
+    protocol: {
+      actionId: input.protocol && input.protocol.actionId ? requireFit(String(input.protocol.actionId), 'protocol.actionId', 96) : null,
+      observationId: input.protocol && input.protocol.observationId ? requireFit(String(input.protocol.observationId), 'protocol.observationId', 96) : null,
+      replayId: input.protocol && input.protocol.replayId ? requireFit(String(input.protocol.replayId), 'protocol.replayId', 96) : null,
+      parentActionId: input.protocol && input.protocol.parentActionId ? requireFit(String(input.protocol.parentActionId), 'protocol.parentActionId', 96) : null,
+    },
     // —— 参数：可选，逐个有界（可能落 omissions） ——
     params: {
       name: opt(input.params && input.params.name, 'params.name'),
@@ -108,6 +115,7 @@ export function createEnvelope(input = {}, limits = DEFAULT_LIMITS) {
       controlType: opt(input.target && input.target.controlType, 'target.controlType'),
       exeCanonical: input.target && input.target.exeCanonical ? requireFit(input.target.exeCanonical, 'target.exeCanonical', 512) : null,
       windowHandle: input.target && input.target.windowHandle != null ? String(input.target.windowHandle) : null,
+      appIdentity: input.target?.appIdentity ? Object.fromEntries(['publisherName', 'productName', 'binaryName', 'aumid', 'signatureStatus'].map(key => [key, input.target.appIdentity[key] == null ? null : requireFit(String(input.target.appIdentity[key]), 'target.appIdentity.' + key, 512)])) : null,
     },
     // —— 门（判定的依据，required 的结构，值可为 null 表示"这道门未启用"） ——
     gates: {
@@ -122,6 +130,8 @@ export function createEnvelope(input = {}, limits = DEFAULT_LIMITS) {
         code: input.gates && input.gates.policy ? (input.gates.policy.code || null) : null,           // policy_unavailable|...
       },
       estop: input.gates && input.gates.estop ? (input.gates.estop.code || 'stopped_by_user') : null,
+      approval: input.gates?.approval ? { id: input.gates.approval.id || null, scope: input.gates.approval.scope || null } : null,
+      desktopState: input.gates?.desktopState || null,
     },
     // —— 结果：三个概念必须分开（账本自相矛盾是本仓的"假成功"同源风险）——
     //   executed 执行器是否被调用（null = 未知，如超时后"可能已执行"）
@@ -155,11 +165,12 @@ export function createEnvelope(input = {}, limits = DEFAULT_LIMITS) {
 }
 
 function normalizeObs(o) {
-  if (!o) return { snapshotId: null, digest: null, count: null }
+  if (!o) return { snapshotId: null, digest: null, count: null, observationId: null }
   return {
     snapshotId: o.snapshotId == null ? null : String(o.snapshotId),
     digest: o.digest == null ? null : String(o.digest),
     count: o.count == null ? null : Number(o.count),
+    observationId: o.observationId || null,
   }
 }
 
@@ -194,9 +205,9 @@ export function finalize(env, limits = DEFAULT_LIMITS) {
 /** 校验：结构形状是否仍是本版本定义的样子（供读回旧证据时对账）。 */
 export function validateEnvelope(env) {
   const problems = []
-  const need = ['v', 'id', 'at', 'kind', 'surface', 'action', 'params', 'target', 'gates', 'result', 'observation', 'trust', 'limits', 'omissions']
-  for (const k of need) if (!(k in (env || {}))) problems.push('缺少字段 ' + k)
-  if (env && env.v !== EVIDENCE_VERSION) problems.push('版本不符：' + env.v + ' ≠ ' + EVIDENCE_VERSION)
+  const need = ['v', 'id', 'at', 'kind', 'surface', 'action', 'protocol', 'params', 'target', 'gates', 'result', 'observation', 'trust', 'limits', 'omissions']
+  for (const k of need) if (!(k in (env || {})) && !(k === 'protocol' && env?.v === 2)) problems.push('缺少字段 ' + k)
+  if (env && ![2, EVIDENCE_VERSION].includes(env.v)) problems.push('版本不符：' + env.v + ' ≠ ' + EVIDENCE_VERSION)
   if (env && env.id) {
     const re = Object.assign({}, env, { id: null })
     const want = 'e' + createHash('sha256').update(stableStringify(re), 'utf8').digest('hex').slice(0, 24)
@@ -224,5 +235,8 @@ export function envelopeSummary(env) {
       : (env.gates.snapshot && env.gates.snapshot.verdict && env.gates.snapshot.verdict !== 'ok' ? 'snapshot_' + env.gates.snapshot.verdict : 'pass'),
     code: env.result.ok ? null : (env.gates.policy.code || env.gates.estop || env.gates.snapshot.verdict || null),
     omissions: env.omissions.length,
+    actionId: env.protocol?.actionId || null,
+    observationId: env.protocol?.observationId || null,
+    replayId: env.protocol?.replayId || null,
   }
 }

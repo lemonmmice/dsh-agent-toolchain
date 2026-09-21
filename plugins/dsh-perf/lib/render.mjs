@@ -264,6 +264,7 @@ export function renderClrEvents(v) {
       'tracerpt-failed': '读摘要失败 —— **未知，不是 0**：',
       'summary-unreadable': '摘要解析失败 —— **未知，不是 0**：',
       'no-clr-provider': '⚠ 这个 etl 里**没有 CLR provider** —— 这是「**没采**」，不是「没有 GC 停顿」：',
+      'not-captured-for-target': '⚠ 未采集到目标 PID 的 CLR 事件 —— **未知，不是 0**：',
       'xml-too-large': '解码体积超限，**未解码 ⇒ 未知，不是 0**：',
       'decode-timeout': '解码超时 —— **未知，不是 0**：',
       'decode-failed': '解码失败 —— **未知，不是 0**：',
@@ -287,13 +288,14 @@ export function renderClrEvents(v) {
   const h = v.heap
   const lines = []
   lines.push('CLR 事件汇总（' + v.etlPath + '，' + fmtBytes(v.etlBytes) + ' → 解码 ' + fmtBytes(v.xmlBytes) + '）')
+  if (v.scope) lines.push('  统计范围：' + (v.scope === 'process' ? '仅 PID ' + v.pid : 'machine-wide（整份 ETL 的全部进程，未归因目标客户端）') + '；事件过滤前 ' + v.originalParsedEvents + ' / 过滤后 ' + v.filteredEvents)
   lines.push('  采集证据：runtime ' + v.clrRuntimeEvents + ' 条 / rundown ' + v.clrRundownEvents + ' 条；解析出 ' + v.parsedEvents + ' 条 CLR 事件')
   lines.push('  GC：共 ' + v.gcCount + ' 次（gen0 ' + g.gen0 + ' / gen1 ' + g.gen1 + ' / gen2 ' + g.gen2 + '）' +
     '，其中**显式触发** ' + v.inducedCount + ' 次' +
     (v.inducedCount > 0 ? '（GC.Collect / Induced —— 通常是代码在手动调，值得看一眼）' : ''))
-  lines.push('  停顿（GC/SuspendEEStart → 其后第一个 GC/RestartEEStop = 托管线程被冻结→恢复的真实时长）：' +
+  lines.push('  停顿（同一 PID 与 CLR 实例的 GC/SuspendEEStart → GC/RestartEEStop）：' +
     p.count + ' 段，合计 ' + p.totalMs + 'ms，最长 ' + p.maxMs + 'ms，P99 ' + p.p99Ms + 'ms')
-  lines.push('  托管堆（末次 GC/HeapStats 尾值）：' +
+  lines.push('  托管堆（末次 GC/HeapStats 尾值' + (v.heapProcessId != null ? '，PID ' + v.heapProcessId : '') + '）：' +
     (h
       ? 'gen0 ' + fmtBytes(h.gen0) + ' / gen1 ' + fmtBytes(h.gen1) + ' / gen2 ' + fmtBytes(h.gen2) +
         ' / LOH ' + fmtBytes(h.lohGen3) + '；GC 句柄 ' + h.gcHandleCount
@@ -302,7 +304,7 @@ export function renderClrEvents(v) {
   if (Array.isArray(v.topPauses) && v.topPauses.length) {
     lines.push('  最长的几段停顿落在（用于跟你看到的卡对上号）：')
     for (const t of v.topPauses) {
-      lines.push('    ' + new Date(t.atMs).toISOString() + '   ' + round1(t.ms) + 'ms')
+      lines.push('    ' + new Date(t.atMs).toISOString() + '   ' + round1(t.ms) + 'ms' + (t.processId != null ? '   PID ' + t.processId : ''))
     }
     // ★ 实测（2026-09-17）：本机时区 +08:00，而 tracerpt 把**全部** SystemTime 渲染成 +07:59
     //   ⇒ 绝对时刻系统性偏约 1 分钟。停顿时长是**差值**，不受影响 —— 但拿绝对时刻去跟别的日志对齐会说错。
@@ -341,7 +343,8 @@ export function renderHotstacks(v) {
     ? '\n\n--- xperf 原话' + (v.xperfRawFiltered ? '（已按符号相关行 + 其上下文行过滤）' : '') +
       (v.xperfRawTruncated ? '，仅前 4000 字符 / 原始输出共 ' + v.xperfRawBytes + ' 字节' : '，原始输出共 ' + v.xperfRawBytes + ' 字节') + ' ---\n' + v.xperfRaw
     : ''
-  return v.text + '\n\n（报告：' + v.reportPath + '，' + (v.reportBytes / 1024).toFixed(0) + 'KB，耗时 ' +
+  return v.text + (v.eventScope ? '\n\n事件范围：' + v.eventScope + '（指标：' + (v.metric || 'stack-sample-count') + '；仅代表采样命中数，不是 CPU 百分比）' : '') +
+    '\n\n（报告：' + v.reportPath + '，' + (v.reportBytes / 1024).toFixed(0) + 'KB，耗时 ' +
     (v.elapsedMs / 1000).toFixed(0) + 's' + (v.symbols ? '，已启用符号解析' : '，未启用符号解析') +
     (v.symbolPath ? '\n 生效符号路径：' + v.symbolPath : '') +
     (v.modulesTruncated ? '\n 模块表共 ' + v.modulesTotal + ' 个（此处只列前 30；"没列出"≠"不在报告里"）' : '') + '）' +

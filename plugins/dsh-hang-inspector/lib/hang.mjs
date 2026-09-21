@@ -24,6 +24,7 @@ import { staleCodeInfo, moduleRoots } from '../../../lib/code-freshness.mjs'
 import { resolveDumpTools } from '../../../lib/dump-tools.mjs'
 // 配置读法要和工具链其余部分一致（进程环境 → 用户级注册表 → 机器级）—— 见 makeHangInspector 里的说明。
 import { envOr } from '../../../lib/env-fallback.mjs'
+import { decodeBuffer } from '../../../lib/decode.mjs'
 
 /** 本插件目录（仓库与 profile 两种布局下都成立）。 */
 const HANG_PLUGIN_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -166,7 +167,7 @@ export function findSourceFile(srcRoot, simpleType) {
 
 /** Locate a method DECLARATION in file text and extract its body (line-numbered). */
 export function extractMethod(text, methodName) {
-  const re = new RegExp('\\b' + escapeRe(methodName) + '\\s*\\(')
+  const re = new RegExp('\\b' + escapeRe(methodName) + '\\s*\\(', 'g')
   let idx = -1
   for (;;) {
     const m = re.exec(text)
@@ -727,10 +728,12 @@ export function makeHangInspector(config = {}) {
         st.status = 'exited'
         st.note = `★ 记录的 pid ${st.pid} **不是本次监测**（${identityWhy(id)}）。`
           + `为避免误杀，hang_stop 不会去动它。该 pid 现在的命令行：${String(id.commandLine).slice(0, 160)}`
-      } else if (id !== null && id.excluded !== true) {
+      } else if (id === null || id.confirmed !== true) {
         st.note = `无法**正面确认** pid ${st.pid} 仍是本次监测（${identityWhy(id)}）。`
           + '按"可能仍在运行"处理，但出于安全，hang_stop **不会**在没有确认的情况下杀它'
           + '（监测脚本带 -MaxSeconds，会自行退出；也可先人工核对后再手工结束）。'
+      } else {
+        delete st.note
       }
     }
     // 卡死取证对"配置是否可用"最敏感：状态里必须能看到**脚本在哪、存在不存在、证据写哪、找过哪些路径**
@@ -863,7 +866,7 @@ export function makeHangInspector(config = {}) {
     // 这句话就是**把没做成的事说成了做成了**（本仓"说做了≠真做了"那一类）。
     // 现在：同步等 taskkill 结束，再**核对进程是否真的没了**，把结果如实带出去。
     const tk = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'],
-      { encoding: 'utf8', windowsHide: true, timeout: 15000 })
+      { windowsHide: true, timeout: 15000 })
     const died = !pidAlive(pid)
     runState.status = died ? 'stopped' : 'stopping'
     runState.killVerified = died
@@ -881,7 +884,7 @@ export function makeHangInspector(config = {}) {
       killVerified: died,
       pidIdentity: 'match',
       taskkillExit: tk.status ?? null,
-      taskkillOut: String(tk.stdout ?? '').trim().slice(0, 200) || null,
+      taskkillOut: decodeBuffer(tk.stdout).text.trim().slice(0, 200) || null,
       ...(died ? {} : {
         note: `已下发 taskkill，但 **pid ${pid} 仍然存活**（taskkill 退出码 ${tk.status ?? 'n/a'}）`
           + ' —— 监测**可能还在跑**，请不要当作已停止；可再试一次或人工核对进程。',
@@ -1004,12 +1007,23 @@ export function makeHangInspector(config = {}) {
     }
   }
 
+  async function waitForAnalysis(done, waitMs) {
+    let timer
+    try {
+      await Promise.race([done, new Promise((resolve) => { timer = setTimeout(resolve, waitMs) })])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   /**
    * (Re)run the stack analysis for one pack and, when `wait` is true, resolve
    * with the finished analysis. Without `wait` it returns as soon as the run
    * starts (the panel polls readAnalysis).
    */
   async function analyze(id, { wait = false, waitMs = 300000, pollMs = 1000, refresh = false } = {}) {
+    waitMs = clampInt(waitMs, 0, 2147483647, 300000)
+    pollMs = clampInt(pollMs, 1, 2147483647, 1000)
     const dir = packDir(id)
     if (dir === null) return { ok: false, error: 'pack not found' }
     const cur = readJsonFile(join(dir, 'analysis.json'))
@@ -1027,7 +1041,7 @@ export function makeHangInspector(config = {}) {
       if (same === false) {
         const done0 = analyzePack(dir).catch(() => {})
         if (!wait) return { ok: true, status: 'running', startedAt: Date.now(), dumpChanged: true }
-        await Promise.race([done0, new Promise((r) => setTimeout(r, waitMs))])
+        await waitForAnalysis(done0, waitMs)
         const fresh = readAnalysis(id) ?? { status: 'none' }
         return { ok: fresh.status !== 'error', ...fresh, dumpChanged: true }
       }
@@ -1048,14 +1062,20 @@ export function makeHangInspector(config = {}) {
       // fire-and-forget unless the caller asked to wait; never unhandled-reject
       const done = analyzePack(dir).catch(() => {})
       if (!wait) return { ok: true, status: 'running', startedAt: Date.now(), ...(losingSrcRoot ? { srcRootRegression: true } : {}) }
-      const timer = new Promise((resolve) => setTimeout(resolve, waitMs))
-      await Promise.race([done, timer])
+      await waitForAnalysis(done, waitMs)
       const after = readAnalysis(id) ?? { status: 'none' }
       return { ok: after.status !== 'error', ...after, ...(losingSrcRoot ? { srcRootRegression: true } : {}) }
     } else if (!wait) {
       return { ok: true, ...cur }
     }
-    const out = readAnalysis(id) ?? { status: 'none' }
+    const deadline = Date.now() + waitMs
+    let out = cur
+    while (out.status === 'running' && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))))
+      const next = readAnalysis(id)
+      if (next === null) return { ok: false, error: 'pack not found' }
+      if (['running', 'done', 'error'].includes(next.status)) out = next
+    }
     return { ok: out.status !== 'error', ...out }
   }
 

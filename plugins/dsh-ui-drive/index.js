@@ -34,6 +34,8 @@ const GUIDANCE =
   'ui_drive(action=find|read|windows|shot|waitfor|click|setvalue|key|type|drag) 单步操作——find/read/windows/shot/waitfor 只读，click/setvalue/key/type/drag/clickat/doubleclick 是真实副作用操作，必须显式传 allowSideEffects=true 才执行；' +
   'ui_tree(maxDepth) 进程内视觉树 dump（真实类型+Name+AutomationId+DataContext 类型），只读深查；' +
   'ui_flow(steps, tag, failFast, allowSideEffects) 按步骤序列驱动并收集证据（find/click/setvalue/key/type/drag/read/windows/shot/wait/waitfor/expect），每步输出+截图写进证据目录 steps.json，返回 transcript。' +
+  'ui_flow 同时生成含校验哈希的 replay.json，ui_replay(replayPath) 可重新执行；回放继续校验当前应用身份与授权。ui_drive/ui_act/ui_flow 支持 approvalId/sessionId，授权范围为 once/session/persistent，可过期和撤销。' +
+  '只有显式 visualFallback=true 时，click/doubleclick 的 UIA 定位失败才尝试视觉坐标定位；visualMinConfidence 默认 0.78，visualTarget 可指定目标，敏感画面或无法确认敏感状态时拒绝外发。' +
   '动态界面（登录、验证码、按界面情况分支）必须「看一步再做下一步」：用 ui_drive 逐步走，先用 ui_windows/read/shot(describe=true) 看现状，再用 waitFor={ms,state:"appear|gone|enabled|disabled"} 等条件成立再点（别靠猜 sleep），同名控件用 index，容器内定位用 inAid/inName，回车提交用 type 的 {ENTER}，滑块验证码用 drag。' +
   '实时性：ui_drive 走常驻 PowerShell 进程（启动成本只付一次，实测单动作 p50 30ms）；ui_flow 整段序列进一个进程批量执行（13 步实测 1.6s）。DSH_UI_SERVE=0 可退回一次性进程路径。' +
   '观测完整性（B-1）：read/state 结果恒带 skipped=N——本次枚举里「读不到状态」而被跳过的元素数（类型白名单/offscreen/match/去重这些正常过滤不算）；skipped>0 时同结果附带 warn，明确写出「本次清单不完整」。别把「没读到」当成「界面上没有」；skipped=null 表示该路径没回报（未知），不等于 0。' +
@@ -232,6 +234,11 @@ const tools = () => [
       label: { type: 'string', description: '截图文件名标签（shot 用）' },
       describe: { type: 'boolean', description: 'shot 时顺带用视觉模型描述界面内容（视觉即返，一步拿到界面状态）' },
       snapshotId: { type: 'string', description: '副作用动作可选：绑定某次 read/state 返回的 snapshotId。若自那次读之后界面已被更新的权威读刷新（staleSnapshot）或客户端已重启（expiredSnapshot），本次动作被拒不执行；不传则不校验（零回归）' },
+      approvalId: { type: 'string', description: '可选授权 ID（once/session/persistent），绑定应用身份与动作；策略启用时用于明确授权' },
+      sessionId: { type: 'string', description: '授权会话 ID；不传使用默认会话' },
+      visualFallback: { type: 'boolean', description: 'UIA 找不到 click/doubleclick 目标时启用视觉坐标兜底（默认关闭；仍需 allowSideEffects=true）' },
+      visualMinConfidence: { type: 'number', description: '视觉坐标最低置信度，默认 0.78' },
+      visualTarget: { type: 'string', description: '视觉兜底要寻找的目标描述；默认使用 name/aid/match' },
       count: { type: 'number', description: 'scroll 页数' },
       x: { type: 'number', description: 'clickat：客户区 X。⚠ 坐标点击**可能落到相邻控件**（登录页旁边就是「注册/忘记密码」），点前先把目标报给用户确认' },
       y: { type: 'number', description: 'clickat：客户区 Y（同样：坐标脆弱、可能点到邻近控件）' },
@@ -398,6 +405,11 @@ const tools = () => [
       procId: { type: 'number', description: '指定进程 PID' },
       allowSideEffects: { type: 'boolean', description: '必须为 true 才执行（安全护栏）' },
       snapshotId: { type: 'string', description: '可选新鲜度门：绑定某次 read/state 返回的 snapshotId。自那次读后界面已被更新的权威读刷新（staleSnapshot）或客户端已重启（expiredSnapshot）→ 本次动作被拒不执行；不传则不校验（零回归）' },
+      approvalId: { type: 'string', description: '可选授权 ID（once/session/persistent）' },
+      sessionId: { type: 'string', description: '授权会话 ID' },
+      visualFallback: { type: 'boolean', description: 'UIA 找不到目标时启用受控视觉坐标兜底（默认关闭）' },
+      visualMinConfidence: { type: 'number', description: '视觉坐标最低置信度，默认 0.78' },
+      visualTarget: { type: 'string', description: '视觉兜底目标描述' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderDrive(v) + (v.observe ? '\n动作后界面：窗口=' + (v.observe.window || '?') + ' 焦点=' + (v.observe.focused || '无') + '\n' + (v.observe.lines || []).join('\n') : '') }] },
     timeoutMs: 120000,
@@ -475,10 +487,16 @@ const tools = () => [
     name: 'ui_flow',
     description: dshDescription('ui_flow'),
     parameters: {
-      steps: { type: 'array', required: true, description: '步骤数组（每步一个对象，action 必填）' },
+      steps: { type: 'array', required: true, description: '步骤数组（每步一个对象，action 必填；approvalId/sessionId/visualFallback/visualMinConfidence/visualTarget 可覆盖流程默认值，secret=true 为该步打码）' },
       tag: { type: 'string', description: '证据目录标签（如 verify-etf-dialog），默认 flow' },
       failFast: { type: 'boolean', description: '断言失败即停，默认 false' },
       allowSideEffects: { type: 'boolean', description: '含点击/输入/拖拽步骤时必须显式传 true' },
+      approvalId: { type: 'string', description: '步骤统一使用的授权 ID' },
+      sessionId: { type: 'string', description: '授权会话 ID' },
+      visualFallback: { type: 'boolean', description: '步骤默认启用视觉坐标兜底，默认关闭；步骤字段可覆盖' },
+      visualMinConfidence: { type: 'number', description: '步骤默认最低视觉置信度，默认 0.78' },
+      visualTarget: { type: 'string', description: '步骤默认视觉目标描述；步骤字段可覆盖' },
+      secret: { type: 'boolean', description: '对全部输入步骤的输出和证据打码' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderFlow(v) }] },
     timeoutMs: 600000,
@@ -494,6 +512,23 @@ const tools = () => [
           { context: { tag: args.tag || 'flow', stepFailureNames: v.stepFailureNames || [] } })
       }
       return v
+    },
+  }),
+  defineTool({
+    name: 'ui_replay',
+    description: dshDescription('ui_replay'),
+    parameters: dshParameters('ui_replay'),
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderFlow(v) }] },
+    timeoutMs: 600000,
+    async execute(args) {
+      return await drv().replay({
+        replayPath: args.replayPath,
+        allowSideEffects: args.allowSideEffects,
+        failFast: args.failFast,
+        tag: args.tag,
+        approvalId: args.approvalId,
+        sessionId: args.sessionId,
+      })
     },
   }),
   defineTool({
@@ -544,6 +579,59 @@ function writeJson(res, status, body) {
   res.end(JSON.stringify(body))
 }
 
+function readApprovalBody(req) {
+  if (!/^application\/json(?:\s*;|\s*$)/i.test(String(req.headers?.['content-type'] || ''))) {
+    return Promise.reject(Object.assign(new Error('content-type must be application/json'), { status: 415 }))
+  }
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    let settled = false
+    const finish = (error, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      req.off('data', onData)
+      req.off('end', onEnd)
+      req.off('aborted', onAborted)
+      if (error) { req.resume(); reject(error) } else resolve(value)
+    }
+    const onData = chunk => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      size += buffer.length
+      if (size > 16 * 1024) {
+        finish(Object.assign(new Error('approval request exceeds 16384 bytes'), { status: 413 }))
+        return
+      }
+      chunks.push(buffer)
+    }
+    const onEnd = () => {
+      let body
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) }
+      catch { finish(Object.assign(new Error('invalid JSON request body'), { status: 400 })); return }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        finish(Object.assign(new Error('request body must be a JSON object'), { status: 400 }))
+        return
+      }
+      finish(null, body)
+    }
+    const onError = error => finish(Object.assign(new Error('request body could not be read', { cause: error }), { status: 400 }))
+    const onAborted = () => finish(Object.assign(new Error('request body aborted'), { status: 400 }))
+    const timer = setTimeout(() => finish(Object.assign(new Error('request body timed out'), { status: 408 })), 5000)
+    req.on('data', onData)
+    req.on('end', onEnd)
+    req.on('error', onError)
+    req.on('aborted', onAborted)
+    req.once('close', () => req.off('error', onError))
+  })
+}
+
+function approvalStatusCode(result) {
+  if (result?.ok !== false) return 200
+  if (result.code === 'approval_store_unavailable') return 500
+  return result.code === 'approval_not_found' ? 404 : 400
+}
+
 const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.json': 'application/json; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8' }
 
 function makeRoutes() {
@@ -569,6 +657,33 @@ function makeRoutes() {
         if (method === 'POST' && rest === '/estop/reset') {
           const sid = new URL(req.url, 'http://127.0.0.1').searchParams.get('sessionId') || undefined
           writeJson(res, 200, drv().estopReset(sid))
+          return
+        }
+
+        // P0：应用身份绑定授权生命周期（仅本机回环；模型不能自行解除授权护栏）。
+        if (method === 'GET' && rest === '/approvals') {
+          const approvals = drv().approvalStatus()
+          writeJson(res, approvalStatusCode(approvals), approvals?.ok === false ? approvals : { ok: true, approvals, file: drv().estopStatus().approvalFile })
+          return
+        }
+        if (method === 'POST' && rest === '/approvals/grant') {
+          let body
+          try { body = await readApprovalBody(req) }
+          catch (error) { writeJson(res, error.status || 400, { ok: false, error: error.message }); return }
+          const result = drv().grantApproval({
+            scope: body.scope, sessionId: body.sessionId, actions: body.actions,
+            ttlMs: body.ttlMs, expiresAt: body.expiresAt, identity: body.identity,
+          })
+          writeJson(res, approvalStatusCode(result), result)
+          return
+        }
+        const revokeMatch = rest.match(/^\/approvals\/([^/]+)$/)
+        if (method === 'DELETE' && revokeMatch) {
+          let approvalId
+          try { approvalId = decodeURIComponent(revokeMatch[1]) }
+          catch { writeJson(res, 400, { ok: false, error: 'invalid approval ID encoding' }); return }
+          const result = drv().revokeApproval(approvalId)
+          writeJson(res, approvalStatusCode(result), result)
           return
         }
 

@@ -48,6 +48,7 @@ import { makeOutputBudget, outputMaxTokens } from '../lib/output-budget.mjs'
 // 工具名仍以字面量出现在下面各 server.tool 调用的第一个实参（守卫要求名字是字面量、静态扫描须等于运行时）。
 import { mcpDescription, mcpAnnotations } from '../lib/tool-registry.mjs'
 import { mcpShape } from './registry-zod.mjs'
+import { makeToolProgress } from './tool-progress.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -68,6 +69,7 @@ const _toolTrace = makeToolTrace({
 // 的返回结果过一遍 token 预算，超了就截并追加 originalTokenCount 说明块。默认关（DSH_OUTPUT_MAX_TOKENS 未设/<=0
 // → 恒等，零回归）。与追踪 compose：预算改结果、追踪观测——两者都关时净身份，注册的仍是原 handler。
 const _outputBudget = makeOutputBudget({ maxTokens: outputMaxTokens({}, process.env) })
+const _toolProgress = makeToolProgress()
 const _origTool = server.tool.bind(server)
 // P1-1c —— 只读工具注解（readOnlyHint）。单一 chokepoint 同处注入：从注册表读该工具是否只读，
 // 是则在 handler 前插入 { readOnlyHint: true } 作 annotations 实参（SDK 支持 tool(name,desc,shape,annotations,cb)
@@ -86,7 +88,7 @@ function injectAnnotations(args) {
   }
   return args
 }
-server.tool = (...args) => _origTool(...wrapToolArgs(injectAnnotations(args), (name, handler) => _toolTrace.wrap(name, _outputBudget.wrap(name, handler))))
+server.tool = (...args) => _origTool(...wrapToolArgs(injectAnnotations(args), (name, handler) => _toolProgress.wrap(name, _toolTrace.wrap(name, _outputBudget.wrap(name, handler)))))
 
 // ---------------------------------------------------------------- shared
 
@@ -105,6 +107,7 @@ const jtext = (o) => {
   if (isError) r.isError = true
   return r
 }
+const failure = (error, errorCode) => jtext({ ok: false, errorCode, error })
 
 // W5 —— 截图内联（见 CODEX-STEAL-ANALYSIS-20260916.md / mcp/inline-image.mjs）。
 // UI 只读/动作结果的统一出口：文本 JSON（含截图 path，零回归）之上，按需（env DSH_UI_INLINE_IMAGE，
@@ -399,6 +402,11 @@ server.tool(
     waitMs: z.number().optional(),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true for click/setvalue/key/type/drag'),
     snapshotId: z.string().optional().describe('W1 freshness token returned by a prior read/state. When set, a side-effect action is rejected if the snapshot is stale (a newer read happened: staleSnapshot) or expired (client/serve restarted: expiredSnapshot). Omit to skip the freshness gate (legacy, zero-regression).'),
+    approvalId: z.string().optional().describe('Application-bound once/session/persistent approval ID'),
+    sessionId: z.string().optional().describe('Session owning the approval'),
+    visualFallback: z.boolean().optional().describe('Explicitly allow vision coordinate fallback when UIA cannot locate a click/doubleclick target'),
+    visualMinConfidence: z.number().optional().describe('Minimum visual confidence, default 0.78'),
+    visualTarget: z.string().optional().describe('Visual target description; defaults to name/aid/match'),
     diff: z.boolean().optional().describe('read only: return an incremental diff {added,removed,unchanged} vs the last full read instead of just the flat list'),
     // The driver's batch engine accepts these but the schema never declared them, and the MCP
     // SDK hands the handler only the zod-parsed object (zod strips unknown keys by default), so
@@ -428,7 +436,7 @@ server.tool(
     // Pre-check reuses the driver's classifyAction (single source) so it can never
     // drift from the write-side gate — this is what previously missed type/drag.
     if (needsSideEffectAuth(args.action) && !args.allowSideEffects) {
-      return text('Blocked: action "' + args.action + '" is a real side effect. Re-call with allowSideEffects=true after confirming with the user.')
+      return failure('Blocked: action "' + args.action + '" is a real side effect. Re-call with allowSideEffects=true after confirming with the user.', 'side_effect_not_authorized')
     }
     // Forward the WHOLE args object instead of an enumerated list.
     //
@@ -508,10 +516,25 @@ server.tool(
       focus: z.boolean().optional().describe('also set keyboard focus to the target before acting'),
       winTitle: z.string().optional().describe('Target a specific top-level window by title instead of the main window'),
       winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows)'),
+      expectedRect: z.record(z.string(), z.number()).optional().describe('Visual fallback: expected window rect before coordinate click'),
+      expectedWindowHandle: z.number().optional().describe('Visual fallback: expected window handle before coordinate click'),
+      stopOnFailure: z.boolean().optional().describe('Stop the batch engine immediately after this step fails'),
+      approvalId: z.string().optional().describe('Override the flow approval for this step'),
+      sessionId: z.string().optional().describe('Override the flow approval session for this step'),
+      visualFallback: z.boolean().optional().describe('Explicitly allow vision fallback for this step'),
+      visualMinConfidence: z.number().optional().describe('Minimum visual confidence for this step'),
+      visualTarget: z.string().optional().describe('Visual target description for this step'),
+      secret: z.boolean().optional().describe('Mask input values in output and evidence'),
     })).describe('Step sequence'),
     tag: z.string().optional().describe('Evidence dir label (default flow)'),
     failFast: z.boolean().optional().describe('Stop at the first failed assertion'),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true when the sequence contains side-effect steps (click/setvalue/key/type/drag/pattern/scroll/selecttext/clickat/doubleclick)'),
+    approvalId: z.string().optional().describe('Default application-bound approval ID for steps'),
+    sessionId: z.string().optional().describe('Default approval session for steps'),
+    visualFallback: z.boolean().optional().describe('Default visual fallback opt-in for steps'),
+    visualMinConfidence: z.number().optional().describe('Default minimum visual confidence, 0.78'),
+    visualTarget: z.string().optional().describe('Default visual target description for steps'),
+    secret: z.boolean().optional().describe('Mask all input step values in output and evidence'),
   },
   async (args) => {
     // Mirrors the driver's own flow() gate rather than re-listing verbs.
@@ -530,13 +553,19 @@ server.tool(
     const known = (a) => READ_ONLY.includes(a) || PSEUDO_READ_ONLY.includes(a) || ['click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext'].includes(a)
     const hasSideEffects = (args.steps || []).some((s) => known(s.action) && !READ_ONLY.includes(s.action) && !PSEUDO_READ_ONLY.includes(s.action))
     if (hasSideEffects && !args.allowSideEffects) {
-      return text('Blocked: the sequence contains a real side effect (click/setvalue/key/type/drag). Re-call with allowSideEffects=true after confirming with the user.')
+      return failure('Blocked: the sequence contains a real side effect (click/setvalue/key/type/drag). Re-call with allowSideEffects=true after confirming with the user.', 'side_effect_not_authorized')
     }
     const r = await drv().flow({
       steps: args.steps,
       tag: args.tag || 'flow',
       failFast: args.failFast === true,
       allowSideEffects: args.allowSideEffects === true,
+      approvalId: args.approvalId,
+      sessionId: args.sessionId,
+      visualFallback: args.visualFallback,
+      visualMinConfidence: args.visualMinConfidence,
+      visualTarget: args.visualTarget,
+      secret: args.secret,
     })
     // UD-03：与 DSH 面同一个洞——只认 `r.failed`（断言步），动作步失败不进语料库。
     // 两面必须一致，否则同一段流程在 MCP 面被记为"失败"、在 DSH 面被记为"通过"。
@@ -547,6 +576,20 @@ server.tool(
     }
     return jtext(r)
   }
+)
+
+server.tool(
+  'ui_replay',
+  mcpDescription('ui_replay'),
+  mcpShape('ui_replay'),
+  async (args) => uiJtext(await drv().replay({
+    replayPath: args.replayPath,
+    allowSideEffects: args.allowSideEffects,
+    failFast: args.failFast,
+    tag: args.tag,
+    approvalId: args.approvalId,
+    sessionId: args.sessionId,
+  }))
 )
 
 // ---------------------------------------------------------------- ui observe / act (semantic split)
@@ -663,7 +706,7 @@ server.tool(
     if (action === 'status') return j(ctl.status())
     if (action === 'frame') return j(await ctl.frame({ fresh: args.fresh, allowSensitive: allow }))
     if (action === 'wait') return j(await ctl.wait({ fromHash: args.fromHash, timeoutMs: args.timeoutMs }))
-    return text('Unknown ui_live action "' + args.action + '". Use start | stop | status | frame | wait.')
+    return failure('Unknown ui_live action "' + args.action + '". Use start | stop | status | frame | wait.', 'invalid_action')
   }
 )
 
@@ -702,6 +745,11 @@ server.tool(
     waitMs: z.number().optional(),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true'),
     snapshotId: z.string().optional().describe('W1 freshness token from a prior read/state. When set, the action is rejected if the snapshot is stale (staleSnapshot) or expired (expiredSnapshot). Omit to skip the freshness gate. (ui_act forwards all args to the driver, so this reaches the same write-side gate as ui_drive.)'),
+    approvalId: z.string().optional().describe('Application-bound once/session/persistent approval ID'),
+    sessionId: z.string().optional().describe('Session owning the approval'),
+    visualFallback: z.boolean().optional().describe('Explicitly allow vision coordinate fallback when UIA cannot locate a click/doubleclick target'),
+    visualMinConfidence: z.number().optional().describe('Minimum visual confidence, default 0.78'),
+    visualTarget: z.string().optional().describe('Visual target description; defaults to name/aid/match'),
     // Declared for the same reason as in ui_drive: the driver accepts these, but an undeclared
     // key is stripped by zod before the handler runs, making the capability unreachable.
     count: z.number().optional().describe('scroll: number of pages/lines (default 1)'),
@@ -837,6 +885,7 @@ server.tool(
   // 同 DSH 面：逐参接线，不整包转发（棘轮闸门钉死"免检转发"工具数 = 28）。
   async (args) => jtext(await trc().clrEvents({
     etlPath: args.etlPath,
+    pid: args.pid,
     xmlPath: args.xmlPath,
     maxXmlMb: args.maxXmlMb,
     timeoutMs: args.timeoutMs,
@@ -934,7 +983,7 @@ server.tool(
   mcpShape('hang_pack'),
   async (args) => {
     const detail = hng().packDetail(args.id)
-    if (detail === null) return text('pack not found: ' + args.id)
+    if (detail === null) return failure('pack not found: ' + args.id, 'pack_not_found')
     return jtext(detail)
   }
 )
@@ -958,14 +1007,14 @@ server.tool(
   mcpShape('hang_delete'),
   async (args) => {
     if (args.confirm !== true) {
-      return text('Blocked: hang_delete is irreversible. Re-call with confirm=true after confirming with the user.')
+      return failure('Blocked: hang_delete is irreversible. Re-call with confirm=true after confirming with the user.', 'confirmation_required')
     }
     if (args.all === true) return jtext({ deleted: hng().removeAllPacks(), all: true })
     if (typeof args.id === 'string' && args.id !== '') {
       const ok = hng().removePack(args.id)
       return jtext(ok ? { deleted: args.id } : { ok: false, error: 'pack not found: ' + args.id })
     }
-    return text('Nothing to do: pass id=<pack> or all=true.')
+    return failure('Nothing to do: pass id=<pack> or all=true.', 'missing_target')
   }
 )
 
@@ -975,15 +1024,16 @@ server.tool(
   // W1：description + 简单参数走注册表；headers（复杂 record）保持内联原样（hybrid）。
   mcpDescription('http_request'),
   { ...mcpShape('http_request'), headers: z.record(z.string(), z.string()).optional().describe('Request headers') },
-  async (args) => {
+  async (args, extra) => {
     const r = await sendRequest({
       method: args.method,
       url: args.url,
       headers: args.headers,
       body: args.body,
       timeoutMs: args.timeoutMs,
+      signal: extra?.signal,
     })
-    if (r.ok === false) autoRecord('tool-error', 'http_request', `request could not be made: ${String(r.error ?? '').slice(0, 200)}`, { context: { url: String(args.url).slice(0, 120) } })
+    if (r.ok === false && r.cancelled !== true) autoRecord('tool-error', 'http_request', `request could not be made: ${String(r.error ?? '').slice(0, 200)}`)
     return jtext(r)
   }
 )
@@ -1023,7 +1073,7 @@ server.tool(
     try {
       return jtext(mem().remember(args.key, args.value, args.scope))
     } catch (e) {
-      return text('memory_save rejected: ' + e.message)
+      return failure('memory_save rejected: ' + e.message, 'memory_save_rejected')
     }
   }
 )
@@ -1107,7 +1157,7 @@ server.tool(
     try {
       return jtext(fc().record(args))
     } catch (e) {
-      return text('failure_record rejected: ' + e.message)
+      return failure('failure_record rejected: ' + e.message, 'failure_record_rejected')
     }
   }
 )
@@ -1309,7 +1359,7 @@ server.tool(
     try {
       return jtext(makeVerificationReport(args))
     } catch (e) {
-      return text('verify_report rejected: ' + e.message)
+      return failure('verify_report rejected: ' + e.message, 'verify_report_rejected')
     }
   }
 )
