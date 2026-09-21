@@ -13,6 +13,7 @@
 param(
   [string]$Action = 'read',     # find | click | setvalue | read | shot | key
   [int]$ProcId = 0,                # 0 = 自动找进程
+  [long]$WinHandle = 0,
   [string]$ProcName = '',             # 目标进程名（driver 总是显式传入）
   [string]$WindowName = '',
   [string]$Aid = '',            # AutomationId
@@ -24,6 +25,8 @@ param(
   [int]$WaitMs = 1200
 )
 
+. (Join-Path $PSScriptRoot 'ui-windows-boundary.ps1')
+
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName System.Windows.Forms
@@ -32,11 +35,7 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public class UiDriveWin32 {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   public struct RECT { public int Left, Top, Right, Bottom; }
@@ -52,6 +51,10 @@ function Get-ClientPid {
 }
 
 function Get-MainWindow([int]$procId) {
+  if ($WinHandle -gt 0) {
+    $boundHandle = [UiDriveInputWin32]::ResolveWindow($procId, $WinHandle, '', [IntPtr]::Zero)
+    return [System.Windows.Automation.AutomationElement]::FromHandle($boundHandle)
+  }
   $root = [System.Windows.Automation.AutomationElement]::RootElement
   $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $procId)
   $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
@@ -80,29 +83,35 @@ function Find-Element($main, [string]$aid, [string]$name) {
 }
 
 function Invoke-Click($el) {
+  Assert-UiInputAllowed
   # 优先 InvokePattern（逻辑点击），否则鼠标点中心
   try {
     $ip = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    Assert-UiInputAllowed
     $ip.Invoke()
     return 'invoke'
   } catch {
+    if (Get-UiPolicyFailure $_.Exception) { throw }
     $b = $el.Current.BoundingRectangle
     $cx = [int]($b.X + $b.Width/2); $cy = [int]($b.Y + $b.Height/2)
-    [UiDriveWin32]::SetCursorPos($cx, $cy)
+    [UiDriveInputWin32]::SetCursorPos($cx, $cy)
     Start-Sleep -Milliseconds 150
-    [UiDriveWin32]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
+    [UiDriveInputWin32]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 60
-    [UiDriveWin32]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+    [UiDriveInputWin32]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     return ('mouse@' + $cx + ',' + $cy)
   }
 }
 
 function Set-ElementValue($el, [string]$value) {
+  Assert-UiInputAllowed
   try {
     $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    Assert-UiInputAllowed
     $vp.SetValue($value)
     return $vp.Current.Value
   } catch {
+    if (Get-UiPolicyFailure $_.Exception) { throw }
     throw ('该控件不支持 ValuePattern: ' + $_.Exception.Message)
   }
 }
@@ -115,14 +124,29 @@ if ($Action -eq 'status') {
     $sp = Get-Process -Name $ProcName -ErrorAction SilentlyContinue | Select-Object -First 1
   }
   if (-not $sp) { Write-Output 'NOT_RUNNING'; exit 2 }
-  $sw = Get-MainWindow $sp.Id
-  if (-not $sw) { Write-Output ('RUNNING pid=' + $sp.Id + ' window=NONE'); exit 0 }
-  Write-Output ('RUNNING pid=' + $sp.Id + ' window=' + $sw.Current.Name)
-  Write-Output ('HANDLE ' + $sw.Current.NativeWindowHandle)
+  $statusHandle = [UiDriveInputWin32]::ResolveWindow($sp.Id, $WinHandle, $WindowName, $sp.MainWindowHandle)
+  $statusTitle = $(if ($statusHandle -eq [IntPtr]::Zero) { 'NONE' } else { [UiDriveInputWin32]::GetWindowTitle($statusHandle) })
+  Write-Output ('RUNNING pid=' + $sp.Id + ' window=' + $statusTitle)
+  Write-Output ('HANDLE ' + [long]$statusHandle)
+  $identityJson = (Get-UiProcessIdentity $sp) | ConvertTo-Json -Compress
+  Write-Output ('IDENT ' + [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($identityJson)))
+  Write-Output ('DESKTOP ' + (Get-UiDesktopState))
+  if ($statusHandle -eq [IntPtr]::Zero) { exit 0 }
   $sr = New-Object UiDriveWin32+RECT
-  [UiDriveWin32]::GetWindowRect([IntPtr]$sw.Current.NativeWindowHandle, [ref]$sr) | Out-Null
+  [UiDriveWin32]::GetWindowRect($statusHandle, [ref]$sr) | Out-Null
   Write-Output ('RECT ' + ($sr.Right - $sr.Left) + 'x' + ($sr.Bottom - $sr.Top) + ' @' + $sr.Left + ',' + $sr.Top)
   exit 0
+}
+
+trap {
+  $failure = Get-UiPolicyFailure $_.Exception
+  if ($failure) {
+    $failure.ok = $false; $failure.error = $_.Exception.Message
+    Write-Output ('POLICY_CODE=' + $failure.policyCode)
+    Write-Output ('RESULT_JSON=' + ($failure | ConvertTo-Json -Compress))
+    exit 1
+  }
+  throw $_
 }
 
 $procId = Get-ClientPid
@@ -134,16 +158,18 @@ if (-not $main) { throw '未找到主窗口（' + $WindowName + '）' }
 $mh = [IntPtr]$main.Current.NativeWindowHandle
 $isIconic = $false
 try { $isIconic = [UiDriveWin32]::IsIconic($mh) } catch { }
-if ($isIconic) {
-  [UiDriveWin32]::ShowWindow($mh, 9) | Out-Null
+$needFg = @('click','setvalue','key','type','drag','move','wheel','clickat','doubleclick') -contains $Action.ToLowerInvariant()
+if ($needFg) { Assert-UiInputAllowed }
+if ($isIconic -and $needFg) {
+  [UiDriveInputWin32]::ShowWindow($mh, 9) | Out-Null
   Start-Sleep -Milliseconds 300
 }
-$needFg = @('click','setvalue','key','type','drag','move','wheel','clickat','doubleclick','shot','capture') -contains $Action.ToLowerInvariant()
 if ($needFg) {
-  [UiDriveWin32]::SetForegroundWindow($mh) | Out-Null
+  [UiDriveInputWin32]::SetForegroundWindow($mh) | Out-Null
   Start-Sleep -Milliseconds 300
 }
 
+try {
 switch ($Action) {
   'find' {
     $el = Find-Element $main $Aid $Name
@@ -258,23 +284,27 @@ switch ($Action) {
     $el = Find-Element $main $Aid $Name
     if (-not $el) { Write-Output 'NOT_FOUND'; exit 1 }
     $b = $el.Current.BoundingRectangle
-    [UiDriveWin32]::SetCursorPos([int]($b.X+$b.Width/2), [int]($b.Y+$b.Height/2))
+    [UiDriveInputWin32]::SetCursorPos([int]($b.X+$b.Width/2), [int]($b.Y+$b.Height/2))
     Start-Sleep -Milliseconds 200
-    [UiDriveWin32]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [UiDriveWin32]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+    [UiDriveInputWin32]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [UiDriveInputWin32]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 400
     if ($Ascii) {
-      [System.Windows.Forms.SendKeys]::SendWait('^a')
+      Send-UiKeys '^a'
       Start-Sleep -Milliseconds 150
-      [System.Windows.Forms.SendKeys]::SendWait($Value)
+      Send-UiKeys $Value
     } else {
+      Assert-UiInputAllowed
       Set-Clipboard -Value $Value
       Start-Sleep -Milliseconds 200
-      [System.Windows.Forms.SendKeys]::SendWait('^a')
+      Send-UiKeys '^a'
       Start-Sleep -Milliseconds 150
-      [System.Windows.Forms.SendKeys]::SendWait('^v')
+      Send-UiKeys '^v'
     }
     Start-Sleep -Milliseconds $WaitMs
     Write-Output ('KEYED "' + $Value + '" into ' + $el.Current.AutomationId)
   }
   default { Write-Output 'UNKNOWN_ACTION' }
+}
+} finally {
+  [UiDriveInputWin32]::ReleasePressedInputs()
 }

@@ -3,6 +3,61 @@
 DSH（DeepSeek Harness）的 **UI 自验驱动插件**：通过 Windows UIA 程序化操作正在运行的桌面客户端并截图留证，
 支撑「改完代码 → 启动/驱动客户端到目标页面 → 截图 → 视觉复核」的自验闭环。
 
+## 应用授权、回放与视觉兜底
+
+`ui_status` 返回应用身份：`exeCanonical`、`binaryName`、`productName`、`aumid`、
+`publisherName` 和 `publisherVerified`。发布者来自验证成功的 Authenticode 签名；
+`company` 只是版本信息。无签名、无 AUMID、读取失败分别由 `signatureStatus` / `aumidStatus` 表示。
+`DSH_UI_APP_POLICY` 的 allow/deny 规则支持这些身份字段和 `windowHandle` / `aid`，所有指定条件同时匹配。
+显式 deny、冲突、损坏的策略不能被授权 ID 覆盖。
+
+授权由本机运维接口管理，路径前缀为 `/api/dsh-ui-drive`：
+
+- `POST /approvals/grant`：`Content-Type: application/json`，请求体上限 16 KiB，读取超时 5 秒。
+- `GET /approvals`：查看当前宿主的会话授权和磁盘上的持久授权。
+- `DELETE /approvals/{id}`：撤销授权。
+
+授权请求示例：
+
+```json
+{
+  "scope": "session",
+  "sessionId": "verify-dialog",
+  "identity": { "exe": "C:/Apps/Client.exe" },
+  "actions": ["click", "clickat"],
+  "ttlMs": 900000
+}
+```
+
+`once` 消费一次；`session` 绑定当前宿主内的会话；`persistent` 有有效期且跨宿主重启保留；
+`permanent` 保留到撤销（也可显式设置有效期）。默认有效期为 15 分钟。
+空应用身份会被拒绝，持久化失败会返回错误。磁盘文件由 `DSH_UI_APPROVAL_FILE` 配置，
+默认 `~/.dsh-agent-toolchain/ui-approvals.json`，每次使用重新读取以看见撤销。
+`once` / `session` 不写磁盘，DSH 与 MCP 是不同宿主，不能互用内存授权；持久授权可共享文件。
+UI Agent 工具只消费 `approvalId` 和 `sessionId`，未提供签发或撤销工具；本机回环运维接口不构成操作系统级隔离。
+未传授权 ID 时保留已有 `allowSideEffects` + 应用规则行为，授权 ID 不替代 `allowSideEffects=true`。
+
+锁屏检查在 PowerShell 真正输入前执行，覆盖单次、常驻和流程路径，也覆盖鼠标移动和滚轮。
+`desktop_locked` / `desktop_secure` / `desktop_unknown` 默认拒绝输入；只读状态查询仍可使用。
+运维显式设置 `DSH_UI_ALLOW_LOCKED=1` 或 `true` 仅允许已确认锁屏的桌面，安全桌面和未知状态仍拒绝。
+`desktopState` 由系统查询，动作参数不能伪造它。
+
+每次单步返回 `actionId`，观测返回 `observationId`、`observationRecord`（含 digest / frameHash）。
+副作用证据升级为 v3，并能校验原 v2 证据。`ui_flow` 同时写 `steps.json` 和 `replay.json`，
+返回 `replayId` / `replayPath`；`ui_replay(replayPath, allowSideEffects, approvalId?, sessionId?)` 可重新运行。
+回放校验内容哈希、应用身份与步骤字段，重新经过当前授权和桌面检查；哈希用于发现内容变化，不是授权签名。
+输入值脱敏后需要重新提供，完整 `${cred:name}` 占位符可保留；临时 PID / 窗口句柄绑定的记录不能直接重放。
+新执行生成新的 `replayId`，`sourceReplayId` 指向来源。授权或视觉流程逐步执行，普通流程仍使用批量引擎。
+`failFast` 在执行器内停止后续步骤；结果未知或策略拒绝也停止受控流程。
+
+`ui_drive` / `ui_act` 的 `click`、`doubleclick` 支持 `visualFallback=true`（默认关闭）。
+UIA 确认没找到目标才尝试视觉定位；不对超时或执行结果未知的动作重试。
+`visualTarget` 可提供目标描述，`visualMinConfidence` 默认 0.78（范围 0.5–1）。
+截图使用已有 `describe-image` 视觉服务，会发送到配置的模型端点；敏感焦点或焦点未知时停止。
+兜底只支持未限定容器/索引/正则的目标，要求截图物理像素与窗口坐标一致、窗口及前后帧哈希不变。
+坐标越界、低置信度、窗口移动或画面变化都会拒绝点击。最终 `clickat` 仍经过授权；使用授权 ID 时，
+`actions` 需同时覆盖原动作和 `clickat`。结果中的 `visualFallback` 明确记录尝试、拒绝原因或点击坐标。
+
 ## 能力
 
 **Agent 工具（host 侧注册）**
@@ -18,6 +73,7 @@ DSH（DeepSeek Harness）的 **UI 自验驱动插件**：通过 Windows UIA 程�
 | \`ui_drive\` | 通用单步入口（等价 ui_observe + ui_act 的并集，保留兼容） |
 | \`ui_tree\` | 进程内视觉树 dump（真实类型 + Name + AutomationId + DataContext 类型，只读深查） |
 | \`ui_flow\` | 步骤序列自验：find/click/setvalue/key/type/drag/read/state/windows/shot/wait/waitfor/expect/expectwindow/expecttext/waitany，统计 passed/failed，证据落盘 steps.json |
+| `ui_replay` | 校验并执行 `ui_flow` 的 `replay.json`，重新检查应用身份、授权与桌面状态 |
 | \`ui_live\` | **实时看见（agent 专用）**：\`action=start\|stop\|status\|frame\|wait\` 后台循环抓「窗口内容」帧（默认 1500ms，不抢前台、不恢复最小化）；\`frame\` 返回 latest.png 路径 + 帧 hash + 控件状态摘要，\`wait\` 可阻塞等画面变化；敏感帧（焦点=密码/验证码）默认不出 path（\`allowSensitive=true\` 才给） |
 
 **动态界面（登录、验证码、按界面情况分支）的正确用法**——不是预排固定点击序列，而是「看一步再做下一步」：

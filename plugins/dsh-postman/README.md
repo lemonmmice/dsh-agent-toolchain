@@ -95,8 +95,11 @@ dsh-postman/
 - `GET    /api/dsh-postman/history/{id}`        — 单条完整记录（请求 + 响应）
 - `DELETE /api/dsh-postman/history`             — 清空历史
 
-响应结构：`{ ok, status, statusText, durationMs, size, truncated, contentType, headers, body }`；
+响应结构：`{ ok, status, statusText, durationMs, size, sizeExact, retainedBytes, truncated, contentType, headers, body }`。
+响应体流式保留最多 2 MiB，超限即停止读取；此时 `truncated:true`、`sizeExact:false`，
+`size` 仅为已收到的字节数下限，总大小未知。未超限时 `sizeExact:true`。
 传输失败时 `{ ok:false, error, durationMs }`。非 2xx 属正常结果（`ok:true`）。
+程序调用 `sendRequest` 可传 `signal: AbortSignal`，取消返回 `cancelled:true`；`timeoutMs` 覆盖响应头及正文读取。
 
 ### 连接转发（宿主 WS/TCP 代理，供带鉴权头的 WebSocket 与原始 TCP 使用）
 

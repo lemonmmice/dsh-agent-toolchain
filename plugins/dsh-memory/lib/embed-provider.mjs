@@ -1,6 +1,7 @@
 // embedding provider：MiniMax embo-01 优先；无 key 时降级为字符 bigram 稀疏向量（零成本开箱可用）
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 function readCreds() {
   try {
@@ -48,12 +49,9 @@ export class EmbedProvider {
       const { map, norm } = bigramVector(text);
       return { sparse: map, norm, dim: 0, kind: "bigram" };
     }
-    if (this.cacheDir) {
-      let h = 0;
-      for (const ch of text) { h = ((h << 5) - h + ch.charCodeAt(0)) | 0; }
-      const cp = path.join(this.cacheDir, "emb-" + (h >>> 0).toString(36) + ".json");
-      if (fs.existsSync(cp)) return JSON.parse(fs.readFileSync(cp, "utf-8")).vector;
-    }
+    const cacheKey = createHash("sha256").update(JSON.stringify([this.baseURL, this.model, String(text)])).digest("hex");
+    const cachePath = this.cacheDir ? path.join(this.cacheDir, "emb-" + cacheKey + ".json") : null;
+    if (cachePath && fs.existsSync(cachePath)) return JSON.parse(fs.readFileSync(cachePath, "utf-8")).vector;
     // ⚠ F-053：这个 fetch 原来**没有超时**。embedding 走的是**远程** api.minimax.chat，
     //   网络一慢/不通，`memory_index` 就**永远挂着**（2026-09-14 真事故：我的调用因此挂死、
     //   最后被打断，而被打断又撞上"非原子的原地写"，把 43.9MB 的向量索引清成 0 字节）。
@@ -65,17 +63,30 @@ export class EmbedProvider {
     const timeoutMs = Math.max(1000, Number(process.env.DSH_MEMORY_EMBED_TIMEOUT_MS) || 20000);
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(new Error('embedding timeout')), timeoutMs);
-    let res;
+    const aborted = new Promise((resolve, reject) => {
+      ctrl.signal.addEventListener('abort', () => reject(ctrl.signal.reason), { once: true });
+    });
+    let vector;
     try {
-      res = await fetch(this.baseURL + "/embeddings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + this.apiKey },
-        body: JSON.stringify({ model: this.model, texts: [String(text).slice(0, 8000)], type: "query" }),
-        signal: ctrl.signal
-      });
+      const request = async () => {
+        const res = await fetch(this.baseURL + "/embeddings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + this.apiKey },
+          body: JSON.stringify({ model: this.model, texts: [String(text).slice(0, 8000)], type: "query" }),
+          signal: ctrl.signal
+        });
+        if (!res.ok) {
+          if (res.body) await res.body.cancel();
+          throw Object.assign(new Error('embedding HTTP error'), { httpStatus: res.status });
+        }
+        const data = await res.json();
+        if (!Array.isArray(data.vectors?.[0]) || data.vectors[0].length === 0 || data.vectors[0].some(value => !Number.isFinite(value))) throw new Error('invalid embedding vector');
+        return data.vectors[0];
+      };
+      vector = await Promise.race([request(), aborted]);
     } catch (e) {
       const timedOut = ctrl.signal.aborted;
-      const why = timedOut ? ('远程 embedding **超时 ' + timeoutMs + 'ms**') : ('远程 embedding 失败：' + (e && e.message ? e.message : String(e)));
+      const why = timedOut ? ('远程 embedding **超时 ' + timeoutMs + 'ms**') : ('远程 embedding 失败：' + (Number.isInteger(e?.httpStatus) ? 'HTTP ' + e.httpStatus : '网络或响应格式错误'));
       throw new Error(why + '（' + this.baseURL + '）。' +
         '下一步：① 换更长的超时 DSH_MEMORY_EMBED_TIMEOUT_MS=60000 再试；' +
         '② 或者清掉 MINIMAX_CN_API_KEY 走**本地 bigram** 降级（不外传、不需网络）；' +
@@ -83,14 +94,9 @@ export class EmbedProvider {
     } finally {
       clearTimeout(timer);
     }
-    const data = await res.json();
-    if (!res.ok || !data.vectors?.[0]) throw new Error("embedding 失败: " + res.status + " " + JSON.stringify(data).slice(0, 200));
-    const vector = data.vectors[0];
     if (this.cacheDir) {
       fs.mkdirSync(this.cacheDir, { recursive: true });
-      let h = 0;
-      for (const ch of text) { h = ((h << 5) - h + ch.charCodeAt(0)) | 0; }
-      fs.writeFileSync(path.join(this.cacheDir, "emb-" + (h >>> 0).toString(36) + ".json"), JSON.stringify({ vector }));
+      fs.writeFileSync(cachePath, JSON.stringify({ vector }));
     }
     return vector;
   }

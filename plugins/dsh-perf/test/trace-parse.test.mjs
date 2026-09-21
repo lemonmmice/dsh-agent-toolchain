@@ -135,6 +135,7 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
 
   // 4b. 报告命令必须显式带 -symbols（xperf 帮助：不指定则**符号解码被禁用**）
   check('hotstacks 的命令里显式带 -symbols', /cmd\.push\('-symbols'\)/.test(src))
+  check('hotstacks 固定 Sampled Profile 事件，避免混入 CSwitch 栈', /const eventScope = 'Sampled Profile'/.test(src) && /'-event', eventScope/.test(src))
   check('-symbols 受 offline 开关控制（离线可跳过）', /if \(!args\.offline\) \{\s*\n\s*cmd\.push\('-symbols'\)/.test(src))
   check('符号路径默认指向微软公网符号 + 本地缓存', /msdl\.microsoft\.com\/download\/symbols/.test(src))
   check('设置 _NT_SYMCACHE_PATH（第二次出报告才快）', /_NT_SYMCACHE_PATH/.test(src))
@@ -327,6 +328,8 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
   check('渲染里出现"已接上默认公网链"这条事实', /已接上默认公网链/.test(rendered))
   const rendered2 = renderHotstacks({ ok: true, text: 'T', reportPath: 'r', reportBytes: 1, elapsedMs: 1, symbols: true })
   check('没有 raw / symbolPathNote 时不硬塞空块（不制造噪声）', !/xperf 原话/.test(rendered2) && !/符号路径/.test(rendered2), rendered2)
+  const scoped = renderHotstacks({ ok: true, text: 'T', reportPath: 'r', reportBytes: 1, elapsedMs: 1, symbols: false, eventScope: 'Sampled Profile', metric: 'stack-sample-count' })
+  check('渲染公开 hotstacks 事件范围和指标', /Sampled Profile/.test(scoped) && /stack-sample-count/.test(scoped), scoped)
 
   // 8e. 未解析帧"还剩多少信息"必须分桶（F-043 的核心可操作结论）
   //     实测：客户端那次 871 个未解析帧**全部**是 `***unknown***!***unknown***`（连模块名都没有）。

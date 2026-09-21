@@ -5,6 +5,12 @@ DSH Web GUI 插件：**Fiddler 式实时抓包面板**。可视化展示 本机�
 System.Net 跟踪日志，自动解析出 方法 / URL / 状态 / 请求头 / 响应头 / 请求体 / 响应体
 （gzip 自动解包）并实时入库，无需 agent 手动上报。
 
+日志尾随每次最多读取 1 MiB，保留 UTF-8 字节直到一行完整后解码。单行上限为 32 MiB，
+覆盖请求与响应各 2 MiB 正文的 JSON 转义开销。超长行会丢弃到下一换行，再恢复后续行；
+状态返回 `oversizedLines`、精确 `droppedBytes`、`pendingBytes`、`bufferedBytes`，有积压、
+未完成行或数据丢弃时 `dataComplete:false`。`LogTailer` 构造选项 `maxReadBytes` / `maxLineBytes`
+可覆盖界限；解析回调失败仍重试原字节，达到原有重试上限才明确记账并跳过。
+
 ## 结构
 
 ```

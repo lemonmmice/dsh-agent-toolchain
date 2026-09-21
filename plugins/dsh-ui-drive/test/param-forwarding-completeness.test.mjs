@@ -179,7 +179,6 @@ const CLEAN = cleanStepsKeys()
     observeMax: '同上',
     shotsDir: '同上（截图目录由驱动/工具参数决定）',
     workspace: '同上',
-    secret: 'ui_flow 用 allowSideEffects 统一授权；secret 只用于单动作的输入打码',
     // 这几个字段服务于**不在 flow 动作集里**的动作（clickat/move/wheel/坐标双击）：
     // 它们在 cleanSteps 里会被转发，但 flow 的 action enum 里没有对应动作 → 传了也没有动作会读它。
     x: '坐标动作 clickat/move/wheel 不在 flow 步骤的 action 集里',
@@ -194,7 +193,7 @@ const CLEAN = cleanStepsKeys()
   const missingInSteps = [...CLEAN].filter((f) => !declaredInSteps.has(f) && !(f in NOT_IN_FLOW_STEPS))
   check('cleanSteps 会转发的字段在 ui_flow 步骤 schema 里都有声明（否则 zod 剥掉=静默丢参）',
     missingInSteps.length === 0, '未声明=' + JSON.stringify(missingInSteps.sort()))
-  for (const f of ['max', 'inAid', 'inName', 'waitFor', 'expectValue']) {
+  for (const f of ['max', 'inAid', 'inName', 'waitFor', 'expectValue', 'approvalId', 'sessionId', 'visualFallback', 'visualMinConfidence', 'visualTarget', 'secret']) {
     check(`flow 步骤 schema 声明了 ${f}`, declaredInSteps.has(f), JSON.stringify([...declaredInSteps].sort()))
   }
 }

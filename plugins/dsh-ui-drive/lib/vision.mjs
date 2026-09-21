@@ -49,6 +49,23 @@ function readCreds() {
 export const UI_STATE_PROMPT =
   '这是一张目标桌面客户端当前界面的截图。请判断并回答：1) 当前处于哪个页面或弹窗（登录页/主界面/股票量化页/ETF量化页/对话框等，一句话）；2) 主要可见元素（按钮/菜单/输入框/列表名称，3~8 个）。用中文简洁回答，不要多余解释。'
 
+export const UI_LOCATE_PROMPT =
+  '请在截图中定位目标控件。只返回 JSON，不要 Markdown，不要解释：{"x":整数,"y":整数,"confidence":0到1的小数,"reason":"简短说明"}。x/y 是截图像素坐标，指向目标控件可点击中心；找不到目标时返回 {"x":null,"y":null,"confidence":0,"reason":"not found"}。目标：'
+
+export function parseLocateResponse(value) {
+  if (typeof value !== 'string' || value.length > 8192) return { ok: false, error: '视觉定位未返回合法 JSON' }
+  const raw = value.trim()
+  try {
+    const obj = JSON.parse(raw)
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { ok: false, error: '视觉定位返回字段无效' }
+    if (Object.keys(obj).some(key => !['x', 'y', 'confidence', 'reason'].includes(key))) return { ok: false, error: '视觉定位返回字段无效' }
+    if (obj.x === null && obj.y === null && obj.confidence === 0) return { ok: false, error: '视觉定位未找到目标' }
+    const { x, y, confidence } = obj
+    if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1 || (obj.reason !== undefined && typeof obj.reason !== 'string')) return { ok: false, error: '视觉定位返回字段无效' }
+    return { ok: true, x, y, confidence, reason: (obj.reason || '').slice(0, 200) }
+  } catch { return { ok: false, error: '视觉定位未返回合法 JSON' } }
+}
+
 export function makeVision(cfg) {
   const c = {
     timeoutMs: 90000,
@@ -57,6 +74,7 @@ export function makeVision(cfg) {
   }
 
   function resolveConfig() {
+    if (typeof c.resolveConfig === 'function') return c.resolveConfig()
     const settings = readSettings()
     const sec = settings['describe-image'] || {}
     const creds = readCreds()
@@ -72,42 +90,65 @@ export function makeVision(cfg) {
   /** 描述一张本地 PNG。返回 {ok, text, model, error}。 */
   async function describeImage(pngPath, prompt = UI_STATE_PROMPT) {
     if (!pngPath || !existsSync(pngPath)) return { ok: false, error: '截图不存在：' + pngPath }
-    const { baseURL, model, apiKey } = resolveConfig()
-    if (!apiKey) return { ok: false, error: '视觉模型 API key 未配置（describe-image.apiKeyEnv）' }
-    const mime = pngPath.toLowerCase().endsWith('.jpg') || pngPath.toLowerCase().endsWith('.jpeg') ? 'image/jpeg' : 'image/png'
-    const dataUri = 'data:' + mime + ';base64,' + readFileSync(pngPath).toString('base64')
+    const controller = new AbortController()
+    let timer
     try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), c.timeoutMs)
-      const resp = await fetch(baseURL + '/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
-        body: JSON.stringify({
-          model,
-          max_tokens: c.maxOutputTokens,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: dataUri } },
-            ],
-          }],
-        }),
-        signal: controller.signal,
+      const { baseURL, model, apiKey } = resolveConfig()
+      if (!apiKey) return { ok: false, error: '视觉模型 API key 未配置（describe-image.apiKeyEnv）' }
+      const mime = pngPath.toLowerCase().endsWith('.jpg') || pngPath.toLowerCase().endsWith('.jpeg') ? 'image/jpeg' : 'image/png'
+      const dataUri = 'data:' + mime + ';base64,' + readFileSync(pngPath).toString('base64')
+      const timeoutMs = Number.isFinite(c.timeoutMs) && c.timeoutMs > 0 ? c.timeoutMs : 90000
+      const timeout = new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+          controller.abort()
+          reject(Object.assign(new Error('vision timeout'), { name: 'AbortError' }))
+        }, timeoutMs)
       })
-      clearTimeout(timer)
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => '')
-        return { ok: false, error: 'vision HTTP ' + resp.status + ': ' + body.slice(0, 200) }
+      const request = async () => {
+        const resp = await (c.fetch || fetch)(baseURL.replace(/\/+$/, '') + '/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
+          body: JSON.stringify({
+            model,
+            max_tokens: c.maxOutputTokens,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'text', text: prompt },
+                { type: 'image_url', image_url: { url: dataUri } },
+              ],
+            }],
+          }),
+          signal: controller.signal,
+        })
+        if (!resp.ok) {
+          controller.abort()
+          return { ok: false, error: 'vision HTTP ' + resp.status }
+        }
+        const data = await resp.json()
+        const text = data?.choices?.[0]?.message?.content
+        if (typeof text !== 'string' || !text.trim()) return { ok: false, error: 'vision 返回空内容' }
+        return { ok: true, text: text.trim(), model }
       }
-      const data = await resp.json()
-      const text = data?.choices?.[0]?.message?.content
-      if (typeof text !== 'string' || !text.trim()) return { ok: false, error: 'vision 返回空内容' }
-      return { ok: true, text: text.trim(), model }
+      return await Promise.race([request(), timeout])
     } catch (e) {
-      return { ok: false, error: 'vision 请求失败: ' + (e?.name === 'AbortError' ? '超时' : String(e)) }
+      return { ok: false, error: 'vision 请求失败: ' + (e?.name === 'AbortError' ? '超时' : '网络、配置或响应格式错误') }
+    } finally {
+      clearTimeout(timer)
     }
   }
 
-  return { describeImage, resolveConfig }
+  async function locateImage(pngPath, target, minConfidence = 0.78) {
+    if (!Number.isFinite(minConfidence) || minConfidence < 0.5 || minConfidence > 1) return { ok: false, error: 'visualMinConfidence 必须在 0.5 到 1 之间' }
+    if (typeof target !== 'string' || !target.trim() || target.length > 2000) return { ok: false, error: '视觉定位目标描述无效' }
+    const prompt = UI_LOCATE_PROMPT + target.trim()
+    const r = await describeImage(pngPath, prompt)
+    if (!r.ok) return r
+    const parsed = parseLocateResponse(r.text)
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    if (parsed.confidence < minConfidence) return { ...parsed, ok: false, error: '视觉定位置信度不足：' + parsed.confidence + ' < ' + minConfidence, model: r.model }
+    return { ...parsed, model: r.model }
+  }
+
+  return { describeImage, locateImage, resolveConfig }
 }

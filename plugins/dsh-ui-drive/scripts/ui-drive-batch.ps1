@@ -30,13 +30,28 @@ param(
   [string]$ProcName = '',
   [string]$WindowName = '',
   [int]$ProcId = 0,
+  [long]$WinHandle = 0,
   [string]$StepsFile = '',
   [string]$Out = '',
   [int]$DefaultWaitMs = 250,
   [string]$ScriptStamp = '',
   [switch]$Status,
+  [switch]$SkipIdentity,
   [switch]$Serve
 )
+
+if ($Status -and $SkipIdentity) {
+  $statusProcess = $null
+  if ($ProcId -gt 0) { $statusProcess = Get-Process -Id $ProcId -ErrorAction SilentlyContinue }
+  elseif ($ProcName) { $statusProcess = Get-Process -Name $ProcName -ErrorAction SilentlyContinue | Select-Object -First 1 }
+  if (-not $statusProcess) { Write-Output 'NOT_RUNNING'; exit 2 }
+  $statusWindow = $(if ($statusProcess.MainWindowHandle -eq [IntPtr]::Zero) { 'NONE' } else { $statusProcess.MainWindowTitle })
+  Write-Output ('RUNNING pid=' + $statusProcess.Id + ' window=' + $statusWindow)
+  exit 0
+}
+
+. (Join-Path $PSScriptRoot 'ui-windows-boundary.ps1')
+$script:ConfiguredProcId = $ProcId
 
 # ------------------------------------------------------------ status 快路径
 # 只要进程/主窗口句柄与矩形时，绝不加载 UIA（省掉 ~600ms 程序集初始化）。
@@ -54,28 +69,17 @@ public class UiDriveStatusWin32 {
   if ($ProcId -gt 0) { $sp = Get-Process -Id $ProcId -ErrorAction SilentlyContinue }
   elseif ($ProcName) { $sp = Get-Process -Name $ProcName -ErrorAction SilentlyContinue | Select-Object -First 1 }
   if (-not $sp) { Write-Output 'NOT_RUNNING'; exit 2 }
-  $h = $sp.MainWindowHandle
-  if (-not $h -or $h -eq [IntPtr]::Zero) { Write-Output ('RUNNING pid=' + $sp.Id + ' window=NONE'); exit 0 }
-  Write-Output ('RUNNING pid=' + $sp.Id + ' window=' + $sp.MainWindowTitle)
+  $h = [UiDriveInputWin32]::ResolveWindow($sp.Id, $WinHandle, $WindowName, $sp.MainWindowHandle)
+  $windowTitle = $(if ($h -eq [IntPtr]::Zero) { 'NONE' } else { [UiDriveInputWin32]::GetWindowTitle($h) })
+  Write-Output ('RUNNING pid=' + $sp.Id + ' window=' + $windowTitle)
   Write-Output ('HANDLE ' + [int64]$h)
   # 进程身份（W2 policy 门用）：单行 base64(JSON)，老解析器忽略即可、向后兼容。
   # 授权主键 = exeCanonical（GetFullPath + 小写）；版本元数据只作可选二次约束
   # （实测 codex.exe / 自研 exe 的 Company/Product/Description 可能全为空）。
-  try {
-    $exePath = [string]$sp.Path
-    if ($exePath) {
-      $identObj = @{ exe = $exePath }
-      try { $identObj.exeCanonical = [System.IO.Path]::GetFullPath($exePath).ToLowerInvariant() } catch { $identObj.exeCanonical = $exePath.ToLowerInvariant() }
-      try {
-        $vi = (Get-Item -LiteralPath $exePath).VersionInfo
-        $identObj.company = [string]$vi.CompanyName
-        $identObj.product = [string]$vi.ProductName
-        $identObj.description = [string]$vi.FileDescription
-      } catch { }
-      $identJson = ($identObj | ConvertTo-Json -Compress)
-      Write-Output ('IDENT ' + [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($identJson)))
-    }
-  } catch { }
+  $identJson = (Get-UiProcessIdentity $sp) | ConvertTo-Json -Compress
+  Write-Output ('IDENT ' + [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($identJson)))
+  Write-Output ('DESKTOP ' + (Get-UiDesktopState))
+  if ($h -eq [IntPtr]::Zero) { exit 0 }
   $r = New-Object UiDriveStatusWin32+RECT
   [UiDriveStatusWin32]::GetWindowRect([IntPtr]$h, [ref]$r) | Out-Null
   Write-Output ('RECT ' + ($r.Right - $r.Left) + 'x' + ($r.Bottom - $r.Top) + ' @' + $r.Left + ',' + $r.Top)
@@ -90,11 +94,6 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public class UiDriveBatchWin32 {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
-  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern short VkKeyScan(char ch);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
@@ -113,7 +112,7 @@ public class UiDriveBatchWin32 {
 $UIA = [System.Windows.Automation.AutomationElement]
 
 function Get-ClientPid {
-  if ($ProcId -gt 0) { return $ProcId }
+  if ($script:ConfiguredProcId -gt 0) { return $script:ConfiguredProcId }
   if (-not $ProcName) { throw '未指定目标进程（-ProcName 或 -ProcId 至少一个）' }
   $p = Get-Process -Name $ProcName -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($p) { return $p.Id }
@@ -121,6 +120,10 @@ function Get-ClientPid {
 }
 
 function Get-MainWindow([int]$procId) {
+  if ($WinHandle -gt 0) {
+    $boundHandle = [UiDriveInputWin32]::ResolveWindow($procId, $WinHandle, '', [IntPtr]::Zero)
+    return $UIA::FromHandle($boundHandle)
+  }
   $root = $UIA::RootElement
   $cond = New-Object System.Windows.Automation.PropertyCondition($UIA::ProcessIdProperty, $procId)
   $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
@@ -404,16 +407,17 @@ function Wait-ForCondition($main, [string]$aid, [string]$name, $spec, $scope = $
 function Send-TypeTo($el, [string]$text, [bool]$literal) {
   Assert-NotDenied $el   # 致效汇聚点守卫（W0）：本函数会先物理左键点元素中心，等于一次点击
   $b = $el.Current.BoundingRectangle
-  [UiDriveBatchWin32]::SetCursorPos([int]($b.X + $b.Width / 2), [int]($b.Y + $b.Height / 2))
+  [UiDriveInputWin32]::SetCursorPos([int]($b.X + $b.Width / 2), [int]($b.Y + $b.Height / 2))
   Start-Sleep -Milliseconds 120
-  [UiDriveBatchWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-  [UiDriveBatchWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
   # 鼠标点过之后显式 SetFocus：SendKeys 只发给「有键盘焦点」的控件，
   # 只靠点击在 UIA 干预/多窗口场景下并不可靠（实测假登录页 type 完全没进去）。
+  Assert-UiInputAllowed
   try { $el.SetFocus() } catch { }
   Start-Sleep -Milliseconds 200
   # 先全选：SendKeys 是「追加」语义，不清空会把新内容拼在旧值后面（实测撞过）
-  $null = [System.Windows.Forms.SendKeys]::SendWait('^a')
+  $null = Send-UiKeys '^a'
   Start-Sleep -Milliseconds 100
   $payload = $text
   if ($literal) {
@@ -425,7 +429,7 @@ function Send-TypeTo($el, [string]$text, [bool]$literal) {
     $payload = $payload.Replace('{', '{{').Replace('}', '}}').Replace('+', '{+}').Replace('^', '{^}').Replace('%', '{%}').Replace('~', '{~}').Replace('(', '{(}').Replace(')', '{)}')
   }
   # SendWait 返回布尔值，PS 5.1 会把它混进函数输出（外层收到 Object[] 会崩）——必须吞掉
-  $null = [System.Windows.Forms.SendKeys]::SendWait($payload)
+  $null = Send-UiKeys $payload
 }
 
 # 直接发字符（keybd_event + VkKeyScan）：比 SendKeys 可靠——不依赖 .NET 的
@@ -438,23 +442,23 @@ function Send-TextDirect([string]$text) {
     if ($vks -eq -1) { continue }
     $vkey = $vks -band 0xFF
     $shift = (($vks -shr 8) -band 1) -eq 1
-    if ($shift) { [UiDriveBatchWin32]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero) }
-    [UiDriveBatchWin32]::keybd_event([byte]$vkey, 0, 0, [UIntPtr]::Zero)
+    if ($shift) { [UiDriveInputWin32]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero) }
+    [UiDriveInputWin32]::keybd_event([byte]$vkey, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 15
-    [UiDriveBatchWin32]::keybd_event([byte]$vkey, 0, 2, [UIntPtr]::Zero)
-    if ($shift) { [UiDriveBatchWin32]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero) }
+    [UiDriveInputWin32]::keybd_event([byte]$vkey, 0, 2, [UIntPtr]::Zero)
+    if ($shift) { [UiDriveInputWin32]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero) }
     Start-Sleep -Milliseconds 15
   }
 }
 
 # key 的 ASCII 路径：先 ^a 全选清空，再逐字符直发（可靠），失败再退回 SendKeys
 function Send-KeyAscii([string]$value) {
-  $null = [System.Windows.Forms.SendKeys]::SendWait('^a')
+  $null = Send-UiKeys '^a'
   Start-Sleep -Milliseconds 120
   if ($value -match '^[\x20-\x7e]*$' -and $value.Length -gt 0) {
     Send-TextDirect $value
   } else {
-    $null = [System.Windows.Forms.SendKeys]::SendWait($value)
+    $null = Send-UiKeys $value
   }
 }
 
@@ -473,40 +477,57 @@ function Invoke-DoubleClickElement($el, $main) {
     if (Is-RectUsable $b) { $sx = [int]($b.X + $b.Width / 2); $sy = [int]($b.Y + $b.Height / 2) }
   }
   if ($null -eq $sx) { throw '元素没有可点击点（GetClickablePoint 失败）' }
+  Assert-UiInputAllowed
   try { $el.SetFocus() } catch { }
-  if ($null -ne $main) { try { [UiDriveBatchWin32]::SetForegroundWindow([IntPtr]$main.Current.NativeWindowHandle) | Out-Null } catch { } }
+  if ($null -ne $main) { try { [UiDriveInputWin32]::SetForegroundWindow([IntPtr]$main.Current.NativeWindowHandle) | Out-Null } catch { } }
   Start-Sleep -Milliseconds 80
-  [UiDriveBatchWin32]::SetCursorPos($sx, $sy) | Out-Null
+  [UiDriveInputWin32]::SetCursorPos($sx, $sy) | Out-Null
   Start-Sleep -Milliseconds 120
-  [UiDriveBatchWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 40
-  [UiDriveBatchWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 120
-  [UiDriveBatchWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 40
-  [UiDriveBatchWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
   return ('doubleClick @' + $sx + ',' + $sy + ' (' + (Get-ControlTypeName $el) + ')')
 }
 
 # 坐标点击（窗口客户区）：表格行、图表点位等 UIA 元素不稳定的地方
 # $button: left(默认) | right（右键菜单）| middle
-function Invoke-ClickAt($main, [int]$x, [int]$y, [bool]$double, [string]$button) {
+function Invoke-ClickAt($main, [int]$x, [int]$y, [bool]$double, [string]$button, $expectedRect = $null, [long]$expectedWindowHandle = 0) {
   $r = Get-MainRect $main
+  $boundHandle = [UiDriveInputWin32]::ResolveWindow([int]$main.Current.ProcessId, [long]$main.Current.NativeWindowHandle, '', [IntPtr]::Zero)
+  if ($expectedWindowHandle -gt 0 -and [long]$main.Current.NativeWindowHandle -ne $expectedWindowHandle) {
+    throw 'visual_window_changed'
+  }
+  if ($null -ne $expectedRect -and ([int]$expectedRect.x -ne $r.Left -or [int]$expectedRect.y -ne $r.Top -or [int]$expectedRect.w -ne ($r.Right - $r.Left) -or [int]$expectedRect.h -ne ($r.Bottom - $r.Top))) {
+    throw 'visual_window_changed'
+  }
+  if ($null -ne $expectedRect -and ($x -lt 0 -or $y -lt 0 -or $x -ge ($r.Right - $r.Left) -or $y -ge ($r.Bottom - $r.Top))) { throw 'visual_coordinate_out_of_bounds' }
   $sx = $r.Left + $x; $sy = $r.Top + $y
-  [UiDriveBatchWin32]::SetCursorPos($sx, $sy) | Out-Null
+  [UiDriveInputWin32]::SetCursorPos($sx, $sy) | Out-Null
   Start-Sleep -Milliseconds 120
+  if ($null -ne $expectedRect) {
+    $latestRect = Get-MainRect $main
+    if ($latestRect.Left -ne $r.Left -or $latestRect.Top -ne $r.Top -or $latestRect.Right -ne $r.Right -or $latestRect.Bottom -ne $r.Bottom) { throw 'visual_window_changed' }
+  }
   $down = 2; $up = 4
   if ($button -eq 'right') { $down = 8; $up = 16 }
   elseif ($button -eq 'middle') { $down = 32; $up = 64 }
-  [UiDriveBatchWin32]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 40
-  [UiDriveBatchWin32]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
   if ($double) {
     # 双击间隔要短（默认双击时间约 500ms，但 60ms 实测被识别成两次单击）
     Start-Sleep -Milliseconds 120
-    [UiDriveBatchWin32]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+    if ($null -ne $expectedRect) {
+      $latestRect = Get-MainRect $main
+      if ($latestRect.Left -ne $r.Left -or $latestRect.Top -ne $r.Top -or $latestRect.Right -ne $r.Right -or $latestRect.Bottom -ne $r.Bottom) { throw 'visual_window_changed' }
+    }
+    [UiDriveInputWin32]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 40
-    [UiDriveBatchWin32]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
+    [UiDriveInputWin32]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
   }
   return ('clickAt ' + $x + ',' + $y + ' ' + $(if ($button) { $button } else { 'left' }) + $(if ($double) { ' x2' } else { '' }))
 }
@@ -524,6 +545,7 @@ function Get-ModVk([string]$name) {
 }
 
 function Get-MainRect($main) {
+  $null = [UiDriveInputWin32]::UsePhysicalPixels()
   $r = New-Object UiDriveBatchWin32+RECT
   if ($null -ne $main) {
     [UiDriveBatchWin32]::GetWindowRect([IntPtr]$main.Current.NativeWindowHandle, [ref]$r) | Out-Null
@@ -535,7 +557,7 @@ function Get-MainRect($main) {
 function Invoke-Move($main, [int]$x, [int]$y, [int]$holdMs) {
   $r = Get-MainRect $main
   $sx = $r.Left + $x; $sy = $r.Top + $y
-  [UiDriveBatchWin32]::SetCursorPos($sx, $sy) | Out-Null
+  [UiDriveInputWin32]::SetCursorPos($sx, $sy) | Out-Null
   if ($holdMs -gt 0) { Start-Sleep -Milliseconds $holdMs }
   return ('move ' + $x + ',' + $y)
 }
@@ -543,7 +565,7 @@ function Invoke-Move($main, [int]$x, [int]$y, [int]$holdMs) {
 # 滚轮：$delta>0 上滚（放大/上翻），<0 下滚；K线缩放/滚动都靠它
 function Invoke-Wheel($main, [int]$x, [int]$y, [int]$delta, [int]$count, [int]$holdMs) {
   $r = Get-MainRect $main
-  [UiDriveBatchWin32]::SetCursorPos($r.Left + $x, $r.Top + $y) | Out-Null
+  [UiDriveInputWin32]::SetCursorPos($r.Left + $x, $r.Top + $y) | Out-Null
   Start-Sleep -Milliseconds 80
   if ($count -lt 1) { $count = 1 }
   for ($i = 0; $i -lt $count; $i++) {
@@ -551,7 +573,7 @@ function Invoke-Wheel($main, [int]$x, [int]$y, [int]$delta, [int]$count, [int]$h
     # 必须显式加 2^32 得到无符号值（-120 → 4294967176）——实测 probe 确认过。
     $wd = [int64]$delta
     if ($wd -lt 0) { $wd = $wd + 4294967296 }
-    [UiDriveBatchWin32]::mouse_event(0x0800, 0, 0, [uint32]$wd, [UIntPtr]::Zero)
+    [UiDriveInputWin32]::mouse_event(0x0800, 0, 0, [uint32]$wd, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds $holdMs
   }
   return ('wheel delta=' + $delta + ' x' + $count + ' @' + $x + ',' + $y)
@@ -560,16 +582,18 @@ function Invoke-Wheel($main, [int]$x, [int]$y, [int]$delta, [int]$count, [int]$h
 # 按住修饰键 → 执行 → 释放（K线 Shift+拖动、Ctrl+滚轮等）
 function Invoke-WithMods([string]$mods, [scriptblock]$body) {
   $vks = @()
-  if ($mods) {
+  try {
+    if ($mods) {
     foreach ($m in ($mods -split '[,+ ]+')) {
       if (-not $m) { continue }
       $vk = Get-ModVk $m
-      if ($vk -gt 0) { $vks += $vk; [UiDriveBatchWin32]::keybd_event([byte]$vk, 0, 0, [UIntPtr]::Zero) }
+      if ($vk -gt 0) { [UiDriveInputWin32]::keybd_event([byte]$vk, 0, 0, [UIntPtr]::Zero); $vks += $vk }
     }
     Start-Sleep -Milliseconds 60
-  }
-  try { return (& $body) } finally {
-    foreach ($vk in $vks) { [UiDriveBatchWin32]::keybd_event([byte]$vk, 0, 2, [UIntPtr]::Zero) }
+    }
+    return (& $body)
+  } finally {
+    foreach ($vk in $vks) { [UiDriveInputWin32]::ReleaseKey([byte]$vk) }
   }
 }
 
@@ -577,23 +601,23 @@ function Invoke-Drag($main, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY, [int
   $h = [IntPtr]$main.Current.NativeWindowHandle
   $r = New-Object UiDriveBatchWin32+RECT
   [UiDriveBatchWin32]::GetWindowRect($h, [ref]$r) | Out-Null
-  [UiDriveBatchWin32]::SetForegroundWindow($h) | Out-Null
+  [UiDriveInputWin32]::SetForegroundWindow($h) | Out-Null
   Start-Sleep -Milliseconds 100
   $x0 = $r.Left + $fromX; $y0 = $r.Top + $fromY
   $x1 = $r.Left + $toX; $y1 = $r.Top + $toY
-  [UiDriveBatchWin32]::SetCursorPos($x0, $y0) | Out-Null
+  [UiDriveInputWin32]::SetCursorPos($x0, $y0) | Out-Null
   Start-Sleep -Milliseconds $holdMs
-  [UiDriveBatchWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 120
   if ($steps -lt 1) { $steps = 12 }
   for ($i = 1; $i -le $steps; $i++) {
     $x = [int]($x0 + ($x1 - $x0) * $i / $steps)
     $y = [int]($y0 + ($y1 - $y0) * $i / $steps)
-    [UiDriveBatchWin32]::SetCursorPos($x, $y) | Out-Null
+    [UiDriveInputWin32]::SetCursorPos($x, $y) | Out-Null
     Start-Sleep -Milliseconds 25
   }
   Start-Sleep -Milliseconds $holdMs
-  [UiDriveBatchWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
   return ('drag ' + $fromX + ',' + $fromY + ' -> ' + $toX + ',' + $toY + ' (' + $steps + ' steps)')
 }
 
@@ -695,6 +719,23 @@ function Get-ElementDetail($el) {
 
 # 当前焦点元素（UIA FocusedElement）+ 它所属的顶层窗口名。
 # 动态界面的关键信号：焦点在哪、当前是哪个窗口，比「我刚才点了什么」可靠得多。
+function Get-FocusedSensitivity([string]$detail) {
+  if (-not $detail) { return @{ secretFocused = $null; sensitivityUnknown = $true } }
+  if ($detail -match $SECRET_NAME_RE) { return @{ secretFocused = $true; sensitivityUnknown = $false } }
+  try {
+    $element = $UIA::FocusedElement
+    if ($null -eq $element) { return @{ secretFocused = $null; sensitivityUnknown = $true } }
+    $current = $element.Current
+    if ($null -eq $current) { return @{ secretFocused = $null; sensitivityUnknown = $true } }
+    $name = $current.Name
+    $automationId = $current.AutomationId
+    if ($name -match $SECRET_NAME_RE -or $automationId -match $SECRET_NAME_RE) { return @{ secretFocused = $true; sensitivityUnknown = $false } }
+    $password = $current.IsPassword
+    if ($password -isnot [bool] -or $null -eq $name -or $null -eq $automationId) { return @{ secretFocused = $null; sensitivityUnknown = $true } }
+    return @{ secretFocused = $password; sensitivityUnknown = $false }
+  } catch { return @{ secretFocused = $null; sensitivityUnknown = $true } }
+}
+
 function Get-FocusedInfo {
   $fe = $null
   try { $fe = [System.Windows.Automation.AutomationElement]::FocusedElement } catch { }
@@ -836,6 +877,7 @@ function Test-DenyTarget($el) {
 # 可以绕过硬拒 —— 即注释里"allowSideEffects 也解锁不了"的承诺在那些路径上是空的。
 # 把守卫放进低层函数入口，今后新增任何分支都无法绕过。
 function Assert-NotDenied($el) {
+  Assert-UiInputAllowed
   $deny = Test-DenyTarget $el
   if ($deny) { throw (New-Object System.InvalidOperationException($deny)) }
 }
@@ -848,33 +890,37 @@ function Invoke-Click($el, $main) {
   try {
     if ($type -in @('Button', 'MenuItem', 'Hyperlink', 'ListItem', 'TabItem', 'TreeItem')) {
       $ip = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+      Assert-UiInputAllowed
       $null = $ip.Invoke()
       return 'invoke'
     }
     if ($type -eq 'CheckBox') {
       $tp = $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+      Assert-UiInputAllowed
       $null = $tp.Toggle()
       return 'toggle'
     }
     if ($type -eq 'RadioButton') {
       $sp = $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+      Assert-UiInputAllowed
       $null = $sp.Select()
       return 'select'
     }
   } catch {
+    if (Get-UiPolicyFailure $_.Exception) { throw }
     # 落下去走鼠标兜底
   }
   $b = $el.Current.BoundingRectangle
   $cx = [int]($b.X + $b.Width / 2); $cy = [int]($b.Y + $b.Height / 2)
   if ($null -ne $main) {
-    try { [UiDriveBatchWin32]::SetForegroundWindow([IntPtr]$main.Current.NativeWindowHandle) | Out-Null } catch { }
+    try { [UiDriveInputWin32]::SetForegroundWindow([IntPtr]$main.Current.NativeWindowHandle) | Out-Null } catch { }
     Start-Sleep -Milliseconds 80
   }
-  [UiDriveBatchWin32]::SetCursorPos($cx, $cy)
+  [UiDriveInputWin32]::SetCursorPos($cx, $cy)
   Start-Sleep -Milliseconds 120
-  [UiDriveBatchWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 50
-  [UiDriveBatchWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
   return ('mouse@' + $cx + ',' + $cy)
 }
 
@@ -883,9 +929,11 @@ function Set-ElementValue($el, [string]$value) {
   try {
     $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
     # SetValue 直接写属性，绕过 PreviewKeyDown 的按键过滤（登录页手机号框只放行数字键）
+    Assert-UiInputAllowed
     $vp.SetValue($value)
     return $vp.Current.Value
   } catch {
+    if (Get-UiPolicyFailure $_.Exception) { throw }
     throw ('该控件不支持 ValuePattern: ' + $_.Exception.Message)
   }
 }
@@ -908,21 +956,21 @@ function Invoke-ElementPattern($el, [string]$name) {
     throw ('不支持的 pattern 动作 "' + $n + '"（允许：' + ($PATTERN_ACTIONS -join '/') + '）')
   }
   switch ($n) {
-    'Invoke'              { $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke();               return 'Invoke' }
+    'Invoke'              { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern); Assert-UiInputAllowed; $elementPattern.Invoke();               return 'Invoke' }
     'Focus'               { $el.SetFocus();                                                                                  return 'Focus' }
-    'Toggle'              { $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle();               return 'Toggle' }
-    'Expand'              { $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand();       return 'Expand' }
-    'Collapse'            { $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse();     return 'Collapse' }
-    'Select'              { $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select();        return 'Select' }
-    'AddToSelection'      { $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).AddToSelection(); return 'AddToSelection' }
-    'RemoveFromSelection' { $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).RemoveFromSelection(); return 'RemoveFromSelection' }
-    'Increment'           { $el.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).SmallIncrement();   return 'Increment' }
-    'Decrement'           { $el.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).SmallDecrement();   return 'Decrement' }
-    'ScrollIntoView'      { $el.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern).ScrollIntoView();   return 'ScrollIntoView' }
-    'Close'               { $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close();                 return 'Close' }
-    'Minimize'            { $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Minimized); return 'Minimize' }
-    'Maximize'            { $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized); return 'Maximize' }
-    'Restore'             { $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal);    return 'Restore' }
+    'Toggle'              { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern); Assert-UiInputAllowed; $elementPattern.Toggle();               return 'Toggle' }
+    'Expand'              { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern); Assert-UiInputAllowed; $elementPattern.Expand();       return 'Expand' }
+    'Collapse'            { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern); Assert-UiInputAllowed; $elementPattern.Collapse();     return 'Collapse' }
+    'Select'              { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern); Assert-UiInputAllowed; $elementPattern.Select();        return 'Select' }
+    'AddToSelection'      { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern); Assert-UiInputAllowed; $elementPattern.AddToSelection(); return 'AddToSelection' }
+    'RemoveFromSelection' { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern); Assert-UiInputAllowed; $elementPattern.RemoveFromSelection(); return 'RemoveFromSelection' }
+    'Increment'           { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern); Assert-UiInputAllowed; $elementPattern.SmallIncrement();   return 'Increment' }
+    'Decrement'           { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern); Assert-UiInputAllowed; $elementPattern.SmallDecrement();   return 'Decrement' }
+    'ScrollIntoView'      { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern); Assert-UiInputAllowed; $elementPattern.ScrollIntoView();   return 'ScrollIntoView' }
+    'Close'               { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern); Assert-UiInputAllowed; $elementPattern.Close();                 return 'Close' }
+    'Minimize'            { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern); Assert-UiInputAllowed; $elementPattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Minimized); return 'Minimize' }
+    'Maximize'            { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern); Assert-UiInputAllowed; $elementPattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized); return 'Maximize' }
+    'Restore'             { $elementPattern = $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern); Assert-UiInputAllowed; $elementPattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal);    return 'Restore' }
   }
   throw ('未能对元素执行 pattern 动作 "' + $n + '"')
 }
@@ -945,6 +993,7 @@ function Invoke-ElementScroll($el, [string]$direction, [int]$pages) {
     try { $sp = $cur.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern) } catch { $sp = $null }
     if ($null -ne $sp) {
       for ($i = 0; $i -lt $times; $i++) {
+        Assert-UiInputAllowed
         if ($horizontal) { $sp.Scroll($amount, [System.Windows.Automation.ScrollAmount]::NoAmount) }
         else { $sp.Scroll([System.Windows.Automation.ScrollAmount]::NoAmount, $amount) }
         Start-Sleep -Milliseconds 60
@@ -999,6 +1048,7 @@ function Invoke-SelectText($el, [string]$text, [string]$prefix, [string]$suffix,
   } elseif ([string]$selType -eq 'cursor_after') {
     $final.MoveEndpointByRange([System.Windows.Automation.TextPatternRangeEndpoint]::Start, $final, [System.Windows.Automation.TextPatternRangeEndpoint]::End)
   }
+  Assert-UiInputAllowed
   $final.Select()
   return ('SELECTED "' + [string]$text + '" (' + (Get-ControlTypeName $el) + ')')
 }
@@ -1006,10 +1056,11 @@ function Invoke-SelectText($el, [string]$text, [string]$prefix, [string]$suffix,
 function Send-KeyTo($el, [string]$value, [bool]$ascii, [int]$waitMs) {
   Assert-NotDenied $el   # 致效汇聚点守卫（W0）：本函数会先物理左键点元素中心，等于一次点击
   $b = $el.Current.BoundingRectangle
-  [UiDriveBatchWin32]::SetCursorPos([int]($b.X + $b.Width / 2), [int]($b.Y + $b.Height / 2))
+  [UiDriveInputWin32]::SetCursorPos([int]($b.X + $b.Width / 2), [int]($b.Y + $b.Height / 2))
   Start-Sleep -Milliseconds 150
-  [UiDriveBatchWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-  [UiDriveBatchWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+  [UiDriveInputWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  Assert-UiInputAllowed
   try { $el.SetFocus() } catch { }
   Start-Sleep -Milliseconds 300
   if ($ascii) {
@@ -1020,11 +1071,12 @@ function Send-KeyTo($el, [string]$value, [bool]$ascii, [int]$waitMs) {
     # 用户刚复制的账号/金额（驱动客户端时尤其危险）。
     $snap = Get-ClipboardSnapshot
     try {
+      Assert-UiInputAllowed
       Set-Clipboard -Value $value
       Start-Sleep -Milliseconds 150
-      $null = [System.Windows.Forms.SendKeys]::SendWait('^a')
+      $null = Send-UiKeys '^a'
       Start-Sleep -Milliseconds 120
-      $null = [System.Windows.Forms.SendKeys]::SendWait('^v')
+      $null = Send-UiKeys '^v'
     } finally {
       # SendKeys ^v 是异步投递：先让目标把内容取走，再还原，避免"还没粘完就被换掉"
       Start-Sleep -Milliseconds 180
@@ -1060,7 +1112,7 @@ function Restore-ClipboardSnapshot($snap) {
 # 动作是否需要窗口在前台：只有鼠标/键盘/屏幕截图类需要；
 # 纯 UIA 只读动作（find/read/state/windows/waitfor/expect*）绝不抢焦点、绝不改窗口状态。
 function Test-NeedsForeground($step) {
-  $ro = @('find','read','state','windows','waitfor','expectwindow','expecttext','waitany','state-live')
+  $ro = @('find','read','state','windows','waitfor','expect','expectwindow','expecttext','waitany','state-live','tree','wait','shot','capture')
   $acts = New-Object System.Collections.ArrayList
   if ($step.PSObject.Properties.Name -contains 'action' -and $step.action) { [void]$acts.Add(([string]$step.action).Trim().ToLowerInvariant()) }
   if ($step.PSObject.Properties.Name -contains 'steps' -and $step.steps) {
@@ -1068,12 +1120,14 @@ function Test-NeedsForeground($step) {
       if ($s.PSObject.Properties.Name -contains 'action' -and $s.action) { [void]$acts.Add(([string]$s.action).Trim().ToLowerInvariant()) }
     }
   }
+  if ($acts.Count -eq 0 -and $step.action) { [void]$acts.Add(([string]$step.action).Trim().ToLowerInvariant()) }
   if ($acts.Count -eq 0) { return $true }
   foreach ($a in $acts) { if ($ro -notcontains $a) { return $true } }
   return $false
 }
 
 function Render-WindowPng([IntPtr]$h, $r, [int]$w, [int]$hh, [string]$outPath) {
+  $null = [UiDriveInputWin32]::UsePhysicalPixels()
   # 把窗口自身内容渲染成 PNG。PrintWindow(PW_RENDERFULLCONTENT=2) 优先：让窗口把内容（含 WPF/DWM
   # 合成）画进我们给的 DC，**不依赖窗口是否显示在物理屏上**——无头/断开(RDP)会话里屏幕 DC 是全黑的，
   # 纯 CopyFromScreen 会把截图抓成一片黑（shot 曾经就是这么黑的）。PrintWindow 失败（个别无 DWM
@@ -1091,6 +1145,7 @@ function Render-WindowPng([IntPtr]$h, $r, [int]$w, [int]$hh, [string]$outPath) {
 }
 
 function Save-Shot($main, [string]$outPath) {
+  $null = [UiDriveInputWin32]::UsePhysicalPixels()
   if (-not $outPath) { $outPath = Join-Path $env:TEMP ('uia-shot-' + (Get-Date -Format 'HHmmss') + '.png') }
   $dir = Split-Path -Parent $outPath
   if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -1099,13 +1154,8 @@ function Save-Shot($main, [string]$outPath) {
   [UiDriveBatchWin32]::GetWindowRect($h, [ref]$r) | Out-Null
   $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
   if ($w -le 0 -or $hh -le 0) {
-    # 最小化/隐藏的窗口 GetWindowRect 返回 0x0：先恢复再量一次（截图不该因为窗口最小化就失败）
-    [UiDriveBatchWin32]::ShowWindow($h, 9) | Out-Null
-    Start-Sleep -Milliseconds 350
-    [UiDriveBatchWin32]::GetWindowRect($h, [ref]$r) | Out-Null
-    $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
+    throw ('窗口尺寸非法 ' + $w + 'x' + $hh + '；请先恢复窗口再截图')
   }
-  if ($w -le 0 -or $hh -le 0) { throw ('窗口尺寸非法 ' + $w + 'x' + $hh) }
   Render-WindowPng $h $r $w $hh $outPath | Out-Null
   return @{ path = $outPath; w = $w; h = $hh }
 }
@@ -1119,6 +1169,10 @@ function Resolve-Window($main, $step, [int]$procId) {
   $handle = 0
   if ($step.PSObject.Properties.Name -contains 'winTitle' -and $step.winTitle) { $titleRe = [string]$step.winTitle }
   if ($step.PSObject.Properties.Name -contains 'winHandle' -and $null -ne $step.winHandle) { $handle = [int64]$step.winHandle }
+  if ($handle -gt 0) {
+    $boundHandle = [UiDriveInputWin32]::ResolveWindow($procId, $handle, '', [IntPtr]::Zero)
+    return $UIA::FromHandle($boundHandle)
+  }
   if ($titleRe -or $handle) {
     $wins = Get-WindowElements $procId
     for ($i = 0; $i -lt $wins.Count; $i++) {
@@ -1222,6 +1276,7 @@ function Resolve-ReadScope($main, $step, [int]$procId) {
 }
 
 function Invoke-Step($main, $step, [int]$index, [int]$procId) {
+  $null = [UiDriveInputWin32]::UsePhysicalPixels()
   # 动作名归一化：模型可能写 waitFor/WaitFor，统一小写
   $action = [string]$step.action
   if ($action) { $action = $action.Trim().ToLowerInvariant() }
@@ -1232,6 +1287,23 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
   if ($hasWaitFor) { $waitSpec = $step.waitFor }
   $res = @{ step = ($index + 1); action = $action; ok = $false }
   try {
+    if ($action -eq 'clickat' -and ($step.name -or $step.aid)) {
+      $selector = [pscustomobject]@{ Current = [pscustomobject]@{ Name = [string]$step.name; AutomationId = [string]$step.aid } }
+      $deny = Test-DenyTarget $selector
+      if ($deny) { $res.error = $deny; $res.policyCode = 'control_denied'; return ,$res }
+    }
+    if (Test-NeedsForeground $step) {
+      Assert-UiInputAllowed
+      $res.desktopState = Get-UiDesktopState
+      $effectWindow = Resolve-Window $main $step $procId
+      if ($null -eq $effectWindow) { throw '未找到目标窗口（winTitle/winHandle）' }
+      $main = $effectWindow
+      if ($null -ne $effectWindow) {
+        $effectHandle = [IntPtr]$effectWindow.Current.NativeWindowHandle
+        if ([UiDriveBatchWin32]::IsIconic($effectHandle)) { [UiDriveInputWin32]::ShowWindow($effectHandle, 9) | Out-Null }
+        [UiDriveInputWin32]::SetForegroundWindow($effectHandle) | Out-Null
+      }
+    }
     # $null = $(...) 吞掉 switch 分支里漏网的表达式输出：PS 5.1 会把它们拼进函数
     # 返回值，外层拿到 Object[] 就在 Remove/Keys 上崩（type 动作踩过一次）。
     $null = $(switch ($action) {
@@ -1428,13 +1500,15 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         }
       }
       'state-live' {
+        $res.secretFocused = $null; $res.sensitivityUnknown = $true
         # live 循环专用「免前台」界面快照：与 state 相同内容，但主窗口在分支内
         # 自行解析（UIA 按 WindowName，绝不 ShowWindow/SetForegroundWindow ——
         # Claude 评审 1.1：state 走 serve 主窗口路径会把最小化窗口弹起、抢焦点，
         # 直接破坏「后台非侵入」承诺）。
         # 额外输出 secretFocused（live 敏感帧防线用）：焦点元素是否命中敏感词表
         # 或 IsPassword，供 Node 侧识别密码/验证码输入瞬间。
-        $foc = Get-FocusedInfo
+        $foc = @{ detail = $null; window = $null }
+        try { $foc = Get-FocusedInfo } catch { $res.sensitivityUnknown = $true }
         $res.ok = $true
         $res.window = ''
         if ($main) { $res.window = [string]$main.Current.Name }
@@ -1491,24 +1565,9 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $res.count = 0; $res.lines = @()
         }
         # 敏感焦点标记（供 live 跳帧）：focused 明细命中敏感词表，或焦点元素 IsPassword
-        $res.secretFocused = $false
-        if ($foc.detail) {
-          if ($foc.detail -match '密码|password|passwd|验证码|verify|code|captcha|token|secret|口令') { $res.secretFocused = $true }
-          else {
-            try {
-              $fe = [System.Windows.Automation.AutomationElement]::FocusedElement
-              if ($null -ne $fe) {
-                $n = [string]$fe.Current.Name; $aid = [string]$fe.Current.AutomationId
-                $t = ''
-                try { $t = Get-ControlTypeName $fe } catch { }
-                if ($t -in @('Edit', 'Document', 'ComboBox')) {
-                  try { if ($fe.Current.IsPassword -eq $true) { $res.secretFocused = $true } } catch { }
-                }
-                if ($n -match '密码|password|passwd|验证码|verify|code|captcha|token|secret|口令' -or $aid -match '密码|password|passwd|验证码|verify|code|captcha|token|secret|口令') { $res.secretFocused = $true }
-              }
-            } catch { }
-          }
-        }
+        $sensitivity = Get-FocusedSensitivity $foc.detail
+        $res.secretFocused = $sensitivity.secretFocused
+        $res.sensitivityUnknown = $sensitivity.sensitivityUnknown
       }
       'waitfor' {
         # waitfor 的等待参数优先取 step.waitFor（与其它动作统一），没有就用 step 自身（ms/state/match/index 平铺写法）
@@ -1706,12 +1765,14 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $deny = Test-DenyTarget $el
           if ($deny) { $res.error = $deny }
           else {
+            Assert-UiInputAllowed
             try { $el.SetFocus() } catch { }
             try {
               $si = $el.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern)
+              Assert-UiInputAllowed
               $si.ScrollIntoView()
               Start-Sleep -Milliseconds 120
-            } catch { }
+            } catch { if (Get-UiPolicyFailure $_.Exception) { throw } }
             if ($el.Current.IsEnabled -eq $false) {
               $res.error = ('控件已找到但处于禁用态（enabled=False）：' + $el.Current.Name)
             } else {
@@ -1748,11 +1809,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         if ($focusOnly) {
           $kv = [string]$step.value
           if ($kv -match '^\{[A-Za-z0-9]+\}$' -or $kv -match '[\^%+~]') {
-            $null = [System.Windows.Forms.SendKeys]::SendWait($kv)
+            $null = Send-UiKeys $kv
           } elseif ($kv -match '^[\x20-\x7e]+$') {
             Send-TextDirect $kv
           } else {
-            $null = [System.Windows.Forms.SendKeys]::SendWait($kv)
+            $null = Send-UiKeys $kv
           }
           Start-Sleep -Milliseconds $waitMs
           $res.ok = $true; $res.output = ('KEYED ' + $kv + ' to focused element')
@@ -1832,7 +1893,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         if (($step.PSObject.Properties.Name -contains 'y') -and $null -ne $step.y) { $cy = [int]$step.y }
         if (($step.PSObject.Properties.Name -contains 'double') -and $step.double) { $dbl = $true }
         if (($step.PSObject.Properties.Name -contains 'button') -and $step.button) { $btn = [string]$step.button }
-        $out = Invoke-ClickAt $main $cx $cy $dbl $btn
+        $expectedRect = $null
+        if ($step.PSObject.Properties.Name -contains 'expectedRect') { $expectedRect = $step.expectedRect }
+        $expectedWindowHandle = 0
+        if ($step.PSObject.Properties.Name -contains 'expectedWindowHandle') { $expectedWindowHandle = [long]$step.expectedWindowHandle }
+        $out = Invoke-ClickAt $main $cx $cy $dbl $btn $expectedRect $expectedWindowHandle
         Start-Sleep -Milliseconds $waitMs
         $res.ok = $true; $res.output = $out
       }
@@ -2040,6 +2105,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         $res.ok = $true; $res.path = $s.path; $res.w = $s.w; $res.h = $s.h
       }
       'capture' {
+        $null = [UiDriveInputWin32]::UsePhysicalPixels()
         # agent 实时视图专用：抓「窗口内容」而非屏幕合成区域。
         # 与 shot 的区别（都是踩过或被评审指出的坑）：
         #   - 不 ShowWindow(SW_RESTORE)/不 SetForegroundWindow → 绝不抢用户焦点；
@@ -2060,8 +2126,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         if (-not $sp) { $res.error = ('进程未运行: ' + $procId) }
         else {
           $h = [IntPtr]::Zero
+          $captureHandle = $WinHandle
+          if ($step.PSObject.Properties.Name -contains 'winHandle' -and $step.winHandle) { $captureHandle = [long]$step.winHandle }
+          if ($captureHandle -gt 0) { $h = [UiDriveInputWin32]::ResolveWindow($procId, $captureHandle, '', [IntPtr]::Zero) }
           # ① UIA 原名匹配（WPF 主窗口标题可靠）
-          if ($WindowName) {
+          if ($WindowName -and $h -eq [IntPtr]::Zero) {
             try {
               $uaWins = Get-WindowElements $procId
               for ($i = 0; $i -lt $uaWins.Count; $i++) {
@@ -2098,10 +2167,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
               # 避免两处各写一份、日后再次漂移（这正是当初 shot 全黑而 capture 正常的根因）。
               $method = Render-WindowPng $h $r $w $hh $outPath
               $res.ok = $true; $res.path = $outPath; $res.w = $w; $res.h = $hh
-              $res.state = 'visible'; $res.captureMethod = $method
+              $res.state = 'visible'; $res.captureMethod = $method; $res.windowHandle = [int64]$h
+              $res.rect = @{ x = $r.Left; y = $r.Top; w = $w; h = $hh }; $res.coordinateSpace = 'window'; $res.physicalPixels = ([UiDriveInputWin32]::GetDpiAwareness() -eq 2)
             }
           }
-          if ($sp) { $res.pid = $sp.Id; $res.window = [string]$sp.MainWindowTitle }
+          if ($sp) { $res.pid = $sp.Id; $res.window = [UiDriveInputWin32]::GetWindowTitle($h) }
         }
       }
       default {
@@ -2111,6 +2181,10 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
   } catch {
     $res.ok = $false
     $res.error = $_.Exception.Message
+    $failure = Get-UiPolicyFailure $_.Exception
+    if ($failure) { $res.policyCode = $failure.policyCode; $res.desktopState = $failure.desktopState }
+  } finally {
+    [UiDriveInputWin32]::ReleasePressedInputs()
   }
   # 只返回结果对象本身：PS 5.1 会把 try 块内未抑制的表达式结果一起放进函数输出，
   # 外层拿到 Object[] 就会在 Remove/Keys 上崩（表现为「集合的大小是固定的」）。
@@ -2166,31 +2240,25 @@ if ($Serve) {
           $resp.ok = $true; $resp.reloaded = $true
         }
         'status' {
+          $null = [UiDriveInputWin32]::UsePhysicalPixels()
           $sp = $null
-          if ($ProcId -gt 0) { $sp = Get-Process -Id $ProcId -ErrorAction SilentlyContinue }
+          if ($script:ConfiguredProcId -gt 0) { $sp = Get-Process -Id $script:ConfiguredProcId -ErrorAction SilentlyContinue }
           elseif ($ProcName) { $sp = Get-Process -Name $ProcName -ErrorAction SilentlyContinue | Select-Object -First 1 }
           if (-not $sp) { $resp.error = 'NOT_RUNNING' }
           else {
-            $resp.ok = $true; $resp.pid = $sp.Id; $resp.window = $sp.MainWindowTitle
-            $resp.handle = [int64]$sp.MainWindowHandle
+            $requestedHandle = $WinHandle
+            if ($req.PSObject.Properties.Name -contains 'winHandle') { $requestedHandle = [long]$req.winHandle }
+            $selectedHandle = [UiDriveInputWin32]::ResolveWindow($sp.Id, $requestedHandle, $WindowName, $sp.MainWindowHandle)
+            $resp.ok = $true; $resp.pid = $sp.Id; $resp.window = [UiDriveInputWin32]::GetWindowTitle($selectedHandle)
+            $resp.handle = [int64]$selectedHandle
             # 进程身份（W2 policy 门用）：
             #   授权主键 = 规范化 exe 绝对路径（GetFullPath + 小写，跨"短/长路径、大小写"统一）；
             #   版本元数据只作**可选二次约束** —— 实测 codex.exe 与自研 exe 的
             #   Company/Product/Description 可能**全为空**，因此缺元数据既不能让规则
             #   "永远匹配不上→全拒"，也绝不能被当成放行依据。
-            $exePath = $null
-            try { $exePath = [string]$sp.Path } catch { }
-            if ($exePath) {
-              $resp.exe = $exePath
-              try { $resp.exeCanonical = [System.IO.Path]::GetFullPath($exePath).ToLowerInvariant() } catch { $resp.exeCanonical = $exePath.ToLowerInvariant() }
-              try {
-                $vi = (Get-Item -LiteralPath $exePath).VersionInfo
-                $resp.company = [string]$vi.CompanyName
-                $resp.product = [string]$vi.ProductName
-                $resp.description = [string]$vi.FileDescription
-                $resp.fileVersion = [string]$vi.FileVersion
-              } catch { }
-            }
+            $identity = Get-UiProcessIdentity $sp
+            foreach ($identityKey in $identity.Keys) { $resp[$identityKey] = $identity[$identityKey] }
+            $resp.desktopState = Get-UiDesktopState
           }
         }
         default {
@@ -2216,6 +2284,7 @@ if ($Serve) {
           # 请求里带了 procId 且与当前不同 → 换目标进程（多客户端/测试宿主场景），并重解析窗口
           if ($req.PSObject.Properties.Name -contains 'procId' -and $null -ne $req.procId -and [int]$req.procId -gt 0 -and [int]$req.procId -ne $procId) {
             $procId = [int]$req.procId
+            $script:ConfiguredProcId = $procId
             $main = $null
           }
           if (@('windows','expectwindow','expecttext','waitany','capture','state-live') -contains $wantAction) {
@@ -2239,20 +2308,6 @@ if ($Serve) {
             if (-not $main) {
               $procId = Get-ClientPid
               $main = Get-MainWindow $procId
-              if (-not $main) { throw ('未找到主窗口（' + $WindowName + '）') }
-              # 只读动作绝不改变窗口状态；输入/截图类才需要前台。
-              # 旧实现无条件 ShowWindow(SW_RESTORE)：对已最大化窗口等价于「还原成非最大化」
-              # → 每次工具调用窗口尺寸都变（用户可见的“缩小一下”），也让所有坐标标定失效
-              # （K 线缩放/平移坐标漂移的真正根因）。
-              $mh = [IntPtr]$main.Current.NativeWindowHandle
-              if ([UiDriveBatchWin32]::IsIconic($mh)) {
-                [UiDriveBatchWin32]::ShowWindow($mh, 9) | Out-Null
-                Start-Sleep -Milliseconds 200
-              }
-              if (Test-NeedsForeground $req) {
-                [UiDriveBatchWin32]::SetForegroundWindow($mh) | Out-Null
-                Start-Sleep -Milliseconds 150
-              }
             }
             $res = Invoke-Step $main $req 0 $procId
           }
@@ -2274,6 +2329,8 @@ if ($Serve) {
       $main = $null
       $resp.ok = $false
       $resp.error = $_.Exception.Message
+      $failure = Get-UiPolicyFailure $_.Exception
+      if ($failure) { $resp.policyCode = $failure.policyCode; $resp.desktopState = $failure.desktopState }
     }
     $writer.WriteLine('RESP_JSON=' + (AsciiJson $resp))
   }
@@ -2302,23 +2359,13 @@ for ($i = 0; $i -lt $steps.Count; $i++) {
 $main = $null
 if ($needsMain) {
   $main = Get-MainWindow $procId
-  if (-not $main) { throw ('未找到主窗口（' + $WindowName + '）' ) }
-  $mh = [IntPtr]$main.Current.NativeWindowHandle
-  if ([UiDriveBatchWin32]::IsIconic($mh)) {
-    [UiDriveBatchWin32]::ShowWindow($mh, 9) | Out-Null
-    Start-Sleep -Milliseconds 200
-  }
-  $needsFg = $false
-  for ($i = 0; $i -lt $steps.Count; $i++) { if (Test-NeedsForeground $steps[$i]) { $needsFg = $true; break } }
-  if ($needsFg) {
-    [UiDriveBatchWin32]::SetForegroundWindow($mh) | Out-Null
-    Start-Sleep -Milliseconds 200
-  }
 }
 
 $results = New-Object System.Collections.ArrayList
 for ($i = 0; $i -lt $steps.Count; $i++) {
-  [void]$results.Add((Invoke-Step $main $steps[$i] $i $procId))
+  $stepResult = Invoke-Step $main $steps[$i] $i $procId
+  [void]$results.Add($stepResult)
+  if (-not $stepResult.ok -and $steps[$i].stopOnFailure -eq $true) { break }
 }
 $sw.Stop()
 

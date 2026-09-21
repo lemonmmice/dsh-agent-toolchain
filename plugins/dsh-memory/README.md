@@ -64,6 +64,8 @@ read. See [validation and timings](../../docs/memory-store-rust.md).
 
 ## Data & privacy
 
+- Remote embedding requests have a 20-second default timeout (`DSH_MEMORY_EMBED_TIMEOUT_MS`), covering both response headers and JSON body reading. Error responses are cancelled without exposing their bodies.
+- Embedding cache names use SHA-256 over the endpoint, model and input text. Older 32-bit cache files are ignored and retained; subsequent calls populate the new cache without changing stored vectors.
 - Everything lives under `~/.dsh/memory/` (override with `DSH_MEMORY_DIR` /
   `DSH_HOME`).
 - **Embedding egress**: when a MiniMax API key is configured

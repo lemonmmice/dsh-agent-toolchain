@@ -18,6 +18,7 @@
     "build:terminal-inspector": "node scripts/build-terminal-inspector.mjs",
     "test:terminal-native": "cargo test --locked --manifest-path native/windows-process-table/Cargo.toml --target-dir .dsh-agent-toolchain/native",
     "bench:terminal-inspector": "node plugins/dsh-win-terminal-inspector/test/bench-process-table.mjs",
+    "bench:mcp": "node scripts/bench-mcp.mjs",
     "test": "node scripts/run-tests.mjs",
     "test:json": "node scripts/run-tests.mjs --json",
     "native-stacks": "node lib/native-stacks.mjs",

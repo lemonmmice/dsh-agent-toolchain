@@ -24,7 +24,7 @@ export function renderHttp(_args, value) {
   if (!value || value.ok !== true) {
     return [{ type: 'text', text: `request failed: ${(value && value.error) || 'unknown error'}` }]
   }
-  const head = `${value.status} ${value.statusText ?? ''} · ${Math.round(value.durationMs)}ms · ${value.size} bytes`
+  const head = `${value.status} ${value.statusText ?? ''} · ${Math.round(value.durationMs)}ms · ${value.sizeExact === false ? '≥' : ''}${value.size} bytes`
   let tail = ''
   if (value.redirected === true) {
     tail = `\n⚠ 本次是**跳转后的响应**：请求 ${value.requestedUrl ?? '?'} → 实际 ${value.finalUrl ?? '?'}` +
@@ -32,6 +32,7 @@ export function renderHttp(_args, value) {
   } else if (value.redirected !== false) {
     tail = '\n（跳转信息未回报：无法判断这次响应是不是跳转后的结果）'
   }
+  if (value.truncated === true) tail += '\n⚠ ' + (value.truncationNote || '响应体已截断。')
   return [{ type: 'text', text: head + tail }]
 }
 
@@ -50,6 +51,8 @@ export function toListItem(rec) {
     status: Number.isInteger(r.status) ? r.status : null,
     durationMs: Number.isFinite(r.durationMs) ? r.durationMs : null,
     size: Number.isInteger(r.size) ? r.size : null,
+    ...(r.sizeExact === false ? { sizeExact: false } : {}),
+    ...(r.truncated === true ? { truncated: true } : {}),
     error: r.ok === false ? r.error ?? '' : '',
     // PM-03：这是**有损投影**（白名单），根因修好后 finalUrl 也到不了这里 ——
     // 历史列表若不标出「这条其实是跳转后的响应」，翻历史的人会照着干净 200 下结论。

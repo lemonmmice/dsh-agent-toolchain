@@ -1090,7 +1090,7 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
           const meta = el(
             'span',
             'pm-status-meta',
-            `${response.statusText || ''} · ${fmtDur(response.durationMs)} · ${fmtSize(response.size)}${response.truncated ? ' · 已截断' : ''}`,
+            `${response.statusText || ''} · ${fmtDur(response.durationMs)} · ${response.sizeExact === false ? '≥' : ''}${fmtSize(response.size)}${response.truncated ? ' · 已截断' : ''}`,
           )
           statusLine.appendChild(meta)
           state.respRaw = response.body ?? ''
