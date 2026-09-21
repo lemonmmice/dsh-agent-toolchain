@@ -1,7 +1,7 @@
 {
   "version": 1,
   "note": "工具**能力基线**：两面（DSH 插件面 / MCP 面）都必须至少提供这些参数。由 lib/toolface-params.test.mjs 维护；刷新须显式带 DSH_TOOLFACE_BASELINE_UPDATE=1 跑一次。删除条目 = 声明\"这个能力不要了\"，请在提交说明里写理由。",
-  "generatedAt": "2026-09-17T02:45:42.756Z",
+  "generatedAt": "2026-09-21T07:57:14.603Z",
   "tools": {
     "api_capture_append": [
       "records",
@@ -75,6 +75,13 @@
       "all",
       "confirm",
       "id"
+    ],
+    "jev_decide": [
+      "allowRemoteData",
+      "model",
+      "questionsJson",
+      "stateJson",
+      "timeoutMs"
     ],
     "memory_index": [
       "budgetMs",
