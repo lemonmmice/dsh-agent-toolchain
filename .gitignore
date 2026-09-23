@@ -7,6 +7,10 @@ results/results-*.json
 bench/tasks/
 bench-runs/
 bench/local.env
+# Sample app build output. obj/ holds NuGet-generated paths (machine-specific
+# text) — without this the repo gate would have to scan them as committable.
+samples/**/bin/
+samples/**/obj/
 # Tool evidence dirs (screenshots, UI text, build logs) are local-only.
 .dsh-agent-toolchain/
 .dsh-ui-evidence/

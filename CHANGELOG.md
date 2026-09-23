@@ -10,6 +10,30 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **The loop is runnable as one command, against a sample app that ships in the repo** —
+  every previous demo needed a private desktop client on the machine, which made the first
+  five minutes unshowable: a reader could see the plugin table but never watch anything
+  happen. `samples/DemoClient` is a throwaway WPF window (net10.0-windows) carrying stable
+  AutomationIds, one button that blocks its UI thread for exactly 1500 ms, and one HTTP
+  button, so the tools have something real to point at. `mcp/demo/run-demo.mjs` is a plain
+  **MCP client** — it spawns `mcp/server.mjs` over stdio and calls the same tools Claude
+  Code / Cursor / Cline call — and runs build → launch → drive → read → `verify_report`:
+  `npm run demo` finishes 9/9 steps with `verdict: pass`, and `npm run demo:perf` also
+  catches the deliberate freeze (`stutterCount=1, maxMs=1474`). A demo run confines every
+  artifact to `.dsh-agent-toolchain/demo/` (build logs, screenshots, verify reports,
+  failure records, perf/hang evidence) so it cannot pollute the real evidence dirs, and
+  the path needs **no Rust and no MSVC** — verified on a checkout whose `plugins/*/bin/`
+  directories are empty. `install.ps1` wraps `scripts/deploy-plugins.mjs` into a
+  dry-run-first deploy plus a native-module checklist.
+
+- **README now leads with the loop instead of the architecture** — badges, the real
+  screenshot from a demo run, the real (path-shortened) transcript, a two-path Quick Start
+  (the no-Rust demo path vs. the full desktop path), and the tools table moved below the
+  fold. Two gate consequences were folded into the same change: `samples/**/bin|obj` had to
+  be gitignored — `obj/` holds NuGet-generated absolute paths, which the repo gate would
+  otherwise scan as committable text — and the README transcript is shortened because raw
+  tool output carries absolute paths.
+
 - **Native-stack unwinding is a tool capability now, not a manual adventure** —
   `DumpStack` only returns the **managed** stack, so "is a thread stuck inside the graphics
   driver?" stayed permanently unanswerable: two independent analyses of the same hang both

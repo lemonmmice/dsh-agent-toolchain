@@ -1,0 +1,46 @@
+<Window x:Class="DemoClient.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Demo Client"
+        Height="380" Width="620"
+        WindowStartupLocation="CenterScreen">
+  <Grid Margin="18">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+
+    <TextBlock Grid.Row="0" FontSize="15" FontWeight="SemiBold"
+               Text="dsh-agent-toolchain demo client" />
+
+    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,14,0,0">
+      <TextBlock Text="Name:" VerticalAlignment="Center" Margin="0,0,8,0" />
+      <!-- x:Name doubles as the UIA AutomationId in WPF, which is what
+           ui_drive/ui_observe match against. -->
+      <TextBox x:Name="Input" Width="240" Height="26" Text="world"
+               VerticalContentAlignment="Center" />
+      <Button x:Name="Greet" Content="Greet" Width="90" Height="26"
+              Margin="10,0,0,0" Click="OnGreet" />
+    </StackPanel>
+
+    <TextBlock x:Name="Result" Grid.Row="2" Margin="0,14,0,0"
+               FontFamily="Consolas" Text="(not greeted yet)" />
+
+    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,18,0,0">
+      <Button x:Name="Freeze" Content="Freeze UI 1500 ms" Width="150" Height="26"
+              Click="OnFreeze" />
+      <Button x:Name="Ping" Content="HTTP GET" Width="110" Height="26"
+              Margin="10,0,0,0" Click="OnPing" />
+      <TextBox x:Name="PingUrl" Width="280" Height="26" Margin="10,0,0,0"
+               VerticalContentAlignment="Center"
+               Text="http://127.0.0.1:8080/api/ping" />
+    </StackPanel>
+
+    <TextBlock x:Name="HttpResult" Grid.Row="4" Margin="0,14,0,0"
+               TextWrapping="Wrap" FontFamily="Consolas"
+               Text="(no request yet)" />
+  </Grid>
+</Window>

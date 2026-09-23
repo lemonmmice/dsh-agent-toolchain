@@ -2,16 +2,56 @@
 
 **The engineering runtime that makes coding agents *verifiably accountable* for their own changes.**
 
-A suite of plugins and an MCP server for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI that let a coding agent do more than write code — it can *see* the running desktop client, *measure* it, *capture* what it sends over the network, and *verify* the code it just changed. Each plugin is a small, composable building block; together they close the loop between "agent wrote a change" and "the change actually works" — and produce the evidence to prove it.
+[![CI](https://github.com/lemonmmice/dsh-agent-toolchain/actions/workflows/ci.yml/badge.svg)](https://github.com/lemonmmice/dsh-agent-toolchain/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+[![Release](https://img.shields.io/github/v/release/lemonmmice/dsh-agent-toolchain)](https://github.com/lemonmmice/dsh-agent-toolchain/releases)
+[![Node](https://img.shields.io/badge/node-20%2B-brightgreen.svg)](https://nodejs.org)
+[![MCP](https://img.shields.io/badge/MCP-stdio-8A2BE2.svg)](./mcp/README.md)
 
-> Roadmap: [ROADMAP.md](./ROADMAP.md)
-> Agent experience evaluation: [measurements, improvements and remaining work](./docs/agent-toolchain-evaluation.md).
+A suite of plugins and an MCP server that let a coding agent do more than write code — it can *see* the running desktop application, *drive* it, *measure* it, *capture* what it sends over the network, and *verify* the change it just made. Each plugin is a small, composable building block; together they close the loop between "the agent wrote a change" and "the change actually works" — and produce the evidence to prove it.
+
+![The driven sample window, after the agent typed into it and clicked Greet](./docs/media/demo-after-greet.png)
+
+One command runs the whole loop against a throwaway WPF window that ships in this repo — build it, drive it, read the result back out, then have `verify_report` adjudicate what the run claimed:
+
+```bash
+npm run demo          # build → launch → drive → read → verdict
+npm run demo:perf     # + catch a deliberately blocked UI thread
+```
+
+Real output (`npm run demo`, paths shortened):
+
+```
+1. environment self-check
+  ok   toolchain_status reports what is configured        (toolchain_status, 542 ms)
+2. build the sample app (and bind the result to a runId)
+  ok   build_run → 0 errors                               (build_run, 3353 ms)
+3. launch and look at the real window
+  ok   ui_launch brings the window up                     (ui_launch, 11929 ms)
+  ok   ui_observe(state) sees the controls                (ui_observe, 62 ms)
+4. drive it — this is the part a code-reading agent cannot do
+  ok   type into the Input box                            (ui_drive, 458 ms)
+  ok   click Greet                                        (ui_drive, 314 ms)
+  ok   read the result back out of the UI                 (ui_observe, 79 ms)
+  ok   capture a screenshot as evidence                   (ui_observe, 35 ms)
+5. adjudicate: claims vs evidence
+  ok   verify_report returns a verdict                    (verify_report, 57 ms)
+
+verdict: pass
+steps: 9/9 ok
+```
+
+`npm run demo:perf` additionally reports `stutterCount=1, maxMs=1474` — the sample app blocks its UI thread for exactly 1500 ms on purpose, and the perf probe has to catch it.
+
+> The demo is not demo-only code. `mcp/demo/run-demo.mjs` is an ordinary MCP client: it spawns `mcp/server.mjs` over stdio and calls the same tools Claude Code, Cursor or Cline would call. If it passes, the MCP face works.
+
+> Recording a GIF: `npm run demo:perf` while a screen recorder is running is the intended capture — the window does something visible at every step. `docs/media/` is where the recording goes.
 
 ## The problem
 
-Coding agents are excellent at producing patches, but they are blind to what happens after the patch: Did the build break? Did the UI actually render the new page? Which API calls did the client fire, and did one of them hang for 20 seconds? Did the change introduce a memory leak or a UI stall?
+Coding agents are excellent at producing patches, but they are blind to what happens after the patch: Did the build break? Did the UI actually render the new page? Which API calls did the application fire, and did one of them hang for 20 seconds? Did the change introduce a memory leak or a UI stall?
 
-Traditional agents verify by reading code. This toolchain lets them verify by *observing the running application* — the same way a human QA engineer would.
+Traditional agents verify by reading code. This toolchain lets them verify by *observing the running application* — the same way a human QA engineer would — and then makes them show the evidence.
 
 ## The loop
 
@@ -20,62 +60,75 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
                                       → capture APIs (dsh-api-visualizer, dsh-postman)
                                       → inspect perf (dsh-perf) / hang (dsh-hang-inspector)
                                       → remember lessons (dsh-memory)
+  claim "done" → verify_report: claims vs evidence → one verdict
   fail / handoff → failure_record → failure corpus (the data flywheel)
 ```
 
-## Plugins
+## Quick start
+
+### Path A — the demo path (no Rust, about five minutes)
+
+Exactly the tools `npm run demo` exercises — `build_run`, the `ui_*` family, `verify_report`, `perf_probe`, `http_request` — need **neither Rust nor MSVC**. Verified on a checkout whose `plugins/*/bin/` directories are empty.
+
+1. Node.js 20+ and a .NET SDK (the sample targets `net10.0-windows`).
+2. `npm install --prefix mcp` — the MCP server is the only thing with a dependency.
+3. `npm run demo`.
+
+Nothing is written into the repo tree: a demo run keeps its screenshots, build log, verify report and any failure records under `.dsh-agent-toolchain/demo/` (gitignored).
+
+### Path B — full desktop mode
+
+The API-capture store, the memory index, flame folding and the terminal inspector load Rust Node-API modules. Build the ones you need (Rust + Visual C++ build tools), or take a deployment that already ships them:
+
+```bash
+npm run build:capture-store        # dsh-api-visualizer (+ shared by dsh-verify)
+npm run build:memory-store         # dsh-memory
+npm run build:trace-fold           # dsh-perf flame folding
+npm run build:terminal-inspector   # dsh-win-terminal-inspector
+```
+
+Then `pwsh -File install.ps1` (dry run) or `pwsh -File install.ps1 -Apply` to copy the plugins into your DSH profile, register them in `cordis.patch.yml`, and restart the host.
+
+## What this does that a code-reading agent cannot
+
+- **Tell the difference between "0 errors" and "the file was compiled".** Legacy `.csproj` projects do not include new `.cs` files automatically, so a build can report success while your file was never compiled. `build_compile_check` answers that question specifically, with three states — in the compilation set, provably not, or *cannot be read* (never silently "not").
+- **Operate and observe the real application.** `ui_observe` / `ui_drive` / `ui_flow` find controls by name or AutomationId, click, type, wait for conditions, read values back, and capture window-scoped screenshots. Read-only actions never need permission; anything that clicks or types must pass `allowSideEffects=true`, and an optional snapshot-freshness gate rejects actions aimed at a stale UI.
+- **Refuse to take the agent's word for it.** A closing summary becomes a claims list, and `verify_report` adjudicates each claim against machine evidence — a build record, the API capture store, a file on disk, a real command, git state — producing `pass` / `incomplete` / `fail`. Claims that the evidence contradicts are recorded in the failure corpus (class `agent-misjudge`) automatically. When the tools cannot see something, they say "unverified", not "passed".
+
+## Tools — 54, of which 23 are read-only
+
+The single source of truth is [`lib/tool-registry.mjs`](./lib/tool-registry.mjs); both faces (DSH plugins and MCP) are generated from it, so they cannot drift apart.
 
 | Plugin | What it does for the agent |
 | --- | --- |
-| [dsh-build](./plugins/dsh-build/README.md) | Run MSBuild as a tool: incremental build, structured error list (file/line/col/code), error re-parse. Build defaults auto-resolve by repo layout (legacy client layouts keep their defaults byte-for-byte; stock repos get `.sln`/`.slnx` + platform auto-detection). Turns "agent wrote code" into "agent wrote code that compiles". |
-| [dsh-ui-drive](./plugins/dsh-ui-drive/README.md) | Drive a running Windows desktop client via UIA: find/click/type/read/screenshot, visual-tree dumps, multi-step flows with assertions, screenshot + vision description. Lets the agent navigate to a page and *see* the result. |
-| [dsh-api-visualizer](./plugins/dsh-api-visualizer/README.md) | Capture the client's HTTP traffic: live panel, JSONL store, caller attribution (ViewModel/API/call-chain), auto-responder rules, baseline/contract regression. Answers "which API did this page fire, and what came back?" |
+| [dsh-build](./plugins/dsh-build/README.md) | Run MSBuild / `dotnet build` as a tool: incremental build, structured error list (file/line/col/code), error re-parse, compile-membership check. Build defaults auto-resolve by repo layout (legacy client layouts keep their defaults byte-for-byte; stock repos get `.sln`/`.slnx` + platform auto-detection). |
+| [dsh-ui-drive](./plugins/dsh-ui-drive/README.md) | Drive a running Windows desktop client via UIA: find/click/type/read/screenshot, visual-tree dumps, multi-step flows with assertions, screenshot + vision description. |
+| [dsh-verify](./plugins/dsh-verify/README.md) | The closing-adjudication surface: claims vs evidence verdicts, plus the failure corpus tools. Thin shell over `lib/verify` — the same engine behind the MCP `verify_report`. |
+| [dsh-api-visualizer](./plugins/dsh-api-visualizer/README.md) | Capture the client's HTTP traffic: live panel, JSONL store, caller attribution, auto-responder rules, baseline/contract regression, optional Fiddler-style local proxy. |
 | [dsh-postman](./plugins/dsh-postman/README.md) | Postman-style HTTP client inside the harness: compose/send requests from the host (no browser CORS), history store, WebSocket client, `http_request` agent tool. |
-| [dsh-perf](./plugins/dsh-perf/README.md) | UI stutter measurement (SendMessageTimeout latency, P50/P95/P99, stutter events), full-dump capture + ClrMD analysis (UI thread stack, lock hot spots), managed-heap type stats (leak screening). |
-| [dsh-hang-inspector](./plugins/dsh-hang-inspector/README.md) | One-click hang diagnosis: monitor main-window responsiveness, auto-collect evidence packs (frozen screenshot, timeline, process info, net-trace tail, dump), analyze the managed thread stack and map the hang thread to project source. |
-| [dsh-memory](./plugins/dsh-memory/README.md) | Long-term memory for the harness: semantic search over indexed workspace docs, cross-session key-value conventions. Stops the agent from re-learning the same project rules every session — and keeps itself clean: mtime-incremental indexing, stale-chunk eviction, token/secret filter on save. |
-| dsh-jev | Optional TypeSafe Jev decision layer: batched typed routing/evidence judgments with explicit remote-data opt-in; advisory only, never executes a selected action. |
-| [dsh-win-terminal-inspector](./plugins/dsh-win-terminal-inspector/README.md) | Windows terminal (ConPTY) inspection for persistent bash shells — the piece that stops the harness from throwing "terminal inspection unsupported on win32". |
-| [dsh-verify](./plugins/dsh-verify/README.md) | The closing-adjudication surface: your task-closing summary becomes a claims list, adjudicated by machine (build record / capture store / file evidence) with one verdict. Thin shell over `lib/verify` — same engine as the MCP `verify_report` tool. |
+| [dsh-perf](./plugins/dsh-perf/README.md) | UI stutter measurement (window-message latency, P50/P95/P99, stutter events), full-dump capture + ClrMD analysis, managed-heap stats, GC-root retention paths, ETW trace / hotstacks / flame and allocation folding, UI-freeze (wall-clock) analysis. |
+| [dsh-hang-inspector](./plugins/dsh-hang-inspector/README.md) | Hang diagnosis: monitor main-window responsiveness, auto-collect evidence packs (frozen screenshot, timeline, process info, net-trace tail, dump), analyze the managed thread stack and map the hang to project source. |
+| [dsh-memory](./plugins/dsh-memory/README.md) | Long-term memory for the harness: semantic search over indexed workspace docs, cross-session key-value conventions, mtime-incremental indexing, stale-chunk eviction, token/secret filter on save. |
+| [dsh-win-terminal-inspector](./plugins/dsh-win-terminal-inspector/README.md) | Windows terminal (ConPTY) inspection for persistent shells. |
+| [dsh-jev](./docs/jev-integration.md) | Optional TypeSafe Jev decision layer: batched typed routing/evidence judgments with explicit remote-data opt-in; advisory only, never executes a selected action. |
 
-## Highlights
+**Highlights**
 
-- **One toolchain, every agent**: the same tools power the DeepSeek Harness plugins **and** any MCP client — see [mcp/](./mcp/README.md). Claude Code, Cursor, Cline can drive the client, run builds, capture APIs and search memory with the exact same `lib/` code. Platform scope is honest: the evidence spine (verify / failure corpus / capture / memory / http), the `dotnet` build engine and the build-target resolution are cross-platform; UI-driving and the VS-MSBuild engine are Windows-only ([mcp/README.md](./mcp/README.md)).
-- **Safety-first UI automation**: `click`/`setvalue`/`key` require an explicit `allowSideEffects=true`; read-only operations (`find`/`read`/`shot`/`expect`) are always safe. Trading entries are never clicked.
-- **Honest measurement**: perf metrics come from real windows-message round trips; cost/price tables mark "unknown" instead of inventing numbers.
-- **Loopback-only control APIs**: all Web routes bind to 127.0.0.1; no external callbacks.
-- **Zero-drift config**: every environment-specific value (client exe name/window title, evidence dirs, tool paths, source roots) is an environment variable with a sane default — no hard-coded machines, no embedded credentials.
-- **The failure corpus is the moat**: failure paths record themselves — build errors, ui_flow assertion failures, ui_drive/http failures, and verify_report claim-vs-evidence mismatches all append automatically (fixed 7-class taxonomy). Manual recording is only for what the system can't see, like human handoffs. See [docs/failure-corpus.md](./docs/failure-corpus.md).
+- **One toolchain, every agent**: the same tools power the DeepSeek Harness plugins **and** any MCP client — see [mcp/](./mcp/README.md). Claude Code, Cursor and Cline can drive the client, run builds, capture APIs and search memory with the exact same `lib/` code.
+- **Safety-first UI automation**: `click`/`setvalue`/`key` require an explicit `allowSideEffects=true`; read-only operations are always safe. An operational kill switch and an optional deny-first policy sit above every action, and recovery is deliberately not an agent tool.
+- **Honest measurement**: perf numbers come from real window-message round trips and each report prints what the method *cannot* see; cost tables say "unknown" instead of inventing numbers; an empty enumeration is reported as "not read", never as "nothing there".
+- **The failure corpus is the moat**: failure paths record themselves — build errors, `ui_flow` assertion failures, `ui_drive`/`http` failures, and `verify_report` claim-vs-evidence mismatches all append automatically under a fixed 7-class taxonomy. See [docs/failure-corpus.md](./docs/failure-corpus.md).
+- **Loopback-only control APIs**, and every environment-specific value (client exe, window title, evidence dirs, tool paths, source roots) is an environment variable with a sane default: no hard-coded machines, no embedded credentials.
 
-## Requirements
+## Works with any MCP client
 
-- Windows 10/11 (the client-driving and performance plugins target Windows desktop apps)
-- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI (Node.js 20+)
+```bash
+claude mcp add --scope user dsh-agent-toolchain -- cmd /c node <repo>\mcp\server.mjs
+```
 
-## Install
+Cursor, Cline and other stdio clients take the same command. Configuration details, progress notifications, output budgets and the honest platform matrix live in [mcp/README.md](./mcp/README.md).
 
-CPU/allocation flame folding uses a Rust Node-API module. Run
-`npm run build:trace-fold` and deploy `plugins/dsh-perf/bin/` with the plugin.
-See the [trace-fold migration report](./docs/trace-fold-rust.md) for scope and timings.
-
-Memory indexing/search also uses a Rust Node-API module. Run
-`npm run build:memory-store` and include `plugins/dsh-memory/bin/` in deployments.
-Existing JSONL indexes remain readable; see the
-[memory migration report](./docs/memory-store-rust.md) for performance and limits.
-
-Capture storage (both DSH and MCP) uses a Rust Node-API module. Before first use,
-run `npm run build:capture-store` from the repository root with Rust and the
-platform linker installed. Deploy `plugins/dsh-api-visualizer/bin/` together with
-the shared `lib/` files. Windows builds require Visual C++ build tools; runtime
-consumers only need the built module. See the
-[capture-store migration report](./docs/capture-store-rust.md).
-
-When deploying `dsh-win-terminal-inspector` from source, first run
-`npm run build:terminal-inspector` on Windows with Rust (MSVC) and Visual C++ build
-tools installed. Copy the generated plugin `bin/` directory along with its JS
-files. End users do not need Rust or PowerShell for process inspection. See the
-[terminal inspector README](./plugins/dsh-win-terminal-inspector/README.md) for
-architecture, verification and benchmark commands.
+## Install (details)
 
 Each plugin is a drop-in host plugin. Copy the plugin directory into your DSH profile's `plugins/` (or `node_modules/@dsh-agent-toolchain/` for the panels) and register it in `cordis.patch.yml`:
 
@@ -85,11 +138,9 @@ Each plugin is a drop-in host plugin. Copy the plugin directory into your DSH pr
       name: './plugins/dsh-ui-drive/index.js'
 ```
 
-**Shared `lib/`:** `dsh-build`, `dsh-ui-drive` and `dsh-verify` import the
-repo-root `lib/` modules (`decode`, `build-resolve`, `failure-corpus`,
-`capture-store`, `verify/report`). Their relative imports resolve against the
-**profile root**, so copy the files you need into the profile as
-`<profile>/lib/…` (mirroring the monorepo `lib/` tree):
+`scripts/deploy-plugins.mjs` (wrapped by `install.ps1`) is the supported way to do that copy; `--check` reports drift without writing.
+
+**Shared `lib/`:** `dsh-build`, `dsh-ui-drive` and `dsh-verify` import the repo-root `lib/` modules (`decode`, `build-resolve`, `failure-corpus`, `capture-store`, `verify/report`). Their relative imports resolve against the **profile root**, so copy the files you need into the profile as `<profile>/lib/…` (mirroring the monorepo `lib/` tree):
 
 ```
 <profile>/
@@ -102,46 +153,29 @@ repo-root `lib/` modules (`decode`, `build-resolve`, `failure-corpus`,
     verify/report.mjs
 ```
 
-Missing shared modules make the plugin crash at load (static imports); the
-`failure-corpus`/`verify` dynamic imports degrade to no-ops instead.
+Missing shared modules make the plugin crash at load (static imports); the `failure-corpus`/`verify` dynamic imports degrade to no-ops instead.
 
-Then restart the harness and set the environment variables the plugin needs (see each plugin README).
+Then restart the host, and ask the agent for `toolchain_status` — it reports what is configured, from which source (process env / user registry / unset), and what cannot be checked.
 
-## Layout
+## Platform scope (honest)
 
-```
-plugins/
-  dsh-build/                  # MSBuild as an agent tool
-  dsh-ui-drive/               # UIA client driver + vision ground-truth
-  dsh-api-visualizer/         # traffic capture panel + proxy engine
-  dsh-postman/                # host-side HTTP client
-  dsh-perf/                   # stutter probe + dump analysis
-  dsh-hang-inspector/         # hang loop + dump-stack analysis
-  dsh-memory/                 # vector/KV long-term memory
-  dsh-win-terminal-inspector/ # win32 ConPTY inspection
-  dsh-verify/                 # closing-adjudication shell over lib/verify
-mcp/
-  server.mjs                  # MCP stdio server: build/ui-drive/http/memory/capture/failure/verify tools
-lib/
-  failure-corpus.mjs          # local failure corpus: record/query/stats
-  capture-store.mjs           # shared API-capture store (panel + MCP + verify)
-  verify/report.mjs           # claims-vs-evidence verdict; auto-feeds agent-misjudge
-scripts/
-  check.mjs                   # CI sanity gate (syntax + private-ref scan)
-  seed-failure-corpus.mjs     # idempotent seed of example failure records
-docs/
-  architecture.md             # how the pieces compose
-  failure-corpus.md           # failure taxonomy + record schema
-```
+The evidence spine (`verify` / failure corpus / capture / memory / http), the `dotnet` build engine and build-target resolution are cross-platform. UI-driving, the VS-MSBuild engine and the perf/hang probes are Windows-only, and on macOS/Linux they report `unconfigured` rather than pretending. The per-tool matrix is in [mcp/README.md](./mcp/README.md#platform-scope-honest); the compatibility matrix (harness × plugin × MCP versions) is in [docs/compatibility.md](./docs/compatibility.md).
+
+## Docs
+
+| Doc | What is in it |
+| --- | --- |
+| [ROADMAP.md](./ROADMAP.md) | The public three-year plan and its design principles |
+| [docs/architecture.md](./docs/architecture.md) | How the pieces compose |
+| [docs/failure-corpus.md](./docs/failure-corpus.md) | Failure taxonomy and record schema |
+| [docs/verification-report.md](./docs/verification-report.md) | Claim kinds and verdict semantics |
+| [docs/agent-toolchain-evaluation.md](./docs/agent-toolchain-evaluation.md) | Measurements of this toolchain, plus what is still weak |
+| [docs/ui-drive-safety-boundary.md](./docs/ui-drive-safety-boundary.md) | What UI automation is allowed to do |
+| [CHANGELOG.md](./CHANGELOG.md) | SemVer history (Keep a Changelog) |
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md).
-
-## Releases
-
-- [CHANGELOG.md](./CHANGELOG.md) — SemVer history (Keep a Changelog format)
-- [docs/compatibility.md](./docs/compatibility.md) — harness/plugin/MCP compatibility matrix
+See [CONTRIBUTING.md](./CONTRIBUTING.md). `npm run check` is the repo gate (syntax, forbidden references, schema DSL, PowerShell encoding); `npm run verify` runs the whole suite.
 
 ## License
 
