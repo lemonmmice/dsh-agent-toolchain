@@ -38,6 +38,20 @@ const pending = new Map()
 let sequence = 0
 let output = ''
 let stderr = ''
+// 预算从 15s 提到 60s：`mcp/server.mjs` 冷启动要 import 一大片模块，CI runner 比暖机开发机慢得多
+// （2026-09-23 实测：CI 上正是撞在 15s 上 —— 15220ms 失败，而本机 989ms 绿）。
+// ⚠ 这不是"用超时掩盖失败"：下面给 child 的 exit 挂了竞速 —— **进程一死就立刻带 stderr 失败**，
+//   只有"还活着但慢"才会等到预算耗尽。原来那句 `MCP timeout: <method>` 把 child 的 stderr 一起吞了，
+//   而 runner 只留输出尾部 ⇒ 失败原因在 CI 上根本读不到（2026-09-23 复核：失败步骤日志 12KB，无该字样）。
+const RPC_BUDGET_MS = Number(process.env.DSH_TEST_RPC_TIMEOUT_MS || 60000)
+const failPending = (reason) => {
+  for (const [id, p] of pending) {
+    clearTimeout(p.timer)
+    pending.delete(id)
+    p.reject(new Error(reason + '（请求 ' + p.method + ' 未完成）\n--- child stderr ---\n' + stderr.slice(-4000)))
+  }
+}
+client.on('exit', (code, signal) => failPending(`MCP 子进程退出 code=${code} signal=${signal}`))
 client.stderr.on('data', chunk => { stderr += chunk })
 client.stdout.on('data', chunk => {
   output += chunk
@@ -48,19 +62,23 @@ client.stdout.on('data', chunk => {
     output = output.slice(newline + 1)
     let message
     try { message = JSON.parse(line) } catch { continue }
-    const resolve = pending.get(message.id)
-    if (resolve) { pending.delete(message.id); resolve(message) }
+    const p = pending.get(message.id)
+    if (p) {
+      clearTimeout(p.timer)
+      pending.delete(message.id)
+      if (message.error) p.reject(new Error(JSON.stringify(message.error)))
+      else p.resolve(message.result)
+    }
   }
 })
 function rpc(method, params = {}) {
   return new Promise((resolve, reject) => {
     const id = ++sequence
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('MCP timeout: ' + method + '\n' + stderr)) }, 15000)
-    pending.set(id, message => {
-      clearTimeout(timer)
-      if (message.error) reject(new Error(JSON.stringify(message.error)))
-      else resolve(message.result)
-    })
+    const timer = setTimeout(() => {
+      pending.delete(id)
+      reject(new Error(`MCP 无响应 ${RPC_BUDGET_MS}ms：${method}\nchild exitCode=${client.exitCode}\n--- child stderr ---\n${stderr.slice(-4000)}`))
+    }, RPC_BUDGET_MS)
+    pending.set(id, { method, resolve, reject, timer })
     client.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
   })
 }
