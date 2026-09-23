@@ -120,3 +120,118 @@ Honest inventory, because a citation to a file that cannot be produced is worse 
   archive, which still contains one review report verbatim and the other's conclusions.
 - **What we changed as a result:** the plugin documentation no longer points readers at those two
   filenames; it states the findings instead. See `plugins/dsh-ui-drive/README.md`.
+
+## Appendix: the studied subset, module by module
+
+Why an appendix: the borrow table above answers "what did you take". This answers the question a
+developer actually asks next — **"what was in the box, and what does each part do?"** The subset kept
+locally was 76 files across ten packages of the `codex-rs` workspace.
+
+How to read it. Descriptions quoted in the *What it does* column are **upstream's own module doc
+comments** (`//!`), copied from the local subset — they are the authors' words, not our summary.
+Where a module carries no doc comment, the description is the module name plus, for the
+`handlers/*_spec.rs` family, the pattern verified by reading `view_image_spec.rs`
+(`create_*_tool(...) -> ToolSpec`, building a JSON schema and a tool definition). The *Used here?*
+column is our own status and never a claim about upstream.
+
+Legend: **✔ borrowed** (see the table above) · **◐ partly** · **○ read, not adopted** ·
+**— studied, not applicable to us**.
+
+### `core/src/guardian/` — approvals and the isolated reviewer (13 modules)
+
+| Module | What it does | Used here? |
+| --- | --- | --- |
+| `mod.rs` | "Hosts approval decisions and the isolated synchronous reviewer. The extension chooses policy and evidence; core enforces permissions and mandatory review requirements. Each approval retains its issuing context and cancellation." | ✔ the separation itself (policy elsewhere, enforcement in the core) |
+| `decision.rs` | "Calls the decision extension for each approval and enforces host constraints. The synchronous service captures one action; no outcome is stored by tool-call ID." | ✔ per-action decisions with host-enforced constraints |
+| `coverage.rs` | "Supplies action categories to the review extension and enforces host-owned requirements." | ◐ categories + host-owned requirements |
+| `approval_request.rs` | The shape of an approval request (no module doc). | ✔ the request envelope |
+| `input_budget.rs` | "Finalizes a pending reviewer input after tools and turn context are resolved." | ✔ budgeted reviewer input |
+| `request_budget.rs` | "Measures and checks complete synchronous requests after wire prefix assembly. Includes reused history, tool definitions, output format and continuations." | ✔ the "measure the whole request, not the delta" rule |
+| `prompt.rs` | Reviewer prompt assembly (no module doc). | ○ |
+| `review.rs` | "Supplies host review preparation, interruption and runtime configuration. Guardian's extension owns the synchronous review loop and pool." | ◐ |
+| `review_request.rs` | "Captures and reports one review on the host's original action and authorization state." | ✔ the reviewable artifact |
+| `review_session_context.rs` | "Owns sync reviewer checkpoint and invalidation policy for both context modes." | ○ |
+| `review_session_factory.rs` | "Prepares opaque session inputs for the extension-owned reviewer pool." | ○ |
+| `reviewer_config.rs` | "Applies extension-owned reviewer settings to host configuration and builds context. Managed constraints, live network rules and policy prompt construction stay in the host." | ○ |
+| `revisit_session_context.rs` | Reviewer session revisit handling (no module doc). | ○ |
+
+### `guardian-context/` — composing bounded evidence for a reviewer (9 modules)
+
+| Module | What it does | Used here? |
+| --- | --- | --- |
+| `enforcement.rs` | "Fits newly composed evidence into the remaining complete-request allowance. **Required action evidence is never truncated.** Optional evidence leaves first; hosts may shorten historical instructions after compaction cannot make room. Every reduction reserves an omission notice and preserves source order." | ✔ the reduction order and the never-silently-shorten rule |
+| `budget.rs` | "Payload-free accounting for composed sections and complete Guardian requests. Text and image bytes stay separate." | ✔ separate text/image accounting |
+| `composition.rs` | "Composes collected evidence into ordered sections with explicit delivery. Profiles retain the host-selected transcript slice; composition owns framing, message boundaries and section placement, without retaining history." | ◐ |
+| `transcript.rs` | "Collects bounded conversation evidence before consumer-specific rendering. Both Guardian consumers receive the same role and tool-source attribution." | ○ |
+| `action.rs` | "Planned-action prompt framing shared by the two production reviewers. Hosts serialize complete actions; whole-request admission bounds the input." | ✔ complete actions, bounded input |
+| `authorization.rs` | "Shared root-conversation and host-verified answer sections. Hosts resolve and bound these inputs before collection." | ○ |
+| `images.rs` | "Bounded image selection shared by Guardian consumers. Keeps source order and evicts oldest images using the existing count/byte caps." | ○ |
+| `profile.rs` | "Resolved Guardian evidence profiles and pure transcript retention. Sync keeps recent entries; async protects approvals/final answers and evicts in cacheable chunks." | ○ |
+| `node_repl.rs` | "Renders a borrowed, bounded host snapshot of completed REPL responses." | ○ — we host no JS REPL; shell sessions go through `dsh-win-terminal-inspector` |
+
+### `ext/guardian-v2/src/async_scorer/` — the asynchronous second-model scorer (6 modules)
+
+| Module | What it does | Used here? |
+| --- | --- | --- |
+| `extension.rs` | The extension that wires an asynchronous scorer into the decision path (no module doc). | ◐ the idea of a separate, reviewable verdict artifact |
+| `approval.rs` | "Owns approval routing and the choice between cached evidence and a fresh assessment. **Registration does not depend on the async scorer starting successfully.**" | ✔ degradation is not a failure |
+| `action.rs` | "Renders complete planned-action JSON or rejects it for synchronous review. Action arguments cannot be shortened to fit the asynchronous classifier budget." | ✔ never shrink the thing being judged |
+| `authorization.rs` | "Binds cached classifier results to the user authorization and model policy they evaluated." | ✔ a cached verdict is bound to the policy version that produced it |
+| `config.rs` | Scorer configuration (no module doc). | ○ |
+| `classifier_instructions.md` | The classifier's instructions, shipped as an asset. | ○ |
+
+### `app-server-protocol/` and `protocol/` — the wire types
+
+| Module | What it does | Used here? |
+| --- | --- | --- |
+| `app-server-protocol/schema/typescript/v2/Guardian{ApprovalReview,ApprovalReviewAction,ApprovalReviewStatus,RiskLevel,UserAuthorization}.ts`, `AllowDenyRequirement.ts` | Generated TypeScript schemas ("GENERATED CODE! DO NOT MODIFY BY HAND!") for review status, risk level, user authorization and allow/deny requirements. | ◐ the vocabulary: status, risk, authorization, allow/deny as first-class typed values |
+| `protocol/src/mcp.rs` | "Types used when representing Model Context Protocol (MCP) values inside the Codex protocol." | ○ |
+| `protocol/src/openai_models/guardian.rs` | "Model-owned Guardian coverage. Missing policy preserves legacy behavior; **unknown modes retain synchronous review and never enable the fast path**." | ✔ unknown → the safe path, never the fast one |
+
+### `config/` — computer-use access control
+
+| Module | What it does | Used here? |
+| --- | --- | --- |
+| `computer_use.rs` | `ComputerUseConfigToml`: a **default allow/deny**, then per-target rules — macOS by `bundle_ids`, Windows by `aumids` and `exes` carrying `publisher_name` / `product_name` / `binary_name`. Read in full during this study. | ✔ identify the target before acting; version metadata as a second constraint |
+| `browser_computer_use_requirements.rs` | The requirement model that backs those per-target decisions (`allow_locked_computer_use`, …). | ◐ |
+
+### `core/src/tools/` — the tool layer (and the tool set itself)
+
+| Module | What it does | Used here? |
+| --- | --- | --- |
+| `call_trace.rs` | "Trace milestones for every direct or code-mode tool call handled by core. **These events contain call identifiers and names, never arguments or output.**" | ✔ `lib/tool-trace.mjs` |
+| `code_mode/execute_spec.rs`, `code_mode/wait_spec.rs` | The code-mode execute and wait tools — start work, then wait on a handle. | ✔ the yield-or-handle shape (`build_run` background) |
+| `executed_tool_calls/seen_ids.rs` | "Tracks seen call and runtime cell IDs with bounded memory. **Bits are never cleared: collisions can withhold a proof, but cannot make an observed ID appear fresh again.**" | ✔ fail-safe by construction (a false "seen" is acceptable, a false "fresh" is not) |
+| `handlers/shell_spec.rs` | The shell tool's definition (`exec_command`). | ✔ yield-or-handle |
+| `handlers/view_image_spec.rs` | The image tool: `create_view_image_tool(...) -> ToolSpec`; images come back as image content blocks, not as paths to go read. | ✔ `mcp/inline-image.mjs` |
+| `handlers/apply_patch_spec.rs` | The patch-application tool's definition. | ○ |
+| `handlers/plan_spec.rs` | The planning tool. | ○ |
+| `handlers/request_user_input_spec.rs` | The tool that asks the human a question. | ◐ (human handoffs exist here as a failure-corpus class rather than a tool) |
+| `handlers/tool_search_spec.rs` | Tool discovery / deferred loading — needed when a tool set is large enough that the definition itself is the context cost. | ○ — explicitly on the "do not copy" list; this tool set is 54 tools shown in full |
+| `handlers/mcp_resource_spec.rs` | Reads MCP resources. | ○ |
+| `handlers/multi_agents_spec.rs` | Sub-agent spawning and messaging. | ○ |
+| `handlers/get_context_remaining_spec.rs` | Reports the remaining context budget. | ○ |
+| `handlers/extension_tools.rs` | Tools contributed by extensions. | ◐ (our plugins contribute tools, but through one registry) |
+| `handlers/list_available_plugins_to_install_spec.rs`, `handlers/request_plugin_install_spec.rs` | Plugin discovery and install request. | ○ |
+
+### The remaining packages
+
+| Module | What it does | Used here? |
+| --- | --- | --- |
+| `tools/src/tool_spec.rs` | The tool-spec type itself — one definition per tool, as data. | ✔ `lib/tool-registry.mjs` |
+| `core-plugins/src/tool_suggest_metadata.rs` | Suggestion metadata attached to tools. | ◐ |
+| `core/src/function_tool.rs` | The function-tool representation. | ○ |
+| `core/src/mcp_tool_exposure.rs`, `core/src/session/mcp.rs` | How MCP tools are exposed into a session. | ✔ one tool set, exposed consistently |
+| `core/src/context/world_state/tools.rs` | The model's view of available tools as a context section. | ◐ |
+| `core/src/context/guardian_tool_descriptions.rs` | "**Bounded, untrusted** descriptions for the exact MCP action under review." | ✔ text coming back from the UI/MCP side is treated as untrusted input |
+| `core/src/turn_metadata.rs` | Per-turn metadata. | ○ |
+| `core/assets/guardian/policy.md`, `policy_template.md`, `node_repl_policy.md` | The Guardian policy documents shipped as assets — including the rule to treat truncation markers as omitted data. | ◐ policy as a reviewable file |
+| `features/src/lib.rs` | "Centralized feature flags and metadata." | ◐ |
+| `tui/src/history_cell/{mod,base,exec,mcp,mcp_result,patches,computer_activity,search}.rs` | The transcript cell model: "A `HistoryCell` is the unit of display in the conversation UI"; `mcp_result.rs` keeps "width-independent display content retained after an MCP call completes", validating multi-megabyte bodies. | ✔ render layer shaped by producer type — the `render-*.test.mjs` suites here |
+
+### What the subset deliberately leaves out
+
+The local copy is a slice, not a mirror: the rest of the workspace (model clients, sandboxing,
+auth, the TUI's rendering internals) was never retained, and the review round's "do not copy" list
+lives on in the borrow table above.
+
