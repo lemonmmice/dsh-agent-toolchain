@@ -191,6 +191,22 @@ console.log('\n[C] 戳记覆盖（C1）+ state-live 非权威（C2）')
 // =======================================================================================
 console.log('\n[D] 写门端到端（C4/C5/C7/C8/C9 + 坐标动作 C3）')
 {
+  const driver = newDriver()
+  const payload = stateStep('主窗口')
+  payload.steps[0].windowHandle = 777
+  setBatchPayload(payload)
+  const observation = await driver.drive({ action: 'state', winHandle: 777 })
+  check('state snapshot binds the observed HWND', driver.decodeSnapshotId(observation.snapshotId).windowHandle === '777')
+  setBatchPayload(clickStep())
+  const accepted = await driver.drive({ action: 'click', name: 'btn', index: 0, winHandle: 777, allowSideEffects: true, snapshotId: observation.snapshotId })
+  check('same HWND accepts the fresh snapshot', accepted.ok === true, JSON.stringify(accepted))
+  const sentinelBefore = sentinelLen(batchSentinel)
+  const rejected = await driver.drive({ action: 'click', name: 'btn', index: 0, winHandle: 778, allowSideEffects: true, snapshotId: observation.snapshotId })
+  check('different HWND stays blocked', rejected.ok === false && !!rejected.staleSnapshot)
+  check('different HWND executes nothing', sentinelLen(batchSentinel) === sentinelBefore)
+  driver.warmShutdown()
+}
+{
   const d = newDriver()
   // 取一个新鲜 id（state 读）
   setBatchPayload(stateStep('主窗口'))
@@ -335,6 +351,69 @@ console.log('\n[F] read(diff=true)（C10–C13）')
   check('C12 空枚举 → diffSuppressed', empty.diffSuppressed === true, JSON.stringify(empty).slice(0, 160))
   check('C12 空枚举 → 保留空枚举 warn', /0 个元素/.test(empty.warn || ''), String(empty.warn))
   check('C12 空枚举 → 无 diff 对象', empty.diff === undefined, JSON.stringify(empty.diff))
+  d.warmShutdown()
+}
+
+// =======================================================================================
+// Block E — requireUnique：唯一性门并进动作调用（2026-09-23）
+//   背景：ui_jev 曾「先 find 一轮拿 count、再 act 一轮」，而 act 自己**又会解析一次**
+//   ⇒ 同一个目标付两轮 UIA 扫描（本机实测 find 2.2 s + act 内解析 2.2 s，占 ui_jev 单步约 19 %）。
+//   并进动作调用既省一轮，又比"先查后点"更安全：判定与执行之间不会被界面变化插队。
+// =======================================================================================
+console.log('\n[E] requireUnique（唯一性门并进动作调用）')
+{
+  const d = newDriver()
+  const batchBefore = sentinelLen(batchSentinel)
+  setBatchPayload({ ok: false, elapsedMs: 1, steps: [
+    { step: 1, action: 'click', ok: false, ambiguous: true, count: 2, error: '目标不唯一：requireUnique 要求恰好 1 个匹配，实际 2 个（未执行任何动作）' },
+  ] })
+  const rejected = await d.drive({ action: 'click', name: 'btn', allowSideEffects: true, requireUnique: true })
+  check('E1 不唯一 → ok=false', rejected.ok === false, JSON.stringify(rejected))
+  check('E2 ambiguous 必须透传（执行器的失败白名单少一个字段就等于没有这个功能）', rejected.ambiguous === true, JSON.stringify(rejected))
+  check('E3 带回实际匹配数', rejected.count === 2, JSON.stringify(rejected))
+  check('E4 是**执行器自己**拒绝的（走到了批量引擎，不是被写门早早拦下）', sentinelLen(batchSentinel) > batchBefore)
+  d.warmShutdown()
+}
+{
+  // 路径选择：requireUnique 必须强制走批量引擎 —— 一次性脚本不认识这个字段，
+  // 若默默走一次性路径，唯一性门就被**静默吞掉**（动作照点，且没人知道门没了）。
+  const d = newDriver()
+  const oneShotBefore = sentinelLen(oneShotSentinel)
+  setBatchPayload(clickStep())
+  const r = await d.drive({ action: 'click', name: 'btn', allowSideEffects: true, requireUnique: true })
+  check('E5 requireUnique 走批量引擎（一次性路径会静默丢掉唯一性门）',
+    r.ok === true && sentinelLen(oneShotSentinel) === oneShotBefore, JSON.stringify(r))
+  d.warmShutdown()
+}
+
+// =======================================================================================
+// Block F — drift：观察→动作之间的漂移门（2026-09-23）
+//   调用方（ui_jev）是「观察 → 决策 1~2 s → 动作」的节奏，动作自己的解析再花约 2 s；
+//   这 3~4 s 里界面可能已经换页，而解析只按 name/aid 找，**分辨不出"同名同 aid 但已不是同一个控件"**。
+//   所以观察到的矩形/窗口句柄要当凭据传下去，不符就在**执行动作之前**拒绝。
+// =======================================================================================
+console.log('\n[F] drift（观察→动作之间的漂移门）')
+{
+  const d = newDriver()
+  setBatchPayload({ ok: false, elapsedMs: 1, steps: [
+    { step: 1, action: 'pattern', ok: false, drift: true, movedBy: { dx: 500, dy: 300 },
+      expectedRect: { x: 10, y: 20, w: 60, h: 24 }, rect: { x: 510, y: 320, w: 60, h: 24 }, error: '目标已漂移：…（未执行任何动作）' },
+  ] })
+  const r = await d.drive({ action: 'pattern', name: 'x', value: 'Expand', allowSideEffects: true, expectedRect: { x: 10, y: 20, w: 60, h: 24 }, expectedWindowHandle: 777 })
+  check('F1 漂移 → ok=false', r.ok === false, JSON.stringify(r))
+  check('F2 drift 透传（执行器的失败白名单少一个字段 = 门存在但调用方看不见）', r.drift === true, JSON.stringify(r))
+  check('F3 位移与前后矩形都要带出来（调用方据此判断是不是真换页了）',
+    r.movedBy && r.movedBy.dx === 500 && r.rect && r.expectedRect && r.expectedRect.w === 60, JSON.stringify(r))
+  d.warmShutdown()
+}
+{
+  // expectedRect/expectedWindowHandle 只由批量引擎认：走了一次性路径 = 漂移门被静默吞掉
+  const d = newDriver()
+  const oneShotBefore = sentinelLen(oneShotSentinel)
+  setBatchPayload(clickStep())
+  const r = await d.drive({ action: 'click', name: 'btn', allowSideEffects: true, expectedRect: { x: 1, y: 2, w: 3, h: 4 } })
+  check('F4 expectedRect 走批量引擎（一次性路径会静默丢掉漂移门）',
+    r.ok === true && sentinelLen(oneShotSentinel) === oneShotBefore, JSON.stringify(r))
   d.warmShutdown()
 }
 

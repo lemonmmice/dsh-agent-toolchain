@@ -954,9 +954,9 @@ export function makeDriver(cfg) {  const c = {
    * 抬升权威 seq、记录 latest，返回 {snapshotId}。挂在每个读产出点的 skipInfo 兄弟位。
    * 只对权威读（read/state）调用；state-live 走非权威标记（snapshotAuthoritative:false），不调这里。
    */
-  function snapshotStamp(windowHandle) {
+  function snapshotStamp(windowHandle, windowTitle = '') {
     const id = { seq: ++snap.seq, gen: currentGen, windowHandle: String(windowHandle == null ? '' : windowHandle) }
-    snap.latest = id
+    snap.latest = { ...id, windowTitle }
     return { snapshotId: encodeSnapshotId(id) }
   }
 
@@ -1001,7 +1001,9 @@ export function makeDriver(cfg) {  const c = {
     if (!allowSideEffects) {
       return { allow: false, result: { ok: false, action, requiresAllowSideEffects: true, error: '动作 ' + action + ' 是真实副作用操作，必须显式传 allowSideEffects=true 才执行（安全护栏）' } }
     }
-    const ctx = { currentGen, latest: snap.latest, targetWindow: gateArgs.winTitle || gateArgs.winHandle || c.windowName || '' }
+    const requestedTitle = gateArgs.winTitle || c.windowName || ''
+    const targetWindow = gateArgs.winHandle || (snap.latest?.windowTitle === requestedTitle ? snap.latest.windowHandle : requestedTitle)
+    const ctx = { currentGen, latest: snap.latest, targetWindow }
     const v = validateSnapshot(gateArgs, ctx)
     if (!v.allow) {
       const result = { ok: false, action }
@@ -1086,6 +1088,11 @@ export function makeDriver(cfg) {  const c = {
       match: args.match,
       waitMs: args.waitMs,
       index: args.index,
+      // requireUnique：把"目标唯一性"并进这一轮解析（见 ui-drive-batch.ps1 的 Resolve-Target）。
+      // 起因：ui_jev 原来是「先 find 一轮、再 act 一轮」，而 act 这一轮**自己又会解析一次**
+      // ⇒ 同一个目标付两轮 UIA 扫描（实测 find 2.2 s + act 自己的解析 2.2 s）。
+      // 与 Wait-Target 里那条"曾经解析两次窗口、每个动作多付一整轮扫描"是同一个病。
+      requireUnique: args.requireUnique,
       inAid: args.inAid,
       inName: args.inName,
       waitFor: args.waitFor,
@@ -1288,7 +1295,7 @@ export function makeDriver(cfg) {  const c = {
   }
 
   async function driveOnce(args) {
-    let { action: rawAction, name = '', aid = '', value = '', ascii = false, match = '', waitMs = c.defaultWaitMs, procId = 0, allowSideEffects = false, workspace = '', label = '', shotsDir = '', index, inAid = '', inName = '', waitFor = null, state = '', keys = '', fromX, fromY, toX, toY, steps = 12, holdMs = 120, max, winTitle = '', winHandle, secret = false, expectValue, titleRe = '', textRe = '', gone = false, ms, interval, conds, stableCount, observe = false, observeMatch = '', observeMax = 15, x, y, delta, count, mods = '', double = false, button = '', focus = false, snapshotId, diff = false, approvalId = '', sessionId, visualFallback = false, visualMinConfidence = 0.78, visualTarget = '' } = args
+    let { action: rawAction, name = '', aid = '', value = '', ascii = false, match = '', waitMs = c.defaultWaitMs, procId = 0, allowSideEffects = false, workspace = '', label = '', shotsDir = '', index, inAid = '', inName = '', waitFor = null, state = '', keys = '', fromX, fromY, toX, toY, steps = 12, holdMs = 120, max, winTitle = '', winHandle, secret = false, expectValue, titleRe = '', textRe = '', gone = false, ms, interval, conds, stableCount, observe = false, observeMatch = '', observeMax = 15, x, y, delta, count, mods = '', double = false, button = '', focus = false, snapshotId, diff = false, approvalId = '', sessionId, visualFallback = false, visualMinConfidence = 0.78, visualTarget = '', requireUnique = false } = args
     const action = normAction(rawAction)
     // 写侧单点：副作用动作（含坐标副作用 clickat/drag）过 allowSideEffects + 新鲜度门；只读/纯输入放行。
     // W2 的 deny/急停在 checkSideEffectGate 内挂钩（同一处），不新增第二处接线点。
@@ -1352,7 +1359,7 @@ export function makeDriver(cfg) {  const c = {
       if (warm.proc && warm.ready === true) {
         const payload = {
           action, name, aid, value, ascii, match, waitMs, procId,
-          index, inAid, inName, waitFor, state, keys,
+          index, inAid, inName, waitFor, state, keys, requireUnique,
           fromX, fromY, toX, toY, steps, holdMs, max,
           // 跨窗口 + 凭据 + 竞速等待（漏传过一次：warm 路径下这些参数全部失效）
           winTitle, winHandle, secret, expectValue,
@@ -1409,7 +1416,10 @@ export function makeDriver(cfg) {  const c = {
     // ---- 回退：批量引擎单步（type/drag/windows/waitfor 只有批量引擎实现；
     //      其余动作在传了 index/inAid/waitFor 时也必须走批量，一次性脚本不认识）
     const needsBatch =
-      BATCH_ONLY_ACTIONS.has(action) || wantObserve || secret || /\$\{cred:/.test(String(value) + String(keys)) ||
+      BATCH_ONLY_ACTIONS.has(action) || wantObserve || secret || requireUnique === true || /\$\{cred:/.test(String(value) + String(keys)) ||
+      // expectedRect/expectedWindowHandle 只由**批量引擎**认（一次性脚本不认识）——
+      // 漏进一次性路径就是"收下参数、行为没变"的静默丢参（本仓为这类漏传专门设了测试）。
+      args.expectedRect != null || args.expectedWindowHandle != null ||
       index !== undefined || inAid !== '' || inName !== '' || waitFor !== null || keys !== '' || winHandle != null || winTitle !== ''
     if (needsBatch) {
       const b = await batch({
@@ -1594,7 +1604,9 @@ export function makeDriver(cfg) {  const c = {
       if (res.found !== undefined) out.found = res.found === true
       if (res.waitedMs !== undefined) out.waitedMs = res.waitedMs
       if (res.count !== undefined) out.count = res.count
-      for (const field of ['policyCode', 'desktopState', 'unknown', 'timeout']) if (res[field] !== undefined) out[field] = res[field]
+      // ambiguous / drift：执行器**在动作之前**拒绝时由批量引擎回报。这类字段不进这份白名单
+      // 就等于不存在（与下面 read 那处的教训同源）；drift 还要带出位移与前后矩形，调用方才能判断。
+      for (const field of ['policyCode', 'desktopState', 'unknown', 'timeout', 'ambiguous', 'drift', 'movedBy', 'rect', 'expectedRect', 'windowHandle', 'expectedWindowHandle']) if (res[field] !== undefined) out[field] = res[field]
       return out
     }
     if (action === 'find') {
@@ -1623,7 +1635,7 @@ export function makeDriver(cfg) {  const c = {
         ...cap,
         ...scopeInfo(res),
         ...skipInfo(res),
-        ...snapshotStamp(res.window ?? ''), // 权威读：抬升 seq，戳 snapshotId
+        ...snapshotStamp(res.windowHandle || res.window || '', res.window || ''),
       }
       if (out.truncated === true) out.returned = lines.length
       return out
@@ -1648,6 +1660,7 @@ export function makeDriver(cfg) {  const c = {
       return {
         ok: true,
         action,
+        ...(Array.isArray(res.controls) ? { controls: res.controls, windowHandle: res.windowHandle } : {}),
         window: res.window ?? null,
         focusedWindow: res.focusedWindow ?? null,
         focused: res.focused ?? null,
@@ -1656,7 +1669,7 @@ export function makeDriver(cfg) {  const c = {
         // 观测完整性（范围/截断/跳过）统一由 completenessInfo 产出 —— 见其文档注释。
         // state 的 max 上限过去是**隐式**的（只靠 scanned>count 推），现在显式回报 truncated/maxApplied。
         ...completenessInfo(res),
-        ...snapshotStamp(res.window ?? ''), // 权威读：抬升 seq，戳 snapshotId
+        ...snapshotStamp(res.windowHandle || res.window || '', res.window || ''),
       }
     }
     if (action === 'state-live') {
@@ -1665,6 +1678,7 @@ export function makeDriver(cfg) {  const c = {
       return {
         ok: true,
         action,
+        ...(Array.isArray(res.controls) ? { controls: res.controls, windowHandle: res.windowHandle } : {}),
         window: res.window ?? null,
         focusedWindow: res.focusedWindow ?? null,
         focused: res.focused ?? null,
@@ -1810,6 +1824,9 @@ export function makeDriver(cfg) {  const c = {
       if (s.expectEnabled !== undefined) o.expectEnabled = s.expectEnabled
       if (s.expectMatch !== undefined) o.expectMatch = s.expectMatch
       if (s.index !== undefined && s.index !== null) o.index = s.index
+      // requireUnique 同样必须转发：执行器（Resolve-Target）会读它，flow 路径漏传就是
+      // "收下参数、行为没变" —— param-forwarding-completeness 那条测试正是为这类漏传设的。
+      if (s.requireUnique !== undefined) o.requireUnique = s.requireUnique
       if (s.inAid !== undefined && s.inAid !== '') o.inAid = s.inAid
       if (s.inName !== undefined && s.inName !== '') o.inName = s.inName
       if (s.waitFor !== undefined && s.waitFor !== null) o.waitFor = s.waitFor
