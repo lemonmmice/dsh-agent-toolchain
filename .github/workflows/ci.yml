@@ -60,6 +60,9 @@ jobs:
       - name: Config defaults (empty string is not a config) unit test
         run: node lib/config-defaults.test.mjs
         shell: bash
+      - name: Docs tool-count guard (registry vs README/docs)
+        run: node lib/tool-count-docs.test.mjs
+        shell: bash
       - name: API capture store unit test
         run: node lib/capture-store.test.mjs
         shell: bash
