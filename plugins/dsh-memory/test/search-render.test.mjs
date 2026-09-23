@@ -11,29 +11,30 @@
 // 做法照抄 `bv07` 的**正确姿势**：起子进程**真装载插件、真调 `output.render`**。
 // ⚠ 第一版我用正则从源码里"抠" render 出来 eval —— 那玩意只认"块体箭头函数"这一种写法，
 //   换成一行式就抠不到 ⇒ **合法的实现也会被误判**（证伪当场暴露：红在了"抠不到"而不是"内容没打出来"）。
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { prepareProfile, describeProfile } from './_test-profile.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const REPO_SRC = join(REPO, 'plugins', 'dsh-memory', 'index.js')
 
 let failures = 0
+let skips = 0
 const check = (name, cond, extra = '') => {
   if (cond) console.log('  ok   ' + name)
   else { failures++; console.log('  FAIL ' + name + (extra ? ' — ' + extra : '')) }
 }
 
-// 路径用 homedir() 拼，不写死用户名/盘符（仓库文件里不许出现本机私有路径，check.mjs 会拦）
-const PROFILE = process.env.DSH_PROFILE_DIR || join(homedir(), '.dsh', 'profiles', 'web')
-const DEPLOYED = join(PROFILE, 'plugins', 'dsh-memory', 'index.js')
-
-check('★ 找得到已部署副本', existsSync(DEPLOYED), DEPLOYED)
-// ⚠ 关键：**必须断言测的就是仓库源码**。否则这个测试可能在比对"另一个版本"，
-//   而它**看不出来**（部署副本与仓库源码一致由 `deploy-plugins.mjs --check` 保证，这里再钉一次）。
-if (existsSync(DEPLOYED)) {
+// 装载来源三级解析（见 `_test-profile.mjs` 头部）：开发机走 ①（现有 profile，零网络）；
+// CI 走 ②（自建临时 profile + 装公开发布的 SDK）；两级都不成 ⇒ **显式 skip 并计数**。
+// 旧写法硬断言"找得到已部署副本"，等于断言"这台机器装过 DSH 宿主"——在 CI 上必然红（2026-09-23 实测）。
+const prof = prepareProfile()
+const DEPLOYED = prof.pluginPath
+console.log('  info ' + describeProfile(prof))
+if (prof.ok && prof.mode === 'host-profile') {
+  // 只在"用别人部署的那份"时才要核对一致性；自建那份本来就是从仓库拷的，比了是同义反复。
   check('★★ 部署副本与仓库源码**逐字节一致**（否则测的是什么就不确定了 —— 先跑 deploy）',
     Buffer.compare(readFileSync(DEPLOYED), readFileSync(REPO_SRC)) === 0,
     'deployed=' + DEPLOYED)
@@ -69,10 +70,10 @@ console.log(JSON.stringify({
 }))
 `
 
-if (existsSync(DEPLOYED)) {
+if (prof.ok) {
   let raw = ''
   try {
-    raw = execFileSync(process.execPath, ['--input-type=module', '-e', child], { cwd: PROFILE, encoding: 'utf8', timeout: 60000 })
+    raw = execFileSync(process.execPath, ['--input-type=module', '-e', child], { cwd: prof.profile, encoding: 'utf8', timeout: 60000 })
   } catch (e) {
     failures++
     console.log('  FAIL 真装插件失败 — ' + String((e.stdout || '') + (e.stderr || e.message)).slice(0, 400))
@@ -94,5 +95,10 @@ if (existsSync(DEPLOYED)) {
   }
 }
 
+if (!prof.ok) {
+  skips++
+  console.log('  skip 真装插件段 —— ' + prof.reason)
+}
 if (failures) { console.log(`\nFAILED: ${failures} 项`); process.exit(1) }
-console.log('\nPASS: memory_search 渲染层必须给出命中内容（F-052 回归）')
+console.log('\nPASS: memory_search 渲染层必须给出命中内容（F-052 回归）' +
+  (skips ? `　⚠ 但 skipped ${skips} 段：真装插件段未覆盖，这不是通过` : ''))
