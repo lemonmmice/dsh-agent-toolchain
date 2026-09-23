@@ -19,6 +19,8 @@ import { renderDrive, renderState, renderFlow, sanitizeLive, launchText, renderL
 import { makeVision, UI_STATE_PROMPT } from './lib/vision.mjs'
 import { makeLive } from './lib/live.mjs'
 import { envOr } from '../../lib/env-fallback.mjs'
+import { createJevClient } from '../../lib/jev-client.mjs'
+import { makeJevUiController } from '../../lib/jev-ui.mjs'
 
 export const name = 'dsh-ui-drive'
 
@@ -88,6 +90,12 @@ function liveCtl() {
   // 模块级单例：宿主热重载/多路复用下绝不出现两个 setInterval（双循环双写 latest.png）
   if (!live) live = makeLive({ driver: drv() })
   return live
+}
+
+let jevUi = null
+function jui() {
+  if (!jevUi) jevUi = makeJevUiController({ driver: drv(), jevClient: createJevClient({ apiKey: envOr('TYPESAFE_API_KEY') }) })
+  return jevUi
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -415,6 +423,21 @@ const tools = () => [
     timeoutMs: 120000,
     async execute(args) {
       return await drv().drive(args)
+    },
+  }),
+  defineTool({
+    name: 'ui_jev',
+    description: dshDescription('ui_jev'),
+    parameters: dshParameters('ui_jev'),
+    output: {
+      schema: OBJECT,
+      render: (_args, value) => [{ type: 'text', text: value.ok
+        ? `Jev UI ${value.completed ? '完成' : '停止'}：${value.choice || value.stopped || '-'}${value.confidence !== undefined ? ` confidence=${value.confidence}` : ''}`
+        : `Jev UI 未完成：${value.errorCode || 'unknown'} — ${value.error || 'unknown error'}` }],
+    },
+    timeoutMs: 120000,
+    async execute(args) {
+      return await jui().run(args)
     },
   }),
   defineTool({

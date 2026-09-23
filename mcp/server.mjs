@@ -45,6 +45,7 @@ import { attachInlineImage } from './inline-image.mjs'
 import { makeToolTrace, wrapToolArgs } from '../lib/tool-trace.mjs'
 import { makeOutputBudget, outputMaxTokens } from '../lib/output-budget.mjs'
 import { createJevClient, parseJevArguments } from '../lib/jev-client.mjs'
+import { makeJevUiController } from '../lib/jev-ui.mjs'
 // W1：工具描述/参数结构收进单一真源（lib/tool-registry.mjs）；MCP 侧的 zod shape 由 mcp/registry-zod.mjs 生成。
 // 工具名仍以字面量出现在下面各 server.tool 调用的第一个实参（守卫要求名字是字面量、静态扫描须等于运行时）。
 import { mcpDescription, mcpAnnotations } from '../lib/tool-registry.mjs'
@@ -236,6 +237,12 @@ function jv() {
   return jev
 }
 
+let jevUi = null
+function ju() {
+  if (!jevUi) jevUi = makeJevUiController({ driver: drv(), jevClient: jv() })
+  return jevUi
+}
+
 /**
  * ETW tracer（F-003 / E4：DSH 面早就有 perf_trace/perf_hotstacks，MCP 面此前没有）。
  * 与 `plugins/dsh-perf/index.js` 的 `trc()` **同参构造** —— 两面的行为必须一致（E4 的判据）。
@@ -287,6 +294,17 @@ server.tool(
     const result = await jv().evaluate(parsed.request)
     if (!result.ok) return jtext(result)
     return jtext({ ...result, advisoryOnly: true, executedActions: 0, remote: true })
+  },
+)
+
+server.tool(
+  'ui_jev',
+  mcpDescription('ui_jev'),
+  mcpShape('ui_jev'),
+  async (args) => {
+    const result = await ju().run(args)
+    if (result.ok === false) autoRecord('tool-error', 'ui_jev', String(result.error || result.errorCode || 'ui_jev failed').slice(0, 200))
+    return jtext(result)
   },
 )
 
@@ -502,6 +520,7 @@ server.tool(
       ascii: z.boolean().optional(),
       match: z.string().optional(),
       index: z.number().optional(),
+      requireUnique: z.boolean().optional(),
       inAid: z.string().optional(),
       inName: z.string().optional(),
       waitFor: z.record(z.string(), z.any()).optional(),

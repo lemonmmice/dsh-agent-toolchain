@@ -232,10 +232,14 @@ function Find-Elements($main, [string]$aid, [string]$name, $scope = $null) {
   if ($null -ne $scope) { $root = $scope }
   $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
   $out = New-Object System.Collections.ArrayList
+  $seenRuntimeIds = @{}
   for ($i = 0; $i -lt $all.Count; $i++) {
     $el = $all.Item($i)
     if ($el.Current.IsOffscreen) { continue }
     if (-not (Is-RectUsable $el.Current.BoundingRectangle)) { continue }
+    $runtimeId = $el.GetRuntimeId() -join '.'
+    if ($runtimeId -and $seenRuntimeIds.ContainsKey($runtimeId)) { continue }
+    if ($runtimeId) { $seenRuntimeIds[$runtimeId] = $true }
     [void]$out.Add($el)
   }
   return $out
@@ -259,6 +263,7 @@ function Find-Element($main, [string]$aid, [string]$name, $scope = $null) {
 # 所以 Wait-ForCondition 在 match-only 模式下把轮询间隔抬到 ≥250ms，不允许 150ms 空转整棵树。
 function Find-ElementsByMatch($main, [string]$re, $scope = $null) {
   $out = New-Object System.Collections.ArrayList
+  $seenRuntimeIds = @{}
   if (-not $re) { return $out }
   $root = $main
   if ($null -ne $scope) { $root = $scope }
@@ -271,6 +276,9 @@ function Find-ElementsByMatch($main, [string]$re, $scope = $null) {
       if ($el.Current.IsOffscreen) { continue }
       if (-not (Is-RectUsable $el.Current.BoundingRectangle)) { continue }
       if (-not (Test-MatchText $el $re)) { continue }
+      $runtimeId = $el.GetRuntimeId() -join '.'
+      if ($runtimeId -and $seenRuntimeIds.ContainsKey($runtimeId)) { continue }
+      if ($runtimeId) { $seenRuntimeIds[$runtimeId] = $true }
       [void]$out.Add($el)
     } catch { continue }
   }
@@ -760,6 +768,8 @@ function Get-FocusedInfo {
 $INTERACTIVE_TYPES = @('Button', 'Edit', 'RadioButton', 'CheckBox', 'TabItem', 'ComboBox', 'ListItem', 'MenuItem', 'TreeItem', 'DataItem', 'Hyperlink', 'Slider', 'Spinner', 'Document', 'Custom')
 
 function Get-InteractiveLines($main, [string]$match, [int]$max) {
+  $script:DecisionControls = New-Object System.Collections.ArrayList
+  $selectorCounts = @{}
   # 逐元素容错 + 跳过计数（与 read 同一约定）：界面重绘/切页瞬间 UIA 会枚举到瞬时元素，
   # 旧写法 $el.Current 直接抛异常会把**整次 state 崩成 0 行**（假空的另一半来源，
   # 与 read 那处根因同源）。现在单个坏元素只计一次 skipped，不再打断整次枚举。
@@ -777,6 +787,8 @@ function Get-InteractiveLines($main, [string]$match, [int]$max) {
       if (-not (Is-RectUsable $b)) { continue }
       $t = Get-ControlTypeName $el
       if ($t -notin $INTERACTIVE_TYPES) { continue }
+      $fullName = [string]$el.Current.Name
+      $automationId = [string]$el.Current.AutomationId
       $n = $el.Current.Name
       if (-not $n) { $n = '' }
       if ($n.Length -gt 60) { $n = $n.Substring(0, 60) }
@@ -784,6 +796,24 @@ function Get-InteractiveLines($main, [string]$match, [int]$max) {
       $key = $t + '|' + $n + '|' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y)
       if ($seen.ContainsKey($key)) { continue }
       $seen[$key] = $true
+      $selectorKey = $automationId + '|' + $fullName
+      $selectorIndex = 0
+      if ($selectorCounts.ContainsKey($selectorKey)) { $selectorIndex = $selectorCounts[$selectorKey] }
+      $selectorCounts[$selectorKey] = $selectorIndex + 1
+      # rect 是给**观察→动作之间的漂移校验**用的（见 Resolve-Target 的 expectedRect）：
+      # 决策要花 1～2 s、动作自己的解析再花 2 s，这期间界面可能已经换页；只靠 name/aid
+      # 分辨不出"同名同 aid 但已经不是同一个东西"（虚拟化列表回收行就是这个形状）。
+      $control = @{ type = $t; name = $fullName; aid = $automationId; enabled = [bool]$el.Current.IsEnabled; index = $selectorIndex; selected = $null; expanded = $null; patterns = @(); secret = $false
+        rect = @{ x = (Get-SafeInt $b.X); y = (Get-SafeInt $b.Y); w = (Get-SafeInt $b.Width); h = (Get-SafeInt $b.Height) } }
+      if ($t -in @('Edit', 'Document')) { $control.secret = Is-SecretControl $el }
+      if ($t -in @('MenuItem', 'TreeItem', 'ComboBox', 'RadioButton', 'TabItem', 'ListItem', 'CheckBox', 'Button')) {
+        $control.patterns = @($el.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName.Replace('PatternIdentifiers.Pattern', '') })
+        $pattern = $null
+        if ($el.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) { $control.selected = [bool]$pattern.Current.IsSelected }
+        $pattern = $null
+        if ($el.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) { $control.expanded = [string]$pattern.Current.ExpandCollapseState }
+      }
+      [void]$script:DecisionControls.Add($control)
       $val = ''
       if ($t -in @('Edit', 'ComboBox', 'Document')) { $val = Get-ElementValueForReport $el }
       if ($val.Length -gt 60) { $val = $val.Substring(0, 60) }
@@ -1198,14 +1228,59 @@ function Resolve-Target($main, $step, [int]$procId) {
     $scope = Find-Element $root $inAid $inName
     if (-not $scope) { return @{ ok = $false; error = ('未找到容器控件（' + $inAid + '/' + $inName + '）') } }
   }
-  $list = Find-Elements $root ([string]$step.aid) ([string]$step.name) $scope
   $matchRe = ''
   if ($step.PSObject.Properties.Name -contains 'match' -and $step.match -and $step.action -ne 'read') { $matchRe = [string]$step.match }
-  if ($matchRe) { $list = @($list | Where-Object { Test-MatchText $_ $matchRe }) }
+  if ((-not $step.aid) -and (-not $step.name) -and $matchRe) {
+    $list = @(Find-ElementsByMatch $root $matchRe $scope)
+  } else {
+    $list = @(Find-Elements $root ([string]$step.aid) ([string]$step.name) $scope)
+    if ($matchRe) { $list = @($list | Where-Object { Test-MatchText $_ $matchRe }) }
+  }
   $idx = 0
   if ($step.PSObject.Properties.Name -contains 'index' -and $null -ne $step.index) { $idx = [int]$step.index }
   $el = $null
   if ($list.Count -gt $idx) { $el = $list[$idx] }
+  # requireUnique（2026-09-23 实测驱动）：把"唯一性门"并进这一轮解析本身。
+  # 起因：ui_jev 原来「先 find 一轮拿 count、再 act 一轮」，而 act 这一轮**自己又会解析一次**
+  # ⇒ 同一个目标付两轮 UIA 扫描（本机实测 find 2.2 s，act 内的解析又 2.2 s，占单步约 19 %）。
+  # 这与 Wait-Target 里那条"曾经解析两次窗口、每个动作多付一整轮 UIA 扫描"是同一个病。
+  # 并进解析既省一轮，又比"先查后点"更安全：判定与执行之间不会被界面变化插队。
+  # 语义：恰好 1 个匹配才放行；0 个或多个一律**拒绝执行**，绝不静默退化成"点第一个"。
+  if ($step.PSObject.Properties.Name -contains 'requireUnique' -and $step.requireUnique) {
+    if ($list.Count -ne 1) {
+      return @{ ok = $false; ambiguous = $true; count = $list.Count; root = $root
+        error = ('目标不唯一：requireUnique 要求恰好 1 个匹配，实际 ' + $list.Count + ' 个（未执行任何动作）') }
+    }
+  }
+  # expectedRect / expectedWindowHandle（2026-09-23）：把"观察到的东西还是不是原来那个"做成动作前的一道门。
+  # 为什么需要它：调用方（ui_jev）是「观察 → 决策 1~2 s → 动作」的节奏，动作自己的解析又要 2 s；
+  # 这 3~4 s 里界面可能已经换页。而解析只按 name/aid 找，**分辨不出"同名同 aid 但已不是同一个控件"**
+  # （虚拟化列表回收行、同布局的两个页面都是这个形状）。
+  # 判据刻意宽松，只抓"真的换了东西"，不抓 1 px 抖动：
+  #   · 窗口句柄不同 ⇒ 直接拒（跨窗口/换窗口，几乎不可能只是抖动）；
+  #   · 矩形位移 ≥ 该控件自身边长 ⇒ 拒（自己都挪出自己了，说明布局/页面变了，不是滚动 1 px）。
+  # 拒绝时**不执行任何动作**，并回报 drift/movedBy 供调用方判断，绝不静默放过。
+  if ($step.PSObject.Properties.Name -contains 'expectedWindowHandle' -and $null -ne $step.expectedWindowHandle -and [long]$step.expectedWindowHandle -gt 0) {
+    $nowHandle = [int64]$root.Current.NativeWindowHandle
+    if ($nowHandle -ne [long]$step.expectedWindowHandle) {
+      return @{ ok = $false; drift = $true; expectedWindowHandle = [long]$step.expectedWindowHandle; windowHandle = $nowHandle; root = $root
+        error = ('目标窗口已变：观察时 HWND=' + [long]$step.expectedWindowHandle + '，现在 HWND=' + $nowHandle + '（未执行任何动作）') }
+    }
+  }
+  if ($step.PSObject.Properties.Name -contains 'expectedRect' -and $null -ne $step.expectedRect -and $null -ne $el) {
+    $now = $el.Current.BoundingRectangle
+    $ex = [double]$step.expectedRect.x; $ey = [double]$step.expectedRect.y
+    $ew = [double]$step.expectedRect.w; $eh = [double]$step.expectedRect.h
+    $dx = [math]::Abs($now.X - $ex); $dy = [math]::Abs($now.Y - $ey)
+    $tolX = [math]::Max(8, $ew); $tolY = [math]::Max(8, $eh)
+    if ($dx -ge $tolX -or $dy -ge $tolY) {
+      return @{ ok = $false; drift = $true; movedBy = @{ dx = [int]$dx; dy = [int]$dy }
+        expectedRect = @{ x = [int]$ex; y = [int]$ey; w = [int]$ew; h = [int]$eh }
+        rect = @{ x = (Get-SafeInt $now.X); y = (Get-SafeInt $now.Y); w = (Get-SafeInt $now.Width); h = (Get-SafeInt $now.Height) }; root = $root
+        error = ('目标已漂移：观察时 @' + [int]$ex + ',' + [int]$ey + '，现在 @' + (Get-SafeInt $now.X) + ',' + (Get-SafeInt $now.Y) +
+          '（位移 ' + [int]$dx + ',' + [int]$dy + ' 超过自身尺寸，判定界面已变；未执行任何动作）') }
+    }
+  }
   return @{ ok = $true; el = $el; count = $list.Count; scope = $scope; root = $root }
 }
 
@@ -1488,6 +1563,8 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         # 逐元素容错 + 跳过计数（与 read / state-live 同一约定，B-1）
         Reset-SkipCounter
         $lines = Get-InteractiveLines $sc.root $matchRe $max
+        $res.controls = @($script:DecisionControls)
+        $res.windowHandle = [int64]$winEl.Current.NativeWindowHandle
         $res.count = $lines.Count; $res.lines = $lines
         $res.scanned = $script:LastScanned
         $res.skipped = $script:SkipCount
@@ -1555,6 +1632,8 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           if ($sc.narrowed) { $res.narrowed = $true; $res.scope = [string]$sc.scopeNote }
           Reset-SkipCounter
           $lines = Get-InteractiveLines $sc.root $matchRe $max
+          $res.controls = @($script:DecisionControls)
+          $res.windowHandle = [int64]$sc.win.Current.NativeWindowHandle
           $res.count = $lines.Count; $res.lines = $lines
           $res.scanned = $script:LastScanned
           $res.skipped = $script:SkipCount
@@ -1722,7 +1801,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       }
       'find' {
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.ok = $false; $res.error = [string]$w.error; $res.found = ($w.found -eq $true) }
+        if (-not $w.ok) { $res.ok = $false; $res.error = [string]$w.error; $res.found = ($w.found -eq $true); if ($w.ambiguous -eq $true) { $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         else {
           $res.ok = $true
           $el = $w.el
@@ -1732,7 +1811,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       }
       'expect' {
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.ok = $false; $res.found = ($w.found -eq $true); $res.error = [string]$w.error }
+        if (-not $w.ok) { $res.ok = $false; $res.found = ($w.found -eq $true); $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         else {
           $el = $w.el
           $res.ok = ($null -ne $el); $res.found = ($null -ne $el); $res.waitedMs = $w.elapsedMs
@@ -1757,7 +1836,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       }
       'click' {
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
           $el = $w.el
@@ -1785,7 +1864,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       }
       'setvalue' {
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
           $el = $w.el
@@ -1819,7 +1898,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
           $res.ok = $true; $res.output = ('KEYED ' + $kv + ' to focused element')
         } else {
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
           $el = $w.el
@@ -1838,7 +1917,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       }
       'type' {
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
           $el = $w.el
@@ -1904,7 +1983,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       'doubleclick' {
         # UIA 元素级双击（表格行进详情等）：用 GetClickablePoint，不靠坐标换算
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
           $out = Invoke-DoubleClickElement $w.el $main
@@ -1916,7 +1995,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         # W5b：调用元素实际暴露的 UIA pattern（对标 performSecondaryAction：展开/自增/选中/最大化…）
         # 动作名走 value（或 keys）；不支持就明确报错，绝不回退成盲点击。
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
           $pact = [string]$step.value
@@ -1929,7 +2008,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       'scroll' {
         # W5b：语义滚动（对元素/最近可滚动祖先用 ScrollPattern，不裸滚轮）
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
           $dir = 'down'
@@ -1946,7 +2025,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         # W5b：精确文本选区（对标 selectText）
         # text=value；prefix=match；suffix=expectValue；selectionType=state（text|cursor_before|cursor_after）
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error }
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
           $stxt = [string]$step.value

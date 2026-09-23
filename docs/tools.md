@@ -1,6 +1,6 @@
 # Every tool, at a glance
 
-54 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
+55 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
 face and the MCP face cannot drift apart. `Read` = the registry marks it read-only (safe to call with
 no permission); `Write` = it can change something — a file, a process, a client window, a running
 capture — and therefore carries the gate described in
@@ -43,6 +43,7 @@ capture — and therefore carries the gate described in
 | `ui_act` | Write | One real action: `click` / `setvalue` / `key` / `type` / `drag` / `pattern` (invoke the UIA pattern the element actually exposes) / `scroll` / `selecttext` / `clickat`. Requires `allowSideEffects=true`; values are read back and verified. |
 | `ui_drive` | Write | The full single-step driver, same gate as `ui_act`, plus read actions and per-action waits. |
 | `ui_flow` | Write | A step sequence with assertions, evidence and screenshots, executed in one process; emits `replay.json`. |
+| `ui_jev` | Write | Jev-driven UI decisions: sends a **sanitized** control list to Jev, which picks one bounded candidate, then the same deterministic executor and gates perform it. Every action is guarded by `requireUnique` (exactly one match) and a drift gate (window handle + element rectangle), so a decision made a second or two ago cannot land on a screen that has since changed. It stops rather than retries on low confidence, deferral, ambiguity or drift — and reports how many controls it could not address at all. |
 | `ui_replay` | Write | Replays a `ui_flow` recording, re-checking application identity and authorisation. |
 | `ui_launch` | Write | Starts the target client and waits for its main window. `force=true` kills a running instance first — do that **only after** capturing the evidence you cannot get back. |
 
