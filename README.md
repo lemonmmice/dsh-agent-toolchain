@@ -189,6 +189,7 @@ At a glance:
 | [docs/architecture.md](./docs/architecture.md) | How the pieces compose |
 | [docs/tools.md](./docs/tools.md) | All 54 tools, one line each, grouped by what you are trying to do |
 | [docs/prior-art.md](./docs/prior-art.md) | What this project learned from (per package), and what it deliberately did not copy |
+| [docs/verify-package.md](./docs/verify-package.md) | Proposal: extracting the verification core as a standalone package — **status: not implemented** |
 | [docs/failure-corpus.md](./docs/failure-corpus.md) | Failure taxonomy and record schema |
 | [docs/verification-report.md](./docs/verification-report.md) | Claim kinds and verdict semantics |
 | [docs/agent-toolchain-evaluation.md](./docs/agent-toolchain-evaluation.md) | Measurements of this toolchain, plus what is still weak |
