@@ -97,7 +97,7 @@ Then `pwsh -File install.ps1` (dry run) or `pwsh -File install.ps1 -Apply` to co
 
 ## Tools — 54, of which 23 are read-only
 
-The single source of truth is [`lib/tool-registry.mjs`](./lib/tool-registry.mjs); both faces (DSH plugins and MCP) are generated from it, so they cannot drift apart.
+The single source of truth is [`lib/tool-registry.mjs`](./lib/tool-registry.mjs); both faces (DSH plugins and MCP) are generated from it, so they cannot drift apart. **Every tool, one line each, sorted by what you are trying to do → [docs/tools.md](./docs/tools.md).**
 
 | Plugin | What it does for the agent |
 | --- | --- |
@@ -187,6 +187,7 @@ At a glance:
 | --- | --- |
 | [ROADMAP.md](./ROADMAP.md) | The public three-year plan and its design principles |
 | [docs/architecture.md](./docs/architecture.md) | How the pieces compose |
+| [docs/tools.md](./docs/tools.md) | All 54 tools, one line each, grouped by what you are trying to do |
 | [docs/prior-art.md](./docs/prior-art.md) | What this project learned from (per package), and what it deliberately did not copy |
 | [docs/failure-corpus.md](./docs/failure-corpus.md) | Failure taxonomy and record schema |
 | [docs/verification-report.md](./docs/verification-report.md) | Claim kinds and verdict semantics |
