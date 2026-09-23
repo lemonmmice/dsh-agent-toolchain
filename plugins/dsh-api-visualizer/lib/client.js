@@ -110,6 +110,11 @@ body[data-ds-dark-theme] .apv-s-5{background:#4c1d1d;color:#f87171}body[data-ds-
 .apv-sec-title .apv-t{font-weight:600}
 .apv-sec-pre{margin:0;padding:8px 10px;font:12px/1.5 Consolas,Menlo,monospace;color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:normal;overflow-wrap:anywhere;background:var(--dsw-alias-bg-layer-2);border-radius:6px;max-height:340px;overflow:auto}
 .apv-sec-body{background:var(--dsw-alias-bg-layer-2);border-radius:6px;padding:8px 10px;max-height:340px;overflow:auto}
+.apv-fold{cursor:pointer;color:#fbbf24;border-bottom:1px dashed currentColor}
+.apv-fold:hover{background:#4a3b14}
+.apv-sec-title-fold{cursor:pointer;user-select:none}
+.apv-sec-title-fold:hover .apv-t{color:var(--dsw-static-deepseek-500)}
+.apv-fold-hint{font-size:11px;color:var(--dsw-alias-label-tertiary)}
 .apv-viewbtns{display:flex;gap:4px;margin-left:auto}
 .apv-viewbtns .apv-btn{padding:2px 8px;font-size:11px}
 [data-apv-back-entry]{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary);border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit;white-space:nowrap}
@@ -1416,6 +1421,145 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
         else setDetailHeight(body.getBoundingClientRect().height - 140)
       })
 
+      // ---------------- oversized-JSON folding
+      // 格式化后的响应体可能有 MB 级（单个 `lines` 净值数组就能 900KB+）。一次性全量布局会把
+      // 面板冻住，所以超大的块只渲染一行存根，点开时才构建内容，且只构建这一层。
+
+      /** Fold an array once it holds more items than this (the `lines` point arrays). */
+      const FOLD_ARRAY_ITEMS = 50
+      /** Objects are just field sets — fold only truly huge ones. */
+      const FOLD_OBJECT_KEYS = 200
+
+      /** Line that opens a JSON object/array, e.g. `{`, `"lines": [`. */
+      function isJsonOpenLine(line) {
+        return /^\s*(?:"(?:[^"\\]|\\.)*":\s*)?[\[{],?$/.test(line)
+      }
+
+      /** Line that closes one, e.g. `]`, `},`. */
+      function isJsonCloseLine(line) {
+        return /^\s*[\]}],?$/.test(line)
+      }
+
+      function indentWidth(line) {
+        const m = line.match(/^[ \t]*/)
+        return m === null ? 0 : m[0].length
+      }
+
+      /**
+       * lines[from..to) 里最外层那些值得折叠的 [open, close] 行区间：元素过多的数组，以及跨行
+       * 过多的块。元素数来自一趟缩进感知的扫描，所以 900KB 的 body 仍是 O(lines)，而且持有巨大
+       * 数组的对象（data: {list: [...60000 行]}）自己不会被折叠。嵌套命中会被丢掉 —— 展开存根
+       * 时会重新分析它自己的内容，所以一次点击永远不会把全部铺开。
+       */
+      function foldRanges(lines, from, to) {
+        const found = []
+        const stack = []
+        for (let i = from; i < to; i++) {
+          const line = lines[i]
+          if (isJsonOpenLine(line)) {
+            const parent = stack[stack.length - 1]
+            if (parent !== undefined) parent.children += 1
+            stack.push({ line: i, indent: indentWidth(line), ch: line.trim().replace(/,$/, '').slice(-1), children: 0 })
+            continue
+          }
+          if (isJsonCloseLine(line) && stack.length > 0) {
+            const open = stack.pop()
+            // 只看元素/字段个数：行数多的块几乎总是因为元素多或嵌套深，而嵌套的大块自己也会被
+            // 折叠，所以展开一层真正要布局的行数始终有限 —— 于是 list(15 项) 直接展开，
+            // 只有 list[i].lines(几千项) 这种才塌。
+            const oversized = open.ch === '['
+              ? open.children > FOLD_ARRAY_ITEMS
+              : open.children > FOLD_OBJECT_KEYS
+            if (oversized) found.push({ open: open.line, close: i })
+            continue
+          }
+          const top = stack[stack.length - 1]
+          if (top !== undefined && indentWidth(line) === top.indent + 2) top.children += 1
+        }
+        found.sort((a, b) => a.open - b.open)
+        const out = []
+        let covered = -1
+        for (const r of found) {
+          if (r.open > covered) {
+            out.push(r)
+            covered = r.close
+          }
+        }
+        return out
+      }
+
+      /** Append lines[from..to] into node, replacing oversized sub-blocks with stubs. */
+      function appendFoldRange(node, lines, from, to) {
+        const parts = []
+        let cursor = from
+        for (const r of foldRanges(lines, from, to + 1)) {
+          if (r.open > cursor) parts.push(lines.slice(cursor, r.open).join('\n'))
+          parts.push(makeFoldStub(lines, r.open, r.close))
+          cursor = r.close + 1
+        }
+        if (cursor <= to) parts.push(lines.slice(cursor, to + 1).join('\n'))
+        // 片段之间补换行：存根保持行内元素，断行只靠真实 "\n"，这样复制出来的还是完整 JSON
+        parts.forEach((p, i) => {
+          if (i > 0) node.appendChild(document.createTextNode('\n'))
+          node.appendChild(typeof p === 'string' ? document.createTextNode(p) : p)
+        })
+      }
+
+      /**
+       * One collapsible block: a stub line now, the real lines only on click. Everything
+       * stays inline — line breaks come from real "\n" text, so copying the body still
+       * yields the original JSON instead of run-together lines.
+       */
+      function makeFoldStub(lines, open, close) {
+        const head = lines[open]
+        const summary = `${head}   … 已折叠 ${close - open - 1} 行 · 点此展开 ]`
+        const stub = el('span', 'apv-fold', summary)
+        stub.title = '这一块太大，已折叠；展开只渲染这一层，里面的块仍保持折叠'
+        const body = el('span')
+        body.hidden = true
+        let built = false
+        stub.addEventListener('click', () => {
+          if (body.hidden) {
+            if (!built) {
+              body.appendChild(document.createTextNode('\n'))
+              appendFoldRange(body, lines, open + 1, close)
+              built = true
+            }
+            body.hidden = false
+            stub.textContent = `${head}   … 点此收起 ]`
+          } else {
+            body.hidden = true
+            stub.textContent = summary
+          }
+        })
+        const wrap = el('span')
+        wrap.appendChild(stub)
+        wrap.appendChild(body)
+        return wrap
+      }
+
+      /**
+       * 把格式化 JSON 渲染进 container：超大的块折叠。没有任何大块时退回普通 pre（等价于
+       * highlightedPre 在空搜索词下的快速路径），保持既有观感不变。
+       */
+      function renderFoldableJson(container, pretty) {
+        const lines = pretty.split('\n')
+        const pre = el('pre', 'apv-sec-pre')
+        const top = foldRanges(lines, 0, lines.length)
+        const wholeBody = top.length === 1 && top[0].open === 0 && top[0].close === lines.length - 1
+        if (top.length === 0) {
+          pre.textContent = pretty
+        } else if (wholeBody) {
+          // 顶层块永不折叠（否则整个 body 塌成一行），但它内部的大块照塌
+          pre.appendChild(document.createTextNode(lines[0] + '\n'))
+          appendFoldRange(pre, lines, 1, lines.length - 2)
+          pre.appendChild(document.createTextNode('\n' + lines[lines.length - 1]))
+        } else {
+          appendFoldRange(pre, lines, 0, lines.length - 1)
+        }
+        container.appendChild(pre)
+      }
+
       // ---------------- P0-3 body multi-view sections
 
       function detectBodyKind(text, contentType) {
@@ -1499,10 +1643,17 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           if (mode === 'raw') {
             container.appendChild(highlightedPre(text, bodyQuery))
           } else if (mode === 'pretty') {
+            let pretty = null
             try {
-              container.appendChild(highlightedPre(JSON.stringify(JSON.parse(t), null, 2), bodyQuery))
+              pretty = JSON.stringify(JSON.parse(t), null, 2)
             } catch {
-              container.appendChild(highlightedPre(/^\s*[[{]/.test(t) ? prettyJsonFragment(t) : text, bodyQuery))
+              pretty = null
+            }
+            // 有搜索词时保留原来的整段高亮渲染（折叠会把行拆成节点，没法再对整段做高亮）
+            if (pretty === null || bodyQuery.trim() !== '') {
+              container.appendChild(highlightedPre(pretty ?? (/^\s*[[{]/.test(t) ? prettyJsonFragment(t) : text), bodyQuery))
+            } else {
+              renderFoldableJson(container, pretty)
             }
           } else if (mode === 'tree') {
             try {
@@ -1528,13 +1679,34 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
         return render
       }
 
-      /** Meta/headers pre section (no body views). */
-      function makePreSection(title, content) {
+      /**
+       * Meta/headers pre section (no body views). collapsed=true 时默认收起成一整行、点标题展开，
+       * 让详情面板的空间留给响应体 JSON；默认（false）保持原来的直接展开。
+       */
+      function makePreSection(title, content, collapsed = false) {
         const sec = el('div', 'apv-sec')
         const secTitle = el('div', 'apv-sec-title')
-        secTitle.appendChild(el('span', 'apv-t', title))
+        const label = el('span', 'apv-t', title)
+        secTitle.appendChild(label)
         sec.appendChild(secTitle)
-        sec.appendChild(highlightedPre(content, ''))
+        const pre = highlightedPre(content, '')
+        sec.appendChild(pre)
+        if (!collapsed) return sec
+        const hint = el('span', 'apv-fold-hint')
+        secTitle.appendChild(hint)
+        secTitle.classList.add('apv-sec-title-fold')
+        secTitle.title = '点击展开 / 收起'
+        let open = false
+        const sync = () => {
+          pre.hidden = !open
+          label.textContent = (open ? '▾ ' : '▸ ') + title
+          hint.textContent = open ? '' : `已收起 · ${content.length} 字符`
+        }
+        secTitle.addEventListener('click', () => {
+          open = !open
+          sync()
+        })
+        sync()
         return sec
       }
 
@@ -1672,7 +1844,7 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           process: full.process,
           id: full.id,
         }
-        detailBody.appendChild(makePreSection('基本信息', JSON.stringify(meta, null, 2)))
+        detailBody.appendChild(makePreSection('基本信息', JSON.stringify(meta, null, 2), true))
         if (full.caller !== undefined && full.caller !== null) {
           const c = full.caller
           const lines = []
@@ -1687,11 +1859,11 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           }
           if (lines.length > 0) detailBody.appendChild(makePreSection('调用方', lines.join('\n')))
         }
-        if (full.reqHeaders !== undefined) detailBody.appendChild(makePreSection('请求头', JSON.stringify(full.reqHeaders, null, 2)))
+        if (full.reqHeaders !== undefined) detailBody.appendChild(makePreSection('请求头', JSON.stringify(full.reqHeaders, null, 2), true))
         if (typeof full.reqBody === 'string' && full.reqBody !== '') {
           bodySections.push(makeBodySection('请求体', full.reqBody, headerValue(full.reqHeaders, 'content-type'), detailBody))
         }
-        if (full.resHeaders !== undefined) detailBody.appendChild(makePreSection('响应头', JSON.stringify(full.resHeaders, null, 2)))
+        if (full.resHeaders !== undefined) detailBody.appendChild(makePreSection('响应头', JSON.stringify(full.resHeaders, null, 2), true))
         if (typeof full.resBody === 'string' && full.resBody !== '') {
           bodySections.push(makeBodySection('响应体', full.resBody, headerValue(full.resHeaders, 'content-type'), detailBody))
         }
@@ -1712,7 +1884,7 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           parentId: full.parentId,
           ruleId: full.ruleId,
         }
-        if (Object.values(streamMeta).some((v) => v !== undefined)) detailBody.insertBefore(makePreSection('流式/关联元数据', JSON.stringify(streamMeta, null, 2)), detailBody.firstChild)
+        if (Object.values(streamMeta).some((v) => v !== undefined)) detailBody.insertBefore(makePreSection('流式/关联元数据', JSON.stringify(streamMeta, null, 2), true), detailBody.firstChild)
         if (full.ws !== undefined && full.ws !== null) {
           const ws = {
             closeCode: full.ws.closeCode,
@@ -1721,7 +1893,7 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
             msgCount: full.ws.msgCount,
             frames: full.ws.frames,
           }
-          detailBody.insertBefore(makePreSection('WebSocket 帧记录', JSON.stringify(ws, null, 2)), detailBody.firstChild)
+          detailBody.insertBefore(makePreSection('WebSocket 帧记录', JSON.stringify(ws, null, 2), true), detailBody.firstChild)
         }
       }
 

@@ -62,6 +62,8 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
 .pm-status-meta{color:var(--dsw-alias-fg-muted,#9aa0aa);font-size:12px}
 .pm-status-err{color:#f87171}
 .pm-pre{margin:0;padding:10px 12px;font:12px/1.5 Consolas,Menlo,monospace;color:#9fe8a0;white-space:pre-wrap;word-break:normal;overflow-wrap:anywhere;overflow:auto;flex:1}
+.pm-fold{cursor:pointer;color:#fbbf24;border-bottom:1px dashed currentColor}
+.pm-fold:hover{background:#4a3b14}
 .pm-badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600}
 .pm-m-get{background:#1b4d3a;color:#4ade80}.pm-m-post{background:#1e3a5f;color:#60a5fa}.pm-m-put{background:#4a3b14;color:#fbbf24}
 .pm-m-delete{background:#4c1d1d;color:#f87171}.pm-m-other{background:#33363f;color:#cbd5e1}
@@ -225,6 +227,76 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         // malformed — fall through to raw
       }
       return text
+    }
+
+    // ---- oversized-JSON folding
+    // A formatted body can be megabytes (one `lines` array of net-value points can
+    // be 900KB+). Laying all of it out at once freezes the panel, so oversized
+    // blocks render as a single-line stub and build their contents only on click.
+
+    /** Fold an array once it holds more items than this (the `lines` point arrays). */
+    const FOLD_ARRAY_ITEMS = 50
+    /** Objects are just field sets — fold only truly huge ones. */
+    const FOLD_OBJECT_KEYS = 200
+
+    /** Line that opens a JSON object/array, e.g. `{`, `"lines": [`. */
+    function isJsonOpenLine(line) {
+      return /^\s*(?:"(?:[^"\\]|\\.)*":\s*)?[\[{],?$/.test(line)
+    }
+
+    /** Line that closes one, e.g. `]`, `},`. */
+    function isJsonCloseLine(line) {
+      return /^\s*[\]}],?$/.test(line)
+    }
+
+    function indentWidth(line) {
+      const m = line.match(/^[ \t]*/)
+      return m === null ? 0 : m[0].length
+    }
+
+    /**
+     * Outermost [open, close] line pairs in lines[from..to) worth collapsing: arrays with
+     * many items, and blocks that span too many lines. Item counts come from one
+     * indentation-aware pass, so a 900KB body is still analysed in O(lines) and an object
+     * holding a huge array (data: {list: [...60000 lines]}) is NOT itself collapsed.
+     * Nested hits are dropped — expanding a stub re-analyses its own contents, so a
+     * single click never lays out everything at once.
+     */
+    function foldRanges(lines, from, to) {
+      const found = []
+      const stack = []
+      for (let i = from; i < to; i++) {
+        const line = lines[i]
+        if (isJsonOpenLine(line)) {
+          const parent = stack[stack.length - 1]
+          if (parent !== undefined) parent.children += 1
+          stack.push({ line: i, indent: indentWidth(line), ch: line.trim().replace(/,$/, '').slice(-1), children: 0 })
+          continue
+        }
+        if (isJsonCloseLine(line) && stack.length > 0) {
+          const open = stack.pop()
+          // 只看元素/字段个数：行数多的块几乎总是因为元素多或嵌套深，而嵌套的大块自己也会被
+          // 折叠，所以展开一层真正要布局的行数始终有限 —— 于是 list(15 项) 直接展开，
+          // 只有 list[i].lines(几千项) 这种才塌。
+          const oversized = open.ch === '['
+            ? open.children > FOLD_ARRAY_ITEMS
+            : open.children > FOLD_OBJECT_KEYS
+          if (oversized) found.push({ open: open.line, close: i })
+          continue
+        }
+        const top = stack[stack.length - 1]
+        if (top !== undefined && indentWidth(line) === top.indent + 2) top.children += 1
+      }
+      found.sort((a, b) => a.open - b.open)
+      const out = []
+      let covered = -1
+      for (const r of found) {
+        if (r.open > covered) {
+          out.push(r)
+          covered = r.close
+        }
+      }
+      return out
     }
 
     function headersToText(headers) {
@@ -1079,8 +1151,85 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       updateBodyMode()
 
       // ---- response rendering
+      /** Append lines[from..to] into node, replacing oversized sub-blocks with stubs. */
+      function appendFoldRange(node, lines, from, to) {
+        const parts = []
+        let cursor = from
+        for (const r of foldRanges(lines, from, to + 1)) {
+          if (r.open > cursor) parts.push(lines.slice(cursor, r.open).join('\n'))
+          parts.push(makeFoldStub(lines, r.open, r.close))
+          cursor = r.close + 1
+        }
+        if (cursor <= to) parts.push(lines.slice(cursor, to + 1).join('\n'))
+        // 片段之间补换行：stub 保持行内元素，断行只靠真实 "\n"，这样复制出来的还是完整 JSON
+        parts.forEach((p, i) => {
+          if (i > 0) node.appendChild(document.createTextNode('\n'))
+          node.appendChild(typeof p === 'string' ? document.createTextNode(p) : p)
+        })
+      }
+
+      /**
+       * One collapsible block: a stub line now, the real lines only on click. Everything
+       * stays inline — line breaks come from real "\n" text, so copying the body still
+       * yields the original JSON instead of run-together lines.
+       */
+      function makeFoldStub(lines, open, close) {
+        const head = lines[open]
+        const summary = `${head}   … 已折叠 ${close - open - 1} 行 · 点此展开 ]`
+        const stub = el('span', 'pm-fold', summary)
+        stub.title = '这一块太大，已折叠；展开只渲染这一层，里面的块仍保持折叠'
+        const body = el('span')
+        body.hidden = true
+        let built = false
+        stub.addEventListener('click', () => {
+          if (body.hidden) {
+            if (!built) {
+              body.appendChild(document.createTextNode('\n'))
+              appendFoldRange(body, lines, open + 1, close)
+              built = true
+            }
+            body.hidden = false
+            stub.textContent = `${head}   … 点此收起 ]`
+          } else {
+            body.hidden = true
+            stub.textContent = summary
+          }
+        })
+        const wrap = el('span')
+        wrap.appendChild(stub)
+        wrap.appendChild(body)
+        return wrap
+      }
+
+      /** Render the formatted body, folding oversized JSON blocks. Non-JSON stays plain text. */
       function renderRespBody() {
-        respBodyPre.textContent = state.formatted ? beautify(state.respRaw, state.respContentType) : state.respRaw
+        if (!state.formatted) {
+          respBodyPre.textContent = state.respRaw
+          return
+        }
+        const text = beautify(state.respRaw, state.respContentType)
+        let parsed
+        try {
+          parsed = JSON.parse(text)
+        } catch {
+          respBodyPre.textContent = text
+          return
+        }
+        if (parsed === null || typeof parsed !== 'object') {
+          respBodyPre.textContent = text
+          return
+        }
+        const lines = text.split('\n')
+        respBodyPre.textContent = ''
+        // 顶层块永不折叠（否则整个 body 塌成一行），但它内部的大块照塌
+        const top = foldRanges(lines, 0, lines.length)
+        if (top.length !== 1 || top[0].open !== 0 || top[0].close !== lines.length - 1) {
+          appendFoldRange(respBodyPre, lines, 0, lines.length - 1)
+          return
+        }
+        respBodyPre.appendChild(document.createTextNode(lines[0] + '\n'))
+        appendFoldRange(respBodyPre, lines, 1, lines.length - 2)
+        respBodyPre.appendChild(document.createTextNode('\n' + lines[lines.length - 1]))
       }
 
       function renderResponse(response) {
