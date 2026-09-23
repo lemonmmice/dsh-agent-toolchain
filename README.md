@@ -43,7 +43,7 @@ steps: 9/9 ok
 
 `npm run demo:perf` additionally reports `stutterCount=1, maxMs=1474` — the sample app blocks its UI thread for exactly 1500 ms on purpose, and the perf probe has to catch it.
 
-> The demo is not demo-only code. `mcp/demo/run-demo.mjs` is an ordinary MCP client: it spawns `mcp/server.mjs` over stdio and calls the same tools Claude Code, Cursor or Cline would call. If it passes, the MCP face works.
+> The demo is not demo-only code. `mcp/demo/run-demo.mjs` is an ordinary MCP client: it spawns `mcp/server.mjs` over stdio and calls the same tools Claude Code, Cursor, Cline or Codex would call. If it passes, the MCP face works.
 
 > Recording a GIF: `npm run demo:perf` while a screen recorder is running is the intended capture — the window does something visible at every step. `docs/media/` is where the recording goes.
 
@@ -114,7 +114,7 @@ The single source of truth is [`lib/tool-registry.mjs`](./lib/tool-registry.mjs)
 
 **Highlights**
 
-- **One toolchain, every agent**: the same tools power the DeepSeek Harness plugins **and** any MCP client — see [mcp/](./mcp/README.md). Claude Code, Cursor and Cline can drive the client, run builds, capture APIs and search memory with the exact same `lib/` code.
+- **One toolchain, every agent**: the same tools power the DeepSeek Harness plugins **and** any MCP client — see [mcp/](./mcp/README.md). Claude Code, Cursor, Cline and Codex can drive the client, run builds, capture APIs and search memory with the exact same `lib/` code.
 - **Safety-first UI automation**: `click`/`setvalue`/`key` require an explicit `allowSideEffects=true`; read-only operations are always safe. An operational kill switch and an optional deny-first policy sit above every action, and recovery is deliberately not an agent tool.
 - **Honest measurement**: perf numbers come from real window-message round trips and each report prints what the method *cannot* see; cost tables say "unknown" instead of inventing numbers; an empty enumeration is reported as "not read", never as "nothing there".
 - **The failure corpus is the moat**: failure paths record themselves — build errors, `ui_flow` assertion failures, `ui_drive`/`http` failures, and `verify_report` claim-vs-evidence mismatches all append automatically under a fixed 7-class taxonomy. See [docs/failure-corpus.md](./docs/failure-corpus.md).
@@ -161,12 +161,33 @@ Then restart the host, and ask the agent for `toolchain_status` — it reports w
 
 The evidence spine (`verify` / failure corpus / capture / memory / http), the `dotnet` build engine and build-target resolution are cross-platform. UI-driving, the VS-MSBuild engine and the perf/hang probes are Windows-only, and on macOS/Linux they report `unconfigured` rather than pretending. The per-tool matrix is in [mcp/README.md](./mcp/README.md#platform-scope-honest); the compatibility matrix (harness × plugin × MCP versions) is in [docs/compatibility.md](./docs/compatibility.md).
 
+## How this was built
+
+This repository is meant to be a working example of its own argument, so the process is part of the artifact rather than a footnote:
+
+- **One implementer, two independent reviewers — from a different vendor.** Work is implemented here, then handed read-only to **Codex** and **Claude** separately, each asked to *falsify* rather than agree ("the valuable output is what I claimed without evidence, plus counter-examples that break it"). Rounds routinely end with some findings accepted and fixed, and others rebutted with evidence — the reviewers are not agreed with for the sake of agreement.
+- **An accepted finding becomes a test, not a paragraph.** That is why dozens of test files name the round that produced them (`Codex r30`, `Codex r37`, `@codex r54`, `Codex 第十二轮`): a review conclusion that is not executable decays immediately.
+- **The review outcome is itself adjudicated.** The 2026-09-11 cross-model review round was closed with the same claims-vs-evidence machinery this repository ships.
+- **The failure corpus stores who found what** — including `agent-misjudge`, the one class a machine can catch unaided ([docs/failure-corpus.md](./docs/failure-corpus.md)).
+
+## Prior art & acknowledgements
+
+What this project learned from, package by package and file by file — including what was deliberately **not** taken, and an honest inventory of the review reports that are *not* in this repository — is collected in **[docs/prior-art.md](./docs/prior-art.md)**.
+
+At a glance:
+
+- **[OpenAI Codex](https://github.com/openai/codex) (`codex-rs`, Apache-2.0, Copyright 2025 OpenAI)** — the largest single influence. A 76-file subset of its workspace was studied locally; what was taken is *interface shape, policy structure and naming discipline* (the Guardian approval layer, the tool-spec registry, the call-trace discipline, the computer-use access control model, the truncation policy). **No Codex source is vendored here and no file was copied** — every implementation is an independent re-implementation, and `native/**/*.rs` contains no Codex references. Codex is also a *subject*: `bench/harness/bench.mjs` runs it as an agent under test.
+- **Anthropic and OpenAI's harness writing, and Mitchell Hashimoto's formulation** — the framing this project works inside; the failure corpus is Hashimoto's "design a solution so the agent never makes that mistake again" turned into storage.
+- **[PerfView](https://github.com/microsoft/perfview)** — the reference implementation for the perf plugin's trace, hotstacks, flame and GC views. [docs/perfview-parity.md](./docs/perfview-parity.md) tracks the gaps as well as the matches.
+- **ClrMD / DumpStack, ETW (xperf/WPR), WinDbg (`cdb`)** — wrapped and parsed, with the traps recorded in [docs/native-stacks.md](./docs/native-stacks.md).
+
 ## Docs
 
 | Doc | What is in it |
 | --- | --- |
 | [ROADMAP.md](./ROADMAP.md) | The public three-year plan and its design principles |
 | [docs/architecture.md](./docs/architecture.md) | How the pieces compose |
+| [docs/prior-art.md](./docs/prior-art.md) | What this project learned from (per package), and what it deliberately did not copy |
 | [docs/failure-corpus.md](./docs/failure-corpus.md) | Failure taxonomy and record schema |
 | [docs/verification-report.md](./docs/verification-report.md) | Claim kinds and verdict semantics |
 | [docs/agent-toolchain-evaluation.md](./docs/agent-toolchain-evaluation.md) | Measurements of this toolchain, plus what is still weak |

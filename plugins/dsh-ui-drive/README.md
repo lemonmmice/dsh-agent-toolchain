@@ -318,9 +318,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File test\read-skips-live.ps1
 
 ### 2026-09-11 跨模型独立复核修正（Codex + Claude 各出一份报告）
 
-两份独立复核报告（`reviews/review-codex-20260911.md` / `reviews/review-claude-20260911.md`，
-存于本机工作区、不随仓库分发）
-对 `354d65f`/`a8adb6f`/`7d03bef` 做只读复核后，确认成立并已修的项：
+两份独立复核报告是**本机工作文档，未随仓库分发**，且本机副本现已不在盘上（去向未查清，
+见 [docs/prior-art.md](../../docs/prior-art.md#review-records-what-exists-and-what-does-not)）。
+幸存下来、也是唯一算数的记录，是**下面这份"已确认并已修"的清单 + 对应的测试断言**：
 
 1. **`truncated` 硬编码 `false`**（两方都判「对调用方撒谎」）→ 如实透传 `res.truncated`，
    并在截断时补 `returned=`（实际返回行数）。补了零覆盖的单测。

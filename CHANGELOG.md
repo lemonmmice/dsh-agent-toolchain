@@ -34,6 +34,20 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   otherwise scan as committable text — and the README transcript is shortened because raw
   tool output carries absolute paths.
 
+- **The repository now says what it learned from, in one place** — Codex appears in ~40 files as an
+  independent reviewer, a design reference and a benchmark subject, but a reader could never see the
+  borrows collected; and the plugin docs cited two review reports that cannot be produced. Added
+  [docs/prior-art.md](./docs/prior-art.md): a per-file table of what was taken from
+  `openai/codex` (`codex-rs`, Apache-2.0) — the Guardian approval layer, the tool-spec registry, the
+  call-trace discipline, the computer-use access-control model, the truncation policy — plus what was
+  deliberately *not* taken, the three cited identifiers that are absent from the local subset, and an
+  honest inventory of the review reports that are not on disk. The README gained **How this was
+  built** and **Prior art & acknowledgements**; the three citations that pointed at non-existent files
+  now state the findings instead. No Codex source is vendored and no file was copied: what was taken
+  is interface shape and policy structure, re-implemented here — evidence for that is a clean scan for
+  copied-source markers and zero Codex references under `native/**/*.rs`, which is *not* a formal
+  provenance audit and is written as such.
+
 - **Native-stack unwinding is a tool capability now, not a manual adventure** —
   `DumpStack` only returns the **managed** stack, so "is a thread stuck inside the graphics
   driver?" stayed permanently unanswerable: two independent analyses of the same hang both
