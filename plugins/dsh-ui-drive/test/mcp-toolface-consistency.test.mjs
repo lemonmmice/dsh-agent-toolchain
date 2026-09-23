@@ -216,7 +216,8 @@ for (const t of TOOLS) {
     const onSurface = new RegExp(`server\\.tool\\(\\s*'${t}'`).test(serverSrc)
     // 这条不是断言"必须在面上"（是否暴露是取舍），而是保证**状态被显式记录**：
     // 现状 ui_live/ui_tree/ui_launch 不在 MCP 面上 → 模型无法自己 ui_launch。
-    // 取舍与后续动作记录在仓库外的合成清单（本地 toolchain reviews 目录）里，见 P0-0b。
+    // 取舍与后续动作（是否把这三个工具放上 MCP 面）记在 docs/prior-art.md 的"
+    // Review records"一节；那份合成清单原本在仓库外，现已不在盘上。
     check(`${t}: 在 MCP 面上的状态已核（当前 ${onSurface ? '在' : '不在'}）`, true)
   }
 }
