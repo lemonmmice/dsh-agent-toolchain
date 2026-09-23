@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A throwaway WPF window that the toolchain's demo runner drives.
+
+    It deliberately contains the three things the tools need something real to
+    point at:
+      * a couple of controls with stable AutomationIds (drive / read / assert),
+      * a button that blocks the UI thread for a fixed 1500 ms (perf probe),
+      * a button that fires one HTTP request (capture / proxy demos).
+
+    Targeting net10.0-windows keeps the demo buildable with `dotnet build` alone
+    (no Visual Studio, no legacy targeting pack). Change the TFM if your SDK is
+    older; nothing in the toolchain depends on it.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>DemoClient</AssemblyName>
+    <RootNamespace>DemoClient</RootNamespace>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+</Project>
