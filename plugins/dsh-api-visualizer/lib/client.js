@@ -104,7 +104,23 @@ body[data-ds-dark-theme] .apv-s-5{background:#4c1d1d;color:#f87171}body[data-ds-
 .apv-detail-bar .apv-in{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:inherit;border-radius:6px;padding:4px 8px;font:inherit}
 .apv-detail-bar .apv-in-note{flex:1 1 160px;min-width:120px}
 .apv-detail-bar .apv-in-tag{width:110px}
-.apv-detail-body{flex:1;min-height:0;overflow:auto;padding:0 12px 12px}
+.apv-detail-main{flex:1;min-height:0;display:flex;flex-direction:row;align-items:stretch}
+.apv-detail-body{flex:1;min-width:0;min-height:0;overflow:auto;padding:0 12px 12px}
+.apv-sortpane{flex:0 0 42%;min-width:240px;max-width:64%;display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--dsw-alias-border-l2)}
+.apv-sortpane[hidden]{display:none}
+.apv-sort-head{padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:12px;color:var(--dsw-alias-label-tertiary);line-height:1.7}
+.apv-sort-head .apv-t{font-weight:600;color:var(--dsw-alias-label-primary);font-size:13px}
+.apv-sort-scroll{flex:1;min-height:0;overflow:auto}
+.apv-sort-table{min-width:100%;border-collapse:collapse;white-space:nowrap;font-variant-numeric:tabular-nums}
+.apv-sort-table th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-2);text-align:right;padding:5px 10px;font-size:12px;color:var(--dsw-alias-label-tertiary);border-bottom:1px solid var(--dsw-alias-border-l2)}
+.apv-sort-table th[data-key]{font-weight:600;color:var(--dsw-alias-label-primary)}
+.apv-sort-table td{padding:4px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:12px;text-align:right}
+.apv-sort-table th.apv-sort-name,.apv-sort-table td.apv-sort-name{text-align:left}
+.apv-sort-table tbody tr:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.apv-sort-table td.apv-sort-rank{color:var(--dsw-alias-label-tertiary)}
+.apv-sort-table td.apv-sort-key{font-weight:600;color:var(--dsw-alias-label-primary)}
+.apv-sort-tag{margin-left:6px;padding:0 5px;border-radius:4px;background:var(--dsw-static-amber-100);color:var(--dsw-static-amber-900);font-size:11px}
+body[data-ds-dark-theme] .apv-sort-tag{background:#7c5c00;color:#fff}
 .apv-sec{margin-top:10px}
 .apv-sec-title{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dsw-alias-label-tertiary);margin-bottom:4px}
 .apv-sec-title .apv-t{font-weight:600}
@@ -178,7 +194,14 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
     // ---------------------------------------------------------------- helpers
 
     function injectStyle() {
-      if (typeof document === 'undefined' || document.getElementById('dsh-apiviz-style') !== null) return
+      if (typeof document === 'undefined') return
+      // 已存在也要按当前 CSS 覆盖：客户端插件热更新只换 JS、不会换 DOM 里那份 <style>，
+      // 否则改了样式会一直吃旧的那份（2026-10-08 实测：新面板出来了，新 CSS 没生效）。
+      const existing = document.getElementById('dsh-apiviz-style')
+      if (existing !== null) {
+        if (existing.textContent !== CSS) existing.textContent = CSS
+        return
+      }
       const style = document.createElement('style')
       style.id = 'dsh-apiviz-style'
       style.textContent = CSS
@@ -1310,8 +1333,13 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
       detail.appendChild(detailResize)
       detail.appendChild(detailHead)
       detail.appendChild(detailBar)
+      const detailMain = el('div', 'apv-detail-main')
       const detailBody = el('div', 'apv-detail-body')
-      detail.appendChild(detailBody)
+      const sortPane = el('div', 'apv-sortpane')
+      sortPane.hidden = true
+      detailMain.appendChild(detailBody)
+      detailMain.appendChild(sortPane)
+      detail.appendChild(detailMain)
       body.appendChild(detail)
       view.appendChild(body)
       let selectedUrl = ''
@@ -1825,6 +1853,176 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
         renderRecordDiff(diffBaseRecord, currentFull)
       })
 
+      // ---------------- 排序视图（详情右侧面板）
+      // 列表型 JSON 响应（如榜单接口的 data.list）只读原始 JSON 看不出排序，这一栏用表格给出
+      // 「第几名、叫什么、排序值多少」。顺序恒为**接口返回顺序**：不重排（客户端榜单的既定口径
+      // 就是「排序由后端定、客户端不排序」），后端置顶的行会被标记出来，免得看起来像排错了。
+
+      /** 接口 sortField = 收益排序周期（月，1/3/6/12），标签与客户端榜单的周期选项同口径。 */
+      const SORT_PERIOD_LABELS = { 1: '近1月', 3: '近3月', 6: '近6月', 12: '近1年' }
+
+      /** 已知收益字段的列名；未知字段直接用字段名（每列的 tooltip 里始终给出真实字段名）。 */
+      const SORT_COLUMN_LABELS = {
+        yearYieldRate: 'year(年化)',
+        totalYieldRate: 'total(累计)',
+        todayYieldRate: 'today(今日)',
+      }
+
+      /** 已知名称字段的列名（其余字段名原样显示）。 */
+      const SORT_NAME_LABELS = { name: '名称', strategyName: '策略名称', stockName: '股票名称', title: '标题', code: '代码', symbol: '代码' }
+
+      /** 只有比率语义的字段名才按小数比率渲染，避免把普通数字（数量/价格）印成百分比。 */
+      const SORT_RATE_KEY = /(rate|yield|ratio|return|percent|pct)/i
+
+      /** 表格最多渲染多少行：几千行的响应只铺前 N 行，避免把面板卡住。 */
+      const SORT_ROWS_CAP = 300
+
+      /** 接口下发的收益有两种形态：文本百分比（`+53.44%`）与小数比率（0.55743）。 */
+      function percentText(value) {
+        return typeof value === 'string' && /^[+-]?\d+(\.\d+)?%$/.test(value.trim()) ? value.trim() : null
+      }
+
+      /** 小数比率 → 百分比文本，位数与接口下发的文本口径一致（2 位）。 */
+      function ratioText(value) {
+        return `${value >= 0 ? '+' : '-'}${(Math.abs(value) * 100).toFixed(2)}%`
+      }
+
+      /** 排序入参只从 URL 里读，不做语义推断。 */
+      function sortParamsOf(url) {
+        try {
+          const params = new URL(url, location.origin).searchParams
+          const field = params.get('sortField')
+          const type = params.get('sortType')
+          return {
+            field,
+            period: SORT_PERIOD_LABELS[Number(field)] ?? null,
+            dir: type === '1' ? '正序' : type === '2' ? '倒序' : null,
+          }
+        } catch {
+          return { field: null, period: null, dir: null }
+        }
+      }
+
+      /**
+       * 在响应 JSON 里找「行集」：元素为对象的数组，优先常见列表键（data.list / rows / items …）。
+       * 有节点预算与深度上限——响应体可达 MB 级，不能全树遍历。
+       */
+      function pickListRows(root) {
+        const PREFERRED = ['list', 'rows', 'items', 'records', 'results', 'data', 'result']
+        let best = null
+        let budget = 300
+        const visit = (node, depth, key) => {
+          if (budget <= 0 || node === null || typeof node !== 'object') return
+          budget -= 1
+          if (Array.isArray(node)) {
+            const first = node[0]
+            if (node.length > 0 && first !== null && typeof first === 'object' && !Array.isArray(first)) {
+              const score = (PREFERRED.includes(String(key).toLowerCase()) ? 100000 : 0) + node.length
+              if (best === null || score > best.score) best = { rows: node, score }
+            }
+            return // 行集内部不再下钻：嵌套数组不是行集
+          }
+          if (depth >= 4) return
+          for (const k of Object.keys(node)) visit(node[k], depth + 1, k)
+        }
+        visit(root, 0, '')
+        return best === null ? null : best.rows
+      }
+
+      /** 行集 → 列模型：名称列 + 最多 4 个值列（比率数字在前，百分比文本按字段出现顺序）。 */
+      function buildSortColumns(rows) {
+        const sample = rows.slice(0, 20)
+        const first = sample[0]
+        const keys = Object.keys(first)
+        const nameKey = keys.find((k) => typeof first[k] === 'string' && /^(name|strategyName|stockName|title|label|code|symbol)$/i.test(k))
+          ?? keys.find((k) => typeof first[k] === 'string' && !SORT_RATE_KEY.test(k) && first[k].length <= 40 && !/id$/i.test(k))
+          ?? null
+        const numeric = []
+        const textual = []
+        for (const k of keys) {
+          if (k === nameKey || /id$/i.test(k) || (first[k] !== null && typeof first[k] === 'object')) continue
+          if (sample.some((row) => typeof row[k] === 'number' && Number.isFinite(row[k])) && SORT_RATE_KEY.test(k)) numeric.push(k)
+          else if (sample.some((row) => percentText(row[k]) !== null)) textual.push(k)
+        }
+        const columns = [...numeric, ...textual].slice(0, 4)
+        return columns.length === 0 ? null : { nameKey, columns }
+      }
+
+      /** 行上的置顶标记：后端把「精选 / 已订阅」排在最前，标出来才不会看着像排序坏了。 */
+      function sortRowTags(row) {
+        const tags = []
+        if (typeof row.handpick === 'string' && row.handpick !== '') tags.push(row.handpick)
+        if (row.isSubscribed === true) tags.push('已订阅')
+        return tags
+      }
+
+      function sortCellText(value) {
+        if (typeof value === 'number' && Number.isFinite(value)) return ratioText(value)
+        return percentText(value) ?? (value === null || value === undefined ? '-' : String(value))
+      }
+
+      const clearSortPane = () => {
+        sortPane.textContent = ''
+        sortPane.hidden = true
+      }
+
+      function renderSortPane(full) {
+        clearSortPane()
+        const text = typeof full.resBody === 'string' ? full.resBody : ''
+        // 截断的 body 无法整体解析，如实不显示（与响应体区块「已截断」口径一致）
+        if (text === '' || text.endsWith('…(截断)')) return
+        let json = null
+        try {
+          json = JSON.parse(text)
+        } catch {
+          return
+        }
+        const rows = pickListRows(json)
+        if (rows === null) return
+        const model = buildSortColumns(rows)
+        if (model === null) return
+        const params = sortParamsOf(full.url)
+
+        const head = el('div', 'apv-sort-head')
+        head.appendChild(el('div', 'apv-t', `排序视图 · 共 ${rows.length} 行`))
+        const basis = ['顺序 = 接口返回顺序（未重排）']
+        if (params.field !== null) basis.push(`sortField=${params.field}${params.period === null ? '' : `(${params.period})`}`)
+        if (params.dir !== null) basis.push(`sortType=${params.dir}`)
+        head.appendChild(el('div', '', basis.join(' · ')))
+        sortPane.appendChild(head)
+
+        const scroll = el('div', 'apv-sort-scroll')
+        const table = el('table', 'apv-sort-table')
+        const headRow = el('tr')
+        headRow.appendChild(el('th', 'apv-sort-rank', '顺序'))
+        const nameTh = el('th', 'apv-sort-name', model.nameKey === null ? '名称' : SORT_NAME_LABELS[model.nameKey] ?? model.nameKey)
+        nameTh.title = model.nameKey ?? '未识别到名称字段'
+        headRow.appendChild(nameTh)
+        for (const key of model.columns) {
+          const th = el('th', '', key === 'sortYieldRate' && params.period !== null ? `sort(${params.period})` : SORT_COLUMN_LABELS[key] ?? key)
+          th.dataset.key = key
+          th.title = key
+          headRow.appendChild(th)
+        }
+        table.appendChild(headRow)
+
+        const body = el('tbody')
+        rows.slice(0, SORT_ROWS_CAP).forEach((row, index) => {
+          const tr = el('tr')
+          tr.appendChild(el('td', 'apv-sort-rank', String(index + 1)))
+          const nameTd = el('td', 'apv-sort-name', model.nameKey === null ? '-' : String(row[model.nameKey] ?? '-'))
+          for (const tag of sortRowTags(row)) nameTd.appendChild(el('span', 'apv-sort-tag', tag))
+          tr.appendChild(nameTd)
+          for (const key of model.columns) tr.appendChild(el('td', key === model.columns[0] ? 'apv-sort-key' : '', sortCellText(row[key])))
+          body.appendChild(tr)
+        })
+        table.appendChild(body)
+        scroll.appendChild(table)
+        sortPane.appendChild(scroll)
+        if (rows.length > SORT_ROWS_CAP) sortPane.appendChild(el('div', 'apv-sort-head', `只渲染前 ${SORT_ROWS_CAP} 行（共 ${rows.length} 行）`))
+        sortPane.hidden = false
+      }
+
       function renderDetail(full) {
         currentFull = full
         updateDiffButtons()
@@ -1895,6 +2093,7 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           }
           detailBody.insertBefore(makePreSection('WebSocket 帧记录', JSON.stringify(ws, null, 2), true), detailBody.firstChild)
         }
+        renderSortPane(full)
       }
 
       function renderReplayResult(response, original) {
@@ -1940,6 +2139,7 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
         bodySections.length = 0
         currentFull = null
         replayWrap = null
+        clearSortPane()
       }
       detailClose.addEventListener('click', closeDetail)
 
