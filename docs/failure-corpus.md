@@ -98,6 +98,12 @@ retraction events (originals stay readable with `includeRetracted=true`).
 
 ## Usage
 
+`node scripts/corpus-hygiene.mjs --misjudge-sha <sha12[,sha12...]>` or
+`--misjudge-version <version>` selects active `agent-misjudge` records with matching producer
+metadata. Both flags together intersect. Legacy records without provenance are excluded.
+Dry runs write nothing; `--apply` appends version-specific retractions and is idempotent.
+These flags replace the historical tool-error cleanup mode for that invocation.
+
 Host deployments record toolchain version, twelve-character commit SHA and dirty state in
 `.dsh-toolchain-deploy.json`. Failure producers use this stamp with `source: deploy-stamp`;
 an unrelated profile's package version is never treated as the toolchain version.
