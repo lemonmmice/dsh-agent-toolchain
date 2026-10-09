@@ -98,6 +98,10 @@ retraction events (originals stay readable with `includeRetracted=true`).
 
 ## Usage
 
+Host deployments record toolchain version, twelve-character commit SHA and dirty state in
+`.dsh-toolchain-deploy.json`. Failure producers use this stamp with `source: deploy-stamp`;
+an unrelated profile's package version is never treated as the toolchain version.
+
 MCP (Claude Code / Cursor / Cline, via the `dsh-agent-toolchain` server):
 
 - `failure_record` — append one record manually (mainly `human-handoff` —

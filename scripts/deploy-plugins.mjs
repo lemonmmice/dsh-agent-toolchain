@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto'
 import { dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 
 const root = join(fileURLToPath(import.meta.url), '..', '..')
 const argv = process.argv.slice(2)
@@ -203,8 +204,24 @@ if (check) {
   // 只在真有文件变化时写：纯粹"跑一次没变化"不该让所有工具报"代码陈旧"。
   try {
     const stampFile = join(profileDir, '.dsh-toolchain-deploy.json')
-    if (copied > 0 || existsSync(stampFile) === false) {
+    const provenance = {}
+    if (existsSync(join(root, 'package.json'))) {
+      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      if (pkg.name === 'dsh-agent-toolchain') {
+        provenance.version = pkg.version
+        const gitOptions = { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }
+        provenance.sha = execFileSync('git', ['rev-parse', 'HEAD'], gitOptions).trim().slice(0, 12)
+        provenance.dirty = execFileSync('git', ['status', '--porcelain'], gitOptions).trim().length > 0
+      }
+    }
+    let previous = {}
+    if (existsSync(stampFile)) {
+      try { previous = JSON.parse(readFileSync(stampFile, 'utf8')) } catch { previous = {} }
+    }
+    const provenanceChanged = Object.entries(provenance).some(([key, value]) => previous[key] !== value)
+    if (copied > 0 || existsSync(stampFile) === false || provenanceChanged) {
       writeFileSync(stampFile, JSON.stringify({
+        ...provenance,
         at: new Date().toISOString(),
         atMs: Date.now(),
         target: profileDir,

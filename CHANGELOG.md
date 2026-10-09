@@ -10,6 +10,10 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **Deployed failure provenance identifies the toolchain** — only the toolchain package name
+  supplies a checkout version; profile installs read version, commit and dirty state from the
+  deployment stamp, with `source: deploy-stamp`, instead of trusting the profile package.
+
 - **Force-restart uses the configured exit budget for asynchronous taskkill** — under load, the
   old fixed five-second timeout killed taskkill before it killed the target, and empty stderr hid
   the timeout. Native PID checks replace slow tasklist polling; final exit evidence is refreshed,
