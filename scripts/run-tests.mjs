@@ -161,21 +161,25 @@ function runOne(file) {
 }
 
 // 并发 4：这些测试多数是纯计算 + 少数起子进程，串行会慢一倍以上。
-const queue = [...files]
+const exclusiveFiles = files.filter((file) => relative(root, file).replace(/\\/g, '/') === 'plugins/dsh-ui-drive/test/launch-force.test.mjs')
+const queue = files.filter((file) => !exclusiveFiles.includes(file))
+async function runAndReport(file) {
+  const result = await runOne(file)
+  results.push(result)
+  if (!jsonOut) {
+    const tag = result.code === 0 ? 'ok  ' : 'FAIL'
+    console.log(`${tag} ${result.file.padEnd(58)} ${String(result.ms).padStart(6)}ms  ${result.summary}`)
+    for (const line of result.failed) console.log('       ' + line)
+    if (result.log) console.log('       ↳ 完整输出: ' + result.log)
+  }
+}
 const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
   while (queue.length) {
-    const f = queue.shift()
-    const r = await runOne(f)
-    results.push(r)
-    if (!jsonOut) {
-      const tag = r.code === 0 ? 'ok  ' : 'FAIL'
-      console.log(`${tag} ${r.file.padEnd(58)} ${String(r.ms).padStart(6)}ms  ${r.summary}`)
-      for (const l of r.failed) console.log('       ' + l)
-      if (r.log) console.log('       ↳ 完整输出: ' + r.log)
-    }
+    await runAndReport(queue.shift())
   }
 })
 await Promise.all(workers)
+for (const file of exclusiveFiles) await runAndReport(file)
 
 results.sort((a, b) => a.file.localeCompare(b.file))
 const bad = results.filter((r) => r.code !== 0)
