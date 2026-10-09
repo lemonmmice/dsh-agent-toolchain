@@ -23,6 +23,8 @@ description: 收尾裁决：宣布任务完成之前，把完成声明写成 cla
    | 机器验证不了的 | `manual` | 写明 `status` 与 `evidence`；属于自评，报告里会标出来 |
 
 3. 调 `verify_report(runId, task, claims)`。
+   需要交接原始证据时加 `bundle=true`；`context.repoRoot` 可附 Git 差异和 HEAD。
+   `bundleError` 只表示打包失败，不改变裁决；查看 manifest 的 omitted 后再描述证据完整性。
 4. **汇报时先报 verdict**（pass / incomplete / fail）和每条 claim 的状态，再写总结。incomplete 和 fail 都不是"完成"。
 
 ## 规则

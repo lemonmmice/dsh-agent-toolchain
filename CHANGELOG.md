@@ -10,6 +10,10 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **Verification evidence bundles** — optional `bundle: true` writes a manifest, time-ordered
+  source trace and bounded payload copies, with SHA-256 hashes, git context, explicit omissions
+  and dump exclusion. Packaging errors do not change the adjudicated verdict.
+
 - **Optional control-level UI deny policies** — validated examples, resolved-control matching,
   cold/warm executor checks, flow/replay preflight, structured refusal details and an offline
   policy checker. Policies remain disabled until explicitly configured.
