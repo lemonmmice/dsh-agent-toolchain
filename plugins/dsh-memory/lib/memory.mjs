@@ -7,6 +7,7 @@ import { KvMemory } from "./kv.mjs";
 import { EmbedProvider } from "./embed-provider.mjs";
 import { findSensitive } from "./sensitive.mjs";
 import { envOr } from "../../../lib/env-fallback.mjs";
+import { buildProducer } from "../../../lib/failure-provenance.mjs";
 
 const SKIP = new Set([".git", "node_modules", "bin", "obj", ".vs", "dist", ".venv", "packages", ".memory"]);
 
@@ -59,7 +60,8 @@ export class DshMemory {
   async indexFile(filePath, relPath, rootDir, { evict = true, deadline = Infinity, concurrency = DEFAULT_CONCURRENCY, maxFileBytes = DEFAULT_MAX_FILE_BYTES } = {}) {
     const st = fs.statSync(filePath);
     if (st.size > maxFileBytes) return { chunks: 0, sensitive: [], tooBig: st.size };   // 如实报"没索引，因为太大"
-    const meta = { file: relPath, root: rootDir, mtime: st.mtimeMs, size: st.size };
+    const meta = { file: relPath, root: rootDir, mtime: st.mtimeMs, size: st.size,
+      indexedAt: new Date().toISOString(), embed: { source: this.embed.mode ?? null, version: this.embed.mode === 'bigram' ? 'bigram/1' : this.embed.model ?? null } };
     // Keys carry the ABSOLUTE path so multiple roots can coexist and the
     // eviction sweep can judge existence on disk instead of on "is this file
     // part of the root being indexed right now" (which wiped other roots).
@@ -285,22 +287,39 @@ export class DshMemory {
     };
   }
 
-  remember(key, value, scope = "global") {
+  remember(key, value, scope = "global", { kind = 'fact', reason = '', ttlDays, source } = {}) {
+    if (!['fact', 'convention', 'debug'].includes(kind)) throw new Error('kind must be fact, convention or debug');
+    if (typeof reason !== 'string' || [...reason].length > 200) throw new Error('reason must be a string of at most 200 characters');
+    const days = ttlDays === undefined ? (kind === 'debug' ? 14 : 0) : ttlDays;
+    if (typeof days !== 'number' || !Number.isFinite(days) || days < 0 || days * 86400000 + Date.now() > 8640000000000000) throw new Error('ttlDays must be a non-negative, finite expiry interval');
+    const expiresAt = days === 0 ? null : new Date(Date.now() + days * 86400000).toISOString();
     const hits = findSensitive(String(value));
     if (hits.length) {
       throw new Error("value contains sensitive content (" + hits.map(h => h.name).join(", ") + ") — rewrite without tokens/keys and retry");
     }
-    return this.kv.save(key, value, scope);
+    return this.kv.save(key, value, scope, { kind, reason, source: source || buildProducer({ runtime: 'memory' }), expiresAt });
   }
-  recall(key, scope = "global") { return this.kv.get(key, scope); }
+  recall(key, scope = "global") {
+    const row = this.kv.get(key, scope);
+    return row ? { ...row, expired: Boolean(row.expiresAt && Date.parse(row.expiresAt) <= Date.now()) } : null;
+  }
   memories(scope) { return this.kv.all(scope); }
   forget(key, scope = "global") { return this.kv.forget(key, scope); }
 
   status() {
+    const memories = this.kv.all();
+    const byKind = { fact: 0, convention: 0, debug: 0 };
+    let expired = 0;
+    for (const row of memories) {
+      byKind[row.kind || 'fact']++;
+      if (row.expiresAt && Date.parse(row.expiresAt) <= Date.now()) expired++;
+    }
     return {
       project: this.project,
       chunks: this.store.count(),
-      kvEntries: this.kv.all().length,
+      kvEntries: memories.length,
+      byKind,
+      expired,
       dataDir: this.dataDir,
       embed: this.embed.label,
       embedEndpoint: this.embed.mode === "minimax" ? "remote (api.minimax.chat)" : "local",

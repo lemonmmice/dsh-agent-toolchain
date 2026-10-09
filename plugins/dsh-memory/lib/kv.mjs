@@ -20,10 +20,10 @@ export class KvMemory {
 
   _write(rows) { return writeJsonlAtomic(this.file, rows); }
 
-  save(key, value, scope = "global") {
+  save(key, value, scope = "global", metadata = {}) {
     const rows = this._read();
     const idx = rows.findIndex(r => r.key === key && r.scope === scope);
-    const row = { key, value, scope, updatedAt: Date.now() };
+    const row = { key, value, scope, ...metadata, updatedAt: Date.now() };
     if (idx >= 0) rows[idx] = row; else rows.push(row);
     this._write(rows);
     return row;

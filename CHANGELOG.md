@@ -10,6 +10,10 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **Memory lifecycle metadata** — facts, conventions and debug findings carry reasons, producer
+  provenance and optional expiry; recall stays read-only, status counts kinds and expiry, and new
+  index chunks return indexing time and embedding identity. Legacy data remains readable.
+
 - **Codex Stop adjudication** — rollout turn IDs, last-prompt fallback, literal nested patch calls
   and nested verification outputs feed the existing closing verdict; unknown formats fail open.
 

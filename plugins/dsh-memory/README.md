@@ -19,6 +19,13 @@ through the MCP server (`memory_index` / `memory_search` / `memory_save` /
 
 ## Native vector store
 
+`memory_save` accepts `kind` (`fact`, `convention`, `debug`), `reason` (up to 200 characters)
+and `ttlDays`. Debug findings expire after 14 days by default; other kinds never expire.
+Explicit `ttlDays: 0` disables expiry. Saves retain producer provenance. Recall returns the
+metadata and an `expired` flag without deleting or updating rows; only `memory_forget` deletes.
+Status includes `byKind` and `expired` counts. Legacy rows remain readable and count as facts.
+New index chunks carry `indexedAt` and embedding source/version, also returned in search hits.
+
 From the monorepo root, build with Rust and the platform linker (Windows:
 Visual C++ build tools):
 

@@ -15,7 +15,7 @@
 //   而 npm 上最新是 `0.0.1-rc.1`（= docs/compatibility.md 记录的已验证版本）。
 //   所以 ② 加载的 SDK 与**活宿主**可能不是同一个版本 —— 返回值里带 `mode` 与 `sdkVersion`，
 //   测试必须把它印出来。要换版本：`DSH_TEST_DSH_TOOLS_VERSION=<版本>`。
-import { existsSync, mkdirSync, cpSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, cpSync, writeFileSync, mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
@@ -52,7 +52,8 @@ export function prepareProfile() {
   ].filter(Boolean)
   for (const p of candidates) {
     const pluginDir = join(p, 'plugins', PLUGIN)
-    if (existsSync(join(pluginDir, 'index.js')) && canResolveSdk(pluginDir)) {
+    if (existsSync(join(pluginDir, 'index.js')) &&
+        readFileSync(join(pluginDir, 'index.js')).equals(readFileSync(join(REPO, 'plugins', PLUGIN, 'index.js'))) && canResolveSdk(pluginDir)) {
       return { ok: true, profile: p, pluginPath: join(pluginDir, 'index.js'), mode: 'host-profile', sdkVersion: '宿主自带', reason: '' }
     }
   }
