@@ -10,6 +10,11 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **Force-restart uses the configured exit budget for asynchronous taskkill** — under load, the
+  old fixed five-second timeout killed taskkill before it killed the target, and empty stderr hid
+  the timeout. Native PID checks replace slow tasklist polling; final exit evidence is refreshed,
+  timeout errors remain visible, and the configured wait is capped at 60 seconds.
+
 - **The repository is now an agent plugin: MCP server + six workflow skills + three hooks in one
   install** — `.claude-plugin/plugin.json` (listed by `.claude-plugin/marketplace.json`) declares the
   MCP server through `mcp/launch.mjs` (installs the MCP SDK on first start; reads this machine's
