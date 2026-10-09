@@ -1405,6 +1405,7 @@ server.tool(
   {
     runId: z.string().describe('Unique run id (e.g. task-2-toolchain-1)'),
     task: z.string().describe('One-line task name'),
+    bundle: z.boolean().optional().describe('Write a bounded evidence bundle without changing the verdict if packaging fails'),
     claims: z.array(z.object({
       statement: z.string().describe('The claim being made'),
       kind: z.enum(['build', 'api', 'file', 'git', 'gate', 'manual', 'compiled']).optional().describe('Adjudication rule; defaults to manual. compiled = does this source file actually belong to a project compile set (legacy .csproj does NOT auto-include .cs, so a forgotten <Compile Include> builds fine while never being compiled - kind=file cannot catch that); unreadable input yields unverified, never fail'),

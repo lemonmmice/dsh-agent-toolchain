@@ -111,7 +111,8 @@ const tools = () => [
         type: 'text',
         text: v.verdict === 'unavailable'
           ? ('裁决不可用：' + (v.error || 'lib/verify 未加载'))
-          : (`verdict=${v.verdict}（pass ${v.counts?.pass ?? 0} / fail ${v.counts?.fail ?? 0} / unverified ${v.counts?.unverified ?? 0}），报告 ${v.reportPath}` + (v.recorded > 0 ? `，${v.recorded} 条 claim 被证据反驳已记入失败样本库` : '')),
+          : (`verdict=${v.verdict}（pass ${v.counts?.pass ?? 0} / fail ${v.counts?.fail ?? 0} / unverified ${v.counts?.unverified ?? 0}），报告 ${v.reportPath}` + (v.recorded > 0 ? `，${v.recorded} 条 claim 被证据反驳已记入失败样本库` : '') +
+            (v.bundlePath ? `，证据包 ${v.bundlePath}` : '') + (v.bundleError ? `，打包失败：${v.bundleError}` : '')),
       }],
     },
     async execute(args) {
