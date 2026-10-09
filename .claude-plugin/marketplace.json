@@ -12,7 +12,7 @@
       "name": "dsh-agent-toolchain",
       "source": "./",
       "description": "MCP tools (build, UI automation, API capture, perf/hang evidence, failure corpus, verify_report) plus workflow skills and a closing-verdict Stop hook.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "category": "development",
       "homepage": "https://github.com/lemonmmice/dsh-agent-toolchain",
       "license": "Apache-2.0"

@@ -8,6 +8,19 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-09
+
+- Agent plugin packaging combines MCP, workflow skills and lifecycle hooks.
+- Claude and Codex Stop hooks require a closing verification verdict.
+- Tool annotations distinguish read-only, evidence-writing and destructive operations.
+- Isolated tests, refusal filtering and recurrence tracking reduce failure-corpus noise.
+- Producer versions survive host deployment and support scoped misjudgement retraction.
+- Force restart keeps timeout diagnostics and current process-exit evidence; live restart tests
+  run after parallel workers so their original eight-second budget does not depend on suite load.
+- Memory entries gain provenance, kinds, reasons and explicit expiry.
+- Optional control policies check resolved UI targets before actions and flows.
+- Verification bundles retain bounded source evidence and hashes without changing verdicts.
+
 ### Added
 
 - **Verification evidence bundles** — optional `bundle: true` writes a manifest, time-ordered
@@ -53,8 +66,9 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   `lib/stop-gate.mjs` reads the turn from the Claude Code transcript; a turn that edited files and
   never called `verify_report` is stopped once (`decision: block`) with instructions; a turn whose
   verdict is not `pass` ends normally but the user sees the machine verdict, whatever the summary
-  says. Fail-open by construction (unreadable transcript, unknown format, Codex sessions, any
-  error); `DSH_STOP_GATE=warn|off`, `DSH_STOP_GATE_IGNORE` for paths that do not count. A
+  says. Fail-open by construction (unreadable transcript, unknown format, any error);
+  Codex rollout support is included in this release. `DSH_STOP_GATE=warn|off` and
+  `DSH_STOP_GATE_IGNORE` configure warnings and paths that do not count. A
   second stop (`stop_hook_active`) always passes. 20 cases in `lib/stop-gate.test.mjs`.
 
 - **Compile-set check on write (PostToolUse hook)** — writing a `.cs`/`.vb`/`.fs` that a legacy

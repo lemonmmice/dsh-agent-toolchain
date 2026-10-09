@@ -9,13 +9,14 @@ everything else is by API surface.
 | dsh-agent-toolchain | DeepSeek Harness host | `@deepseek-ai/dsh-tools` | Node |
 | --- | --- | --- | --- |
 | 0.1.0 | `0.1.2-alpha.4` *(verified)* | `0.0.1-rc.1` *(verified)* | 22+ *(verified on 24)* |
+| 0.2.0 | `0.2.0-rc.2` *(plugin-load smoke; deployed restart pending)* | host SDK + `0.0.1-rc.1` test profile *(verified)* | `24.15.0` *(verified, Windows x64)* |
 
 The plugins use only the public plugin surface (`defineTool`, `inject`, loopback
 web routes); they do not patch harness internals (except
 `dsh-win-terminal-inspector`, which wraps the documented `terminalInspector`
 test hook and is guarded + reversible).
 
-## Plugin compatibility (0.1.0)
+## Plugin compatibility (0.2.0)
 
 | Plugin | Depends on | Notes |
 | --- | --- | --- |
@@ -28,11 +29,14 @@ test hook and is guarded + reversible).
 | dsh-memory | MiniMax `embo-01` embeddings (optional) | Falls back to local bigram search without a key |
 | dsh-win-terminal-inspector | Git Bash (optional path rewrite) | Windows-only |
 
-## MCP server (0.1.0)
+## MCP server (0.2.0)
 
 | Client | Status |
 | --- | --- |
 | Claude Code 2.1.x | *(verified: registered, connected, tools listed)* |
+| Claude Code 2.1.175 plugin | strict manifest validation and hook subprocess tests *(verified)* |
+| Codex CLI 0.154.0 | rollout parser and Stop schema *(verified)*; fresh-session hook execution *(unverified)* |
+| MCP SDK 1.30.0 | stdio smoke: 55 tools registered, read-only execution *(verified)* |
 | Cursor / Cline / any MCP stdio client | by MCP protocol (2024-11-05) |
 
 MCP tools map onto the same `lib/` modules as the DSH plugins; behavior and
