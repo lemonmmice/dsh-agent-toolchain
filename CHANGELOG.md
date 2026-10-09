@@ -10,6 +10,9 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **Version-scoped misjudgement retractions** — corpus hygiene accepts `--misjudge-sha` and
+  `--misjudge-version`, defaults to a read-only preview, and leaves unversioned legacy records alone.
+
 - **Deployed failure provenance identifies the toolchain** — only the toolchain package name
   supplies a checkout version; profile installs read version, commit and dirty state from the
   deployment stamp, with `source: deploy-stamp`, instead of trusting the profile package.

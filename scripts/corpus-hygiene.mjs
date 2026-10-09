@@ -19,6 +19,18 @@ const argv = process.argv.slice(2)
 const apply = argv.includes('--apply')
 const dirIdx = argv.indexOf('--dir')
 const dir = dirIdx >= 0 ? argv[dirIdx + 1] : undefined
+function option(name) {
+  const index = argv.indexOf(name)
+  if (index < 0) return null
+  if (!argv[index + 1] || argv[index + 1].startsWith('--')) throw new Error(name + ' requires a value')
+  return argv[index + 1]
+}
+const shaArg = option('--misjudge-sha')
+const versionArg = option('--misjudge-version')
+const shas = shaArg ? shaArg.split(',').map((sha) => sha.trim().toLowerCase()) : []
+if (shas.some((sha) => !/^[0-9a-f]{12}$/.test(sha))) throw new Error('--misjudge-sha requires comma-separated twelve-character commit hashes')
+const misjudgeMode = shaArg !== null || versionArg !== null
+const failureClass = misjudgeMode ? 'agent-misjudge' : 'tool-error'
 
 /** 只认这几种**已核实**的签名；拿不准的一律不动。 */
 const SIGNATURES = [
@@ -34,13 +46,20 @@ const SOURCE_NOTE = '2026-10 复盘查明这批记录基本由 plugins/dsh-ui-dr
 const corpus = makeFailureCorpus(dir ? { dir } : {})
 const rows = []
 for (let offset = 0; ; offset += 500) {
-  const page = corpus.query({ failureClass: 'tool-error', limit: 500, offset })
+  const page = corpus.query({ failureClass, limit: 500, offset })
   rows.push(...page.rows)
   if (page.rows.length < 500) break
 }
 
 const plan = []
 for (const r of rows) {
+  if (misjudgeMode) {
+    const producer = r.producer?.toolchain
+    if (!producer || (shaArg && !shas.includes(String(producer.sha || '').toLowerCase())) || (versionArg && producer.version !== versionArg)) continue
+    const selector = [shaArg ? 'sha=' + shas.join(',') : '', versionArg ? 'version=' + versionArg : ''].filter(Boolean).join(' AND ')
+    plan.push({ r, sig: { key: 'toolchain-misjudge', why: '按工具链来源撤回 agent-misjudge：' + selector } })
+    continue
+  }
   if (!Array.isArray(r.tags) || !r.tags.includes('auto')) continue // 手工记录一律不动
   const sig = SIGNATURES.find((s) => s.tasks.includes(r.task) && s.re.test(String(r.description ?? '')))
   if (sig) plan.push({ r, sig })
@@ -54,8 +73,8 @@ for (const { r, sig } of plan) {
   if (r.ts > g.last) g.last = r.ts
 }
 console.log(`失败库：${corpus.dir}`)
-console.log(`活动的 tool-error 共 ${rows.length} 条；匹配到 ${plan.length} 条可撤回：`)
-for (const s of SIGNATURES) {
+console.log(`活动的 ${failureClass} 共 ${rows.length} 条；匹配到 ${plan.length} 条可撤回：`)
+for (const s of misjudgeMode ? [{ key: 'toolchain-misjudge' }] : SIGNATURES) {
   const g = bySig[s.key]
   console.log(`  ${s.key.padEnd(22)} ${String(g ? g.count : 0).padStart(4)} 条` + (g ? `  ${g.first.slice(0, 10)} → ${g.last.slice(0, 10)}` : ''))
 }
@@ -68,7 +87,7 @@ if (!apply) {
 let done = 0
 let failed = 0
 for (const { r, sig } of plan) {
-  const res = corpus.retract({ id: r.id, ts: r.ts, reason: sig.why + '。' + SOURCE_NOTE, by: 'scripts/corpus-hygiene.mjs' })
+  const res = corpus.retract({ id: r.id, ts: r.ts, reason: sig.why + (misjudgeMode ? '' : '。' + SOURCE_NOTE), by: 'scripts/corpus-hygiene.mjs' })
   if (res.ok) done++
   else failed++
 }
