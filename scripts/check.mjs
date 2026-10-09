@@ -5,22 +5,12 @@ import { join, extname, relative } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { validateSchemas } from './lib/schema-dsl.mjs'
+import { createPrivateReferenceScanner } from './lib/private-references.mjs'
 
 const root = join(fileURLToPath(import.meta.url), '..', '..')
 
 // Environment-specific leaks that must never appear in this public repo.
-const FORBIDDEN = [
-  '牛股王',
-  'NiuGuWang',
-  'niugu',
-  'dsh-files',
-  'E:\\',
-  'hntz18',
-  'NGW_CLIENT',
-  '57782',
-  'PC客户端',
-  'linxin666',
-]
+const hasPrivateReference = createPrivateReferenceScanner()
 
 // Local-only paths (task packages, run artifacts, agent env overrides) that
 // must never be committed. Their content is skipped by the text scans below;
@@ -84,8 +74,6 @@ for (const f of walk(root)) {
 }
 
 // 2. forbidden-reference scan over text files
-//    (skip this script itself and CONTRIBUTING.md, which legitimately
-//     mention the forbidden patterns as examples of what NOT to include)
 //
 //    Scanned by CONTENT SNIFF, not by extension whitelist. The old whitelist
 //    (.js/.mjs/.ps1/.md/.json/.yaml/.yml/.cs) silently skipped every other text
@@ -97,7 +85,6 @@ for (const f of walk(root)) {
 //    because that is what "would this leak into the public repo?" means. Local
 //    gitignored junk (e.g. *.log scratch files) can never be committed and must
 //    not turn the gate red — that was the false-positive the sniff first hit.
-const SKIP_SCAN = new Set([join(root, 'scripts', 'check.mjs'), join(root, 'CONTRIBUTING.md')])
 const SIZE_CAP = 2 * 1024 * 1024
 function looksBinary(buf) {
   const n = Math.min(buf.length, 4096)
@@ -116,7 +103,7 @@ function committableFiles() {
 }
 const COMMITTABLE = committableFiles()
 for (const f of walk(root)) {
-  if (SKIP_SCAN.has(f) || isLocalOnly(f)) continue
+  if (isLocalOnly(f)) continue
   if (COMMITTABLE !== null && !COMMITTABLE.has(f)) continue
   let buf
   try {
@@ -126,15 +113,10 @@ for (const f of walk(root)) {
   }
   if (buf.length > SIZE_CAP || looksBinary(buf)) continue
   const text = buf.toString('utf8')
-  for (const pat of FORBIDDEN) {
-    if (text.includes(pat)) {
-      // Proxy-Authenticate legitimately contains "-Authe..." pattern; skip line-level noise
-      for (const [i, line] of text.split('\n').entries()) {
-        if (line.includes(pat)) {
-          failures++
-          console.error(`FORBIDDEN REF "${pat}" at ${relative(root, f)}:${i + 1}: ${line.trim().slice(0, 100)}`)
-        }
-      }
+  for (const [index, line] of text.split('\n').entries()) {
+    if (hasPrivateReference(line)) {
+      failures++
+      console.error(`FORBIDDEN REF at ${relative(root, f)}:${index + 1}`)
     }
   }
 }

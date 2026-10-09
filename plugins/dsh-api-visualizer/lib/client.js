@@ -292,7 +292,7 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
     /**
      * 完整调用链文本（入口 → 接口）。去重后按「外→内」排列，
      * 连续同类型帧省略重复的类型前缀，紧凑又可读。
-     * 例：StatusBarViewModel.TimerOnElapsed → .RequestStocks → AStockApi.GetIndexTotalTrade
+     * 例：WatchListViewModel.OnRefresh → .LoadQuotes → QuoteApi.FetchSnapshot
      */
     function formatCallChain(stack) {
       const norm = normalizeStack(stack)

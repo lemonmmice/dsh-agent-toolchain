@@ -209,14 +209,14 @@ for (const [action, c] of Object.entries(CASES)) {
     target: { tid: 29600, pid: 13196, process: 'ClientApp' },
     etlZip: 'C:\\ev\\uifreeze.etl.zip',
     freezes: [
-      { startMs: 20443, durMs: 361, leaf: 'ntoskrnl!?', managed: ['clientapp!ClientApp.Client.AppMain.Main(class System.String[])', 'ClientApp.DataManager!ClientApp.DataManager.Apis.TradeDayApi.GetLatestTradeDate(value class System.DateTime)', 'ClientApp.DataManager!ClientApp.DataManager.Common.HttpUtility.HttpGet(class System.String)'] },
-      { startMs: 20164, durMs: 279, leaf: 'ntoskrnl!?', managed: ['ClientApp.DataManager!ClientApp.DataManager.Apis.UsersApi.BatchGetSigned(class System.String)', 'ClientApp.DataManager!ClientApp.DataManager.Common.HttpUtility.HttpGet(class System.String)'] },
+      { startMs: 20443, durMs: 361, leaf: 'ntoskrnl!?', managed: ['clientapp!ClientApp.Program.Main(class System.String[])', 'ClientApp.DemoData!ClientApp.DemoData.CalendarGateway.LatestDate(value class System.DateTime)', 'ClientApp.DemoData!ClientApp.DemoData.Transport.Fetch(class System.String)'] },
+      { startMs: 20164, durMs: 279, leaf: 'ntoskrnl!?', managed: ['ClientApp.DemoData!ClientApp.DemoData.ProfileGateway.ReadBatch(class System.String)', 'ClientApp.DemoData!ClientApp.DemoData.Transport.Fetch(class System.String)'] },
     ],
   })
   check('★★ uifreeze 有冻结 ⇒ 印出次数/合计/阈值（结构化进人话）',
     /UI 冻结 2 次/.test(frozen) && /641ms/.test(frozen) && /200ms/.test(frozen), JSON.stringify(frozen.slice(0, 200)))
-  check('★★ uifreeze 印出单段时长 + 托管主因链（HttpGet 那条 —— 这是本工具的价值）',
-    /361ms/.test(frozen) && /GetLatestTradeDate/.test(frozen) && /HttpGet/.test(frozen), JSON.stringify(frozen.slice(0, 400)))
+  check('★★ uifreeze 印出单段时长 + 托管主因链（Fetch 那条 —— 这是本工具的价值）',
+    /361ms/.test(frozen) && /LatestDate/.test(frozen) && /Fetch/.test(frozen), JSON.stringify(frozen.slice(0, 400)))
   check('★ uifreeze 主 UI 线程 tid/进程可核对',
     /29600/.test(frozen) && /ClientApp/.test(frozen), JSON.stringify(frozen.slice(0, 160)))
   check('★ uifreeze 托管帧要精简（去掉 module! 前缀与参数表，别糊一大坨）',
