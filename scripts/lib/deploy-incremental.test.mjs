@@ -43,6 +43,23 @@ try {
   const stamp = readFileSync(join(profile, '.dsh-toolchain-deploy.json'), 'utf8')
   run()
   assert.equal(readFileSync(join(profile, '.dsh-toolchain-deploy.json'), 'utf8'), stamp)
+  writeFileSync(join(source, 'package.json'), JSON.stringify({ name: 'dsh-agent-toolchain', version: '2.0.0' }))
+  const git = (...args) => {
+    const result = spawnSync('git', ['-C', source, ...args], { encoding: 'utf8', windowsHide: true, timeout: 10000 })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout.trim()
+  }
+  git('init', '-q')
+  git('add', '-A')
+  git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '-qm', 'fixture')
+  run()
+  const cleanStamp = JSON.parse(readFileSync(join(profile, '.dsh-toolchain-deploy.json'), 'utf8'))
+  assert.equal(cleanStamp.version, '2.0.0')
+  assert.equal(cleanStamp.sha, git('rev-parse', 'HEAD').slice(0, 12))
+  assert.equal(cleanStamp.dirty, false)
+  writeFileSync(join(source, 'uncommitted.txt'), 'dirty')
+  run()
+  assert.equal(JSON.parse(readFileSync(join(profile, '.dsh-toolchain-deploy.json'), 'utf8')).dirty, true)
   console.log('PASS incremental deployment: unchanged binaries untouched, nested additions, shared modules and no-op stamp')
 } finally {
   rmSync(scratch, { recursive: true, force: true })
