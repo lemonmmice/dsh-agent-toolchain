@@ -9,7 +9,7 @@
  *    程序集只加载一次、主窗口只解析一次，步间没有进程启动开销；
  *  - status 走 batch 脚本的 -Status 快路径（不加载 UIA）。
  */
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn, execFile, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -300,11 +300,11 @@ export function makeDriver(cfg) {  const c = {
   function isPidAlive(pid) {
     if (!pid) return false
     try {
-      const out = execFileSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
-      return new RegExp('","' + pid + '",').test(out)
+      process.kill(pid, 0)
+      return true
     } catch (e) {
-      if (isProgrammingError(e)) throw e
-      return false
+      if (e.code === 'ESRCH') return false
+      throw e
     }
   }
 
@@ -390,25 +390,23 @@ export function makeDriver(cfg) {  const c = {
       }
     }
     const pids = targets.map((t) => t.pid)
-    // 强杀必须**同步拿到结果**（2026-09-11，压测下两次实测漏杀之后）：
-    //   旧写法 `spawn('taskkill', …)` 是 fire-and-forget，结果与错误全丢 —— 于是"没杀掉"时
-    //   调用方只看到 `killed:false`，**不知道为什么**（taskkill 压根没起来？被拒绝？进程还在退？）。
-    //   现在用 execFileSync（有超时），把每次的 stderr 收下来如实回报（killErrors）。
     const killErrors = []
-    const killOnce = () => {
+    const waitBudget = Math.min(60000, Math.max(1, Number(envOr('DSH_UI_KILL_WAIT_MS')) || 15000))
+    const deadline = Date.now() + waitBudget
+    const killOnce = async () => {
       for (const pid of pids) {
-        try {
-          execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
-        } catch (e) {
-          const msg = String((e && (e.stderr || e.message)) || e).replace(/\s+/g, ' ').trim().slice(0, 160)
-          if (msg) killErrors.push(pid + ': ' + msg)
-        }
+        if (!isPidAlive(pid) || Date.now() >= deadline) continue
+        await new Promise((resolve) => {
+          execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: Math.max(1, deadline - Date.now()) }, (error, stdout, stderr) => {
+            if (error) killErrors.push(pid + ': ' + (String(stderr || '').trim() || error.message).replace(/\s+/g, ' ').slice(0, 160))
+            resolve()
+          })
+        })
       }
     }
-    killOnce()
+    await killOnce()
     // 等它真的退出：taskkill 是异步的，进程还在时"重启"会撞文件锁/单实例互斥。
     // 预算内**持续重试**（不是只重试一次）：高负载下 taskkill.exe 起进程本身就要几秒。
-    const deadline = Date.now() + (Number(process.env.DSH_UI_KILL_WAIT_MS) || 15000)
     const remaining = []
     let retried = 0
     let lastKillAt = Date.now()
@@ -416,9 +414,11 @@ export function makeDriver(cfg) {  const c = {
       remaining.length = 0
       for (const pid of pids) if (isPidAlive(pid)) remaining.push(pid)
       if (remaining.length === 0) break
-      if (Date.now() - lastKillAt >= 1500) { retried++; killOnce(); lastKillAt = Date.now() }
+      if (Date.now() - lastKillAt >= 1500) { retried++; await killOnce(); lastKillAt = Date.now() }
       await sleep(150)
     }
+    remaining.length = 0
+    for (const pid of pids) if (isPidAlive(pid)) remaining.push(pid)
     return {
       killed: remaining.length === 0,
       scope,
