@@ -147,7 +147,11 @@ claude plugin install dsh-agent-toolchain@dsh-agent-toolchain
 
 For local development, load the checkout in place instead of a cached copy (Claude Code auto-loads plugins under `~/.claude/skills/<name>/`), so edits take effect in the next session — Windows: `mklink /J %USERPROFILE%\.claude\skills\dsh-agent-toolchain <repo>`. Plugin-provided tools are namespaced, e.g. `mcp__plugin_dsh-agent-toolchain_dsh__verify_report`; remove a separate `claude mcp add` registration of the same server to avoid two copies of every tool.
 
-Codex reads `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` as alternate manifest locations (upstream `codex-rs/core-plugins`), so the same layout is meant to load there too — **not yet verified end to end**; the Stop gate currently recognises Claude Code transcripts only and lets Codex sessions through.
+Codex reads `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` as alternate manifest locations (upstream `codex-rs/core-plugins`), so the same layout is meant to load there too — **not yet verified end to end**. The Stop gate supports Claude transcripts and Codex rollout JSONL, including literal patches and `verify_report` calls nested in code-mode `exec`. It selects the supplied turn ID, falling back to the last user message only when no turn IDs exist. Shell edits and dynamically constructed patch strings are not detected. Unknown formats fail open.
+
+Codex Stop output uses `decision: block` with a nonempty `reason`, or `systemMessage` for warnings.
+The contract was checked in `codex-rs/hooks/src/schema.rs` and `codex-rs/hooks/src/events/stop.rs`
+at upstream commit `e45069d770c6d0b8984c58a6e7cbaf221ad37599`.
 
 ## Install (details)
 

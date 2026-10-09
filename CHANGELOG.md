@@ -10,6 +10,9 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **Codex Stop adjudication** — rollout turn IDs, last-prompt fallback, literal nested patch calls
+  and nested verification outputs feed the existing closing verdict; unknown formats fail open.
+
 - **Version-scoped misjudgement retractions** — corpus hygiene accepts `--misjudge-sha` and
   `--misjudge-version`, defaults to a read-only preview, and leaves unversioned legacy records alone.
 
