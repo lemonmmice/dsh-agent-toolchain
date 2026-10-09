@@ -18,6 +18,7 @@ import { z } from 'zod'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { AsyncLocalStorage } from 'node:async_hooks'
 
 import { makeBuilder } from '../plugins/dsh-build/lib/builder.mjs'
 import { checkCompileMembership } from '../lib/compile-membership.mjs'
@@ -31,6 +32,8 @@ import { makeHangInspector } from '../plugins/dsh-hang-inspector/lib/hang.mjs'
 import { sendRequest } from '../plugins/dsh-postman/lib/http.mjs'
 import { DshMemory } from '../plugins/dsh-memory/lib/memory.mjs'
 import { makeFailureCorpus, FAILURE_CLASSES } from '../lib/failure-corpus.mjs'
+import { buildProducer, agentTurnFromMeta } from '../lib/failure-provenance.mjs'
+import { isExpectedRefusal } from '../plugins/dsh-ui-drive/lib/refusal.mjs'
 // 捕获控制面的"人话总结"：**与 DSH 工具 / 面板路由共用同一份实现**（本仓第 38 类：同一逻辑许两份必然漂移）。
 // 之所以要在这里算而不是只信路由返回：**运行中的宿主不会热加载**，旧宿主的路由里没有 summary 字段，
 // 于是"新工具 + 旧宿主"这个组合下 MCP 面会拿不到那句关键提示（实测过：summary=undefined）。
@@ -90,7 +93,18 @@ function injectAnnotations(args) {
   }
   return args
 }
-server.tool = (...args) => _origTool(...wrapToolArgs(injectAnnotations(args), (name, handler) => _toolProgress.wrap(name, _toolTrace.wrap(name, _outputBudget.wrap(name, handler)))))
+// 调用上下文（最外层）：把本次调用来自哪个宿主回合（目前只有 Codex 在 `_meta` 里给）存进 AsyncLocalStorage，
+// 让 autoRecord / verify_report 不必改 55 个 handler 的签名就能给记录标上来源。只取 id，不取内容。
+const _callCtx = new AsyncLocalStorage()
+const withCallContext = (name, handler) => (args, extra) =>
+  _callCtx.run({ tool: name, agentTurn: agentTurnFromMeta(extra?._meta) }, () => handler(args, extra))
+/** 当前调用的来源描述（失败记录 / 验证报告共用）。 */
+function producerNow(runtime = 'mcp') {
+  let client = null
+  try { client = server.server.getClientVersion?.() ?? null } catch { client = null }
+  return buildProducer({ runtime, client, agentTurn: _callCtx.getStore()?.agentTurn ?? null })
+}
+server.tool = (...args) => _origTool(...wrapToolArgs(injectAnnotations(args), (name, handler) => withCallContext(name, _toolProgress.wrap(name, _toolTrace.wrap(name, _outputBudget.wrap(name, handler))))))
 
 // ---------------------------------------------------------------- shared
 
@@ -277,9 +291,22 @@ function autoRecord(failureClass, tool, message, extra = {}) {
       description: String(message).slice(0, 300),
       tags: ['auto', tool],
       context: { runtime: 'mcp', tool, ...(extra.context ?? {}) },
+      // 来源 + 去重（2026-10）：同一种失败在窗口内只记一条全量记录，其余折叠成 recurrence 计数；
+      // producer 让"这是测试/哪个客户端/哪一版工具链写的"在记录本身里就能查到。
+      producer: producerNow('mcp'),
+      dedupe: true,
     })
   } catch { /* ignore */ }
 }
+
+/**
+ * ui_jev 的这些失败码是参数校验 / 前置条件不满足（没开远端、正忙、目标不在），属于"调用方式不对或环境未就绪"，
+ * 不是工具失灵。`ui_jev_invalid_decision`（远端返回了无效选择）**不在**此列 —— 那是真故障，照记。
+ */
+const UI_JEV_EXPECTED_CODES = new Set([
+  'ui_jev_invalid_goal', 'ui_jev_invalid_arguments', 'ui_jev_invalid_confidence', 'ui_jev_invalid_scope',
+  'remote_data_not_allowed', 'ui_jev_busy', 'ui_jev_target_unavailable',
+])
 
 // ---------------------------------------------------------------- build
 
@@ -303,7 +330,9 @@ server.tool(
   mcpShape('ui_jev'),
   async (args) => {
     const result = await ju().run(args)
-    if (result.ok === false) autoRecord('tool-error', 'ui_jev', String(result.error || result.errorCode || 'ui_jev failed').slice(0, 200))
+    if (result.ok === false && !isExpectedRefusal(result) && !UI_JEV_EXPECTED_CODES.has(result.errorCode)) {
+      autoRecord('tool-error', 'ui_jev', String(result.error || result.errorCode || 'ui_jev failed').slice(0, 200))
+    }
     return jtext(result)
   },
 )
@@ -489,7 +518,8 @@ server.tool(
     // snapshotId bug called out below. Spreading makes the schema the single
     // source of truth, so this cannot drift again.
     const r = await drv().drive({ ...args, action: args.action, allowSideEffects: args.allowSideEffects })
-    if (!r.ok) autoRecord('tool-error', 'ui_drive', `ui_drive ${args.action} failed: ${String(r.error ?? 'unknown error').slice(0, 200)}`)
+    // 闸门按设计拒绝（快照三件套 / 策略 / 未授权）与"目标未配置"不是工具失灵，不进失败库（见 refusal.mjs）
+    if (!r.ok && !isExpectedRefusal(r)) autoRecord('tool-error', 'ui_drive', `ui_drive ${args.action} failed: ${String(r.error ?? 'unknown error').slice(0, 200)}`)
     // r44：`describe=true` 以前是**幽灵参数**（声明了、handler 从不实现 ⇒ 模型以为拿到了描述，其实没有）。
     // 现在真的接上：vision 模块是自包含的（读 ~/.dsh/settings.yaml + .credentials.yaml），不需要宿主 API。
     await attachVision(r, args)
@@ -813,7 +843,7 @@ server.tool(
       })
     }
     const r = await drv().drive(args)
-    if (!r.ok) autoRecord('tool-error', 'ui_act', `ui_act ${args.action} failed: ${String(r.error ?? 'unknown').slice(0, 200)}`)
+    if (!r.ok && !isExpectedRefusal(r)) autoRecord('tool-error', 'ui_act', `ui_act ${args.action} failed: ${String(r.error ?? 'unknown').slice(0, 200)}`)
     return uiJtext(r)
   }
 )
@@ -1397,7 +1427,9 @@ server.tool(
   },
   async (args) => {
     try {
-      return jtext(makeVerificationReport(args))
+      // producer：报告与它自动记下的 agent-misjudge 都标上"哪个客户端、哪个宿主回合、哪一版裁决器"，
+      // 裁决器以后被证明有缺陷时可以按版本批量撤回它的结论（F-023 那类）。
+      return jtext(makeVerificationReport({ ...args, producer: producerNow('mcp') }))
     } catch (e) {
       return failure('verify_report rejected: ' + e.message, 'verify_report_rejected')
     }

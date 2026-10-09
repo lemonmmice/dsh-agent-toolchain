@@ -69,6 +69,29 @@ A review round also produced an explicit **"do not copy" list**, and it is the m
 retrieval round trip), the v1/v2 dual-protocol split, OS-level sandbox profiles, TUI rendering
 internals, and long governance prose in tool descriptions.
 
+### Second reading: upstream `main`, 2026-10-09
+
+The first study used a local 76-file subset; the 2026-09-16 follow-up could only see search-engine
+summaries (direct fetches were blocked). The second reading went to the source itself
+(`openai/codex@03b761d`, read through the GitHub API), focusing on the areas the subset never
+contained — hooks, plugins, memories, execpolicy, rollout tracing. Same rule as before: shape and
+semantics were taken, no source was copied.
+
+| Codex area (upstream path) | What it does upstream | What this repository did with it |
+| --- | --- | --- |
+| `core/src/mcp_tool_call.rs` — `requires_mcp_tool_approval`, `AppToolApproval` default `Auto` (`config/src/mcp_types.rs`) | decides whether an MCP call needs approval from its annotations; a **missing** `destructiveHint` / `openWorldHint` counts as `true` | every tool now sends explicit hints (`TOOL_EFFECTS` in `lib/tool-registry.mjs`); the rule is ported as an executable spec in `lib/tool-annotations.test.mjs` |
+| `core/src/mcp_tool_call.rs` — `build_mcp_tool_call_request_meta`; `core/src/turn_metadata.rs` | every MCP call carries `_meta["x-codex-turn-metadata"]` (session / thread / turn ids) | `producer.agentTurn` on failure records and verify reports (`lib/failure-provenance.mjs`), ids only |
+| `core-plugins/src/manifest.rs`, `core-plugins/src/marketplace.rs`, `plugin/src/manifest.rs` | plugins bundle skills + MCP servers + hooks; `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` are accepted alternate locations | the repository root is a plugin in that shared layout (`.claude-plugin/`, `skills/`, `hooks/`) |
+| `hooks/schema/generated/stop.command.{input,output}.schema.json`, `config/src/hook_config.rs` | Stop hooks can return `decision: "block"` + `reason` (Claude-compatible); handlers may be `command` **or `mcp_tool`** (call a connected MCP tool with `${…}`-templated arguments) | the closing-verdict gate (`lib/stop-gate.mjs`) uses the `command` form, which both hosts run; the `mcp_tool` form is noted for the Codex path, not used yet |
+| `memories/README.md` | two-phase memory pipeline: per-session extraction (idle-only, leased, secret-redacted) → git-baselined consolidation; usage counts from citations drive retention | ○ read, not adopted yet — the reference design for ROADMAP item 9 |
+| `execpolicy/README.md` | `prefix_rule` with `match` / `not_match` examples validated at load time, `justification` surfaced on refusal, strictest decision wins | ○ read, not adopted yet — the reference shape for the capability policy (ROADMAP item 6) |
+| `rollout-trace/README.md` | "observe first, interpret later": raw `trace.jsonl` + `payloads/` + a deterministic offline reducer | ○ read, not adopted yet — the reference bundle layout for ROADMAP item 4 |
+
+The `tool_search` decision above still stands, for a different reason than before: clients now defer
+MCP tool definitions themselves (a Claude Code session observed on 2026-10-09 listed all 55 tools as
+deferred), so discovery cost is the client's job; what the toolchain owed was workflow-level guidance,
+which is what `skills/` provides.
+
 ### Three identifiers we cite that are *not* in the local subset
 
 Our comments name `truncate_middle`, `performSecondaryAction` and `selectText`. None of them appears

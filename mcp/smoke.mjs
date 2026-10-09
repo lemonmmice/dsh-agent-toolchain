@@ -35,6 +35,12 @@ const serverPath = join(here, 'server.mjs')
 // ⚠ 必须在 `spawn` **之前**设：子进程是继承 `process.env` 的。
 const smokeEvidenceDir = mkdtempSync(join(tmpdir(), 'dsh-mcp-smoke-evidence-'))
 process.env.DSH_PERF_EVIDENCE_DIR = smokeEvidenceDir
+// 同理（2026-10）：冒烟里会触发自动失败记录 / 验证报告的调用，绝不能写进用户的真实失败库与报告目录
+// （真库曾被测试流量灌满，见 scripts/run-tests.mjs 的"测试硬闸二"）—— 所以**无条件**指到临时目录，
+// 不沿用用户配置的目录。
+process.env.DSH_FAILURE_CORPUS_DIR = join(smokeEvidenceDir, 'failure-corpus')
+process.env.DSH_VERIFY_DIR = join(smokeEvidenceDir, 'verify-reports')
+process.env.DSH_TEST = '1'
 process.on('exit', () => { try { rmSync(smokeEvidenceDir, { recursive: true, force: true }) } catch { /* best effort */ } })
 
 const child = spawn(process.execPath, [serverPath], { stdio: ['pipe', 'pipe', 'pipe'] })

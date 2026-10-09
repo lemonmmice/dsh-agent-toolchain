@@ -21,6 +21,7 @@ import { createEnvelope, envelopeSummary, envelopeToLine } from './evidence.mjs'
 import { makeVision } from './vision.mjs'
 import { protocolId, contentHash, observationOf, createReplay, validateReplay, normalizeTarget } from './protocol.mjs'
 import { executeVisualFallback } from './visual-fallback.mjs'
+import { isGateDenied } from './refusal.mjs'
 
 // 解释器路径用户可配：经 env-fallback（长活宿主的进程环境里可能没有用户后来设的值）。
 const PS = envOr('DSH_UI_POWERSHELL') || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
@@ -1241,7 +1242,7 @@ export function makeDriver(cfg) {  const c = {
       //   · unknown —— 常驻进程超时等"可能已执行"的情形：驱动自己就标了 unknown，
       //                证据不得反过来断言"被拒/没执行"（原实现就是这么自相矛盾的）；
       //   · action  —— 其余（含"执行器跑了但失败"：executed=true 而 applied=false）。
-      const gateDeniedNow = !!(res && (res.policyCode || res.requiresAllowSideEffects || res.notExecuted || res.unconfigured || res.staleSnapshot || res.expiredSnapshot || res.unknownSnapshot))
+      const gateDeniedNow = isGateDenied(res) // 判据与失败库的"预期内拒绝"同处定义，见 ./refusal.mjs
       const maybeExecuted = !!(res && res.unknown)
       const kindNow = gateDeniedNow ? 'denied' : (maybeExecuted ? 'unknown' : 'action')
       const executedNow = gateDeniedNow ? false : (maybeExecuted ? null : true)

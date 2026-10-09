@@ -91,3 +91,28 @@ export function renderFailureQuery(v) {
   }
   return [{ type: 'text', text: lines.join('\n') }]
 }
+
+/**
+ * `failure_stats` 的渲染。以前只印一行总数；2026-10 加了 `topRecurring`（按指纹聚合的反复出现排行）
+ * 之后，一行总数会把**最有用的那张表**整个丢掉（F-059 同病：算出来了、没印出来）。
+ *
+ * @param {object} v `lib/failure-corpus.mjs` 的 `stats()` 返回值
+ */
+export function renderFailureStats(v) {
+  const o = v && typeof v === 'object' ? v : {}
+  const lines = ['失败样本库：活动分片 ' + (o.total ?? '?') + ' 条（全部分片 ' + (o.totalAllShards ?? '?') + '，已撤回 ' + (o.retracted ?? 0) +
+    (o.recurrences ? '，去重折叠的重复发生 ' + o.recurrences + ' 次' : '') + '）']
+  const byClass = o.byClass && typeof o.byClass === 'object' ? Object.entries(o.byClass).filter(([, n]) => n > 0) : []
+  if (byClass.length) lines.push('按类别（活动分片）：' + byClass.map(([k, n]) => k + ' ' + n).join(' / '))
+  const top = Array.isArray(o.topRecurring) ? o.topRecurring : []
+  if (top.length) {
+    lines.push('反复出现（按指纹聚合，含去重折叠的次数）：')
+    top.forEach((g, i) => {
+      lines.push('[' + (i + 1) + '] ×' + (g.occurrences ?? '?') + '  ' + (g.failureClass || '(无类别)') + '  ' + (g.task || '(无 task)') +
+        '  ' + fmtWhen(g.firstTs) + ' → ' + fmtWhen(g.lastTs))
+      if (g.sample) lines.push('    ' + String(g.sample).replace(/\s*\n\s*/g, ' '))
+    })
+  }
+  if (o.archivedNote) lines.push('ℹ ' + o.archivedNote)
+  return [{ type: 'text', text: lines.join('\n') }]
+}
