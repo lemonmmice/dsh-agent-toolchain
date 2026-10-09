@@ -59,7 +59,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const server = new McpServer({
   name: 'dsh-agent-toolchain',
-  version: '0.1.0',
+  version: '0.2.0',
 })
 
 // W2 —— 工具调用追踪（见 CODEX-STEAL-ANALYSIS-20260916.md / lib/tool-trace.mjs）。

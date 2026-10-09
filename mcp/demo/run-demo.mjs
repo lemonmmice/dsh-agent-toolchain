@@ -96,7 +96,7 @@ const env = {
   DSH_VERIFY_DIR: dirs.verify,
 }
 
-const client = new Client({ name: 'dsh-agent-toolchain-demo', version: '0.1.0' })
+const client = new Client({ name: 'dsh-agent-toolchain-demo', version: '0.2.0' })
 let exitCode = 0
 
 try {

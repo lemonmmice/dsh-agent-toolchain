@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-toolchain",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Make coding agents verifiably accountable for their changes to Windows desktop clients: build + compile-set checks, UI automation, API capture, perf/hang evidence, and a closing verdict that adjudicates 'done' against machine evidence. Ships the MCP server, workflow skills, and hooks (closing-verdict gate, compile-set check for new source files, session context).",
   "author": {
     "name": "lemonmmice",
