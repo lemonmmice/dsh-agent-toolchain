@@ -33,6 +33,7 @@ function executorFields() {
 const NOT_STEP_FIELDS = new Set([
   'PSObject',             // PowerShell 反射惯用法
   'cmd',                  // warm 常驻进程的协议字段（warmSend 自带），不是 step 字段
+  'controlPolicy',
   'path', 'w', 'h',       // 截图结果对象的属性（$s.path/$s.w/$s.h 是**脚本内构造**的结果，不是入参）
   'GetText',              // [System.Windows.Automation.TextPattern]::…GetText(…) 的静态成员
   'MoveEndpointByRange', 'MoveEndpointByUnit', // TextPattern 的静态成员
@@ -89,6 +90,7 @@ function cleanStepsKeys() {
  * 加新条目必须能说清"为什么这条路径不需要它"，而不是"先加上让它变绿"。
  */
 const EXEMPT_FROM_WARM = {
+  controlPreflight: '只由 flow 内部通过 batch 执行预检，单动作 warm 路径执行正常策略检查',
   expectEnabled: 'expect 是 flow 步骤类型，单动作 ui_drive 不收（warm 是单动作路径）',
   expectMatch: '同上：expect 断言只在 ui_flow 的步骤里使用',
   maxDepth: 'tree 动作走批量路径（ui_tree → batch），单动作路径不读它',
@@ -101,6 +103,13 @@ const EXEMPT_FROM_CLEAN = {
 const EXEC = [...executorFields()].filter((f) => !NOT_STEP_FIELDS.has(f)).sort()
 const WARM = warmPayloadKeys()
 const CLEAN = cleanStepsKeys()
+check('内部策略由 warmSend 注入，冷路径经环境传入，不接受用户步骤覆盖',
+  /payload = \{ \.\.\.payload, controlPolicy: loadControlPolicy\(\) \}/.test(driverSrc) &&
+  /env\.DSH_UI_CONTROL_POLICY_DATA = Buffer\.from\(JSON\.stringify\(loadControlPolicy\(\)\)/.test(driverSrc) &&
+  /Set-ControlPolicy \$req\.controlPolicy/.test(batchSrc))
+check('内部流程预检由 batch 执行且在真实流程前检查结果',
+  /const preflight = await batch\(\{ steps: \[\{ \.\.\.target\.batchStep, controlPreflight: true \}\]/.test(driverSrc) &&
+  /if \(!result \|\| !result\.ok\)/.test(driverSrc))
 
 // ------------------------------------------------- 0. 解析器自检（否则"全绿"可能只是没解析到东西）
 {
@@ -172,6 +181,7 @@ const CLEAN = cleanStepsKeys()
   check('解析出步骤 schema 声明的字段（>15 个）', declaredInSteps.size > 15, 'n=' + declaredInSteps.size)
   // 不是所有 cleanSteps 字段都该出现在 flow 步骤里（有些是 drive 专用的 Node 侧参数），显式登记：
   const NOT_IN_FLOW_STEPS = {
+    controlPreflight: '内部只读预检标记，由驱动生成并通过 batch 传递，不暴露给工具调用方',
     out: '截图落盘路径由驱动内部计算，不是步骤参数',
     maxDepth: 'tree 只在 ui_tree 工具里用；flow 步骤不含 tree 动作',
     observe: '动作后快照只在单动作路径（ui_drive/ui_act）支持',

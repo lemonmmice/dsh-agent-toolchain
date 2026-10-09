@@ -28,6 +28,10 @@ description: 驱动正在运行的 Windows 桌面客户端做自验：ui_observe
 
 ## 安全
 
+- `ui_status.controlPolicy` 显示可选控件策略状态；`control_policy_invalid` 时先修策略，不执行副作用。
+- `control_denied` 按实际控件名称、AutomationId 和祖先容器判定，遵循返回的 reason / alternative；换定位参数不能绕过。
+- flow / replay 在首步前预检全部目标；后续才出现的控件应拆成观察后逐步操作。坐标动作无法按控件名匹配。
+
 - **下单、提交、删除、转账、发送**这类不可逆按钮：先向用户确认，再点。
 - 焦点在密码 / 验证码 / token 框时，截图描述默认被拒；除非用户确认画面没有敏感内容，否则别用 `allowSensitive` 绕过。
 - 动作超时后驱动不会重试：先用 find / read 复核状态，再决定是否重发。

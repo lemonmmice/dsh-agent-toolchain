@@ -892,6 +892,69 @@ function Mask-Value([string]$v, [bool]$secret) {
 # 机制一行没少（Test-DenyTarget / Assert-NotDenied / 各致效入口守卫都在），
 # 只是把"默认拦一批"改成"默认不拦，拦哪些由你说了算"。
 $DENY_RE = if ($env:DSH_UI_DENY_RE) { [string]$env:DSH_UI_DENY_RE } else { '(?!)' }
+$script:ControlPolicy = $null
+function Set-ControlPolicy($policy) {
+  $script:ControlPolicy = $policy
+  if (-not $policy -or -not $policy.valid) { return }
+  try {
+    foreach ($rule in $policy.rules) {
+      foreach ($field in @('name','aid','container')) { if ($null -ne $rule.$field) { $null = [regex]::new([string]$rule.$field) } }
+      foreach ($kind in @('match','not_match')) {
+        $exampleIndex = 0
+        foreach ($example in $rule.examples.$kind) {
+          $matched = @($rule.actions) -ccontains [string]$example.action
+          foreach ($field in @('name','aid','container')) {
+            if ($null -ne $rule.$field -and -not [regex]::IsMatch([string]$example.$field, [string]$rule.$field)) { $matched = $false }
+          }
+          if ($matched -ne ($kind -eq 'match')) { throw ($rule.id + ': ' + $kind + '[' + $exampleIndex + '] differs in PowerShell') }
+          $exampleIndex++
+        }
+      }
+    }
+  } catch { $script:ControlPolicy = [pscustomobject]@{ valid = $false; error = $_.Exception.Message } }
+}
+if ($env:DSH_UI_CONTROL_POLICY_DATA) {
+  try { Set-ControlPolicy ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:DSH_UI_CONTROL_POLICY_DATA)) | ConvertFrom-Json) }
+  catch { $script:ControlPolicy = [pscustomobject]@{ valid = $false; error = 'invalid control policy transport' } }
+}
+$script:ControlAction = ''
+function Test-ControlPolicy($el, [string]$action) {
+  if (-not $script:ControlPolicy) { return $null }
+  if (-not $script:ControlPolicy.valid) { return @{ ok = $false; policyCode = 'control_policy_invalid'; error = [string]$script:ControlPolicy.error } }
+  if (@($script:ControlPolicy.rules).Count -eq 0) { return $null }
+  if ($null -eq $el -or @('clickat','drag','move','wheel') -contains $action) { return $null }
+  $name = [string]$el.Current.Name
+  $aid = [string]$el.Current.AutomationId
+  $containers = New-Object System.Collections.ArrayList
+  $parent = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($el)
+  for ($depth = 0; $null -ne $parent -and $depth -lt 32; $depth++) {
+    [void]$containers.Add([string]$parent.Current.Name)
+    [void]$containers.Add([string]$parent.Current.AutomationId)
+    $parent = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($parent)
+  }
+  foreach ($rule in $script:ControlPolicy.rules) {
+    if (@($rule.actions) -cnotcontains $action) { continue }
+    try {
+      if ($null -ne $rule.name -and -not [regex]::IsMatch($name, [string]$rule.name)) { continue }
+      if ($null -ne $rule.aid -and -not [regex]::IsMatch($aid, [string]$rule.aid)) { continue }
+      if ($null -ne $rule.container) {
+        $matched = $false
+        foreach ($container in $containers) { if ([regex]::IsMatch($container, [string]$rule.container)) { $matched = $true; break } }
+        if (-not $matched) { continue }
+      }
+      return @{ ok = $false; policyCode = 'control_denied'; ruleId = [string]$rule.id; reason = [string]$rule.reason; alternative = [string]$rule.alternative; error = [string]$rule.reason }
+    } catch { return @{ ok = $false; policyCode = 'control_policy_invalid'; error = ($rule.id + ': ' + $_.Exception.Message) } }
+  }
+  return $null
+}
+function Assert-ControlPolicy($el, [string]$action) {
+  $denial = Test-ControlPolicy $el $action
+  if ($denial) {
+    $exception = New-Object System.InvalidOperationException([string]$denial.error)
+    $exception.Data['controlPolicy'] = $denial
+    throw $exception
+  }
+}
 function Test-DenyTarget($el) {
   $name = [string]$el.Current.Name
   $aid = [string]$el.Current.AutomationId
@@ -907,6 +970,7 @@ function Test-DenyTarget($el) {
 # 可以绕过硬拒 —— 即注释里"allowSideEffects 也解锁不了"的承诺在那些路径上是空的。
 # 把守卫放进低层函数入口，今后新增任何分支都无法绕过。
 function Assert-NotDenied($el) {
+  Assert-ControlPolicy $el $script:ControlAction
   Assert-UiInputAllowed
   $deny = Test-DenyTarget $el
   if ($deny) { throw (New-Object System.InvalidOperationException($deny)) }
@@ -1361,7 +1425,18 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
   $waitSpec = $null
   if ($hasWaitFor) { $waitSpec = $step.waitFor }
   $res = @{ step = ($index + 1); action = $action; ok = $false }
+  $script:ControlAction = $action
   try {
+    if ((Test-NeedsForeground $step) -and $script:ControlPolicy -and $script:ControlPolicy.state -ne 'unconfigured') {
+      Assert-ControlPolicy $null $action
+      if ($script:ControlPolicy -and @('clickat','drag','move','wheel') -notcontains $action) {
+        $resolved = Resolve-Target $main $step $procId
+        if (-not $resolved.ok -or $null -eq $resolved.el) {
+          if ($step.controlPreflight) { return @{ ok = $false; action = $action; policyCode = 'control_preflight_unavailable'; error = 'Cannot resolve target before flow execution' } }
+        } else { Assert-ControlPolicy $resolved.el $action }
+      }
+    }
+    if ($step.controlPreflight) { return @{ ok = $true; action = $action; preflight = $true } }
     if ($action -eq 'clickat' -and ($step.name -or $step.aid)) {
       $selector = [pscustomobject]@{ Current = [pscustomobject]@{ Name = [string]$step.name; AutomationId = [string]$step.aid } }
       $deny = Test-DenyTarget $selector
@@ -2261,7 +2336,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
     $res.ok = $false
     $res.error = $_.Exception.Message
     $failure = Get-UiPolicyFailure $_.Exception
-    if ($failure) { $res.policyCode = $failure.policyCode; $res.desktopState = $failure.desktopState }
+    if ($failure) { foreach ($field in $failure.Keys) { $res[$field] = $failure[$field] } }
   } finally {
     [UiDriveInputWin32]::ReleasePressedInputs()
   }
@@ -2310,6 +2385,7 @@ if ($Serve) {
     $resp = @{ id = $seq; ok = $false }
     try {
       $req = $line | ConvertFrom-Json
+      if ($req.PSObject.Properties.Name -contains 'controlPolicy') { Set-ControlPolicy $req.controlPolicy }
       $cmd = 'step'
       if ($req.PSObject.Properties.Name -contains 'cmd' -and $req.cmd) { $cmd = [string]$req.cmd }
       switch ($cmd) {
