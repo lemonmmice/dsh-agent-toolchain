@@ -1,5 +1,10 @@
 # Every tool, at a glance
 
+Memory saves accept optional `kind`, `reason` and `ttlDays`; debug memories default to 14 days,
+and zero disables expiry. Recall preserves expired rows and returns `expired`, provenance and
+expiry metadata. Status reports per-kind and expired counts; search hits include index time
+and embedding identity for newly indexed chunks.
+
 55 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
 face and the MCP face cannot drift apart. `Read` = the registry marks it read-only (safe to call with
 no permission); `Write` = it can change something — a file, a process, a client window, a running

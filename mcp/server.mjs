@@ -1128,7 +1128,7 @@ server.tool(
     const { hits, freshness } = await mem().searchDetailed(args.query, k)
     return jtext({
       embed: mem().embed.label,
-      hits: hits.map((h) => ({ file: h.meta.file, chunk: h.meta.chunkIndex, score: +h.score.toFixed(3), text: String(h.meta.text).slice(0, 400) })),
+      hits: hits.map((h) => ({ file: h.meta.file, chunk: h.meta.chunkIndex, score: +h.score.toFixed(3), text: String(h.meta.text).slice(0, 400), ...(h.meta.indexedAt ? { indexedAt: h.meta.indexedAt, embed: h.meta.embed ?? null } : {}) })),
       freshness,
       freshnessNote: freshness.note,
     })
@@ -1141,7 +1141,7 @@ server.tool(
   mcpShape('memory_save'),
   async (args) => {
     try {
-      return jtext(mem().remember(args.key, args.value, args.scope))
+      return jtext(mem().remember(args.key, args.value, args.scope, { kind: args.kind, reason: args.reason, ttlDays: args.ttlDays, source: producerNow() }))
     } catch (e) {
       return failure('memory_save rejected: ' + e.message, 'memory_save_rejected')
     }
@@ -1155,7 +1155,7 @@ server.tool(
   async (args) => {
     const v = mem().recall(args.key, args.scope)
     // Flat shape: value is the stored string, not a nested row object.
-    return jtext(v == null ? { found: false } : { found: true, key: v.key, value: v.value, scope: v.scope })
+    return jtext(v == null ? { found: false } : { found: true, ...v })
   }
 )
 

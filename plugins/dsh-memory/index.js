@@ -5,6 +5,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { DshMemory } from './lib/memory.mjs'
+import { buildProducer } from '../../lib/failure-provenance.mjs'
 // W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name）。
 import { dshParameters, dshDescription } from '../../lib/tool-registry.mjs'
 
@@ -120,7 +121,8 @@ const tools = () => [
         const lines = hits.map((h, i) =>
           '\n[' + (i + 1) + '] ' + (h.file || '(未知文件)') + (h.chunk != null ? ' #' + h.chunk : '') +
           (h.score != null ? '  score=' + h.score : '') + '\n    ' +
-          String(h.text || '').replace(/\s*\n\s*/g, ' ').slice(0, 300))
+          String(h.text || '').replace(/\s*\n\s*/g, ' ').slice(0, 300) +
+          (h.indexedAt ? '\n    indexedAt=' + h.indexedAt + ' embed=' + JSON.stringify(h.embed) : ''))
         const fnote = value.freshnessNote ? '\n\n⚠ ' + value.freshnessNote : ''
         return [{ type: 'text', text: head + lines.join('') + fnote }]
       },
@@ -131,7 +133,7 @@ const tools = () => [
       const { hits, freshness } = await mem().searchDetailed(args.query, k)
       return {
         embed: mem().embed.label,
-        hits: hits.map(h => ({ file: h.meta.file, chunk: h.meta.chunkIndex, score: +h.score.toFixed(3), text: String(h.meta.text).slice(0, 400) })),
+        hits: hits.map(h => ({ file: h.meta.file, chunk: h.meta.chunkIndex, score: +h.score.toFixed(3), text: String(h.meta.text).slice(0, 400), ...(h.meta.indexedAt ? { indexedAt: h.meta.indexedAt, embed: h.meta.embed ?? null } : {}) })),
         freshness,
         freshnessNote: freshness.note,
       }
@@ -145,8 +147,8 @@ const tools = () => [
       render: (_args, value) => [{ type: 'text', text: value.saved ? (`已记住：${value.key}`) : (`保存被拒绝：${value.error}`) }] },
     async execute(args) {
       try {
-        mem().remember(args.key, args.value, args.scope || 'global')
-        return { saved: true, key: args.key }
+        const row = mem().remember(args.key, args.value, args.scope || 'global', { kind: args.kind, reason: args.reason, ttlDays: args.ttlDays, source: buildProducer({ runtime: 'dsh' }) })
+        return { saved: true, ...row }
       } catch (e) {
         return { saved: false, key: args.key, error: e.message }
       }
@@ -158,10 +160,10 @@ const tools = () => [
     parameters: dshParameters('memory_recall'),
     isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: { type: 'object', additionalProperties: true, properties: { found: { type: 'boolean' }, key: { type: 'string' }, value: { type: 'string' } } },
-      render: (_args, value) => [{ type: 'text', text: value.found ? (`${value.key} = ${value.value}`) : (`没有找到记忆：${value.key}`) }] },
+      render: (_args, value) => [{ type: 'text', text: value.found ? (`${value.key} = ${value.value}\n${JSON.stringify({ kind: value.kind, reason: value.reason, source: value.source, expiresAt: value.expiresAt, expired: value.expired })}`) : (`没有找到记忆：${value.key}`) }] },
     async execute(args) {
       const r = mem().recall(args.key, args.scope || 'global')
-      return r ? { found: true, key: r.key, value: r.value } : { found: false, key: args.key }
+      return r ? { found: true, ...r } : { found: false, key: args.key }
     },
   }),
   defineTool({
@@ -192,7 +194,8 @@ const tools = () => [
         //   根因与 F-049/F-051 同族：**改了一半** —— 当初只修了渲染，忘了从 execute 把字段带出来。
         //   现在渲染层对"字段缺失"**不再当成本地**：缺字段就明说"判不了"，绝不替它下"没出本机"的结论。
         const ep = value.embedEndpoint
-        const head = `记忆库：${value.chunks} 分块 / ${value.kvEntries} 条 KV（${value.embed}，embedding=${ep || '**判不了（本工具没回报该字段）**'}）`
+        const head = `记忆库：${value.chunks} 分块 / ${value.kvEntries} 条 KV（${value.embed}，embedding=${ep || '**判不了（本工具没回报该字段）**'}）` +
+          (value.byKind ? `\n类型：${JSON.stringify(value.byKind)}；已过期 ${value.expired}` : '')
         if (ep === undefined || ep === null || ep === '') {
           return [{ type: 'text', text: head + `\n⚠ **无法判断 embedding 有没有出本机**（工具没回报 embedEndpoint）。` +
             `\n**不要向用户承诺"数据不外传"**；要判断请直接看 \`memory.status().embedEndpoint\`，或检查有没有配 MiniMax key。` }]
@@ -211,7 +214,7 @@ const tools = () => [
       const s = mem().status()
       // ⚠ F-054：**必须把渲染层要用的字段一起带出来**。少了 `embedEndpoint`，渲染就只能瞎猜，
       //   而它猜的方向是"本地/安全" —— 一个字段漏传 = 一句隐私假承诺。
-      return { chunks: s.chunks, kvEntries: s.kvEntries, embed: s.embed, embedEndpoint: s.embedEndpoint, note: s.note }
+      return { chunks: s.chunks, kvEntries: s.kvEntries, byKind: s.byKind, expired: s.expired, embed: s.embed, embedEndpoint: s.embedEndpoint, note: s.note }
     },
   }),
 ]
