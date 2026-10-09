@@ -37,6 +37,9 @@ CPU/allocation CSV folding uses `npm run build:trace-fold` and
    - never hard-code absolute paths or user home directories;
    - configure via environment variables (`DSH_*`) with sane defaults;
    - never commit API keys, tokens, or company identifiers.
+   - private-reference rules in `scripts/lib/private-references.mjs` retain lowercase SHA-256
+     fingerprints and lengths, not the private terms; scanning is case-insensitive and includes
+     substrings in identifiers, paths and Unicode words.
 3. **Syntax-check** — `node --check` every `.js`/`.mjs` you touch.
 4. **Add or update a test** — each plugin has a `test/` dir with offline self-tests where feasible.
 5. **Update the plugin README** — env vars table, tool description, behavioral change notes.

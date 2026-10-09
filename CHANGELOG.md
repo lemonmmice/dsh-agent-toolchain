@@ -8,6 +8,12 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Remove application-specific names from public fixtures and examples. The repository reference
+  scan now matches case-insensitive substrings and stores private terms as SHA-256 fingerprints,
+  including the scanner itself in checks without printing the matched private text.
+
 ## [0.2.0] — 2026-10-09
 
 - Agent plugin packaging combines MCP, workflow skills and lifecycle hooks.
