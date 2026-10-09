@@ -45,7 +45,7 @@ $unsignedIdentity = Get-UiProcessIdentity (Get-Process -Id $PID)
 function Get-AuthenticodeSignature { return [pscustomobject]@{ Status = 'HashMismatch'; SignerCertificate = $null } }
 $invalidIdentity = Get-UiProcessIdentity (Get-Process -Id $PID)
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:DSH_BOUNDARY_SCRIPTS 'ui-drive-batch.ps1'), [ref]$tokens, [ref]$errors)
-foreach ($functionName in @('Test-NeedsForeground', 'Invoke-Step')) {
+foreach ($functionName in @('Test-NeedsForeground', 'Invoke-Step', 'Assert-ControlPolicy', 'Test-ControlPolicy')) {
   $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName }, $true)
   . ([scriptblock]::Create($definition.Extent.Text))
 }

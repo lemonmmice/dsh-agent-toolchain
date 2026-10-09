@@ -179,7 +179,8 @@ const tools = () => [
     description: dshDescription('ui_status'),
     parameters: dshParameters('ui_status'),
     isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.running ? ('客户端运行中 pid=' + v.pid + ' 窗口=' + v.title) : (v.unknown ? ('客户端状态未知：' + (v.error || '查询超时')) : '客户端未运行') }] },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: (v.running ? ('客户端运行中 pid=' + v.pid + ' 窗口=' + v.title) : (v.unknown ? ('客户端状态未知：' + (v.error || '查询超时')) : '客户端未运行')) +
+      (v.controlPolicy ? '\n控件策略：' + JSON.stringify(v.controlPolicy) : '') }] },
     async execute(args) {
       // 传下去才算真的支持（参数存在但被忽略 = 最坏的一种）
       return await drv().status(args?.procId ? { procId: args.procId } : {})

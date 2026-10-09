@@ -22,6 +22,7 @@ import { makeVision } from './vision.mjs'
 import { protocolId, contentHash, observationOf, createReplay, validateReplay, normalizeTarget } from './protocol.mjs'
 import { executeVisualFallback } from './visual-fallback.mjs'
 import { isGateDenied } from './refusal.mjs'
+import { loadControlPolicy, controlPolicyStatus } from './control-policy.mjs'
 
 // 解释器路径用户可配：经 env-fallback（长活宿主的进程环境里可能没有用户后来设的值）。
 const PS = envOr('DSH_UI_POWERSHELL') || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
@@ -149,6 +150,7 @@ export function makeDriver(cfg) {  const c = {
         // 而错误只进 stderr、被上层当成"探针没返回内容"。
         // 这里注入的是**已经解析过**的值（进程环境优先，其次用户级/机器级注册表），进程环境原样保留。
         const env = { ...process.env }
+        env.DSH_UI_CONTROL_POLICY_DATA = Buffer.from(JSON.stringify(loadControlPolicy()), 'utf8').toString('base64')
         if (c.procName) env.DSH_UI_PROC_NAME = c.procName
         if (c.windowName) env.DSH_UI_WINDOW_NAME = c.windowName
         if (c.clientExe) env.DSH_UI_CLIENT_EXE = c.clientExe
@@ -227,6 +229,7 @@ export function makeDriver(cfg) {  const c = {
    * 否则一次卡住的 status 就能把「客户端重启调用」拖到远超 waitMs（B-2）。
    */
   async function status({ timeoutMs = 30000, procId = 0, winHandle, winTitle, includeIdentity = true } = {}) {
+    const controlPolicy = controlPolicyStatus()
     const procName = c.procName || (c.clientExe ? basename(c.clientExe).replace(/\.exe$/i, '') : '')
     if (!procName && !c.clientExe && !(procId > 0)) {
       // 未配置目标进程：明确区分「未配置」与「未运行」，避免三个状态塌缩成一个 running:false。
@@ -235,6 +238,7 @@ export function makeDriver(cfg) {  const c = {
       return {
         running: false,
         unconfigured: true,
+        controlPolicy,
         error: '未配置目标进程（设置 DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE）',
         configHint: unconfiguredHint(['DSH_UI_PROC_NAME', 'DSH_UI_CLIENT_EXE']),
       }
@@ -250,9 +254,9 @@ export function makeDriver(cfg) {  const c = {
     const text = r.stdout
     // 超时 = 「不知道」，不是「未运行」：混为一谈会让上层把「卡住」当成「没起来」
     // 而反复重启客户端（踩过的归因错误）。
-    if (r.timedOut) return { running: false, unknown: true, error: 'status 超时（' + timeoutMs + 'ms 未返回）' }
-    if (/NOT_RUNNING/.test(text)) return { running: false, pid: null, title: null, raw: text.slice(0, 300) }
-    return parseStatusText(text)
+    if (r.timedOut) return { running: false, unknown: true, controlPolicy, error: 'status 超时（' + timeoutMs + 'ms 未返回）' }
+    if (/NOT_RUNNING/.test(text)) return { running: false, pid: null, title: null, controlPolicy, raw: text.slice(0, 300) }
+    return { ...parseStatusText(text), controlPolicy }
   }
 
   /**
@@ -781,6 +785,7 @@ export function makeDriver(cfg) {  const c = {
    * 反例：agent 正常动作超时仍杀进程（卡住的 serve 没救），保持原语义。
    */
   function warmSend(payload, timeoutMs = c.defaultTimeoutMs, opts = {}) {
+    payload = { ...payload, controlPolicy: loadControlPolicy() }
     return new Promise((resolve) => {
       if (!warm.proc) { resolve(null); return }
       const id = ++warm.seq
@@ -998,6 +1003,8 @@ export function makeDriver(cfg) {  const c = {
    * @returns {{allow:true}|{allow:false, result:object}}
    */
   async function checkSideEffectGate(action, allowSideEffects, gateArgs) {
+    const controlPolicy = loadControlPolicy()
+    if (!controlPolicy.valid && classifyAction(action) !== 'read') return { allow: false, result: { ok: false, policyCode: 'control_policy_invalid', error: controlPolicy.error } }
     if (!isSideEffectKind(classifyAction(action))) return { allow: true } // 只读 / 纯输入：放行
     if (!allowSideEffects) {
       return { allow: false, result: { ok: false, action, requiresAllowSideEffects: true, error: '动作 ' + action + ' 是真实副作用操作，必须显式传 allowSideEffects=true 才执行（安全护栏）' } }
@@ -1417,7 +1424,7 @@ export function makeDriver(cfg) {  const c = {
     // ---- 回退：批量引擎单步（type/drag/windows/waitfor 只有批量引擎实现；
     //      其余动作在传了 index/inAid/waitFor 时也必须走批量，一次性脚本不认识）
     const needsBatch =
-      BATCH_ONLY_ACTIONS.has(action) || wantObserve || secret || requireUnique === true || /\$\{cred:/.test(String(value) + String(keys)) ||
+      loadControlPolicy().state !== 'unconfigured' || BATCH_ONLY_ACTIONS.has(action) || wantObserve || secret || requireUnique === true || /\$\{cred:/.test(String(value) + String(keys)) ||
       // expectedRect/expectedWindowHandle 只由**批量引擎**认（一次性脚本不认识）——
       // 漏进一次性路径就是"收下参数、行为没变"的静默丢参（本仓为这类漏传专门设了测试）。
       args.expectedRect != null || args.expectedWindowHandle != null ||
@@ -1607,7 +1614,7 @@ export function makeDriver(cfg) {  const c = {
       if (res.count !== undefined) out.count = res.count
       // ambiguous / drift：执行器**在动作之前**拒绝时由批量引擎回报。这类字段不进这份白名单
       // 就等于不存在（与下面 read 那处的教训同源）；drift 还要带出位移与前后矩形，调用方才能判断。
-      for (const field of ['policyCode', 'desktopState', 'unknown', 'timeout', 'ambiguous', 'drift', 'movedBy', 'rect', 'expectedRect', 'windowHandle', 'expectedWindowHandle']) if (res[field] !== undefined) out[field] = res[field]
+      for (const field of ['policyCode', 'ruleId', 'reason', 'alternative', 'desktopState', 'unknown', 'timeout', 'ambiguous', 'drift', 'movedBy', 'rect', 'expectedRect', 'windowHandle', 'expectedWindowHandle']) if (res[field] !== undefined) out[field] = res[field]
       return out
     }
     if (action === 'find') {
@@ -1873,6 +1880,7 @@ export function makeDriver(cfg) {  const c = {
       if (s.expectedRect !== undefined) o.expectedRect = s.expectedRect
       if (s.expectedWindowHandle !== undefined) o.expectedWindowHandle = s.expectedWindowHandle
       if (s.stopOnFailure !== undefined) o.stopOnFailure = s.stopOnFailure
+      if (s.controlPreflight === true) o.controlPreflight = true
       return o
     })
     writeFileSync(stepsFile, JSON.stringify(cleanSteps), 'utf8')
@@ -2306,6 +2314,20 @@ export function makeDriver(cfg) {  const c = {
 
     if (runnable.length === 0) return finish()
 
+    const controlPolicy = loadControlPolicy()
+    if (controlPolicy.state !== 'unconfigured') {
+      for (const target of runnable) {
+        const preflight = await batch({ steps: [{ ...target.batchStep, controlPreflight: true }], procId: target.src.procId || steps[0].procId || 0, waitMs: 0, tmpDir: dir })
+        const result = preflight.steps[0]
+        if (!result || !result.ok) {
+          const denial = result || { policyCode: 'control_preflight_unavailable', error: preflight.error || 'control preflight failed' }
+          failed++
+          transcript.push({ step: target.step, action: target.batchStep.action, ...denial })
+          return { ...finish(), ok: false, ...denial }
+        }
+      }
+    }
+
     const b = sequential
       ? { ok: true, steps: [], elapsedMs: 0 }
       : await batch({ steps: runnable.map((r) => r.batchStep), procId: steps[0].procId || 0, waitMs: c.defaultWaitMs, tmpDir: dir })
@@ -2338,7 +2360,7 @@ export function makeDriver(cfg) {  const c = {
       const action = r.batchStep.action
       let ok = res.ok === true
       const entry = { step: r.step, action, actionId: res.actionId || protocolId('act'), ok }
-      for (const field of ['policyCode', 'desktopState', 'unknown', 'visualFallback']) if (res[field] !== undefined) entry[field] = res[field]
+      for (const field of ['policyCode', 'ruleId', 'reason', 'alternative', 'desktopState', 'unknown', 'visualFallback']) if (res[field] !== undefined) entry[field] = res[field]
       if (r.src.secret) entry.secret = true
 
       if (action === 'expect') {

@@ -161,6 +161,7 @@ function Assert-UiInputAllowed {
 
 function Get-UiPolicyFailure($exception) {
   while ($null -ne $exception) {
+    if ($exception.Data.Contains('controlPolicy')) { return $exception.Data['controlPolicy'] }
     if ($exception -is [UiDriveDesktopPolicyException]) {
       return @{ policyCode = $exception.PolicyCode; desktopState = $exception.DesktopState }
     }

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "rules": [{
+    "id": "no-order-submit",
+    "effect": "deny",
+    "actions": ["click", "doubleclick", "key", "type", "setvalue"],
+    "name": "^(买入|卖出|下单|撤单|确认下单)$",
+    "aid": null,
+    "container": null,
+    "reason": "交易提交类按钮，误点即真实委托",
+    "alternative": "停在提交前一步，报告按钮名称并等待用户确认",
+    "examples": {
+      "match": [{ "action": "click", "name": "买入" }],
+      "not_match": [{ "action": "click", "name": "买入说明" }, { "action": "read", "name": "买入" }]
+    }
+  }]
+}

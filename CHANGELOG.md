@@ -10,6 +10,10 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **Optional control-level UI deny policies** — validated examples, resolved-control matching,
+  cold/warm executor checks, flow/replay preflight, structured refusal details and an offline
+  policy checker. Policies remain disabled until explicitly configured.
+
 - **Memory lifecycle metadata** — facts, conventions and debug findings carry reasons, producer
   provenance and optional expiry; recall stays read-only, status counts kinds and expiry, and new
   index chunks return indexing time and embedding identity. Legacy data remains readable.
