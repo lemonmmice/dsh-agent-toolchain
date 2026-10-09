@@ -31,6 +31,8 @@ simple, so recording costs almost nothing.
 | `context` | object | — | runtime / tool / model / repo |
 | `costMs` | number | — | approximate time wasted |
 | `tags` | string[] | — | free-form tags for later mining |
+| `fingerprint` | string | auto | sha256 prefix of class + task + description with paths / ids / numbers normalized away; older records get it computed on read |
+| `producer` | object | — (auto records: yes) | who wrote it: `runtime`, MCP `client` (clientInfo), `agentTurn` (host session/turn ids — Codex sends them in `_meta`), `toolchain` (`version` + commit `sha`), `test: true` for test processes. Identifiers only, never arguments or output |
 
 ## Failure taxonomy
 
@@ -64,6 +66,35 @@ have to volunteer (and usually won't):
 Auto records carry the tags `auto` + the tool name. Manual `failure_record` is
 reserved for what the system cannot see: `human-handoff`, and context the
 tools don't know.
+
+### What is *not* recorded, and why (2026-10)
+
+A review of the real corpus found 811 `tool-error` records of which ~94% were three
+repeated messages — "unknown snapshotId, refused", "target process not configured",
+and a raw `Get-Process` error from the same unconfigured path — arriving in 248 bursts
+of exactly three records two seconds apart. They were written by
+`plugins/dsh-ui-drive/test/mcp-snapshot-gate.test.mjs` every time the suite ran: 16 of
+the 18 tests that spawn the MCP server did not isolate the corpus directory. Three
+changes followed:
+
+- **Tests never touch the real corpus.** `scripts/run-tests.mjs` gives every test file
+  its own temporary `DSH_FAILURE_CORPUS_DIR` / `DSH_VERIFY_DIR` and sets `DSH_TEST=1`;
+  `mcp/smoke.mjs` does the same.
+- **Expected refusals are not malfunctions.** A gate doing its job (policy deny, missing
+  `allowSideEffects`, stale / expired / unknown snapshot) or an unconfigured target is
+  not a `tool-error` and is no longer auto-recorded
+  (`plugins/dsh-ui-drive/lib/refusal.mjs`; `ui_jev` argument/precondition codes likewise).
+  A queue timeout *is* still recorded — congestion is a real signal.
+- **Repeats are counted, not multiplied.** Auto records pass `dedupe: true`: within
+  `DSH_FAILURE_DEDUPE_HOURS` (default 24, `0` = off) a fingerprint gets one full record;
+  later occurrences append a compact `recurrence` event to `recurrences.jsonl` (a separate
+  file, so older readers see exactly what they saw before). `failure_query` shows
+  `recurrences` / `lastSeenAt` per record and `failure_stats` ranks `topRecurring`.
+  Manual records and `verify_report` misjudgements are never folded.
+
+The historical records can be withdrawn with `node scripts/corpus-hygiene.mjs` — a dry run
+by default that lists what matches the three verified signatures; `--apply` appends
+retraction events (originals stay readable with `includeRetracted=true`).
 
 ## Usage
 

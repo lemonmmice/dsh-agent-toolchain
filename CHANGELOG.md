@@ -10,6 +10,56 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Added
 
+- **The repository is now an agent plugin: MCP server + six workflow skills + three hooks in one
+  install** — `.claude-plugin/plugin.json` (listed by `.claude-plugin/marketplace.json`) declares the
+  MCP server through `mcp/launch.mjs` (installs the MCP SDK on first start; reads this machine's
+  `DSH_*` settings from `~/.dsh-agent-toolchain/env.json`, which overrides inherited variables
+  exactly like a registration's `env` block did — measured necessary: this machine's user-level
+  variables target one client while the old registration overrode them with another), `skills/` holds
+  six on-demand workflows (closing verdict, UI self-check, API capture, perf triage, hang triage,
+  build/compile-set), and `hooks/hooks.json` wires three hooks. Validated with
+  `claude plugin validate --strict`. The same layout is what upstream Codex reads as its alternate
+  manifest location; that path is not verified end to end yet.
+
+- **Closing-verdict gate (Stop hook)** — the bench pilot showed the whole evidence loop hangs on
+  prompt injection: with guidance 6/6 runs closed through `verify_report`, without it 0/4.
+  `lib/stop-gate.mjs` reads the turn from the Claude Code transcript; a turn that edited files and
+  never called `verify_report` is stopped once (`decision: block`) with instructions; a turn whose
+  verdict is not `pass` ends normally but the user sees the machine verdict, whatever the summary
+  says. Fail-open by construction (unreadable transcript, unknown format, Codex sessions, any
+  error); `DSH_STOP_GATE=warn|off`, `DSH_STOP_GATE_IGNORE` for paths that do not count. A
+  second stop (`stop_hook_active`) always passes. 20 cases in `lib/stop-gate.test.mjs`.
+
+- **Compile-set check on write (PostToolUse hook)** — writing a `.cs`/`.vb`/`.fs` that a legacy
+  project provably does not compile gets an immediate warning naming the `<Compile Include>` to add
+  (same judgement as `build_compile_check`; undecidable cases stay silent; once per file per session).
+
+- **Session context (SessionStart hook)** — in a .NET repo, a few lines on what is connected and
+  which process the UI/perf tools will act on, with a warning when the configured source roots do
+  not contain the current directory (global config pointing at client A while the session is in
+  repo B was invisible to the agent).
+
+- **Every tool now carries explicit approval hints** — write tools used to send no annotations, and
+  Codex's default `auto` mode treats a missing `destructiveHint`/`openWorldHint` as `true`, so all 32
+  of them asked for approval alike. `lib/tool-registry.mjs` now classifies each one
+  (`TOOL_EFFECTS`): 18 local/additive tools (new evidence, append-only records) no longer need
+  approval there; `build_run`, `ui_launch`, the `ui_act` family, `perf_clean`, `hang_delete`,
+  `memory_forget`, `http_request` and `verify_report` (`kind=gate` runs arbitrary commands) are
+  destructive; `memory_index` and `jev_decide` are open-world. `lib/tool-annotations.test.mjs` ports
+  the upstream approval rule and pins both lists.
+
+- **Failure records say who wrote them** — `producer` on every auto record and on
+  `verify_report` reports: MCP client (clientInfo), host turn ids (Codex sends
+  `_meta["x-codex-turn-metadata"]`, captured once at the dispatch chokepoint via AsyncLocalStorage),
+  toolchain version + commit sha (read from `.git` without spawning git), and `test: true` under
+  the test runner. Bulk-retracting the verdicts of a verifier version later proven buggy (F-023) now
+  has something to select on.
+
+- **Fingerprints and recurrence counting in the failure corpus** — see Fixed below for why;
+  `failure_stats.topRecurring` ranks repeated failures, `failure_query` rows carry
+  `recurrences`/`lastSeenAt`. `scripts/corpus-hygiene.mjs` (dry run by default) withdraws the
+  historical noise by retraction.
+
 - **The loop is runnable as one command, against a sample app that ships in the repo** —
   every previous demo needed a private desktop client on the machine, which made the first
   five minutes unshowable: a reader could see the plugin table but never watch anything
@@ -194,6 +244,17 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
     `ui_launch` re-launched on top of it.
 
 ### Fixed
+
+- **The test suite was writing into the user's real failure corpus** — 811 `tool-error` records,
+  ~94% of them three repeated messages in 248 bursts of three records two seconds apart: every run
+  of `plugins/dsh-ui-drive/test/mcp-snapshot-gate.test.mjs` recorded two "unknown snapshotId"
+  refusals and one "target not configured" through the MCP server, because 16 of the 18 tests that
+  spawn the server did not isolate `DSH_FAILURE_CORPUS_DIR`. The runner now gives each test file its
+  own temporary corpus and verify-report directories (`mcp/smoke.mjs` too), and gate refusals /
+  unconfigured targets are no longer auto-recorded as `tool-error` at all — they are the safety
+  gates working, not malfunctions (`plugins/dsh-ui-drive/lib/refusal.mjs`, shared with the
+  evidence ledger's `denied` verdict). `mcp/autorecord-provenance.test.mjs` replays the exact three
+  calls and asserts zero records.
 
 - **scripts/check.mjs: repo gate crashed with `RangeError: Maximum call stack
   size exceeded`** — the walker recursed into `bench-runs/` (per-run repo

@@ -1,0 +1,21 @@
+{
+  "name": "dsh-agent-toolchain",
+  "owner": {
+    "name": "lemonmmice",
+    "url": "https://github.com/lemonmmice"
+  },
+  "metadata": {
+    "description": "The dsh-agent-toolchain plugin: evidence-first engineering tools for coding agents working on Windows desktop clients."
+  },
+  "plugins": [
+    {
+      "name": "dsh-agent-toolchain",
+      "source": "./",
+      "description": "MCP tools (build, UI automation, API capture, perf/hang evidence, failure corpus, verify_report) plus workflow skills and a closing-verdict Stop hook.",
+      "version": "0.1.0",
+      "category": "development",
+      "homepage": "https://github.com/lemonmmice/dsh-agent-toolchain",
+      "license": "Apache-2.0"
+    }
+  ]
+}

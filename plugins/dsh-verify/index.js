@@ -15,7 +15,7 @@ import { dshParameters, dshDescription } from '../../lib/tool-registry.mjs'
 // 渲染层放在**本插件内的零依赖模块**里（可被普通 node 测试 import）—— 见 lib/render-failure.mjs。
 // 注意：这里必须是**静态** import（本插件目录内的文件永远在），不能走下面那个带守卫的动态 import
 // （那个是给 `../../lib/verify/report.mjs` —— 共享库，插件被拷出 monorepo 时可能不存在）。
-import { renderFailureQuery } from './lib/render-failure.mjs'
+import { renderFailureQuery, renderFailureStats } from './lib/render-failure.mjs'
 
 export const name = 'dsh-verify'
 
@@ -168,7 +168,7 @@ const tools = () => [
     description: dshDescription('failure_stats'),
     parameters: dshParameters('failure_stats'),
     isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: '失败样本库：活动分片 ' + (v.total ?? '?') + ' 条（全部分片 ' + (v.totalAllShards ?? '?') + '，已撤回 ' + (v.retracted ?? 0) + '）' }] },
+    output: { schema: OBJECT, render: (_a, v) => renderFailureStats(v) },
     async execute() {
       return withCorpus((c) => c.stats())
     },

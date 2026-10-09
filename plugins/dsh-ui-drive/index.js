@@ -116,7 +116,8 @@ function autoRecord(failureClass, task, description, extra = {}) {
   corpusPromise.then((c) => {
     if (!c) return
     try {
-      c.record({ task, failureClass, description, tags: ['auto', task], context: { runtime: 'dsh', ...(extra.context ?? {}) } })
+      // dedupe：同一种失败在窗口内只记一条，其余折叠成 recurrence 计数（旧版 corpus 不认识这个字段，会忽略）
+      c.record({ task, failureClass, description, tags: ['auto', task], context: { runtime: 'dsh', ...(extra.context ?? {}) }, dedupe: true })
     } catch { /* the corpus must never break the tool */ }
   })
 }

@@ -91,6 +91,16 @@ claude mcp add --scope user dsh-agent-toolchain -- cmd /c node <repo>\mcp\server
 
 Cursor / Cline: add a stdio MCP server entry with the same command.
 
+Installed as a plugin instead (see the root README), the server starts through `mcp/launch.mjs`: it
+installs the MCP SDK on first start when `node_modules` is missing (npm output goes to stderr — stdout
+is the protocol channel), then applies `~/.dsh-agent-toolchain/env.json` (`DSH_ENV_FILE` to move it,
+`none` to disable; a flat `{ "DSH_…": "…" }` object, string values only, `DSH_CRED_*` refused). The file
+**overrides** inherited variables of the same name — the same semantics as the `env` block of a
+`claude mcp add -e …` registration, which is what it replaces (user-level variables meant for another
+host would otherwise silently retarget the server). Precedence: that file > process env > user/machine
+environment variables; overridden key names are logged to stderr. A broken file is reported on stderr
+and ignored as a whole.
+
 ## Environment
 
 Same `DSH_*` variables as the plugins:
@@ -107,6 +117,9 @@ Same `DSH_*` variables as the plugins:
 | `DSH_FAILURE_CORPUS_DIR` | failure tools | corpus dir (default `~/.dsh-agent-toolchain/failure-corpus`) |
 | `DSH_API_CAPTURE_STORE` | capture tools | capture store dir (default `~/.dsh/api-capture`, shared with the panel) |
 | `DSH_VERIFY_DIR` | verify_report | report dir (default `~/.dsh-agent-toolchain/verify-reports`) |
+| `DSH_FAILURE_DEDUPE_HOURS` | failure corpus | window in which a repeated auto-recorded failure is counted as a recurrence instead of a new record (default `24`, `0` = off) |
+| `DSH_ENV_FILE` | `mcp/launch.mjs`, plugin hooks | machine settings file (default `~/.dsh-agent-toolchain/env.json`) |
+| `DSH_STOP_GATE` / `DSH_STOP_GATE_IGNORE` | plugin Stop hook | `block` (default) / `warn` / `off`; regex of paths that do not count as edits |
 | `TYPESAFE_API_KEY` | jev_decide | TypeSafe API key; used only when `allowRemoteData=true` |
 
 ## Run standalone

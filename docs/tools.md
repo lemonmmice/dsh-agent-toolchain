@@ -116,3 +116,29 @@ capture — and therefore carries the gate described in
 scale. `perf_hotstacks` and `hang_analyze` are marked `Write` because they *produce files* (a report,
 a cached analysis), not because they touch your client. The tools that actually change the world are
 the `ui_act`-family and `perf_clean` / `hang_delete` — and those are the ones with an explicit gate.
+
+## Approval hints (MCP annotations)
+
+Every tool carries MCP annotations from the same registry (`mcpAnnotations` in
+[`lib/tool-registry.mjs`](../lib/tool-registry.mjs)): read-only tools send `readOnlyHint: true`; every
+`Write` tool sends `readOnlyHint: false` plus an explicit `destructiveHint` and `openWorldHint`.
+Clients use these for **approval**, not only for parallelism — Codex's default `auto` mode for custom
+servers (upstream `requires_mcp_tool_approval`) treats a *missing* `destructiveHint` or
+`openWorldHint` as `true`, so before this every `Write` tool asked for approval, and writing a flame
+graph looked exactly as dangerous as deleting every evidence pack.
+
+- **No approval needed** (local, additive — new evidence or append-only records): `ui_live`, `perf_probe`,
+  `perf_dump`, `perf_trace`, `perf_hotstacks`, `perf_flame`, `perf_allocflame`, `perf_clrevents`,
+  `perf_uifreeze`, `hang_run`, `hang_stop`, `hang_analyze`, `capture_start`, `capture_stop`,
+  `capture_append`, `failure_record`, `failure_retract`, `memory_save`.
+- **Approval** — destructive: `build_run` (`killClient`), `ui_launch` (`force`), the `ui_act` family
+  (real clicks/typing; also open-world), `perf_clean`, `hang_delete`, `memory_forget`, `http_request`
+  (any method; also open-world), and `verify_report` — its `kind=gate` runs an arbitrary command in the
+  MCP server process, outside the client's own sandbox.
+- **Approval** — open-world only: `memory_index` (chunks leave the machine when a remote embedding backend
+  is configured) and `jev_decide` (remote data when `allowRemoteData=true`).
+
+These are hints, not authorisation: `allowSideEffects`, `confirm`, the kill switch and the policy table
+still gate every action exactly as before. The classification is pinned by `lib/tool-annotations.test.mjs`,
+which ports the upstream approval rule and fails if a new tool is left unclassified or a dangerous one
+becomes auto-approved.

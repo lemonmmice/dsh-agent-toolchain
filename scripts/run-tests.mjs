@@ -16,8 +16,8 @@ import { readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 
 const root = join(fileURLToPath(import.meta.url), '..', '..')
 const argv = process.argv.slice(2)
@@ -105,6 +105,24 @@ if (files.length === 0) {
 const results = []
 const started = Date.now()
 
+/**
+ * 测试硬闸二（2026-10 真库复盘后加）：测试**不许写用户的真实失败库 / 验证报告目录**。
+ * 起因：会拉起 MCP server 的 18 个测试里有 16 个没隔离失败库目录；其中 mcp-snapshot-gate.test.mjs
+ * 每跑一次就往真库写 3 条（两条"未知 snapshotId 拒绝" + 一条"未配置目标进程"）——
+ * 真库 811 条 tool-error 里约 94% 就是这样来的（248 组「3 条 / 2 秒」的突发），真实失败被淹没。
+ * 现在每个测试文件拿**自己的**临时目录（并发的 4 个 worker 互不串数），跑完整体删除；
+ * DSH_TEST=1 让万一漏网写进别处的记录也自带 `producer.test` 标记。测试自己显式设的目录照旧优先。
+ */
+const runTmp = mkdtempSync(join(tmpdir(), 'dsh-tests-'))
+process.on('exit', () => { try { rmSync(runTmp, { recursive: true, force: true }) } catch { /* ignore */ } })
+function isolatedDirs(file) {
+  const slot = join(runTmp, relative(root, file).replace(/[\\/:]/g, '__'))
+  return {
+    DSH_FAILURE_CORPUS_DIR: join(slot, 'failure-corpus'),
+    DSH_VERIFY_DIR: join(slot, 'verify-reports'),
+  }
+}
+
 function runOne(file) {
   return new Promise((resolve) => {
     const t0 = Date.now()
@@ -115,7 +133,7 @@ function runOne(file) {
       // 起因：env 回退上线后，某个用 `delete process.env.X` 模拟"未配置"的测试拿到了真客户端的
       // 可执行路径，于是 build(killClient=true) **把用户正在跑的客户端杀掉了**。
       // 测试永远不该能驱动/结束真实目标进程；要测回退逻辑本身，就显式注入 env/exec（见 lib/env-fallback.test.mjs）。
-      env: { ...process.env, DSH_NO_ENV_FALLBACK: '1' },
+      env: { ...process.env, DSH_NO_ENV_FALLBACK: '1', DSH_TEST: '1', ...isolatedDirs(file) },
     })
     let out = ''
     child.stdout.on('data', (d) => { out += d.toString('utf8') })

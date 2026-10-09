@@ -129,6 +129,26 @@ claude mcp add --scope user dsh-agent-toolchain -- cmd /c node <repo>\mcp\server
 
 Cursor, Cline and other stdio clients take the same command. Configuration details, progress notifications, output budgets and the honest platform matrix live in [mcp/README.md](./mcp/README.md).
 
+## Install as an agent plugin (MCP server + skills + hooks)
+
+The repository root is also a plugin (`.claude-plugin/plugin.json`, listed by `.claude-plugin/marketplace.json`). One install brings three things together:
+
+- **the MCP server** — started through `mcp/launch.mjs`, which installs the MCP SDK on first start if `node_modules` is missing and reads this machine's settings from `~/.dsh-agent-toolchain/env.json` (`DSH_ENV_FILE` to move it, `none` to disable; only `DSH_*` string values, never `DSH_CRED_*`). Like the `env` block of a `claude mcp add -e …` registration, the file **overrides** inherited environment variables of the same name;
+- **six workflow skills** under `skills/` — closing verdict, UI self-check, API capture, perf triage, hang triage, build/compile-set check — loaded on demand instead of 55 tool descriptions doing all the teaching;
+- **three hooks** (`hooks/hooks.json`):
+  - `Stop` — **closing-verdict gate**: if the turn edited files and never called `verify_report`, the agent is stopped once and asked to submit claims (`DSH_STOP_GATE=warn` only reminds, `off` disables). If it did call `verify_report` and the verdict is not `pass`, the user is shown the machine verdict directly. The bench pilot is why this exists: with guidance 6/6 runs closed through `verify_report`, without it 0/4.
+  - `PostToolUse` — writing a `.cs`/`.vb`/`.fs` file that a legacy project provably does not compile gets an immediate warning (same judgement as `build_compile_check`; undecidable cases stay silent).
+  - `SessionStart` — in a .NET repo, a few lines on what is connected and **which process the UI/perf tools will act on**, with a warning when that target's source root is not the repo you are in.
+
+```bash
+claude plugin marketplace add lemonmmice/dsh-agent-toolchain
+claude plugin install dsh-agent-toolchain@dsh-agent-toolchain
+```
+
+For local development, load the checkout in place instead of a cached copy (Claude Code auto-loads plugins under `~/.claude/skills/<name>/`), so edits take effect in the next session — Windows: `mklink /J %USERPROFILE%\.claude\skills\dsh-agent-toolchain <repo>`. Plugin-provided tools are namespaced, e.g. `mcp__plugin_dsh-agent-toolchain_dsh__verify_report`; remove a separate `claude mcp add` registration of the same server to avoid two copies of every tool.
+
+Codex reads `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` as alternate manifest locations (upstream `codex-rs/core-plugins`), so the same layout is meant to load there too — **not yet verified end to end**; the Stop gate currently recognises Claude Code transcripts only and lets Codex sessions through.
+
 ## Install (details)
 
 Each plugin is a drop-in host plugin. Copy the plugin directory into your DSH profile's `plugins/` (or `node_modules/@dsh-agent-toolchain/` for the panels) and register it in `cordis.patch.yml`:
