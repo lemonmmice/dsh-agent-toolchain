@@ -519,7 +519,9 @@ delete process.env.DSH_UI_SERVE_IDLE_MS
   {
     const src = readFileSync(new URL('../lib/driver.mjs', import.meta.url), 'utf8')
     check('【P1-A】源码含 unknown 分支（超时等"可能已执行"不被记成 denied）',
-      /maybeExecuted/.test(src) && /'unknown'/.test(src) && /executedNow = gateDeniedNow \? false : \(maybeExecuted \? null : true\)/.test(src))
+      // 只钉语义：executedNow 必须把 maybeExecuted 判成 null（unknown 分支），而不是 false。
+      // 不再钉赋值式左半边 —— 2026-10-11 加了 `|| res?.notExecuted === true` 后这条就误报红了。
+      /maybeExecuted/.test(src) && /'unknown'/.test(src) && /executedNow\s*=[^\n]*maybeExecuted\s*\?\s*null\s*:\s*true/.test(src))
   }
 }
 
