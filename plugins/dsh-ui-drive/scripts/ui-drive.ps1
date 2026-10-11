@@ -22,6 +22,7 @@ param(
   [switch]$Ascii,               # key 模式用 ASCII（否则走剪贴板粘贴，适合中文）
   [string]$Match = '',          # read 模式的正则过滤
   [string]$Out = '',            # shot 输出路径
+  [ValidateSet('print', 'screen')][string]$CaptureMode = 'print',
   [int]$WaitMs = 1200
 )
 
@@ -36,6 +37,7 @@ using System;
 using System.Runtime.InteropServices;
 public class UiDriveWin32 {
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   public struct RECT { public int Left, Top, Right, Bottom; }
@@ -262,23 +264,33 @@ switch ($Action) {
     if ($skipReason) { Write-Output ('SKIPREASON ' + $skipReason) }
   }
   'shot' {
-    if (-not $Out) { $Out = Join-Path $env:TEMP ('uia-shot-' + (Get-Date -Format 'HHmmss') + '.png') }
+    $null = [UiDriveInputWin32]::UsePhysicalPixels()
+    if (-not $Out) { $Out = Join-Path $env:TEMP ('uia-shot-' + [Guid]::NewGuid().ToString('N') + '.png') }
     $h = [IntPtr]$main.Current.NativeWindowHandle
+    if ($CaptureMode -eq 'screen' -and ([UiDriveWin32]::IsIconic($h) -or -not [UiDriveWin32]::IsWindowVisible($h))) { throw 'screen capture requires a visible, non-minimized target window' }
     $r = New-Object UiDriveWin32+RECT
-    [UiDriveWin32]::GetWindowRect($h, [ref]$r) | Out-Null
+    if (-not [UiDriveWin32]::GetWindowRect($h, [ref]$r)) { throw 'Could not read target window rectangle' }
     $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
+    if ($w -le 0 -or $hh -le 0) { throw 'Target window has no capture area' }
     $bmp = New-Object System.Drawing.Bitmap($w, $hh)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     # PrintWindow(PW_RENDERFULLCONTENT=2) 优先：让窗口把自身内容（含 WPF/DWM 合成）画进 DC，不依赖
     # 窗口是否显示在物理屏上——无头/断开(RDP)会话里屏幕 DC 是黑的，纯 CopyFromScreen 会抓成全黑。
     # PrintWindow 失败（个别无 DWM 窗口）才退回 CopyFromScreen（此时需窗口在前台、未被遮挡才可信）。
-    $hdc = $g.GetHdc()
-    $shotOk = [UiDriveWin32]::PrintWindow($h, $hdc, 2)
-    $g.ReleaseHdc($hdc)
-    if (-not $shotOk) { $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size) }
-    $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose(); $bmp.Dispose()
+    $method = 'print'
+    try {
+      $shotOk = $false
+      if ($CaptureMode -ne 'screen') {
+        $hdc = $g.GetHdc()
+        try { $shotOk = [UiDriveWin32]::PrintWindow($h, $hdc, 2) }
+        finally { $g.ReleaseHdc($hdc) }
+      }
+      if (-not $shotOk) { $method = 'screen'; $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size, [System.Drawing.CopyPixelOperation]::SourceCopy) }
+      $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
+    } finally { $g.Dispose(); $bmp.Dispose() }
     Write-Output ('SHOT ' + $Out + ' ' + $w + 'x' + $hh)
+    $metadata = @{ captureMethod = $method; windowHandle = [long]$h; rect = @{ x = $r.Left; y = $r.Top; w = $w; h = $hh }; coordinateSpace = 'window'; physicalPixels = ([UiDriveInputWin32]::GetDpiAwareness() -eq 2) } | ConvertTo-Json -Compress
+    Write-Output ('SHOT_META=' + [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($metadata)))
   }
   'key' {
     $el = Find-Element $main $Aid $Name

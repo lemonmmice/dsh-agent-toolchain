@@ -115,6 +115,20 @@ try {
   client.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
   const listed = new Map((await rpc('tools/list')).tools.map(tool => [tool.name, tool]))
   for (const name of ['ui_drive', 'ui_act']) {
+    assert.ok(tools.get(name).parameters.targetRef)
+    assert.ok(listed.get(name).inputSchema.properties.targetRef)
+    assert.ok(tools.get(name).parameters.requireUnique)
+    assert.ok(listed.get(name).inputSchema.properties.requireUnique)
+    const args = { action: 'pattern', value: 'Invoke', targetRef: 'reference-1', allowSideEffects: true }
+    assert.deepEqual((await tools.get(name).execute(args)).received, args)
+    assert.deepEqual((await mcpCall(name, args)).received, args)
+    assert.deepEqual((await mcpCall(name, { ...args, requireUnique: true })).received, { ...args, requireUnique: true })
+    const doubleclick = { action: 'doubleclick', targetRef: 'reference-1', allowSideEffects: true }
+    assert.deepEqual((await tools.get(name).execute(doubleclick)).received, doubleclick)
+    assert.deepEqual((await mcpCall(name, doubleclick)).received, doubleclick)
+  }
+  assert.ok(listed.get('ui_flow').inputSchema.properties.steps.items.properties.targetRef)
+  for (const name of ['ui_drive', 'ui_act']) {
     for (const key of Object.keys(extended)) {
       assert.ok(tools.get(name).parameters[key], 'DSH schema missing ' + name + '.' + key)
       assert.ok(listed.get(name).inputSchema.properties[key], 'MCP schema missing ' + name + '.' + key)

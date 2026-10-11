@@ -411,6 +411,16 @@ server.tool(
   async (args) => jtext(await drv().status(args.procId ? { procId: args.procId } : {}))
 )
 
+const uiWaitAfter = z.object({
+  aid: z.string().optional(),
+  name: z.string().optional(),
+  state: z.enum(['appear', 'gone', 'enabled', 'disabled']).optional(),
+  ms: z.number().int().min(1).max(30000).optional(),
+  interval: z.number().int().min(1).max(1000).optional(),
+  winHandle: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+  winTitle: z.string().optional(),
+}).strict().optional().describe('After a successful effect action, confirm a specific aid/name condition without a full UI snapshot. Defaults: state=appear, ms=1500, interval=50. Overrides observe; actionOk and confirmed report action execution and confirmation separately. Does not retry the action.')
+
 const uiAction = z.enum([
   // 只读 + 纯输入（输入类由驱动器统一授权，见 uiActionNeedsAuth 说明）
   'find', 'read', 'state', 'windows', 'shot', 'waitfor',
@@ -446,6 +456,7 @@ server.tool(
   mcpDescription('ui_drive'),
   {
     action: uiAction,
+    waitAfter: uiWaitAfter,
     name: z.string().optional().describe('Control Name'),
     aid: z.string().optional().describe('AutomationId'),
     value: z.string().optional().describe('Value for setvalue/key/type (type accepts SendKeys syntax, e.g. 1234{ENTER})'),
@@ -470,6 +481,8 @@ server.tool(
     waitMs: z.number().optional(),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true for click/setvalue/key/type/drag'),
     snapshotId: z.string().optional().describe('W1 freshness token returned by a prior read/state. When set, a side-effect action is rejected if the snapshot is stale (a newer read happened: staleSnapshot) or expired (client/serve restarted: expiredSnapshot). Omit to skip the freshness gate (legacy, zero-regression).'),
+    targetRef: z.string().optional().describe('Opaque 30-second warm-process reference from find/state. Only action=pattern|doubleclick; do not combine with name/aid/match/index/inAid/inName/waitFor/requireUnique/visualFallback. Expired references fail without retry.'),
+    requireUnique: z.boolean().optional().describe('Require exactly one name/aid/match target; cannot be combined with targetRef.'),
     approvalId: z.string().optional().describe('Application-bound once/session/persistent approval ID'),
     sessionId: z.string().optional().describe('Session owning the approval'),
     visualFallback: z.boolean().optional().describe('Explicitly allow vision coordinate fallback when UIA cannot locate a click/doubleclick target'),
@@ -489,6 +502,7 @@ server.tool(
     delta: z.number().optional().describe('wheel: scroll delta'),
     observeMax: z.number().optional().describe('observe=true: how many controls the post-action snapshot lists (default 15). Only affects the snapshot, not the action result.'),
     shotsDir: z.string().optional().describe('Directory to copy the screenshot into (absolute). Evidence always also lands in the evidence dir.'),
+    captureMode: z.enum(['print', 'screen']).optional().describe('shot/capture: print window rendering by default, or screen pixels inside the target window rectangle'),
     mods: z.string().optional().describe('held modifier keys for drag/key, e.g. "shift" | "ctrl" | "alt"'),
     button: z.string().optional().describe('mouse button for coordinate actions (default left)'),
     double: z.boolean().optional().describe('true = double click at the coordinate instead of a single click'),
@@ -538,7 +552,7 @@ server.tool(
       // those capabilities were unreachable through ui_flow even after they became callable
       // one step at a time via ui_act.
       action: z.enum([
-        'find', 'click', 'setvalue', 'key', 'type', 'drag',
+        'find', 'click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'move', 'wheel',
         'pattern', 'scroll', 'selecttext',
         'read', 'state', 'shot', 'windows',
         'wait', 'waitfor', 'expect', 'expectwindow', 'expecttext', 'waitany',
@@ -551,6 +565,7 @@ server.tool(
       match: z.string().optional(),
       index: z.number().optional(),
       requireUnique: z.boolean().optional(),
+      targetRef: z.string().optional().describe('Not supported in flows; use an individual ui_drive/ui_act pattern or doubleclick action.'),
       inAid: z.string().optional(),
       inName: z.string().optional(),
       waitFor: z.record(z.string(), z.any()).optional(),
@@ -559,6 +574,13 @@ server.tool(
       fromY: z.number().optional(),
       toX: z.number().optional(),
       toY: z.number().optional(),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      delta: z.number().optional(),
+      double: z.boolean().optional(),
+      button: z.string().optional(),
+      captureMode: z.enum(['print', 'screen']).optional().describe('shot: print window rendering or screen pixels inside the target window rectangle'),
+      procId: z.number().int().min(1).optional().describe('Override the flow target PID for this step'),
       waitMs: z.number().optional().describe('Post-action settle time; find/read/shot/expect/windows default to 0'),
       label: z.string().optional(),
       expectEnabled: z.boolean().optional().describe('expect: assert enabled state'),
@@ -597,6 +619,8 @@ server.tool(
       secret: z.boolean().optional().describe('Mask input values in output and evidence'),
     })).describe('Step sequence'),
     tag: z.string().optional().describe('Evidence dir label (default flow)'),
+    procId: z.number().int().min(1).optional().describe('Default target PID inherited by steps'),
+    waitMs: z.number().int().min(0).max(30000).optional().describe('Default post-action settling time; use 0 with explicit waitfor steps'),
     failFast: z.boolean().optional().describe('Stop at the first failed assertion'),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true when the sequence contains side-effect steps (click/setvalue/key/type/drag/pattern/scroll/selecttext/clickat/doubleclick)'),
     approvalId: z.string().optional().describe('Default application-bound approval ID for steps'),
@@ -628,6 +652,8 @@ server.tool(
     const r = await drv().flow({
       steps: args.steps,
       tag: args.tag || 'flow',
+      procId: args.procId,
+      waitMs: args.waitMs,
       failFast: args.failFast === true,
       allowSideEffects: args.allowSideEffects === true,
       approvalId: args.approvalId,
@@ -698,6 +724,7 @@ server.tool(
     max: z.number().optional(),
     label: z.string().optional(),
     describe: z.boolean().optional().describe('shot: also return a vision description (refused by default when the focused control is a password/captcha/token field; allowSensitive=true overrides)'),
+    captureMode: z.enum(['print', 'screen']).optional().describe('shot/capture: print window rendering by default, or screen pixels inside the target window rectangle'),
     allowSensitive: z.boolean().optional().describe('Override the secret-focus guard on describe=true'),
     winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows) — steadier than winTitle'),
     // move/wheel are reversible input primitives: the driver classifies them as kind 'input' and
@@ -784,6 +811,7 @@ server.tool(
   'ui_act',
   mcpDescription('ui_act'),
   {
+    waitAfter: uiWaitAfter,
     action: z.enum([
       'click', 'setvalue', 'key', 'type', 'drag',
       // 原先漏在 enum 之外：驱动均已实现（坐标类副作用 + W5 原语），但模型调不到
@@ -815,6 +843,8 @@ server.tool(
     waitMs: z.number().optional(),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true'),
     snapshotId: z.string().optional().describe('W1 freshness token from a prior read/state. When set, the action is rejected if the snapshot is stale (staleSnapshot) or expired (expiredSnapshot). Omit to skip the freshness gate. (ui_act forwards all args to the driver, so this reaches the same write-side gate as ui_drive.)'),
+    targetRef: z.string().optional().describe('Opaque 30-second warm-process reference from find/state. Only action=pattern|doubleclick; do not combine with name/aid/match/index/inAid/inName/waitFor/requireUnique/visualFallback. Expired references fail without retry.'),
+    requireUnique: z.boolean().optional().describe('Require exactly one name/aid/match target; cannot be combined with targetRef.'),
     approvalId: z.string().optional().describe('Application-bound once/session/persistent approval ID'),
     sessionId: z.string().optional().describe('Session owning the approval'),
     visualFallback: z.boolean().optional().describe('Explicitly allow vision coordinate fallback when UIA cannot locate a click/doubleclick target'),

@@ -155,6 +155,15 @@ export function renderState(v) {
 }
 
 export function renderDrive(v) {
+  if (v.waitAfter) {
+    const actionText = renderDrive({ ...v, waitAfter: undefined })
+    const confirmation = v.waitAfter
+    const elapsed = typeof confirmation.waitedMs === 'number' ? '（等待 ' + confirmation.waitedMs + 'ms）' : ''
+    const actionState = v.actionOk === true ? '动作成功' : (v.unknown === true ? '动作结果未知' : '动作未成功')
+    const confirmationState = v.confirmed === true ? '后置条件已确认' : (confirmation.unknown === true ? '后置确认结果未知' : '后置确认失败')
+    const detail = confirmation.error || confirmation.detail || ''
+    return actionText + '\n' + actionState + '，' + confirmationState + elapsed + (detail ? '：' + detail : '')
+  }
   if (!v.ok) return '失败：' + (v.error || '未知错误') + hintTail(v)
   switch (v.action) {
     case 'find': return v.found ? ('找到：' + v.detail + (v.count > 1 ? '（共 ' + v.count + ' 个匹配，可用 index 指定第几个）' : '')) : '未找到目标控件（下一步：重新 ui_observe(state/read) 确认当前界面与控件名称）'

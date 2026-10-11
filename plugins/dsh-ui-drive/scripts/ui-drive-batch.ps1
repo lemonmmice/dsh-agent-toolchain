@@ -217,7 +217,7 @@ function Get-SafeInt($v) {
 # 不再手写遍历整棵树的循环——这是单步脚本里最大的开销来源。
 # 返回所有可见匹配（按树序）；index 由调用方挑选（同名控件去重）。
 # $scope 非空时只在子树内找（局部定位，避免命中另一个面板里的同名控件）。
-function Find-Elements($main, [string]$aid, [string]$name, $scope = $null) {
+function Find-Elements($main, [string]$aid, [string]$name, $scope = $null, [switch]$FirstOnly) {
   $conds = @()
   if ($aid) { $conds += (New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, $aid)) }
   if ($name) { $conds += (New-Object System.Windows.Automation.PropertyCondition($UIA::NameProperty, $name)) }
@@ -230,6 +230,11 @@ function Find-Elements($main, [string]$aid, [string]$name, $scope = $null) {
   }
   $root = $main
   if ($null -ne $scope) { $root = $scope }
+  if ($FirstOnly) {
+    $first = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+    if ($null -eq $first) { return }
+    if (Is-ElementUsable $first) { return $first }
+  }
   $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
   $out = New-Object System.Collections.ArrayList
   $seenRuntimeIds = @{}
@@ -247,7 +252,7 @@ function Find-Elements($main, [string]$aid, [string]$name, $scope = $null) {
 
 # 单条件找第一个（find/expect 的旧语义）
 function Find-Element($main, [string]$aid, [string]$name, $scope = $null) {
-  $list = Find-Elements $main $aid $name $scope
+  $list = @(Find-Elements $main $aid $name $scope -FirstOnly)
   if ($list.Count -eq 0) { return $null }
   return $list[0]
 }
@@ -344,6 +349,7 @@ function Wait-ForCondition($main, [string]$aid, [string]$name, $spec, $scope = $
   if ($spec.PSObject.Properties.Name -contains 'match' -and $spec.match) { $matchRe = [string]$spec.match }
   $idx = 0
   if ($spec.PSObject.Properties.Name -contains 'index' -and $null -ne $spec.index) { $idx = [int]$spec.index }
+  $firstOnly = (-not $matchRe) -and (-not ($spec.PSObject.Properties.Name -contains 'index' -and $null -ne $spec.index)) -and (-not $spec.requireUnique)
   # UD-05：目标（aid/name）也可以写在 waitFor 里；且允许**只给 match 正则**。
   # 旧实现只拿 step 的 aid/name 去 Find-Elements —— 二者皆空时它 throw
   # 「find 需要 -Aid 或 -Name」，于是 read/state 上的 waitFor 必然失败，而 schema 里
@@ -378,7 +384,7 @@ function Wait-ForCondition($main, [string]$aid, [string]$name, $spec, $scope = $
       $list = Find-ElementsByMatch $main $matchRe $scope
       $picked = @($list)
     } else {
-      $list = Find-Elements $main $aid $name $scope
+      $list = Find-Elements $main $aid $name $scope -FirstOnly:$firstOnly
       $picked = @($list)
       if ($matchRe) {
         $picked = @($picked | Where-Object { Test-MatchText $_ $matchRe })
@@ -472,7 +478,47 @@ function Send-KeyAscii([string]$value) {
 
 # UIA 元素级双击：用 GetClickablePoint（物理像素）定位，绕开坐标口径问题。
 # 表格行双击必须走这条——实测按 BoundingRectangle 换算的坐标点击会偏。
-function Invoke-DoubleClickElement($el, $main) {
+function Get-DoubleClickHitTarget([double]$pointX, [double]$pointY) {
+  Add-Type -AssemblyName WindowsBase
+  $point = New-Object System.Windows.Point($pointX, $pointY)
+  return [System.Windows.Automation.AutomationElement]::FromPoint($point)
+}
+
+function Test-DoubleClickHit($element, [double]$pointX, [double]$pointY) {
+  try {
+    $targetRuntimeId = @($element.GetRuntimeId()) -join ','
+    $targetProcessId = [int]$element.Current.ProcessId
+    if (-not $targetRuntimeId -or $targetProcessId -le 0) { return $false }
+    $hit = Get-DoubleClickHitTarget $pointX $pointY
+    if ($null -eq $hit) { return $false }
+    $hitRuntimeId = @($hit.GetRuntimeId()) -join ','
+    $hitRectangle = $hit.Current.BoundingRectangle
+    $targetRectangle = $element.Current.BoundingRectangle
+    $hitHandle = [long]$hit.Current.NativeWindowHandle
+    if (-not (Is-RectUsable $targetRectangle) -or -not (Is-RectUsable $hitRectangle)) { return $false }
+    foreach ($rectangle in @($targetRectangle,$hitRectangle)) {
+      if ($pointX -lt $rectangle.X -or $pointY -lt $rectangle.Y -or $pointX -ge ($rectangle.X+$rectangle.Width) -or $pointY -ge ($rectangle.Y+$rectangle.Height)) { return $false }
+    }
+    for ($depth=0; $depth -lt 16 -and $null -ne $hit; $depth++) {
+      if ([int]$hit.Current.ProcessId -ne $targetProcessId) { return $false }
+      if ((@($hit.GetRuntimeId()) -join ',') -eq $targetRuntimeId) { return $true }
+      if ([long]$hit.Current.NativeWindowHandle -ne 0) { break }
+      $hit = Get-TargetRefParent $hit
+    }
+    if ($hitHandle -ne 0) { return $false }
+    $ancestor = Get-TargetRefParent $element
+    for ($depth=0; $depth -lt 16 -and $null -ne $ancestor; $depth++) {
+      if ([int]$ancestor.Current.ProcessId -ne $targetProcessId -or [long]$ancestor.Current.NativeWindowHandle -ne 0) { return $false }
+      if ((@($ancestor.GetRuntimeId()) -join ',') -eq $hitRuntimeId) { return $true }
+      $ancestor = Get-TargetRefParent $ancestor
+    }
+    return $false
+  } catch { return $false }
+}
+
+function Invoke-DoubleClickElement($el, $main, [bool]$requireClickablePoint = $false) {
+  $mouseStarted = $false
+  try {
   Assert-NotDenied $el   # 致效汇聚点守卫（W0）：双击有元素，按名硬拒（原先漏了这一条路径）
   # GetClickablePoint() 返回 System.Windows.Point（UIAutomationTypes 里就有），
   # 不要 New-Object System.Windows.Point —— 本进程没加载 PresentationCore，会编译失败。
@@ -482,15 +528,20 @@ function Invoke-DoubleClickElement($el, $main) {
     $sx = [int]$pt.X; $sy = [int]$pt.Y
   } catch {
     $b = $el.Current.BoundingRectangle
-    if (Is-RectUsable $b) { $sx = [int]($b.X + $b.Width / 2); $sy = [int]($b.Y + $b.Height / 2) }
+    if (Is-RectUsable $b) {
+      $centerX = [int]($b.X + $b.Width / 2); $centerY = [int]($b.Y + $b.Height / 2)
+      if ($requireClickablePoint -and -not (Test-DoubleClickHit $el $centerX $centerY)) { throw '引用目标中心未命中当前元素（未执行双击）' }
+      $sx = $centerX; $sy = $centerY
+    }
   }
-  if ($null -eq $sx) { throw '元素没有可点击点（GetClickablePoint 失败）' }
+  if ($null -eq $sx -or $null -eq $sy) { throw '元素没有可点击点（GetClickablePoint 失败）' }
   Assert-UiInputAllowed
   try { $el.SetFocus() } catch { }
   if ($null -ne $main) { try { [UiDriveInputWin32]::SetForegroundWindow([IntPtr]$main.Current.NativeWindowHandle) | Out-Null } catch { } }
   Start-Sleep -Milliseconds 80
   [UiDriveInputWin32]::SetCursorPos($sx, $sy) | Out-Null
   Start-Sleep -Milliseconds 120
+  $mouseStarted = $true
   [UiDriveInputWin32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 40
   [UiDriveInputWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
@@ -499,6 +550,13 @@ function Invoke-DoubleClickElement($el, $main) {
   Start-Sleep -Milliseconds 40
   [UiDriveInputWin32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
   return ('doubleClick @' + $sx + ',' + $sy + ' (' + (Get-ControlTypeName $el) + ')')
+  } catch {
+    if ($requireClickablePoint) {
+      $_.Exception.Data['targetRefDoubleClick'] = $true
+      $_.Exception.Data['mouseStarted'] = $mouseStarted
+    }
+    throw
+  }
 }
 
 # 坐标点击（窗口客户区）：表格行、图表点位等 UIA 元素不稳定的地方
@@ -767,7 +825,7 @@ function Get-FocusedInfo {
 # 交互型控件过滤（ui_state 用：只列能点/能输的东西，避免 900+ 行文本淹没上下文）
 $INTERACTIVE_TYPES = @('Button', 'Edit', 'RadioButton', 'CheckBox', 'TabItem', 'ComboBox', 'ListItem', 'MenuItem', 'TreeItem', 'DataItem', 'Hyperlink', 'Slider', 'Spinner', 'Document', 'Custom')
 
-function Get-InteractiveLines($main, [string]$match, [int]$max) {
+function Get-InteractiveLines($main, [string]$match, [int]$max, $referenceRoot = $null) {
   $script:DecisionControls = New-Object System.Collections.ArrayList
   $selectorCounts = @{}
   # 逐元素容错 + 跳过计数（与 read 同一约定）：界面重绘/切页瞬间 UIA 会枚举到瞬时元素，
@@ -789,7 +847,7 @@ function Get-InteractiveLines($main, [string]$match, [int]$max) {
       if ($t -notin $INTERACTIVE_TYPES) { continue }
       $fullName = [string]$el.Current.Name
       $automationId = [string]$el.Current.AutomationId
-      $n = $el.Current.Name
+      $n = $fullName
       if (-not $n) { $n = '' }
       if ($n.Length -gt 60) { $n = $n.Substring(0, 60) }
       if ($match -and $n -notmatch $match) { continue }
@@ -813,11 +871,15 @@ function Get-InteractiveLines($main, [string]$match, [int]$max) {
         $pattern = $null
         if ($el.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) { $control.expanded = [string]$pattern.Current.ExpandCollapseState }
       }
+      if ($Serve -and $referenceRoot -and $script:DecisionControls.Count -lt 128) {
+        $reference = New-TargetRef $el $referenceRoot
+        if ($reference) { $control.targetRef = $reference }
+      }
       [void]$script:DecisionControls.Add($control)
       $val = ''
       if ($t -in @('Edit', 'ComboBox', 'Document')) { $val = Get-ElementValueForReport $el }
       if ($val.Length -gt 60) { $val = $val.Substring(0, 60) }
-      $line = '#' + $lines.Count + ' [' + $t + '] "' + $n + '" aid="' + $el.Current.AutomationId + '" enabled=' + $el.Current.IsEnabled + ' @' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y)
+      $line = '#' + $lines.Count + ' [' + $t + '] "' + $n + '" aid="' + $automationId + '" enabled=' + $control.enabled + ' @' + (Get-SafeInt $b.X) + ',' + (Get-SafeInt $b.Y)
       if ($val -and $val -ne $n) { $line = $line + ' value="' + $val + '"' }
       [void]$lines.Add($line)
       if ($max -gt 0 -and $lines.Count -ge $max) { break }
@@ -1220,7 +1282,7 @@ function Test-NeedsForeground($step) {
   return $false
 }
 
-function Render-WindowPng([IntPtr]$h, $r, [int]$w, [int]$hh, [string]$outPath) {
+function Render-WindowPng([IntPtr]$h, $r, [int]$w, [int]$hh, [string]$outPath, [string]$captureMode = 'print') {
   $null = [UiDriveInputWin32]::UsePhysicalPixels()
   # 把窗口自身内容渲染成 PNG。PrintWindow(PW_RENDERFULLCONTENT=2) 优先：让窗口把内容（含 WPF/DWM
   # 合成）画进我们给的 DC，**不依赖窗口是否显示在物理屏上**——无头/断开(RDP)会话里屏幕 DC 是全黑的，
@@ -1228,30 +1290,35 @@ function Render-WindowPng([IntPtr]$h, $r, [int]$w, [int]$hh, [string]$outPath) {
   # 窗口）才退回 CopyFromScreen（此时窗口需在前台、未被遮挡才可信）。返回 'print' | 'screen'。
   $bmp = New-Object System.Drawing.Bitmap($w, $hh)
   $g = [System.Drawing.Graphics]::FromImage($bmp)
-  $hdc = $g.GetHdc()
-  $ok = [UiDriveBatchWin32]::PrintWindow($h, $hdc, 2)
-  $g.ReleaseHdc($hdc)
   $method = 'print'
-  if (-not $ok) { $method = 'screen'; $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size) }
-  $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
-  $g.Dispose(); $bmp.Dispose()
+  try {
+    $ok = $false
+    if ($captureMode -ne 'screen') {
+      $hdc = $g.GetHdc()
+      try { $ok = [UiDriveBatchWin32]::PrintWindow($h, $hdc, 2) }
+      finally { $g.ReleaseHdc($hdc) }
+    }
+    if (-not $ok) { $method = 'screen'; $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size, [System.Drawing.CopyPixelOperation]::SourceCopy) }
+    $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
+  } finally { $g.Dispose(); $bmp.Dispose() }
   return $method
 }
 
-function Save-Shot($main, [string]$outPath) {
+function Save-Shot($main, [string]$outPath, [string]$captureMode = 'print') {
   $null = [UiDriveInputWin32]::UsePhysicalPixels()
-  if (-not $outPath) { $outPath = Join-Path $env:TEMP ('uia-shot-' + (Get-Date -Format 'HHmmss') + '.png') }
+  if (-not $outPath) { $outPath = Join-Path $env:TEMP ('uia-shot-' + [Guid]::NewGuid().ToString('N') + '.png') }
   $dir = Split-Path -Parent $outPath
   if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
   $h = [IntPtr]$main.Current.NativeWindowHandle
+  if ($captureMode -eq 'screen' -and ([UiDriveBatchWin32]::IsIconic($h) -or -not [UiDriveBatchWin32]::IsWindowVisible($h))) { throw 'screen capture requires a visible, non-minimized target window' }
   $r = New-Object UiDriveBatchWin32+RECT
-  [UiDriveBatchWin32]::GetWindowRect($h, [ref]$r) | Out-Null
+  if (-not [UiDriveBatchWin32]::GetWindowRect($h, [ref]$r)) { throw 'Could not read target window rectangle' }
   $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
   if ($w -le 0 -or $hh -le 0) {
     throw ('窗口尺寸非法 ' + $w + 'x' + $hh + '；请先恢复窗口再截图')
   }
-  Render-WindowPng $h $r $w $hh $outPath | Out-Null
-  return @{ path = $outPath; w = $w; h = $hh }
+  $method = Render-WindowPng $h $r $w $hh $outPath $captureMode
+  return @{ path = $outPath; w = $w; h = $hh; captureMethod = $method; windowHandle = [long]$h; rect = @{ x = $r.Left; y = $r.Top; w = $w; h = $hh }; coordinateSpace = 'window'; physicalPixels = ([UiDriveInputWin32]::GetDpiAwareness() -eq 2) }
 }
 
 # ------------------------------------------------------------ 单步执行
@@ -1281,7 +1348,69 @@ function Resolve-Window($main, $step, [int]$procId) {
 }
 
 # 目标解析：容器范围（inAid/inName）→ 候选列表 → index/match 挑选
+function New-TargetRef($element, $root) {
+  if (-not $Serve -or $null -eq $element -or $null -eq $root) { return $null }
+  try {
+    $current = $element.Current
+    $rectangle = $current.BoundingRectangle
+    $rootHandle = [long]$root.Current.NativeWindowHandle
+    if ($rootHandle -le 0 -or -not (Is-RectUsable $rectangle)) { return $null }
+    $runtimeId = @($element.GetRuntimeId()) -join ','
+    if (-not $runtimeId) { return $null }
+    if ($null -eq $script:TargetRefs) { $script:TargetRefs = [ordered]@{} }
+    $now = [DateTime]::UtcNow
+    foreach ($expired in @($script:TargetRefs.Keys)) {
+      if ($script:TargetRefs[$expired].expiresAt -le $now) { $script:TargetRefs.Remove($expired) }
+    }
+    while ($script:TargetRefs.Count -ge 128) { $script:TargetRefs.Remove(@($script:TargetRefs.Keys)[0]) }
+    $reference = [Guid]::NewGuid().ToString('N')
+    $script:TargetRefs[$reference] = @{ element=$element; procId=[int]$current.ProcessId; rootHandle=$rootHandle; runtimeId=$runtimeId; type=[string]$current.ControlType.ProgrammaticName; name=[string]$current.Name; aid=[string]$current.AutomationId; rect=@{x=$rectangle.X;y=$rectangle.Y;w=$rectangle.Width;h=$rectangle.Height}; expiresAt=$now.AddSeconds(30) }
+    return $reference
+  } catch { return $null }
+}
+
+function Get-TargetRefParent($element) {
+  return [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($element)
+}
+
+function Resolve-TargetRef($root, $step, [int]$procId) {
+  $failure = @{ok=$false;notExecuted=$true;staleTargetRef=$true;error='targetRef 已失效，请重新观察目标'}
+  if (-not $Serve -or $step.action -notin @('pattern','doubleclick') -or [string]::IsNullOrWhiteSpace([string]$step.targetRef)) { return $failure }
+  if ($step.PSObject.Properties.Name -contains 'index' -and $null -ne $step.index) { return $failure }
+  foreach ($field in @('name','aid','match','inAid','inName','waitFor','index','requireUnique')) {
+    if ($step.PSObject.Properties.Name -contains $field -and $null -ne $step.$field -and $step.$field -ne '' -and $step.$field -ne $false) { return $failure }
+  }
+  $reference = [string]$step.targetRef
+  if ($null -eq $script:TargetRefs -or -not $script:TargetRefs.Contains($reference)) { return $failure }
+  $entry = $script:TargetRefs[$reference]
+  try {
+    if ($entry.expiresAt -le [DateTime]::UtcNow) { $script:TargetRefs.Remove($reference); return $failure }
+    if ($null -eq $root -or $entry.procId -ne $procId -or [int]$root.Current.ProcessId -ne $procId -or [long]$root.Current.NativeWindowHandle -ne $entry.rootHandle) { return $failure }
+    $element = $entry.element
+    $current = $element.Current
+    $rectangle = $current.BoundingRectangle
+    if ([int]$current.ProcessId -ne $procId -or $current.IsOffscreen -or -not $current.IsEnabled -or -not (Is-RectUsable $rectangle)) { return $failure }
+    if ((@($element.GetRuntimeId()) -join ',') -ne $entry.runtimeId -or [string]$current.Name -cne $entry.name -or [string]$current.AutomationId -cne $entry.aid -or [string]$current.ControlType.ProgrammaticName -cne $entry.type) { return $failure }
+    if ($rectangle.X -ne $entry.rect.x -or $rectangle.Y -ne $entry.rect.y -or $rectangle.Width -ne $entry.rect.w -or $rectangle.Height -ne $entry.rect.h) { return $failure }
+    $ancestor = $element
+    $rootRuntimeId = @($root.GetRuntimeId()) -join ','
+    $belongs = $false
+    for ($depth=0; $depth -lt 32 -and $null -ne $ancestor; $depth++) {
+      if ([int]$ancestor.Current.ProcessId -ne $procId) { return $failure }
+      if ((@($ancestor.GetRuntimeId()) -join ',') -eq $rootRuntimeId) { $belongs=$true; break }
+      $ancestor = Get-TargetRefParent $ancestor
+    }
+    if (-not $belongs) { return $failure }
+    return @{ok=$true;el=$element;count=1;root=$root;targetRef=$reference}
+  } catch { return $failure }
+}
+
 function Resolve-Target($main, $step, [int]$procId) {
+  if ($step.PSObject.Properties.Name -contains 'targetRef') {
+    try { $referenceRoot = Resolve-Window $main $step $procId }
+    catch { return @{ok=$false;notExecuted=$true;staleTargetRef=$true;error='targetRef 目标窗口无法确认'} }
+    return (Resolve-TargetRef $referenceRoot $step $procId)
+  }
   $root = Resolve-Window $main $step $procId
   if ($null -eq $root) { return @{ ok = $false; error = '未找到目标窗口（winTitle/winHandle）' } }
   $scope = $null
@@ -1427,6 +1556,13 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
   $res = @{ step = ($index + 1); action = $action; ok = $false }
   $script:ControlAction = $action
   try {
+    if ($step.PSObject.Properties.Name -contains 'captureMode' -and $null -ne $step.captureMode) {
+      if ($action -notin @('shot', 'capture') -or $step.captureMode -notin @('print', 'screen')) { return @{ ok = $false; notExecuted = $true; error = 'captureMode requires shot/capture and must be print or screen' } }
+    }
+    if ($step.PSObject.Properties.Name -contains 'targetRef') {
+      $referenceTarget = Resolve-Target $main $step $procId
+      if (-not $referenceTarget.ok) { return $referenceTarget }
+    }
     if ((Test-NeedsForeground $step) -and $script:ControlPolicy -and $script:ControlPolicy.state -ne 'unconfigured') {
       Assert-ControlPolicy $null $action
       if ($script:ControlPolicy -and @('clickat','drag','move','wheel') -notcontains $action) {
@@ -1637,7 +1773,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         if ($sc.narrowed) { $res.narrowed = $true; $res.scope = [string]$sc.scopeNote }
         # 逐元素容错 + 跳过计数（与 read / state-live 同一约定，B-1）
         Reset-SkipCounter
-        $lines = Get-InteractiveLines $sc.root $matchRe $max
+        $lines = Get-InteractiveLines $sc.root $matchRe $max $winEl
         $res.controls = @($script:DecisionControls)
         $res.windowHandle = [int64]$winEl.Current.NativeWindowHandle
         $res.count = $lines.Count; $res.lines = $lines
@@ -1880,7 +2016,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         else {
           $res.ok = $true
           $el = $w.el
-          if ($el) { $res.found = $true; $res.detail = (Get-ElementDetail $el); $res.count = $w.count; $res.waitedMs = $w.elapsedMs }
+          if ($el) {
+            $res.found = $true; $res.detail = (Get-ElementDetail $el); $res.count = $w.count; $res.waitedMs = $w.elapsedMs
+            $reference = New-TargetRef $el (Resolve-Window $main $step $procId)
+            if ($reference) { $res.targetRef = $reference; $res.targetAid = [string]$script:TargetRefs[$reference].aid }
+          }
           else { $res.found = $false; $res.count = $w.count; $res.waitedMs = $w.elapsedMs }
         }
       }
@@ -2058,10 +2198,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
       'doubleclick' {
         # UIA 元素级双击（表格行进详情等）：用 GetClickablePoint，不靠坐标换算
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.staleTargetRef) { $res.staleTargetRef=$true; $res.notExecuted=$true }; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
-          $out = Invoke-DoubleClickElement $w.el $main
+          if ($step.targetRef) { $script:TargetRefs.Remove([string]$step.targetRef) }
+          $out = Invoke-DoubleClickElement $w.el $main ([bool]$step.targetRef)
           Start-Sleep -Milliseconds $waitMs
           $res.ok = $true; $res.output = ([string]$out)
         }
@@ -2070,11 +2211,12 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         # W5b：调用元素实际暴露的 UIA pattern（对标 performSecondaryAction：展开/自增/选中/最大化…）
         # 动作名走 value（或 keys）；不支持就明确报错，绝不回退成盲点击。
         $w = Wait-Target $main $step $waitSpec $procId
-        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
+        if (-not $w.ok) { $res.notFound = $true; $res.error = [string]$w.error; if ($w.staleTargetRef) { $res.staleTargetRef=$true; $res.notExecuted=$true }; if ($w.ambiguous -eq $true) { $res.notFound = $false; $res.ambiguous = $true; $res.count = $w.count }; if ($w.drift -eq $true) { $res.notFound = $false; $res.drift = $true; $res.movedBy = $w.movedBy; $res.rect = $w.rect; $res.expectedRect = $w.expectedRect; $res.windowHandle = $w.windowHandle; $res.expectedWindowHandle = $w.expectedWindowHandle } }
         elseif (-not $w.el) { $res.notFound = $true; $res.error = '未找到目标控件' }
         else {
           $pact = [string]$step.value
           if (($step.PSObject.Properties.Name -contains 'keys') -and $step.keys) { $pact = [string]$step.keys }
+          if ($step.targetRef) { $script:TargetRefs.Remove([string]$step.targetRef) }
           $out = Invoke-ElementPattern $w.el $pact
           Start-Sleep -Milliseconds $waitMs
           $res.ok = $true; $res.output = ('PATTERN ' + $out + ' on "' + $w.el.Current.Name + '"')
@@ -2255,8 +2397,11 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         }
       }
       'shot' {
-        $s = Save-Shot $main ([string]$step.out)
+        $shotWindow = Resolve-Window $main $step $procId
+        if ($null -eq $shotWindow) { throw 'Could not resolve target window for screenshot' }
+        $s = Save-Shot $shotWindow ([string]$step.out) ([string]$step.captureMode)
         $res.ok = $true; $res.path = $s.path; $res.w = $s.w; $res.h = $s.h
+        foreach ($field in @('captureMethod', 'windowHandle', 'rect', 'coordinateSpace', 'physicalPixels')) { $res[$field] = $s[$field] }
       }
       'capture' {
         $null = [UiDriveInputWin32]::UsePhysicalPixels()
@@ -2314,12 +2459,12 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
             if ($w -le 0 -or $hh -le 0) { $res.ok = $true; $res.state = 'nowindow' }
             else {
               $outPath = [string]$step.out
-              if (-not $outPath) { $outPath = Join-Path $env:TEMP ('uia-capture-' + (Get-Date -Format 'HHmmss') + '.png') }
+              if (-not $outPath) { $outPath = Join-Path $env:TEMP ('uia-capture-' + [Guid]::NewGuid().ToString('N') + '.png') }
               $dir = Split-Path -Parent $outPath
               if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
               # 抓帧统一走 Render-WindowPng（PrintWindow 优先，见其定义处注释）——与 shot 同一条实现，
               # 避免两处各写一份、日后再次漂移（这正是当初 shot 全黑而 capture 正常的根因）。
-              $method = Render-WindowPng $h $r $w $hh $outPath
+              $method = Render-WindowPng $h $r $w $hh $outPath ([string]$step.captureMode)
               $res.ok = $true; $res.path = $outPath; $res.w = $w; $res.h = $hh
               $res.state = 'visible'; $res.captureMethod = $method; $res.windowHandle = [int64]$h
               $res.rect = @{ x = $r.Left; y = $r.Top; w = $w; h = $hh }; $res.coordinateSpace = 'window'; $res.physicalPixels = ([UiDriveInputWin32]::GetDpiAwareness() -eq 2)
@@ -2335,6 +2480,15 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
   } catch {
     $res.ok = $false
     $res.error = $_.Exception.Message
+    $referenceException = $_.Exception
+    while ($null -ne $referenceException) {
+      if ($referenceException.Data.Contains('targetRefDoubleClick')) {
+        if ($referenceException.Data['mouseStarted']) { $res.unknown = $true }
+        else { $res.notExecuted = $true }
+        break
+      }
+      $referenceException = $referenceException.InnerException
+    }
     $failure = Get-UiPolicyFailure $_.Exception
     if ($failure) { foreach ($field in $failure.Keys) { $res[$field] = $failure[$field] } }
   } finally {
@@ -2385,6 +2539,7 @@ if ($Serve) {
     $resp = @{ id = $seq; ok = $false }
     try {
       $req = $line | ConvertFrom-Json
+      if ($req.PSObject.Properties.Name -contains 'id') { $resp.id = $req.id }
       if ($req.PSObject.Properties.Name -contains 'controlPolicy') { Set-ControlPolicy $req.controlPolicy }
       $cmd = 'step'
       if ($req.PSObject.Properties.Name -contains 'cmd' -and $req.cmd) { $cmd = [string]$req.cmd }
@@ -2397,14 +2552,20 @@ if ($Serve) {
         'status' {
           $null = [UiDriveInputWin32]::UsePhysicalPixels()
           $sp = $null
-          if ($script:ConfiguredProcId -gt 0) { $sp = Get-Process -Id $script:ConfiguredProcId -ErrorAction SilentlyContinue }
-          elseif ($ProcName) { $sp = Get-Process -Name $ProcName -ErrorAction SilentlyContinue | Select-Object -First 1 }
+          $statusProcId = $script:ConfiguredProcId
+          if ($req.PSObject.Properties.Name -contains 'procId') { $statusProcId = [int]$req.procId }
+          $statusProcName = $ProcName
+          if ($req.PSObject.Properties.Name -contains 'procName') { $statusProcName = [string]$req.procName }
+          if ($statusProcId -gt 0) { $sp = Get-Process -Id $statusProcId -ErrorAction SilentlyContinue }
+          elseif ($statusProcName) { $sp = Get-Process -Name $statusProcName -ErrorAction SilentlyContinue | Select-Object -First 1 }
           if (-not $sp) { $resp.error = 'NOT_RUNNING' }
           else {
             $requestedHandle = $WinHandle
             if ($req.PSObject.Properties.Name -contains 'winHandle') { $requestedHandle = [long]$req.winHandle }
-            $selectedHandle = [UiDriveInputWin32]::ResolveWindow($sp.Id, $requestedHandle, $WindowName, $sp.MainWindowHandle)
-            $resp.ok = $true; $resp.pid = $sp.Id; $resp.window = [UiDriveInputWin32]::GetWindowTitle($selectedHandle)
+            $requestedTitle = $WindowName
+            if ($req.PSObject.Properties.Name -contains 'winTitle') { $requestedTitle = [string]$req.winTitle }
+            $selectedHandle = [UiDriveInputWin32]::ResolveWindow($sp.Id, $requestedHandle, $requestedTitle, $sp.MainWindowHandle)
+            $resp.ok = $true; $resp.pid = $sp.Id; $resp.window = $(if ($selectedHandle -eq [IntPtr]::Zero) { 'NONE' } else { [UiDriveInputWin32]::GetWindowTitle($selectedHandle) })
             $resp.handle = [int64]$selectedHandle
             # 进程身份（W2 policy 门用）：
             #   授权主键 = 规范化 exe 绝对路径（GetFullPath + 小写，跨"短/长路径、大小写"统一）；
@@ -2412,8 +2573,14 @@ if ($Serve) {
             #   Company/Product/Description 可能**全为空**，因此缺元数据既不能让规则
             #   "永远匹配不上→全拒"，也绝不能被当成放行依据。
             $identity = Get-UiProcessIdentity $sp
+            $resp.identity = $identity
             foreach ($identityKey in $identity.Keys) { $resp[$identityKey] = $identity[$identityKey] }
             $resp.desktopState = Get-UiDesktopState
+            if ($selectedHandle -ne [IntPtr]::Zero) {
+              $statusRect = New-Object UiDriveBatchWin32+RECT
+              [UiDriveBatchWin32]::GetWindowRect([IntPtr]$selectedHandle, [ref]$statusRect) | Out-Null
+              $resp.rect = @{ w = ($statusRect.Right - $statusRect.Left); h = ($statusRect.Bottom - $statusRect.Top); x = $statusRect.Left; y = $statusRect.Top }
+            }
           }
         }
         default {

@@ -34,6 +34,7 @@ const NOT_STEP_FIELDS = new Set([
   'PSObject',             // PowerShell 反射惯用法
   'cmd',                  // warm 常驻进程的协议字段（warmSend 自带），不是 step 字段
   'controlPolicy',
+  'id', 'procName',
   'path', 'w', 'h',       // 截图结果对象的属性（$s.path/$s.w/$s.h 是**脚本内构造**的结果，不是入参）
   'GetText',              // [System.Windows.Automation.TextPattern]::…GetText(…) 的静态成员
   'MoveEndpointByRange', 'MoveEndpointByUnit', // TextPattern 的静态成员

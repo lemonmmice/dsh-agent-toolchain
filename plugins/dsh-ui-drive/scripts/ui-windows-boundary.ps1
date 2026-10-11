@@ -30,6 +30,9 @@ public static class UiDriveInputWin32 {
   [DllImport("user32.dll", EntryPoint="mouse_event")] static extern void NativeMouseEvent(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
   [DllImport("user32.dll", EntryPoint="keybd_event")] static extern void NativeKeyboardEvent(byte key, byte scan, uint flags, UIntPtr extra);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr handle, uint command);
+  [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr window);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr handle, StringBuilder title, int length);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc callback, IntPtr param);
   [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
@@ -104,7 +107,22 @@ public static class UiDriveInputWin32 {
       return appId.ToString();
     } finally { CloseHandle(process); }
   }
-  public static bool SetForegroundWindow(IntPtr handle) { AssertInputAllowed(); return NativeSetForegroundWindow(handle); }
+  public static bool IsForegroundInWindow(IntPtr handle) {
+    IntPtr foreground = GetForegroundWindow();
+    if (handle == IntPtr.Zero || foreground == IntPtr.Zero) return false;
+    uint targetProcessId;
+    GetWindowThreadProcessId(handle, out targetProcessId);
+    if (targetProcessId == 0) return false;
+    for (int depth = 0; depth < 32 && foreground != IntPtr.Zero; depth++) {
+      uint foregroundProcessId;
+      GetWindowThreadProcessId(foreground, out foregroundProcessId);
+      if (foregroundProcessId != targetProcessId) return false;
+      if (foreground == handle || IsChild(handle, foreground)) return true;
+      foreground = GetWindow(foreground, 4);
+    }
+    return false;
+  }
+  public static bool SetForegroundWindow(IntPtr handle) { AssertInputAllowed(); return IsForegroundInWindow(handle) || NativeSetForegroundWindow(handle); }
   public static bool ShowWindow(IntPtr handle, int command) { AssertInputAllowed(); return NativeShowWindow(handle, command); }
   public static bool SetCursorPos(int x, int y) { AssertInputAllowed(); return NativeSetCursorPos(x, y); }
   public static void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra) {
