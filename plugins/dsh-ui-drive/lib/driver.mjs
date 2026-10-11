@@ -243,6 +243,22 @@ export function makeDriver(cfg) {  const c = {
         configHint: unconfiguredHint(['DSH_UI_PROC_NAME', 'DSH_UI_CLIENT_EXE']),
       }
     }
+    if (includeIdentity && warmEnabled() && warm.proc && warm.ready === true && warm.activeId === null && warm.pending.size === 0 && warmScriptIsCurrent()) {
+      const result = await warmSend({ cmd: 'status', procName, procId, winHandle: winHandle || 0, winTitle: winTitle || c.windowName }, timeoutMs)
+      if (result?.error === 'NOT_RUNNING') return { running: false, pid: null, title: null, controlPolicy, raw: 'NOT_RUNNING' }
+      if (!result?.ok) return { ...result, running: false, unknown: true, controlPolicy, error: result?.error || 'status 无法确认目标进程状态' }
+      return {
+        running: true,
+        pid: result.pid,
+        title: result.window === 'NONE' ? null : result.window || null,
+        handle: result.handle ?? null,
+        identity: result.identity || null,
+        desktopState: result.desktopState || 'unknown',
+        rect: result.rect || null,
+        controlPolicy,
+        raw: ('RUNNING pid=' + result.pid + ' window=' + (result.window || 'NONE')).slice(0, 300),
+      }
+    }
     const script = existsSync(batchScript()) ? batchScript() : driveScript()
     // G1 黑盒 #1：多实例（同名进程）时 status 无法消歧，而 ui_drive/ui_observe 都能传 procId —— 口径不一致。
     // 脚本本身早就支持 `-ProcId`（param 里就有，Get-MainWindow/Get-Windows 都按 pid 取），这里把它接上。
@@ -581,6 +597,12 @@ export function makeDriver(cfg) {  const c = {
    * 常驻 PowerShell 进程：启动成本（~400ms）只付一次，之后每个动作只付 UIA 调用
    * 本身（实测 30-150ms）。单步 ui_drive 走这里；进程空闲超时/异常自动重启。
    */
+  const targetRefs = new Map()
+  const rememberTargetRef = (reference, aid) => {
+    if (typeof reference !== 'string' || !reference || typeof aid !== 'string') return
+    targetRefs.set(reference, { aid, expiresAt: Date.now() + 30000 })
+    while (targetRefs.size > 128) targetRefs.delete(targetRefs.keys().next().value)
+  }
   const warm = {
     proc: null,
     starting: null,
@@ -590,6 +612,7 @@ export function makeDriver(cfg) {  const c = {
     buf: Buffer.alloc(0),
     lastUsed: 0,
     startedAt: 0,
+    scriptStamp: '',
     ready: null,
     disabled: false,
     idleTimer: null,
@@ -613,7 +636,13 @@ export function makeDriver(cfg) {  const c = {
     return existsSync(batchScript())
   }
 
+  function warmScriptIsCurrent() {
+    try { return warm.scriptStamp === String(Math.floor(statSync(batchScript()).mtimeMs)) }
+    catch { return false }
+  }
+
   function warmStop(reason) {
+    targetRefs.clear()
     const p = warm.proc
     warm.proc = null
     warm.starting = null
@@ -656,6 +685,7 @@ export function makeDriver(cfg) {  const c = {
     warm.proc = child
     warm.buf = Buffer.alloc(0)
     warm.startedAt = Date.now()
+    warm.scriptStamp = stamp
     warm.lastUsed = Date.now()
     warm.lastOkAt = Date.now()
     warm.lastProtocolError = null
@@ -1030,7 +1060,7 @@ export function makeDriver(cfg) {  const c = {
     // —— W2 seam：deny / 急停（estop）判定（同一写侧单点、snapshot 校验之后）——
     // 未配置规则表且无急停哨兵 → 直接放行（零开销，保持既有行为；这是显式集成取舍，见 policy.mjs）。
     if (gateArgs.approvalId || (policy.needsCheck && policy.needsCheck(gateArgs))) {
-      let identity = {}
+      let identity = { aid: gateArgs.aid }
       if (policy.requiresIdentity || gateArgs.approvalId) {
         try {
           const st = await resolveIdentity(gateArgs)
@@ -1091,6 +1121,8 @@ export function makeDriver(cfg) {  const c = {
       action: normAction(args.action),
       name: args.name,
       aid: args.aid,
+      targetRef: args.targetRef,
+      captureMode: args.captureMode,
       value: args.value,
       ascii: args.ascii,
       match: args.match,
@@ -1175,12 +1207,17 @@ export function makeDriver(cfg) {  const c = {
   async function drive(args) {
     const actionId = protocolId('act')
     const before = latestObservation
-    let res = await driveInner(args)
+    const waitAfter = args.waitAfter === undefined ? null : validateWaitAfter(args.action, args.waitAfter)
+    let res = waitAfter?.error
+      ? { ok: false, action: normAction(args.action), actionOk: false, confirmed: false, notExecuted: true, invalidWaitAfter: true, error: waitAfter.error }
+      : await driveInner(waitAfter ? { ...args, observe: false, waitMs: args.waitMs ?? 0 } : args)
+    if (waitAfter && !waitAfter.error) res = await confirmAfterAction(res, args, waitAfter)
     if (args.secret === true) {
       res = { ...res }
       for (const field of ['output', 'detail', 'error', 'focused']) if (res[field]) res[field] = '[redacted]'
       if (res.lines) res.lines = ['[redacted]']
       if (res.observe) res.observe = { ...res.observe, lines: ['[redacted]'], focused: '[redacted]', ...(res.observe.error ? { error: '[redacted]' } : {}) }
+      if (res.waitAfter) res.waitAfter = { ...res.waitAfter, detail: res.waitAfter.detail ? '[redacted]' : null, error: res.waitAfter.error ? '[redacted]' : null }
     }
     res = { ...res, actionId, protocolVersion: 1 }
     const source = res.observe ? { ...res.observe, ok: !res.observe.error } : res
@@ -1193,6 +1230,54 @@ export function makeDriver(cfg) {  const c = {
       }
     }
     return attachEvidence(res, { ...args, __before: before })
+  }
+
+  function validateWaitAfter(action, value) {
+    if (!isSideEffectKind(classifyAction(normAction(action)))) return { error: 'waitAfter 仅支持副作用动作' }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return { error: 'waitAfter 必须是对象' }
+    const fields = new Set(['aid', 'name', 'state', 'ms', 'interval', 'winHandle', 'winTitle'])
+    if (Object.keys(value).some(field => !fields.has(field))) return { error: 'waitAfter 包含不支持的字段' }
+    for (const field of ['aid', 'name', 'winTitle']) {
+      if (value[field] !== undefined && typeof value[field] !== 'string') return { error: 'waitAfter.' + field + ' 必须是字符串' }
+    }
+    if (!value.aid?.trim() && !value.name?.trim()) return { error: 'waitAfter 必须提供 aid 或 name' }
+    if (value.state !== undefined && !['appear', 'gone', 'enabled', 'disabled'].includes(value.state)) return { error: 'waitAfter.state 无效' }
+    for (const [field, maximum] of [['ms', 30000], ['interval', 1000]]) {
+      if (value[field] !== undefined && (!Number.isInteger(value[field]) || value[field] < 1 || value[field] > maximum)) return { error: 'waitAfter.' + field + ' 必须是 1 到 ' + maximum + ' 的整数' }
+    }
+    if (value.winHandle !== undefined && (!Number.isSafeInteger(value.winHandle) || value.winHandle < 1)) return { error: 'waitAfter.winHandle 必须是正整数' }
+    return { ...value, state: value.state ?? 'appear', ms: value.ms ?? 1500, interval: value.interval ?? 50 }
+  }
+
+  async function confirmAfterAction(result, args, condition) {
+    if (result.ok !== true) return { ...result, actionOk: false, confirmed: false, waitAfter: { ok: false, found: false, waitedMs: 0, detail: null, error: '动作未成功，未执行后置确认', unknown: result.unknown === true } }
+    const request = {
+      ...condition,
+      action: 'waitfor',
+      procId: result.gateMetadata?.identity?.pid || args.procId || 0,
+      winHandle: condition.winHandle ?? (condition.winTitle !== undefined ? undefined : result.gateMetadata?.identity?.handle || args.winHandle),
+      winTitle: condition.winTitle ?? args.winTitle ?? '',
+      timeoutMs: condition.ms + 1000,
+      waitMs: 0,
+    }
+    const started = Date.now()
+    let confirmation
+    try {
+      confirmation = warmEnabled() && warm.proc && warm.ready === true
+        ? await warmSend(request, request.timeoutMs)
+        : await driveOnce(request)
+    } catch (error) {
+      confirmation = { ok: false, unknown: true, error: String(error.message || error) }
+    }
+    const summary = {
+      ok: confirmation?.ok === true,
+      found: confirmation?.found === true,
+      waitedMs: confirmation?.waitedMs ?? Date.now() - started,
+      detail: confirmation?.detail ?? null,
+      error: confirmation?.error || (confirmation?.ok === true ? null : '后置确认未完成'),
+      unknown: !confirmation || confirmation.unknown === true || confirmation.timeout === true || confirmation.killed === true,
+    }
+    return { ...result, actionOk: true, confirmed: summary.ok, waitAfter: summary }
   }
 
   let latestObservation = null
@@ -1252,7 +1337,7 @@ export function makeDriver(cfg) {  const c = {
       const gateDeniedNow = isGateDenied(res) // 判据与失败库的"预期内拒绝"同处定义，见 ./refusal.mjs
       const maybeExecuted = !!(res && res.unknown)
       const kindNow = gateDeniedNow ? 'denied' : (maybeExecuted ? 'unknown' : 'action')
-      const executedNow = gateDeniedNow ? false : (maybeExecuted ? null : true)
+      const executedNow = gateDeniedNow || res?.notExecuted === true ? false : (maybeExecuted ? null : true)
       const appliedNow = !!(res && res.ok)
       const env = createEnvelope({
         kind: kindNow,
@@ -1292,7 +1377,7 @@ export function makeDriver(cfg) {  const c = {
   function stableExtra(args) {
     if (!args) return null
     const e = {}
-    for (const k of ['winTitle', 'winHandle', 'snapshotId', 'fromX', 'fromY', 'toX', 'toY', 'x', 'y', 'count', 'state']) {
+    for (const k of ['winTitle', 'winHandle', 'snapshotId', 'targetRef', 'fromX', 'fromY', 'toX', 'toY', 'x', 'y', 'count', 'state']) {
       if (args[k] !== undefined && args[k] !== null) e[k] = args[k]
     }
     return Object.keys(e).length ? e : null
@@ -1305,10 +1390,26 @@ export function makeDriver(cfg) {  const c = {
   async function driveOnce(args) {
     let { action: rawAction, name = '', aid = '', value = '', ascii = false, match = '', waitMs = c.defaultWaitMs, procId = 0, allowSideEffects = false, workspace = '', label = '', shotsDir = '', index, inAid = '', inName = '', waitFor = null, state = '', keys = '', fromX, fromY, toX, toY, steps = 12, holdMs = 120, max, winTitle = '', winHandle, secret = false, expectValue, titleRe = '', textRe = '', gone = false, ms, interval, conds, stableCount, observe = false, observeMatch = '', observeMax = 15, x, y, delta, count, mods = '', double = false, button = '', focus = false, snapshotId, diff = false, approvalId = '', sessionId, visualFallback = false, visualMinConfidence = 0.78, visualTarget = '', requireUnique = false } = args
     const action = normAction(rawAction)
+    const captureMode = args.captureMode
+    if (captureMode !== undefined && (!['shot', 'capture'].includes(action) || !['print', 'screen'].includes(captureMode))) return { ok: false, action, notExecuted: true, error: 'captureMode requires shot/capture and must be print or screen' }
     // 写侧单点：副作用动作（含坐标副作用 clickat/drag）过 allowSideEffects + 新鲜度门；只读/纯输入放行。
     // W2 的 deny/急停在 checkSideEffectGate 内挂钩（同一处），不新增第二处接线点。
     const visualPreflight = visualFallback === true && ['click', 'doubleclick'].includes(action)
-    const gate = await checkSideEffectGate(action, allowSideEffects, { snapshotId, winTitle, winHandle, aid, approvalId, sessionId, procId, consume: !visualPreflight })
+    const targetRef = args.targetRef
+    let targetRefMetadata = null
+    if (targetRef !== undefined) {
+      const mixed = requireUnique === true || visualFallback === true || index !== undefined || Boolean(name || aid || match || inAid || inName || waitFor)
+      if (typeof targetRef !== 'string' || targetRef.trim().length === 0 || !['pattern', 'doubleclick'].includes(action) || mixed) {
+        return { ok: false, action, invalidTargetRef: true, notExecuted: true, error: 'targetRef requires a non-empty string and action=pattern|doubleclick; it cannot be combined with name/aid/match/index/inAid/inName/waitFor/requireUnique/visualFallback' }
+      }
+      targetRefMetadata = targetRefs.get(targetRef)
+      if (!targetRefMetadata || targetRefMetadata.expiresAt <= Date.now()) {
+        targetRefs.delete(targetRef)
+        return { ok: false, action, staleTargetRef: true, notExecuted: true, error: 'targetRef is expired or was not issued by this driver; obtain a new reference with find/state' }
+      }
+      if (action === 'doubleclick' && args.waitMs === undefined) waitMs = 0
+    }
+    const gate = await checkSideEffectGate(action, allowSideEffects, { snapshotId, winTitle, winHandle, aid: targetRefMetadata?.aid ?? aid, approvalId, sessionId, procId, consume: !visualPreflight })
     if (!gate.allow) return gate.result
 
     // ---- 配置类错误**前置判定**（在**安全门之后**）：没配目标进程就立即回，
@@ -1367,7 +1468,7 @@ export function makeDriver(cfg) {  const c = {
       if (warm.proc && warm.ready === true) {
         const payload = {
           action, name, aid, value, ascii, match, waitMs, procId,
-          index, inAid, inName, waitFor, state, keys, requireUnique,
+          index, inAid, inName, waitFor, state, keys, requireUnique, targetRef, captureMode,
           fromX, fromY, toX, toY, steps, holdMs, max,
           // 跨窗口 + 凭据 + 竞速等待（漏传过一次：warm 路径下这些参数全部失效）
           winTitle, winHandle, secret, expectValue,
@@ -1383,6 +1484,7 @@ export function makeDriver(cfg) {  const c = {
         const callerMs = Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : c.defaultTimeoutMs
         const effMs = (action === 'shot' || action === 'capture') ? Math.min(callerMs, 60000) : callerMs
         let res = await warmSend(payload, effMs, { killOnTimeout: action === 'capture' ? false : true })
+        if (targetRef !== undefined) targetRefs.delete(targetRef)
         if (res?.notExecuted) return { ...res, action }
         if (res && res.ok === false && res.timeout === true) {
           // 超时 ≠ 没执行：请求可能已经到达并被处理，只是响应没回来。
@@ -1421,6 +1523,8 @@ export function makeDriver(cfg) {  const c = {
       }
     }
 
+    if (targetRef !== undefined) return { ok: false, action, staleTargetRef: true, notExecuted: true, error: 'targetRef requires its original warm UI process; obtain a new reference with find/state' }
+
     // ---- 回退：批量引擎单步（type/drag/windows/waitfor 只有批量引擎实现；
     //      其余动作在传了 index/inAid/waitFor 时也必须走批量，一次性脚本不认识）
     const needsBatch =
@@ -1432,7 +1536,7 @@ export function makeDriver(cfg) {  const c = {
     if (needsBatch) {
       const b = await batch({
         steps: [stepFields({
-          action, name, aid, value, ascii, match, waitMs, index, inAid, inName, waitFor, state, keys,
+          action, name, aid, targetRef, captureMode, value, ascii, match, waitMs, index, inAid, inName, waitFor, state, keys,
           fromX, fromY, toX, toY, steps, holdMs, max, x, y, delta, count, mods, double, button, focus,
           winTitle, winHandle, secret, expectValue, titleRe, textRe, gone, ms, interval, conds,
           out: shotPlan ? shotPlan.path : undefined,
@@ -1460,6 +1564,7 @@ export function makeDriver(cfg) {  const c = {
     if (match) psArgs.push('-Match', match)
     psArgs.push('-WaitMs', String(waitMs))
     if (action === 'shot') psArgs.push('-Out', shotPlan.path)
+    if (captureMode !== undefined) psArgs.push('-CaptureMode', captureMode)
 
     // 单步超时：默认 90s，可用 timeoutMs 收紧（右键菜单/read 这类容易挂住的动作用）
     const stepTimeout = Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : c.defaultTimeoutMs
@@ -1499,7 +1604,15 @@ export function makeDriver(cfg) {  const c = {
     }
     if (action === 'shot') {
       const m = text.match(/SHOT (.+) (\d+)x(\d+)/)
-      if (m) return shapeShot(action, { ok: true, path: m[1], w: Number(m[2]), h: Number(m[3]) }, shotPlan, workspace)
+      if (m) {
+        const metadata = text.match(/^SHOT_META=([A-Za-z0-9+/=]+)$/m)
+        let details = {}
+        if (metadata) {
+          try { details = JSON.parse(Buffer.from(metadata[1], 'base64').toString('utf8')) }
+          catch { return { ok: false, action, error: 'Screenshot metadata could not be decoded' } }
+        }
+        return shapeShot(action, { ok: true, path: m[1], w: Number(m[2]), h: Number(m[3]), ...details }, shotPlan, workspace)
+      }
       return { ok: false, action, error: cleanPsError(r.stderr) || text.slice(0, 500) }
     }
     return { ok: false, action, error: '未知动作 ' + action }
@@ -1614,11 +1727,15 @@ export function makeDriver(cfg) {  const c = {
       if (res.count !== undefined) out.count = res.count
       // ambiguous / drift：执行器**在动作之前**拒绝时由批量引擎回报。这类字段不进这份白名单
       // 就等于不存在（与下面 read 那处的教训同源）；drift 还要带出位移与前后矩形，调用方才能判断。
-      for (const field of ['policyCode', 'ruleId', 'reason', 'alternative', 'desktopState', 'unknown', 'timeout', 'ambiguous', 'drift', 'movedBy', 'rect', 'expectedRect', 'windowHandle', 'expectedWindowHandle']) if (res[field] !== undefined) out[field] = res[field]
+      for (const field of ['policyCode', 'ruleId', 'reason', 'alternative', 'desktopState', 'unknown', 'timeout', 'ambiguous', 'drift', 'movedBy', 'rect', 'expectedRect', 'windowHandle', 'expectedWindowHandle', 'staleTargetRef', 'invalidTargetRef', 'notExecuted']) if (res[field] !== undefined) out[field] = res[field]
       return out
     }
     if (action === 'find') {
       const out = { ok: true, action, found: res.found === true, detail: res.detail !== undefined ? res.detail : null }
+      if (typeof res.targetRef === 'string' && res.targetRef) {
+        rememberTargetRef(res.targetRef, res.targetAid)
+        out.targetRef = res.targetRef
+      }
       if (res.count !== undefined) out.count = res.count
       if (res.waitedMs) out.waitedMs = res.waitedMs
       return out
@@ -1665,6 +1782,7 @@ export function makeDriver(cfg) {  const c = {
       return out
     }
     if (action === 'state') {
+      for (const control of res.controls || []) rememberTargetRef(control.targetRef, control.aid)
       return {
         ok: true,
         action,
@@ -1752,7 +1870,7 @@ export function makeDriver(cfg) {  const c = {
    */
   function shapeShot(action, res, shotPlan, workspace) {
     const src = res.path
-    return { ok: true, action, path: src, w: res.w, h: res.h, workspacePath: null }
+    return { ok: true, action, path: src, w: res.w, h: res.h, workspacePath: null, captureMethod: res.captureMethod || null, windowHandle: res.windowHandle ?? null, rect: res.rect || null, coordinateSpace: res.coordinateSpace || null, physicalPixels: res.physicalPixels === true }
   }
 
   function parseStatusText(text) {
@@ -1784,7 +1902,7 @@ export function makeDriver(cfg) {  const c = {
 
   function prepareShotPath(baseDir, label) {
     const dir = baseDir || join(c.evidenceDir, tsDir())
-    return { dir, path: join(dir, safeLabel(label) + '.png') }
+    return { dir, path: join(dir, safeLabel(label) + '-' + randomUUID() + '.png') }
   }
 
   // ------------------------------------------------------------ 批量执行（ui_flow 的引擎）
@@ -1824,6 +1942,8 @@ export function makeDriver(cfg) {  const c = {
       const o = { action: normAction(s.action) }
       if (s.name !== undefined) o.name = s.name
       if (s.aid !== undefined) o.aid = s.aid
+      if (s.targetRef !== undefined) o.targetRef = s.targetRef
+      if (s.captureMode !== undefined) o.captureMode = s.captureMode
       if (s.value !== undefined) o.value = s.value
       if (s.ascii !== undefined) o.ascii = s.ascii
       if (s.match !== undefined) o.match = s.match
@@ -2149,7 +2269,7 @@ export function makeDriver(cfg) {  const c = {
   // W5b 三个新动词已放行（W1 新鲜度门 + W2 policy/急停门均已落地，冻结稿的"禁用前提"解除）。
   // 分类仍走 classifyAction 的默认分支 = 'effect'（未知动作按副作用），因此它们必须显式 allowSideEffects
   // 并过 policy/急停门；不单独加进 COORD_EFFECT（它们有具名元素或可定位祖先）。
-  const FLOW_ACTIONS = new Set(['find', 'click', 'setvalue', 'key', 'type', 'drag', 'pattern', 'scroll', 'selecttext', 'read', 'state', 'shot', 'wait', 'waitfor', 'expect', 'windows', 'expectwindow', 'expecttext', 'waitany'])
+  const FLOW_ACTIONS = new Set(['find', 'click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'move', 'wheel', 'pattern', 'scroll', 'selecttext', 'read', 'state', 'shot', 'wait', 'waitfor', 'expect', 'windows', 'expectwindow', 'expecttext', 'waitany'])
 
   /**
    * ui_flow：步骤序列驱动 + 证据收集。
@@ -2164,8 +2284,10 @@ export function makeDriver(cfg) {  const c = {
    * W3：**含副作用步**的 flow 落一份证据包（kind=flow 或 denied）；纯只读 flow 不落（零开销）。
    */
   async function flow(args = {}) {
+    const started = Date.now()
     const res = await flowInner(args)
-    return attachFlowEvidence({ ...res, actionId: protocolId('act'), protocolVersion: 1 }, args)
+    const result = attachFlowEvidence({ ...res, actionId: protocolId('act'), protocolVersion: 1 }, args)
+    return { ...result, totalElapsedMs: Date.now() - started }
   }
 
   async function replay({ replayPath, allowSideEffects = false, failFast = true, tag = 'replay', approvalId = '', sessionId } = {}) {
@@ -2216,10 +2338,13 @@ export function makeDriver(cfg) {  const c = {
     }
   }
 
-  async function flowInner({ steps = [], tag = 'flow', failFast = false, allowSideEffects = false, waitMs, approvalId = '', sessionId, visualFallback, visualMinConfidence, visualTarget, secret } = {}) {
+  async function flowInner({ steps = [], tag = 'flow', failFast = false, allowSideEffects = false, procId, waitMs, approvalId = '', sessionId, visualFallback, visualMinConfidence, visualTarget, secret } = {}) {
     if (!Array.isArray(steps) || steps.length === 0) return { ok: false, error: 'steps 不能为空' }
     if (steps.length > 60) return { ok: false, error: 'steps 最多 60 步' }
-    const defaults = Object.fromEntries(Object.entries({ approvalId, sessionId, visualFallback, visualMinConfidence, visualTarget, secret }).filter(([, value]) => value !== undefined && value !== ''))
+    if (procId !== undefined && (!Number.isSafeInteger(procId) || procId < 1)) return { ok: false, notExecuted: true, error: 'procId 必须是正整数' }
+    if (waitMs !== undefined && (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > 30000)) return { ok: false, notExecuted: true, error: 'waitMs 必须是 0 到 30000 的整数' }
+    if (steps.some(step => step?.targetRef !== undefined)) return { ok: false, invalidTargetRef: true, notExecuted: true, error: 'targetRef is supported only by individual ui_drive/ui_act pattern/doubleclick actions, not ui_flow or replay' }
+    const defaults = Object.fromEntries(Object.entries({ procId, approvalId, sessionId, visualFallback, visualMinConfidence, visualTarget, secret }).filter(([, value]) => value !== undefined && value !== ''))
     steps = steps.map(step => ({ ...defaults, ...step }))
 
     const dir = join(c.evidenceDir, tsDir() + '-' + safeLabel(tag, 'flow') + '-' + randomUUID().slice(0, 8))
@@ -2306,7 +2431,7 @@ export function makeDriver(cfg) {  const c = {
         ...s,
         action,
         waitMs: stepWait,
-        out: action === 'shot' ? join(dir, safeLabel(label) + '.png') : undefined,
+        out: action === 'shot' ? join(dir, safeLabel(label) + '-' + n + '.png') : undefined,
         ...(failFast ? { stopOnFailure: true } : {}),
       }
       runnable.push({ index: i, step: n, label, src: s, batchStep })
@@ -2419,6 +2544,7 @@ export function makeDriver(cfg) {  const c = {
       } else if (action === 'shot') {
         if (res.path) { entry.path = res.path; finalShot = res.path }
         entry.size = res.ok ? res.w + 'x' + res.h : null
+        for (const field of ['captureMethod', 'windowHandle', 'rect', 'coordinateSpace', 'physicalPixels']) if (res[field] !== undefined) entry[field] = res[field]
       } else if (action === 'wait') {
         entry.waitedMs = res.waitedMs
       } else {

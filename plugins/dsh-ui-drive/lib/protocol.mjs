@@ -54,11 +54,11 @@ export function redactForRecord(value, secret = false) {
   return result
 }
 
-const REPLAY_FIELDS = new Set(['action', 'name', 'aid', 'value', 'keys', 'ascii', 'match', 'index', 'inAid', 'inName', 'waitFor', 'state', 'fromX', 'fromY', 'toX', 'toY', 'steps', 'holdMs', 'count', 'mods', 'focus', 'waitMs', 'label', 'expectEnabled', 'expectMatch', 'expectValue', 'titleRe', 'textRe', 'gone', 'ms', 'interval', 'conds', 'stableCount', 'max', 'secret', 'visualFallback', 'visualMinConfidence', 'visualTarget', 'winTitle'])
+const REPLAY_FIELDS = new Set(['action', 'name', 'aid', 'value', 'keys', 'ascii', 'match', 'index', 'inAid', 'inName', 'waitFor', 'state', 'fromX', 'fromY', 'toX', 'toY', 'steps', 'holdMs', 'count', 'mods', 'focus', 'waitMs', 'label', 'expectEnabled', 'expectMatch', 'expectValue', 'titleRe', 'textRe', 'gone', 'ms', 'interval', 'conds', 'stableCount', 'max', 'secret', 'visualFallback', 'visualMinConfidence', 'visualTarget', 'winTitle', 'x', 'y', 'delta', 'double', 'button', 'captureMode'])
 const WAIT_FIELDS = new Set(['ms', 'interval', 'state', 'match', 'index', 'name', 'aid', 'inAid', 'inName', 'stableCount'])
 const CONDITION_FIELDS = new Set(['kind', 'titleRe', 'textRe', 'name', 'aid', 'match', 'index', 'label', 'inAid', 'inName'])
 const TARGET_FIELDS = new Set(['exeCanonical', 'aumid', 'publisherName', 'productName', 'binaryName', 'publisherVerified'])
-const REPLAY_ACTIONS = new Set(['find', 'click', 'setvalue', 'key', 'type', 'drag', 'pattern', 'scroll', 'selecttext', 'read', 'state', 'shot', 'wait', 'waitfor', 'expect', 'windows', 'expectwindow', 'expecttext', 'waitany'])
+const REPLAY_ACTIONS = new Set(['find', 'click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'move', 'wheel', 'pattern', 'scroll', 'selecttext', 'read', 'state', 'shot', 'wait', 'waitfor', 'expect', 'windows', 'expectwindow', 'expecttext', 'waitany'])
 
 function containsRedacted(value) {
   if (typeof value === 'string') return value.includes(REDACTED)
@@ -95,6 +95,7 @@ function validNestedFields(value, fields) {
 
 function validStep(step) {
   if (!step || typeof step !== 'object' || Array.isArray(step) || !REPLAY_ACTIONS.has(step.action) || Object.keys(step).some(key => !REPLAY_FIELDS.has(key))) return false
+  if (step.captureMode !== undefined && (step.action !== 'shot' || !['print', 'screen'].includes(step.captureMode))) return false
   if (step.waitFor != null && !validNestedFields(step.waitFor, WAIT_FIELDS)) return false
   if (step.conds != null && (!Array.isArray(step.conds) || !step.conds.every(condition => validNestedFields(condition, CONDITION_FIELDS)))) return false
   return Object.entries(step).every(([key, value]) => ['waitFor', 'conds'].includes(key) || value === null || ['string', 'number', 'boolean'].includes(typeof value))

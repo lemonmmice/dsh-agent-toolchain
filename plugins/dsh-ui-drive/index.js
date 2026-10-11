@@ -162,6 +162,20 @@ async function shotWithVision({ workspace = '', label = 'state', waitBeforeMs = 
 }
 
 const OBJECT = { type: 'object', additionalProperties: true }
+const WAIT_AFTER = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    aid: { type: 'string' },
+    name: { type: 'string' },
+    state: { type: 'string', enum: ['appear', 'gone', 'enabled', 'disabled'] },
+    ms: { type: 'integer', minimum: 1, maximum: 30000 },
+    interval: { type: 'integer', minimum: 1, maximum: 1000 },
+    winHandle: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+    winTitle: { type: 'string' },
+  },
+  description: '副作用动作成功后，用明确的 aid/name 定向确认条件，不读取整窗快照。state 默认 appear，ms 默认 1500，interval 默认 50；优先于 observe。actionOk 表示动作结果，confirmed 表示后置条件结果，确认失败不重放动作。',
+}
 const READ_ONLY_NOTE = '。注意：点击/输入是真实副作用操作（可能落库），必须先报按钮名给用户确认再执行；「按名硬拒」名单默认为空（未配 DSH_UI_DENY_RE 时什么都不拦），别拿它当兜底；运维若配了急停（DSH_UI_ESTOP_FILE）或策略表（DSH_UI_APP_POLICY），被拦时返回带 policyCode，复位走运维路径 /api/dsh-ui-drive/estop/reset'
 
 /** R-01（2026-09-17）：把「没有界面描述」的原因显示出来 —— 旧写法只渲染 description，
@@ -217,6 +231,7 @@ const tools = () => [
     name: 'ui_drive',
     description: dshDescription('ui_drive'),
     parameters: {
+      waitAfter: WAIT_AFTER,
       action: { type: 'string', required: true, enum: ['find', 'read', 'state', 'windows', 'shot', 'waitfor', 'click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext', 'move', 'wheel', 'capture', 'state-live'], description: 'find | read | state | windows | shot | waitfor | click | setvalue | key | type | drag | clickat | doubleclick | pattern | scroll | selecttext | move | wheel | capture | state-live（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位——坐标脆弱，窗口一移动就失效；doubleclick=元素级双击（UIA GetClickablePoint，不是坐标）；pattern=调用元素**真正暴露**的 UIA pattern：动作名放 value/keys，支持 Expand|Collapse|Increment|Decrement|Select|AddToSelection|RemoveFromSelection|ScrollIntoView|Toggle|Invoke|Focus|Close|Minimize|Maximize|Restore（展开树节点/自增数字/多选/最大化窗口——比盲点击稳得多，元素不支持会明确报错而不是回退成点击）；scroll=语义滚动，对元素或最近可滚动祖先调 ScrollPattern，方向放 value（up/down/left/right），页数放 count；selecttext=TextPattern 精确选区，text 放 value、prefix 放 match、suffix 放 expectValue、selectionType 放 state（text|cursor_before|cursor_after）；move/wheel=移动鼠标/滚轮，只读白名单、不需 allowSideEffects；capture=抓一帧窗口内容；state-live=免前台状态采样）' },
       name: { type: 'string', description: '控件 Name（与 aid 二选一或都传）' },
       aid: { type: 'string', description: '控件 AutomationId' },
@@ -244,6 +259,8 @@ const tools = () => [
       label: { type: 'string', description: '截图文件名标签（shot 用）' },
       describe: { type: 'boolean', description: 'shot 时顺带用视觉模型描述界面内容（视觉即返，一步拿到界面状态）' },
       snapshotId: { type: 'string', description: '副作用动作可选：绑定某次 read/state 返回的 snapshotId。若自那次读之后界面已被更新的权威读刷新（staleSnapshot）或客户端已重启（expiredSnapshot），本次动作被拒不执行；不传则不校验（零回归）' },
+      targetRef: { type: 'string', description: 'find/state 返回的30秒常驻控件引用，仅用于pattern/doubleclick；不能混用name/aid/match/index/inAid/inName/waitFor/requireUnique/visualFallback，失效明确拒绝且不重试' },
+      requireUnique: { type: 'boolean', description: '要求name/aid/match恰好匹配一个控件；不能与targetRef混用' },
       approvalId: { type: 'string', description: '可选授权 ID（once/session/persistent），绑定应用身份与动作；策略启用时用于明确授权' },
       sessionId: { type: 'string', description: '授权会话 ID；不传使用默认会话' },
       visualFallback: { type: 'boolean', description: 'UIA 找不到 click/doubleclick 目标时启用视觉坐标兜底（默认关闭；仍需 allowSideEffects=true）' },
@@ -263,6 +280,7 @@ const tools = () => [
       expectValue: { type: 'string', description: 'type：写完回读校验的期望值（不一致 → ok:false）；selecttext：要选到的后缀' },
       observeMax: { type: 'number', description: 'observe=true 时动作后快照列几个控件（默认 15；只影响快照，不影响动作结果）' },
       shotsDir: { type: 'string', description: 'shot：截图副本目录（绝对路径）。证据目录里那份始终都会写' },
+      captureMode: { type: 'string', enum: ['print', 'screen'], description: 'shot/capture：默认print窗口渲染；screen截取目标窗口矩形内屏幕像素' },
       diff: { type: 'boolean', description: 'read 专用：与上一次完整读做增量，返回 diff={added,removed,unchanged}（首读给 diffBaseline；读不完整时抑制并回落完整清单）' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderDrive(v) }] },
@@ -357,6 +375,7 @@ const tools = () => [
       allowSensitive: { type: 'boolean', description: 'describe=true 时：焦点在密码/验证码/token 控件上默认拒（像素无法脱敏），确认无敏感内容才传 true' },
 
       describe: { type: 'boolean', description: 'shot：顺带返回视觉描述' },
+      captureMode: { type: 'string', enum: ['print', 'screen'], description: 'shot/capture：默认print窗口渲染；screen截取目标窗口矩形内屏幕像素' },
       diff: { type: 'boolean', description: 'read 专用：与上一次完整读做增量，返回 diff={added,removed,unchanged}（首读给 diffBaseline；读不完整时抑制并回落完整清单）' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderDrive(v) }] },
@@ -382,6 +401,7 @@ const tools = () => [
     name: 'ui_act',
     description: dshDescription('ui_act'),
     parameters: {
+      waitAfter: WAIT_AFTER,
       action: { type: 'string', required: true, enum: ['click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'pattern', 'scroll', 'selecttext', 'move', 'wheel'], description: 'click | setvalue | key | type | drag | clickat | doubleclick | pattern | scroll | selecttext | move | wheel（clickat=按窗口客户区坐标点击，用于 UIA 拿不到稳定元素的表格行/图表点位，坐标脆弱；doubleclick=元素级双击；pattern=调用元素真正暴露的 UIA pattern，动作名放 value/keys（Expand/Collapse/Increment/Decrement/Select/ScrollIntoView/Toggle/Invoke/Focus/Minimize/Maximize/Restore 等）；scroll=语义滚动（方向 value、页数 count）；selecttext=精确选区（text=value、prefix=match、suffix=expectValue、selectionType=state）；drag/clickat/doubleclick/pattern/scroll/selecttext 都能致效，必须 allowSideEffects=true；move/wheel 只移动鼠标/滚轮，无需副作用授权）' },
       name: { type: 'string', description: '控件 Name' },
       aid: { type: 'string', description: '控件 AutomationId' },
@@ -415,6 +435,8 @@ const tools = () => [
       procId: { type: 'number', description: '指定进程 PID' },
       allowSideEffects: { type: 'boolean', description: '必须为 true 才执行（安全护栏）' },
       snapshotId: { type: 'string', description: '可选新鲜度门：绑定某次 read/state 返回的 snapshotId。自那次读后界面已被更新的权威读刷新（staleSnapshot）或客户端已重启（expiredSnapshot）→ 本次动作被拒不执行；不传则不校验（零回归）' },
+      targetRef: { type: 'string', description: 'find/state 返回的30秒常驻控件引用，仅用于pattern/doubleclick；不能混用name/aid/match/index/inAid/inName/waitFor/requireUnique/visualFallback，失效明确拒绝且不重试' },
+      requireUnique: { type: 'boolean', description: '要求name/aid/match恰好匹配一个控件；不能与targetRef混用' },
       approvalId: { type: 'string', description: '可选授权 ID（once/session/persistent）' },
       sessionId: { type: 'string', description: '授权会话 ID' },
       visualFallback: { type: 'boolean', description: 'UIA 找不到目标时启用受控视觉坐标兜底（默认关闭）' },
@@ -512,8 +534,17 @@ const tools = () => [
     name: 'ui_flow',
     description: dshDescription('ui_flow'),
     parameters: {
-      steps: { type: 'array', required: true, description: '步骤数组（每步一个对象，action 必填；approvalId/sessionId/visualFallback/visualMinConfidence/visualTarget 可覆盖流程默认值，secret=true 为该步打码）' },
+      steps: { type: 'array', required: true, items: { type: 'object', required: ['action'], additionalProperties: true, properties: {
+        action: { type: 'string', enum: ['find', 'click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'move', 'wheel', 'pattern', 'scroll', 'selecttext', 'read', 'state', 'shot', 'wait', 'waitfor', 'expect', 'windows', 'expectwindow', 'expecttext', 'waitany'] },
+        procId: { type: 'integer', minimum: 1 },
+        waitMs: { type: 'integer', minimum: 0, maximum: 30000 },
+        x: { type: 'number' }, y: { type: 'number' }, delta: { type: 'number' }, count: { type: 'number' },
+        double: { type: 'boolean' }, button: { type: 'string' }, mods: { type: 'string' }, holdMs: { type: 'number' },
+        captureMode: { type: 'string', enum: ['print', 'screen'] },
+      } }, description: '步骤数组；支持clickat/doubleclick/move/wheel及原有动作；每步procId/waitMs可覆盖流程默认值；targetRef不支持流程' },
       tag: { type: 'string', description: '证据目录标签（如 verify-etf-dialog），默认 flow' },
+      procId: { type: 'integer', minimum: 1, description: '固定目标进程ID，步骤未指定时继承' },
+      waitMs: { type: 'integer', minimum: 0, maximum: 30000, description: '步骤默认动作后等待，可设0并使用waitfor定向确认；步骤waitMs优先' },
       failFast: { type: 'boolean', description: '断言失败即停，默认 false' },
       allowSideEffects: { type: 'boolean', description: '含点击/输入/拖拽步骤时必须显式传 true' },
       approvalId: { type: 'string', description: '步骤统一使用的授权 ID' },

@@ -90,6 +90,25 @@ assert.equal(validateReplay(nestedValid).ok, true)
 assert.equal(validateReplay(makeReplay({ steps: [{ action: 'unknown_action' }] })).ok, false)
 assert.equal(validateReplay(makeReplay({ steps: [{ action: 'click', name: { unknown: true } }] })).ok, false)
 assert.equal(validateReplay(makeReplay({ steps: [{ action: 'waitfor', waitFor: { state: 'appear', aid: '[redacted]' } }] })).ok, false)
+for (const step of [
+  { action: 'clickat', x: 10, y: 20, double: true, button: 'left', mods: 'ctrl' },
+  { action: 'doubleclick', name: 'Row' },
+  { action: 'move', x: 30, y: 40, holdMs: 0 },
+  { action: 'wheel', x: 50, y: 60, delta: -120, count: 2 },
+  { action: 'shot', captureMode: 'screen' },
+  { action: 'shot', captureMode: 'print' },
+]) {
+  const supported = makeReplay({ steps: [step] })
+  assert.deepEqual(supported.steps[0], step)
+  assert.equal(validateReplay(supported).ok, true)
+  assert.equal(validateReplay(makeReplay({ steps: [{ ...step, procId: 42 }] })).ok, false)
+  assert.equal(validateReplay(makeReplay({ steps: [{ ...step, winHandle: 123 }] })).ok, false)
+  const unauthorized = structuredClone(supported)
+  unauthorized.steps[0].allowSideEffects = true
+  assert.equal(validateReplay(rehash(unauthorized)).ok, false)
+}
+assert.equal(validateReplay(makeReplay({ steps: [{ action: 'shot', captureMode: 'invalid' }] })).ok, false)
+assert.equal(validateReplay(makeReplay({ steps: [{ action: 'click', captureMode: 'screen' }] })).ok, false)
 
 const clean = redactForRecord({ nested: { approvalId: 'approval-secret', sessionId: 'session-secret', procId: 2, value: 'ordinary' }, action: 'pattern', value: 'invoke' })
 assert.deepEqual(clean, { nested: { value: 'ordinary' }, action: 'pattern', value: 'invoke' })

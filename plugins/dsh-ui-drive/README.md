@@ -166,6 +166,71 @@ UI 驱动最早的瓶颈是「每个动作新起一个 PowerShell 进程」：�
 - 常驻进程空闲超时自动退出（`DSH_UI_SERVE_IDLE_MS`，默认 5 分钟），插件卸载时回收
 - `DSH_UI_SERVE=0` 可关闭常驻进程，退回一次性进程路径（排查用）
 
+### 状态查询与实机基准（2026-10）
+
+已有空闲常驻进程时，`ui_status` 复用该进程，省去每次启动 PowerShell 的开销。
+每次仍重新查询目标进程、窗口、签名身份和桌面状态；不缓存授权身份。
+首次查询、驱动忙碌、脚本更新及启动轮询继续使用独立状态查询。
+状态查询超时会结束卡住的只读 worker，排队动作明确返回未执行，后续请求可恢复。
+`state` 同一次枚举中复用已读取的名称、AutomationId 和启用状态，减少重复属性调用。
+默认首项条件等待和容器查找优先用 `FindFirst`，首项不可用时回退完整枚举；
+公开 `find` 的匹配数量、显式索引和正则过滤仍保持完整查找。
+常驻协议回显请求 ID，支持超时跳号和进程重启后的连续调用。
+
+用已运行的实际客户端复测，在仓库根目录执行：
+
+```powershell
+node scripts/bench-ui-drive.mjs --proc-id <PID> --proc-name <进程名> --find-aid <唯一控件ID> --samples 8 --max 40 --output .dsh-agent-toolchain/ui-benchmark/before.json
+```
+
+修改后在同一窗口、相同参数下改用 `after.json` 重跑。每轮依次测量
+`status/state/read/find`，输出 p50/p95、PID/窗口一致性、截断和跳过计数；
+冷启动单独记录。基准不启动或结束客户端，报告仅保存内容哈希和计数。
+`--win-handle` 可固定目标窗口；采样期间源码发生变化会使该次基准失败。
+
+## 操作后的快速反馈
+
+`ui_act` / `ui_drive` 支持 `waitAfter`：一次调用完成操作，再定向确认目标控件，
+直接返回简短结果。已知目标时优先使用它，避免动作后整页 `state` 扫描和额外工具往返。
+
+```json
+{
+  "action": "click",
+  "aid": "OpenPageButton",
+  "allowSideEffects": true,
+  "waitAfter": { "aid": "PageReadyControl", "state": "appear", "ms": 1500 }
+}
+```
+
+`waitAfter` 至少提供 `aid` 或 `name`；支持 `state`、`ms`、`interval`、`winHandle` 和 `winTitle`。
+默认继承动作的进程和窗口。提供它时不再执行 `observe=true` 的整页快照；未指定 `waitMs`
+则跳过固定静默等待。`ok` / `actionOk` 表示动作阶段结果，`confirmed` 表示后置条件成立。
+确认超时会返回 `confirmed=false` 和原因，不会重放动作。非法条件在操作前拒绝。
+需要发现新控件或视觉核对时，仍可单独使用 `state`、`read` 或 `shot`。
+
+刚观察过的控件还可使用返回的 `targetRef`，省去下一次动作的整树定位：
+
+```json
+{
+  "action": "pattern",
+  "targetRef": "<find 或 state.controls 返回的引用>",
+  "value": "Invoke",
+  "allowSideEffects": true,
+  "waitAfter": { "aid": "PageReadyControl", "ms": 1500 }
+}
+```
+
+引用仅在原常驻进程内有效，30 秒过期，最多保留 128 个；单次 `state` 只给前
+128 个控件签发。执行前重新校验进程、窗口归属、控件身份、启用状态和矩形，
+调用前消费引用。界面变化、引用过期或进程重启都会明确拒绝，不改用坐标点击。
+它是具体元素引用，支持单步 `pattern` 和 `doubleclick`，不能与名称、AutomationId、索引、正则、
+容器、`waitFor` 或 `requireUnique=true` 混用，也不能保存到 flow/replay 重放。
+首次观察仍需遍历；低延迟来自复用刚观察到的目标，不能将首次发现成本算作已消除。
+
+引用双击使用 `{"action":"doubleclick","targetRef":"<引用>","allowSideEffects":true}`，
+默认不再追加静默等待，保留双击按下/释放时序。UIA 未提供点击点时，仅使用经实时命中校验的当前矩形中心；校验失败直接拒绝。
+鼠标事件开始后发生异常则返回结果未知，不重复双击，也不转视觉或坐标回退。
+
 ## 实现
 
 - `index.js` — host 插件入口：工具注册 + systemPrompt 公告 + 证据路由
