@@ -1,4 +1,6 @@
 // D.1（2026-09-14 夜）：`ui_drive` / `ui_observe` / `ui_act` / `ui_live` 的**渲染层**与生产者的 action 分支对齐。
+// 2026-10-12 追加 `ui_flow`：它的**步骤** action enum 被同一个守卫扫了出来（它扫的是 defineTool 块里
+// 有没有 action enum，不区分属于工具自身还是步骤）。覆盖口径与上面四个不同，见下方 ui_flow 一节。
 //
 // 为什么这四个被点名：`plugins/dsh-perf/test/render-trace.test.mjs` 的「覆盖面登记」把它们钉成
 // `KNOWN_UNCOVERED`（只许缩短），理由是 F-049 那类缺陷 —— **生产者加了新 action，渲染层没跟上**，
@@ -22,7 +24,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { renderDrive, renderLive } from '../lib/render.mjs'
+import { renderDrive, renderFlow, renderLive } from '../lib/render.mjs'
 
 let failures = 0
 function check(name, cond, extra = '') {
@@ -206,20 +208,61 @@ for (const a of (LIVE.ui_live || [])) {
   }
 }
 
+// ---------------------------------------------------------------- ui_flow：**步骤** action 的渲染覆盖
+//
+// 2026-10-12：`ui_flow` 的**步骤** schema 里内联了 action enum（index.js 的 steps.items.properties.action），
+// 于是被 `plugins/dsh-perf/test/render-trace.test.mjs` 那条「声明 action enum 就必须核渲染」的守卫
+// 扫了出来 —— 它的扫描规则不区分 enum 属于工具自身还是步骤（本轮给步骤加了 clickat/doubleclick/move/wheel，
+// ui_flow 因此从"块内没有 action enum"变成"有"）。按守卫的规矩（核过才进 COVERED、钉子只许缩短），
+// 这里补**真实覆盖**，而不是把它钉回未覆盖名单。
+//
+// ui_flow 的渲染与 ui_drive 不同：它渲染的是**聚合**（断言通过/失败数、动作步失败数、证据目录），
+// 每步明细在 steps.json 的 transcript 里。所以这里钉的不变量是：
+//   **任何一个步骤 action 失败，都必须出现在渲染文本里** —— 否则 agent 只看到一句"流程结束"，
+//   失败被计数吃掉，正是 UD-03 那一类「把失败渲染成成功」。
+{
+  const FLOW_ACTIONS = actionEnum('ui_flow')
+  check('★ 读到 ui_flow 的步骤 action enum（读不到 ⇒ 本节退化成空断言）',
+    Array.isArray(FLOW_ACTIONS) && FLOW_ACTIONS.length >= 20, JSON.stringify(FLOW_ACTIONS))
+  check('★ ui_flow 的步骤 enum 含本轮新增的四个动作（否则本节核的不是当前版本）',
+    ['clickat', 'doubleclick', 'move', 'wheel'].every((a) => (FLOW_ACTIONS || []).includes(a)), JSON.stringify(FLOW_ACTIONS))
+
+  for (const a of (FLOW_ACTIONS || [])) {
+    // 形状照 driver.mjs:2611-2617 的 flow 返回值；stepFailureNames 的格式是 `序号:动作`（driver.mjs:2580）。
+    const txt = renderFlow({ ok: false, passed: 0, failed: 0, stepFailures: 1, stepFailureNames: ['1:' + a], totalSteps: 1, elapsedMs: 120, evidenceDir: 'D:\\ev\\flow' })
+    check('★★ [ui_flow/' + a + '] 步骤失败必须被渲染出来（不许只剩一句"流程结束"）',
+      txt.includes(a) && /没有全部成功/.test(txt), JSON.stringify(txt.slice(0, 200)))
+    check('★ [ui_flow/' + a + '] 渲染文本里不许出现编造的量', !FABRICATED.test(txt), JSON.stringify(txt.slice(0, 200)))
+  }
+
+  // 反向：全程成功但**一个断言都没有**时必须说出来，否则"跑通了"会被读成"结果对"。
+  const noAssert = renderFlow({ ok: true, passed: 0, failed: 0, stepFailures: 0, totalSteps: 3, elapsedMs: 500, evidenceDir: 'D:\\ev\\flow' })
+  check('★ ui_flow：全部步骤成功但没有任何断言时必须提示（不许让 passed=0 冒充"验过了"）',
+    /一个断言都没有/.test(noAssert) && !FABRICATED.test(noAssert), JSON.stringify(noAssert.slice(0, 200)))
+  const allGood = renderFlow({ ok: true, passed: 2, failed: 0, stepFailures: 0, totalSteps: 2, elapsedMs: 800, evidenceDir: 'D:\\ev\\flow' })
+  check('★ ui_flow：有断言且全过时不许冒失败警告（零假警报）',
+    !/没有全部成功/.test(allGood) && /2 断言通过/.test(allGood), JSON.stringify(allGood.slice(0, 200)))
+  const failedFlow = renderFlow({ ok: false, error: 'steps 不能为空' })
+  check('★ ui_flow：整段失败要印 error（不许渲染成"流程结束"）',
+    /流程失败/.test(failedFlow) && /steps 不能为空/.test(failedFlow), JSON.stringify(failedFlow.slice(0, 160)))
+}
+
 // ---------------------------------------------------------------- 跨文件哨兵：钉子只许缩短
 {
   const perf = readFileSync(join(HERE, '..', '..', 'dsh-perf', 'test', 'render-trace.test.mjs'), 'utf8')
   const m = perf.match(/const KNOWN_UNCOVERED = \[([^\]]*)\]/)
   check('★ 读到了 perf 那侧的未覆盖钉子（读不到 ⇒ 哨兵失效）', Boolean(m), '')
   const pinned = m ? m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean) : []
-  const stillPinned = ['ui_drive', 'ui_observe', 'ui_act', 'ui_live'].filter((t) => pinned.includes(t))
-  check('★★ 本文件核过的四个工具，不许还留在"未核渲染"名单里（核过就要把钉子拔掉）',
+  // 本文件核过渲染的工具：核过就必须在 COVERED 里、且不许还留在未覆盖钉子上（两处共用一份清单）。
+  const VERIFIED_BY_THIS_FILE = ['ui_drive', 'ui_observe', 'ui_act', 'ui_live', 'ui_flow']
+  const stillPinned = VERIFIED_BY_THIS_FILE.filter((t) => pinned.includes(t))
+  check('★★ 本文件核过的工具，不许还留在"未核渲染"名单里（核过就要把钉子拔掉）',
     stillPinned.length === 0, '仍被钉着：' + stillPinned.join(', '))
   const cov = perf.match(/const COVERED = new Set\(\[([^\]]*)\]\)/)
   const covered = cov ? cov[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean) : []
-  check('★ 这四个工具应已被登记为"已核渲染"（COVERED）',
-    ['ui_drive', 'ui_observe', 'ui_act', 'ui_live'].every((t) => covered.includes(t)), 'COVERED=' + covered.join(','))
+  check('★ 这些工具应已被登记为"已核渲染"（COVERED）',
+    VERIFIED_BY_THIS_FILE.every((t) => covered.includes(t)), 'COVERED=' + covered.join(','))
 }
 
 if (failures) { console.log('\nFAILED: ' + failures + ' 项'); process.exit(1) }
-console.log('\nPASS: dsh-ui-drive 渲染层与生产者的 action 分支对齐（ui_drive / ui_observe / ui_act / ui_live）')
+console.log('\nPASS: dsh-ui-drive 渲染层与生产者的 action 分支对齐（ui_drive / ui_observe / ui_act / ui_live / ui_flow）')
