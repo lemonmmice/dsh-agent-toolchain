@@ -154,7 +154,7 @@ const tools = () => [
     parameters: dshParameters('perf_clean'),
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderClean(v) }] },
     async execute(args) {
-      return cleanEvidence({ dir: prf().evidenceDir(), confirm: args.confirm === true, what: args.what, keepDays: args.keepDays })
+      return cleanEvidence({ dir: prf().evidenceDir(), confirm: args.confirm === true, planId: args.planId, what: args.what, keepDays: args.keepDays })
     },
   }),
   defineTool({
@@ -182,6 +182,7 @@ const tools = () => [
         etlPath: args.etlPath,
         pid: args.pid,
         xmlPath: args.xmlPath,
+        reuse: args.reuse,
         maxXmlMb: args.maxXmlMb,
         timeoutMs: args.timeoutMs,
       })

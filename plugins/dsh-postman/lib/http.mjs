@@ -69,6 +69,43 @@ function safeFetchError(error) {
   return describeFetchError(new Error('HTTP request failed', { cause: { code, message: redirect ? 'redirect count exceeded' : 'transport or request validation failed' } }))
 }
 
+function assertRequestAllowed(url, method) {
+  const target = new URL(url)
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') throw new Error('unsupported redirect protocol')
+  const pathname = decodeURIComponent(target.pathname).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && /^\/api\/dsh-ui-drive\/(?:approvals(?:\/|$)|estop\/reset$)/.test(pathname)) {
+    throw Object.assign(new Error('operator control endpoints cannot be called through the HTTP tool'), { code: 'control_plane_forbidden' })
+  }
+}
+
+async function fetchAllowed(url, options) {
+  let current = url
+  let method = options.method
+  let body = options.body
+  const headers = new Headers(options.headers)
+  for (let hop = 0; hop <= 20; hop++) {
+    assertRequestAllowed(current, method)
+    const response = await fetch(current, { ...options, method, body, headers, redirect: 'manual' })
+    const location = response.headers.get('location')
+    if (![301, 302, 303, 307, 308].includes(response.status) || !location) return { response, redirected: hop > 0, finalUrl: current }
+    await response.body?.cancel()
+    if (hop === 20) throw new Error('redirect count exceeded', { cause: { code: 'UND_ERR_TOO_MANY_REDIRECTS' } })
+    const next = new URL(location, current)
+    if (next.origin !== new URL(current).origin) {
+      headers.delete('authorization')
+      headers.delete('proxy-authorization')
+      headers.delete('cookie')
+      headers.delete('host')
+    }
+    if ((response.status === 303 && method !== 'HEAD') || ([301, 302].includes(response.status) && method === 'POST')) {
+      method = 'GET'
+      body = undefined
+      for (const name of ['content-type', 'content-length', 'content-encoding', 'content-language', 'content-location']) headers.delete(name)
+    }
+    current = next.href
+  }
+}
+
 /**
  * Perform one HTTP request server-side and shape the result.
  * A non-2xx status is still ok:true (a response arrived); ok:false is reserved
@@ -100,13 +137,13 @@ export async function sendRequest(spec) {
   spec.signal?.addEventListener('abort', cancel, { once: true })
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(url, {
+    const fetched = await fetchAllowed(url, {
       method,
       headers,
       body: hasBody ? spec.body : undefined,
       signal: controller.signal,
-      redirect: 'follow',
     })
+    const res = fetched.response
     const { buffer: buf, size, truncated } = await readResponseBody(res)
     const durationMs = Date.now() - started
     const resHeaders = {}
@@ -121,8 +158,8 @@ export async function sendRequest(spec) {
     // 不做 manual 跟随链（那是更大的一步，且会改变既有行为）。
     // 注意这三个字段必须放在**数据层**：MCP 面是 JSON.stringify(整个对象)、没有单行渲染，
     // 只在渲染层补一句"↪ 跳转"只对 DSH 面有效（F-021 就是这么踩的）。
-    const finalUrl = typeof res.url === 'string' && res.url !== '' ? res.url : url
-    const redirected = res.redirected === true
+    const finalUrl = fetched.finalUrl
+    const redirected = fetched.redirected
     return {
       ok: true,
       status: res.status,
@@ -153,6 +190,7 @@ export async function sendRequest(spec) {
     const aborted = error !== null && typeof error === 'object' && error.name === 'AbortError'
     return {
       ok: false,
+      ...(error?.code === 'control_plane_forbidden' ? { errorCode: error.code } : {}),
       error: cancelled ? 'request cancelled' : (aborted || controller.signal.aborted ? `timeout after ${timeoutMs}ms` : safeFetchError(error)),
       durationMs,
       ...(cancelled ? { cancelled: true } : {}),

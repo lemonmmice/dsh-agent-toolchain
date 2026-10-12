@@ -538,7 +538,7 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
     check('★★ R1-05：perf_clean 看得见子目录里的 etl（出现在 skipped 且理由是"采样进行中"）',
       dry.skipped.some((s) => s.path.toLowerCase() === runEtl.toLowerCase() && /采样进行中/.test(s.reason)),
       JSON.stringify({ skipped: dry.skipped, candidates: dry.candidates.map((c) => c.path) }))
-    const cleaned = cleanEvidence({ dir: evDir, confirm: true })
+    const cleaned = cleanEvidence({ dir: evDir, confirm: true, planId: dry.planId })
     check('★★ 采样进行中：etl 必须被"跳过"而不是删掉（写者与读者的标记位置对齐了）',
       cleaned.deleted.length === 0 && cleaned.skipped.some((s) => /采样进行中/.test(s.reason)),
       JSON.stringify({ deleted: cleaned.deleted, skipped: cleaned.skipped.map((s) => s.reason) }))
@@ -551,7 +551,7 @@ const src = readFileSync(join(here, '..', 'lib', 'trace.mjs'), 'utf8')
     check('★★ R1-05（正面）：标记不在时，子目录里的 etl 必须落进 candidates（原实现这里恒为空）',
       dry2.candidates.some((c) => c.path.toLowerCase() === runEtl.toLowerCase() && c.bytes === 2048),
       JSON.stringify({ candidates: dry2.candidates }))
-    const cleaned2 = cleanEvidence({ dir: evDir, confirm: true })
+    const cleaned2 = cleanEvidence({ dir: evDir, confirm: true, planId: dry2.planId })
     check('★ 标记移除后同一份 etl 被删掉', cleaned2.deleted.length === 1 && !existsSync(runEtl), JSON.stringify(cleaned2.deleted))
 
     // 9d. 符号缓存**永远不碰**（跨运行共享的 srv* 缓存，几百 MB 到 GB 级，删了就要重新下）

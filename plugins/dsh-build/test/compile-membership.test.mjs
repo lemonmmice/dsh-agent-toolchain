@@ -141,12 +141,12 @@ W('stdimport/Unlisted.cs', '// 没列出 —— 结论仍然必须是确定的 f
   const n = checkCompileMembership(join(root, 'sdk/New.cs'))
   check('SDK：默认 glob ⇒ included=true（basis=sdk-default-glob）', n.included === true && n.basis === 'sdk-default-glob', JSON.stringify(n))
   const u = checkCompileMembership(join(root, 'sdkopt/Unlisted.cs'))
-  check('★ SDK 但关了默认项：没显式列出 ⇒ false（basis=sdk-default-disabled）',
-    u.included === false && u.basis === 'sdk-default-disabled', JSON.stringify(u))
+  check('SDK 默认项被关闭但仍有未求值条件 ⇒ unknown',
+    u.included === null && u.reason === 'conditions-not-evaluated', JSON.stringify(u))
   const l = checkCompileMembership(join(root, 'sdkopt/Listed.cs'))
-  check('SDK 关默认项但显式列出 ⇒ true', l.included === true, JSON.stringify(l))
+  check('SDK 条件式显式编译项 ⇒ unknown', l.included === null, JSON.stringify(l))
   check('★ 带 Condition 的条目：结论里**注明条件没被求值**（不许假装有条件求值能力）',
-    l.conditionsIgnored >= 1 && /不求值|不\*\*求值/.test(l.note), l.note)
+    l.conditionsIgnored >= 1 && /未经求值/.test(l.error), l.error)
 }
 
 // ------------------------------------------- 3b.（r43）编译项不止在 .csproj 里

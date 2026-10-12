@@ -1,8 +1,12 @@
 // 文档切块：按段落/行数切，中文友好，带重叠
 const MAX_CHARS = 800;
 const OVERLAP = 100;
+export const CHUNKER_VERSION = 'paragraph/2';
 
 export function splitIntoChunks(text, { maxChars = MAX_CHARS, overlap = OVERLAP } = {}) {
+  if (!Number.isSafeInteger(maxChars) || maxChars <= 0 || !Number.isSafeInteger(overlap) || overlap < 0 || overlap >= maxChars) {
+    throw new RangeError('chunk bounds require maxChars > overlap >= 0 as integers');
+  }
   const paragraphs = String(text ?? "").split(/\n{2,}|(?<=[。！？；])\s*/);
   const chunks = [];
   let buf = "";
@@ -13,7 +17,8 @@ export function splitIntoChunks(text, { maxChars = MAX_CHARS, overlap = OVERLAP 
       buf = buf ? buf + "\n" + t : t;
       continue;
     }
-    if (buf) { chunks.push(buf); buf = t; }
+    if (buf) { chunks.push(buf); buf = ''; }
+    if (t.length <= maxChars) buf = t;
     else {
       // 单段超长：硬切
       for (let i = 0; i < t.length; i += maxChars - overlap) {

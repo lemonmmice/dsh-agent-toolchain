@@ -98,8 +98,8 @@ const repoRoot = join(here, '..', '..', '..')
     /buildQueryView\(\{ records: page, all, status: stForRoute, callerFilter: String\(params\.get\('caller'\)/.test(plugin) && /freshnessNote: freshnessNote\(view\.freshness\)/.test(plugin))
   check('MCP 面：import 了 query-view', /from '\.\.\/plugins\/dsh-api-visualizer\/lib\/query-view\.mjs'/.test(mcp))
   check('MCP 面：capture_query 用 buildQueryView 且传 callerFilter',
-    /buildQueryView\(\{ records: page && page\.items, all: readAll\(\), status, callerFilter: String\(args\.caller/.test(mcp), '未传 callerFilter → 过滤+0 条会被误读')
-  check('MCP 面：会去问宿主引擎状态（问不到就 null，不猜）', /capture\/status/.test(mcp) && /status = null/.test(mcp))
+    /buildQueryView\(\{ records: page && page\.items, all: readAll\(\), status: hostStatus\.value, callerFilter: String\(args\.caller/.test(mcp), '未传 callerFilter → 过滤+0 条会被误读')
+  check('MCP 面：宿主状态通过带年龄的缓存读取', /capture\/status/.test(mcp) && /captureStatusCache\.get\(\{ fresh: args\.fresh === true \}\)/.test(mcp))
   // 反例护栏：插件里不该再出现这段逻辑的手写副本（那正是反复漂移的根源）
   check('插件面：不再手写 freshness 对象（应只剩调用）', !/const freshness = \{/.test(plugin), '又出现手写副本了')
   check('插件面：不再手写 callerAttribution 对象', !/const callerAttribution = \{/.test(plugin), '又出现手写副本了')

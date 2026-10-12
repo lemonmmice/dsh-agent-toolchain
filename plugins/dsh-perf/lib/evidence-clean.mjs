@@ -14,16 +14,16 @@
  *   4. **采样进行中不删**：会话标记（trace-session.json）说在跑时，拒绝删 `.etl`（那正是它正在写的文件）；
  *   5. 失败要把原因说清楚（目录不存在 / 传进来的路径越界 / 读不到），不许静默什么都不做。
  */
-import { existsSync, statSync, readdirSync, rmSync, readFileSync } from 'node:fs'
-import { join, resolve, basename } from 'node:path'
+import { existsSync, lstatSync, statSync, realpathSync, readdirSync, rmSync, readFileSync } from 'node:fs'
+import { join, resolve, basename, relative, isAbsolute, dirname } from 'node:path'
+import { createHash } from 'node:crypto'
 
 const BIG_EXT = /\.(dmp|etl)$/i
 
 /** 目标路径是否在 root 之下（前缀比对，避免 `..` 越界）。 */
 function under(root, p) {
-  const r = resolve(root).toLowerCase().replace(/[\\/]+$/, '')
-  const t = resolve(p).toLowerCase()
-  return t === r || t.startsWith(r + '\\') || t.startsWith(r + '/')
+  const child = relative(root, p)
+  return child === '' || (!isAbsolute(child) && child !== '..' && !child.startsWith('..\\') && !child.startsWith('../'))
 }
 
 /**
@@ -34,7 +34,13 @@ export function cleanEvidence(args = {}) {
   const dir = args.dir ? resolve(String(args.dir)) : ''
   if (!dir) return { ok: false, error: '没有可用的 perf 证据目录（DSH_PERF_EVIDENCE_DIR 未配置且默认目录也取不到）', dryRun: true, candidates: [], deleted: [], skipped: [], freedBytes: 0, totalBytes: 0 }
   if (!existsSync(dir)) return { ok: false, error: '证据目录不存在：' + dir, dryRun: true, dir, candidates: [], deleted: [], skipped: [], freedBytes: 0, totalBytes: 0 }
-  if (!under(dir, dir)) return { ok: false, error: '证据目录解析异常：' + dir, dryRun: true, dir, candidates: [], deleted: [], skipped: [], freedBytes: 0, totalBytes: 0 }
+  let realRoot
+  try {
+    if (!statSync(dir).isDirectory()) throw new Error('证据目录不是目录')
+    realRoot = realpathSync(dir)
+  } catch (error) {
+    return { ok: false, error: '证据目录解析异常：' + error.message, dryRun: true, dir, candidates: [], deleted: [], skipped: [], freedBytes: 0, totalBytes: 0 }
+  }
 
   const what = String(args.what || 'all').toLowerCase()
   const keepDays = Number.isFinite(Number(args.keepDays)) && Number(args.keepDays) > 0 ? Number(args.keepDays) : 0
@@ -42,14 +48,27 @@ export function cleanEvidence(args = {}) {
   const confirm = args.confirm === true
 
   // 采样进行中 ⇒ 不碰 etl（那可能正是它在写的文件）
-  let sampling = false
-  try {
-    const s = JSON.parse(readFileSync(join(dir, 'trace-session.json'), 'utf8'))
-    sampling = Boolean(s && s.etlPath)
-  } catch { sampling = false }
+  const samplingStatus = () => {
+    for (const name of ['trace-session.json', 'uifreeze-pv-session.json', 'uifreeze-session.json']) {
+      try {
+        JSON.parse(readFileSync(join(dir, name), 'utf8'))
+        return 'active'
+      } catch (error) {
+        if (error.code !== 'ENOENT') return 'unknown'
+      }
+    }
+    return 'inactive'
+  }
+  const sampling = samplingStatus()
 
   const candidates = []
   const skipped = []
+  const identities = new Map()
+  const inspect = path => {
+    const state = lstatSync(path)
+    if (state.isSymbolicLink() || (dirname(path) !== dir && lstatSync(dirname(path)).isSymbolicLink()) || !under(realRoot, realpathSync(path)) || realpathSync(dir) !== realRoot) throw new Error('链接、junction 或真实路径越出证据目录')
+    return state
+  }
   // ⚠⚠ 必须**往下走一层**（2026-09-14 夜 R1-05 真机查出）：
   //   原实现只扫证据目录的**顶层文件**（`readdirSync(dir)` + `st.isFile()`），
   //   而全工具链的证据大件都放在**按次运行的子目录**里（`trace-<stamp>/trace.etl`、
@@ -70,7 +89,7 @@ export function cleanEvidence(args = {}) {
     for (const name of readdirSync(d)) {
       const p = join(d, name)
       let st
-      try { st = statSync(p) } catch { skipped.push({ path: p, reason: '读不到状态' }); continue }
+      try { st = inspect(p) } catch (error) { skipped.push({ path: p, reason: error.message }); continue }
       if (st.isDirectory()) {
         if (depth >= 1) continue                                   // 只下潜一层
         if (!OUR_RUN_DIR.test(name)) continue                      // 只认我们自己的运行目录（别处的子目录一律不进）
@@ -87,33 +106,42 @@ export function cleanEvidence(args = {}) {
       if (!BIG_EXT.test(name)) continue
       const ageDays = (now - st.mtimeMs) / 86400000
       if (keepDays > 0 && ageDays < keepDays) { skipped.push({ path: p, reason: '未超龄（' + ageDays.toFixed(2) + ' 天 < keepDays=' + keepDays + '）' }); continue }
-      if (sampling && isEtl) { skipped.push({ path: p, reason: '采样进行中（trace-session.json 在盘上）：不删 etl' }); continue }
+      if (sampling !== 'inactive' && isEtl) { skipped.push({ path: p, reason: sampling === 'active' ? '采样进行中（会话标记在盘上）：不删 etl' : '采样状态未知（会话标记不可读）：不删 etl' }); continue }
       // ⚠ 这里**只能放 JSON 能表达的值** —— 第一版我塞了个 Symbol 做"来自哪一层"的标记，
       //   结果它被带到工具返回值里，宿主按 `output.schema` 校验时直接判「不是 lossless JSON 对象」，
       //   整个 `perf_clean` 在 DSH 面不可用（`lib/toolface-params.test.mjs` 当场抓到）。
       candidates.push({ path: p, bytes: st.size, ageDays: Number(ageDays.toFixed(2)) })
+      identities.set(p, [st.dev, st.ino, st.size, st.mtimeMs, st.ctimeMs].join(':'))
     }
   }
   collect(dir, 0)
   const totalBytes = candidates.reduce((a, x) => a + x.bytes, 0)
+  const planId = createHash('sha256').update(JSON.stringify({ realRoot, what, keepDays, sampling, identities: [...identities.entries()].sort(([left], [right]) => left.localeCompare(right)) })).digest('hex')
 
   if (!confirm) {
     return {
-      ok: true, dryRun: true, dir, candidates, totalBytes, deleted: [], freedBytes: 0, skipped,
+      ok: true, dryRun: true, dir, planId, candidates, totalBytes, deleted: [], freedBytes: 0, skipped,
       hint: candidates.length
-        ? '上面是**将要删除**的文件（共 ' + totalBytes + ' 字节）。确认后重新调用并传 confirm=true；只想删某类可传 what="dumps"|"etls"，只删旧的传 keepDays=7。'
+        ? '上面是**将要删除**的文件（共 ' + totalBytes + ' 字节）。确认后重新调用并传 confirm=true 和本次 planId；只想删某类可传 what="dumps"|"etls"，只删旧的传 keepDays=7。'
         : '没有符合条件的文件（可能已经清过了，或 keepDays/what 过滤掉了）。',
     }
   }
 
+  if (args.planId !== planId) return { ok: false, dryRun: true, dir, planId, candidates, totalBytes, deleted: [], freedBytes: 0, skipped, error: '缺少匹配的 planId 或文件清单已变化；请重新查看 dry-run 清单后确认' }
+
   const deleted = []
   let freedBytes = 0
   for (const c of candidates) {
-    try { rmSync(c.path, { force: true }); deleted.push(c.path); freedBytes += c.bytes }
+    try {
+      const state = inspect(c.path)
+      if (!state.isFile() || identities.get(c.path) !== [state.dev, state.ino, state.size, state.mtimeMs, state.ctimeMs].join(':')) throw new Error('文件身份已变化，未删除')
+      if (/\.etl$/i.test(c.path) && samplingStatus() !== 'inactive') throw new Error('删除前检测到采样活动或未知状态，未删除 etl')
+      rmSync(c.path); deleted.push(c.path); freedBytes += c.bytes
+    }
     catch (e) { skipped.push({ path: c.path, reason: '删除失败：' + String((e && e.message) || e) }) }
   }
   return {
-    ok: true, dryRun: false, dir, candidates, totalBytes, deleted, freedBytes, skipped,
+    ok: true, dryRun: false, dir, planId, candidates, totalBytes, deleted, freedBytes, skipped,
     hint: deleted.length ? '已删除 ' + deleted.length + ' 个文件，释放 ' + freedBytes + ' 字节。' : '没有删除任何文件。',
   }
 }
@@ -131,5 +159,5 @@ export function renderClean(v) {
   const lines = (v.candidates || []).slice(0, 20).map((c) => '  ' + c.path + '  ' + c.bytes + ' 字节（' + c.ageDays + ' 天前）')
   const more = (v.candidates || []).length > 20 ? '  …共 ' + v.candidates.length + ' 个' : ''
   const skips = (v.skipped || []).slice(0, 5).map((s) => '  ⏭ ' + basename(s.path) + '：' + s.reason)
-  return [head, '目录：' + v.dir, ...lines, more, ...skips, v.hint].filter(Boolean).join('\n')
+  return [head, '目录：' + v.dir, 'planId：' + v.planId, ...lines, more, ...skips, v.hint].filter(Boolean).join('\n')
 }

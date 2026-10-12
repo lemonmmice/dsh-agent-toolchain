@@ -98,8 +98,8 @@ const tools = () => [
     parameters: dshParameters('build_status'),
     isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderStatus(v) }] },
-    async execute() {
-      return bld().status()
+    async execute(args) {
+      return bld().status({ runId: args.runId, jobId: args.jobId })
     },
   }),
   defineTool({
@@ -108,8 +108,8 @@ const tools = () => [
     parameters: dshParameters('build_errors'),
     isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderErrors(v) }] },
-    async execute() {
-      return bld().errorsOfLast()
+    async execute(args) {
+      return bld().errorsOfLast({ runId: args.runId, jobId: args.jobId })
     },
   }),
   defineTool({
@@ -160,13 +160,15 @@ function makeRoutes() {
         if (!isLoopbackRequest(req)) { writeJson(res, 403, { error: 'forbidden: loopback-only' }); return }
         const method = req.method || 'GET'
         const rest = (req.url || '').split('?')[0].slice(API.length) || '/'
+        const query = new URL(req.url || '/', 'http://localhost').searchParams
+        const selection = { runId: query.get('runId') || undefined, jobId: query.get('jobId') || undefined }
 
         if (method === 'GET' && rest === '/status') {
-          writeJson(res, 200, bld().status())
+          writeJson(res, 200, bld().status(selection))
           return
         }
         if (method === 'GET' && rest === '/errors') {
-          writeJson(res, 200, bld().errorsOfLast())
+          writeJson(res, 200, bld().errorsOfLast(selection))
           return
         }
         // GET /log/{file} — 构建日志原文（basename 白名单）

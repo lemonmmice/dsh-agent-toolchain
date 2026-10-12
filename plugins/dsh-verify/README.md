@@ -18,6 +18,14 @@ Verdict: `pass` / `incomplete` / `fail`. Claims contradicted by evidence
 auto-record into the failure corpus as `agent-misjudge` — the only data
 source for "caught the agent claiming success while the evidence disagrees".
 
+`verifiedVerdict` separates independent observations from `acceptance` of manual reports.
+A manual-only report is incomplete; imported API records cannot certify observed traffic.
+Build claims require current source/log fingerprints and may select an immutable `attemptId`.
+Static `compiled` hints remain unverified until MSBuild evaluation/compiler input evidence is available.
+Gate/Git work is asynchronous, has a deadline and observes cancellation; exit zero proves only that command.
+`toolchain_status` runs diagnostics in bounded workers and caches completed snapshots for two seconds;
+`fresh=true` bypasses the cache, with `observedAt`, `completedAt`, `ageMs` and `source` in each result.
+
 ## The workflow (mandatory)
 
 1. Finish the work.

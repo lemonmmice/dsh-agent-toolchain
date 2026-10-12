@@ -40,7 +40,8 @@ import { isExpectedRefusal } from '../plugins/dsh-ui-drive/lib/refusal.mjs'
 import { captureStatusSummary as summarizeCapture, doubleWriteVerdict, sampleDeltaVerdict } from '../plugins/dsh-api-visualizer/lib/capture-control.mjs'
 // E3 / F-042：环境自检（toolchain_status）—— **与 DSH 面共用同一条实现**（lib/），
 // 不在这里再写一份（第 24 类缺陷：同一件事不许有第二份实现）。
-import { buildToolchainStatus } from '../lib/toolchain-status.mjs'
+import { toolchainStatusAsync } from '../lib/toolchain-status.mjs'
+import { createCaptureStatusCache } from './capture-status-cache.mjs'
 import { queryPage, appendRecords, readAll, readRetention } from '../lib/capture-store.mjs'
 import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote } from '../plugins/dsh-api-visualizer/lib/query-view.mjs'
 import { makeVerificationReport } from '../lib/verify/report.mjs'
@@ -97,7 +98,15 @@ function injectAnnotations(args) {
 // 让 autoRecord / verify_report 不必改 55 个 handler 的签名就能给记录标上来源。只取 id，不取内容。
 const _callCtx = new AsyncLocalStorage()
 const withCallContext = (name, handler) => (args, extra) =>
-  _callCtx.run({ tool: name, agentTurn: agentTurnFromMeta(extra?._meta) }, () => handler(args, extra))
+  _callCtx.run({ tool: name, agentTurn: agentTurnFromMeta(extra?._meta) }, async () => {
+    try { return await handler(args, extra) }
+    catch (error) {
+      if (error.code === 'UI_LOCK_BUSY' || error.code === 'FILE_TRANSACTION_BUSY') {
+        return jtext({ ok: false, state: 'busy', errorCode: error.code, retryable: true, retryAfterMs: error.retryAfterMs, writesApplied: false })
+      }
+      throw error
+    }
+  })
 /** 当前调用的来源描述（失败记录 / 验证报告共用）。 */
 function producerNow(runtime = 'mcp') {
   let client = null
@@ -753,12 +762,13 @@ server.tool(
     // r44：与 DSH 面同一件事（视觉即返）——启动成功就顺带截一张并交给视觉模型，
     // 让「我现在到底在哪个页面」一步可答，省掉 shot + 读图两轮往返。
     // 只在窗口真的可用（ok===true）时才做：半成功时没有主窗口，截到的可能是闪屏或别的进程。
-    if (l && l.ok === true) {
+    l.readiness = l.ok === true ? 'window-ready' : (l.started === true ? 'spawned' : 'unknown')
+    if (l && l.ok === true && (args.includeScreenshot === true || args.describe === true)) {
       try {
         const s = await drv().drive({ action: 'shot', label: 'launch-state' })
         if (s && s.ok === true) {
           const shot = { ...s }
-          await attachVision(shot, { describe: true, allowSensitive: args.allowSensitive === true })
+          await attachVision(shot, { describe: args.describe === true, allowSensitive: args.allowSensitive === true })
           l.uiState = {
             screenshot: shot.workspacePath || shot.path,
             size: shot.w + 'x' + shot.h,
@@ -984,6 +994,7 @@ server.tool(
   mcpShape('perf_clrevents'),
   // 同 DSH 面：逐参接线，不整包转发（棘轮闸门钉死"免检转发"工具数 = 28）。
   async (args) => jtext(await trc().clrEvents({
+    reuse: args.reuse,
     etlPath: args.etlPath,
     pid: args.pid,
     xmlPath: args.xmlPath,
@@ -1158,7 +1169,7 @@ server.tool(
     const { hits, freshness } = await mem().searchDetailed(args.query, k)
     return jtext({
       embed: mem().embed.label,
-      hits: hits.map((h) => ({ file: h.meta.file, chunk: h.meta.chunkIndex, score: +h.score.toFixed(3), text: String(h.meta.text).slice(0, 400), ...(h.meta.indexedAt ? { indexedAt: h.meta.indexedAt, embed: h.meta.embed ?? null } : {}) })),
+      hits: hits.map((h) => ({ root: h.meta.root, file: h.meta.file, chunk: h.meta.chunkIndex, score: +h.score.toFixed(3), text: String(h.meta.text).slice(0, 400), truncated: h.meta.truncated === true || String(h.meta.text).length > 400, textLength: h.meta.textLength ?? String(h.meta.text).length, contentHash: h.meta.contentHash, indexVersion: h.meta.indexVersion, ...(h.meta.indexedAt ? { indexedAt: h.meta.indexedAt, embed: h.meta.embed ?? null } : {}) })),
       freshness,
       freshnessNote: freshness.note,
     })
@@ -1173,6 +1184,7 @@ server.tool(
     try {
       return jtext(mem().remember(args.key, args.value, args.scope, { kind: args.kind, reason: args.reason, ttlDays: args.ttlDays, source: producerNow() }))
     } catch (e) {
+      if (e.retryable === true) return jtext({ ok: false, errorCode: e.code, retryable: true, retryAfterMs: e.retryAfterMs, writesApplied: e.writesApplied })
       return failure('memory_save rejected: ' + e.message, 'memory_save_rejected')
     }
   }
@@ -1201,8 +1213,13 @@ server.tool(
   mcpDescription('memory_forget'),
   mcpShape('memory_forget'),
   async (args) => {
-    mem().forget(args.key, args.scope || 'global')
-    return jtext({ forgotten: true, key: args.key })
+    try {
+      const result = mem().forget(args.key, args.scope || 'global')
+      return jtext({ forgotten: result.deleted > 0, deleted: result.deleted, key: args.key })
+    } catch (error) {
+      if (error.retryable === true) return jtext({ ok: false, errorCode: error.code, retryable: true, retryAfterMs: error.retryAfterMs, writesApplied: error.writesApplied })
+      return failure('memory_forget rejected: ' + error.message, 'memory_forget_rejected')
+    }
   }
 )
 
@@ -1214,14 +1231,14 @@ server.tool(
   'build_status',
   mcpDescription('build_status'),
   mcpShape('build_status'),
-  async () => jtext(bld().status())
+  async (args) => jtext(bld().status({ runId: args.runId, jobId: args.jobId }))
 )
 
 server.tool(
   'build_errors',
   mcpDescription('build_errors'),
   mcpShape('build_errors'),
-  async () => jtext(bld().errorsOfLast())
+  async (args) => jtext(bld().errorsOfLast({ runId: args.runId, jobId: args.jobId }))
 )
 
 server.tool(
@@ -1284,7 +1301,7 @@ server.tool(
   'toolchain_status',
   mcpDescription('toolchain_status'),
   mcpShape('toolchain_status'),
-  async (args) => jtext(await buildToolchainStatus({ deep: args && args.deep === true }))
+  async (args) => jtext(await toolchainStatusAsync({ deep: args?.deep === true, fresh: args?.fresh === true }))
 )
 
 server.tool(
@@ -1295,6 +1312,12 @@ server.tool(
 )
 
 // ---------------------------------------------------------------- api capture
+
+const captureStatusCache = createCaptureStatusCache({ fetchStatus: async () => {
+  const response = await fetch('http://127.0.0.1:3080/api/dsh-api-visualizer/capture/status', { signal: AbortSignal.timeout(3000) })
+  if (!response.ok) throw new Error('capture status unavailable')
+  return response.json()
+} })
 
 server.tool(
   'capture_query',
@@ -1309,12 +1332,9 @@ server.tool(
     const page = queryPage(args)
     // 捕获引擎跑在**宿主进程**里，MCP 进程看不到它 —— 但宿主开了回环路由，可以直接问。
     // 问不到就保持 null（"未知"），绝不猜成"没在跑"或"在跑"。
-    let status = null
-    try {
-      const r = await fetch('http://127.0.0.1:3080/api/dsh-api-visualizer/capture/status', { signal: AbortSignal.timeout(3000) })
-      if (r.ok) status = await r.json()
-    } catch { status = null }
-    const view = buildQueryView({ records: page && page.items, all: readAll(), status, callerFilter: String(args.caller ?? ''), retention: readRetention() })
+    const hostStatus = await captureStatusCache.get({ fresh: args.fresh === true })
+    const view = buildQueryView({ records: page && page.items, all: readAll(), status: hostStatus.value, callerFilter: String(args.caller ?? ''), retention: readRetention() })
+    view.freshness.hostStatus = { ...hostStatus, value: undefined }
     return jtext({
       ...page,
       ...view,
@@ -1348,7 +1368,9 @@ async function hostCapture(method, path, body) {
     }
     // HTTP 状态如实带出去：409/500 是**宿主拒绝**，不是"调不通"。
     // 成功但路由没给 ok 时补一个（2xx 就是 ok）；失败一律 ok:false —— 别让上游看到 undefined 当成功。
-    return { ...data, httpStatus: res.status, ...(res.ok ? (data.ok === undefined ? { ok: true } : {}) : { ok: false }) }
+    const result = { ...data, httpStatus: res.status, ...(res.ok ? (data.ok === undefined ? { ok: true } : {}) : { ok: false }) }
+    if (res.ok && (path === '/capture/start' || path === '/capture/stop')) captureStatusCache.invalidate()
+    return result
   } catch (e) {
     return {
       ok: false,
@@ -1424,7 +1446,7 @@ server.tool(
   'perf_clean',
   mcpDescription('perf_clean'),
   mcpShape('perf_clean'),
-  async (args) => jtext(cleanEvidence({ dir: prf().evidenceDir(), confirm: args.confirm === true, what: args.what, keepDays: args.keepDays }))
+  async (args) => jtext(cleanEvidence({ dir: prf().evidenceDir(), confirm: args.confirm === true, planId: args.planId, what: args.what, keepDays: args.keepDays }))
 )
 
 // ---------------------------------------------------------------- verification report
@@ -1440,6 +1462,7 @@ server.tool(
       statement: z.string().describe('The claim being made'),
       kind: z.enum(['build', 'api', 'file', 'git', 'gate', 'manual', 'compiled']).optional().describe('Adjudication rule; defaults to manual. compiled = does this source file actually belong to a project compile set (legacy .csproj does NOT auto-include .cs, so a forgotten <Compile Include> builds fine while never being compiled - kind=file cannot catch that); unreadable input yields unverified, never fail'),
       runId: z.string().optional().describe('For kind=build/api: which run the evidence belongs to'),
+      attemptId: z.string().optional().describe('For kind=build: immutable build attempt ID; runId otherwise selects its latest attempt'),
       path: z.string().optional().describe('For kind=file: path to check. For kind=compiled: source file whose compile membership is checked'),
       filter: z.record(z.string(), z.any()).optional().describe('For kind=api: capture-store filter (q/method/host/status/...)'),
       expect: z.object({ min: z.number().optional(), all2xx: z.boolean().optional() }).optional().describe('For kind=api: pass criteria (default min=1)'),
@@ -1451,16 +1474,17 @@ server.tool(
       gitConfig: z.array(z.string()).optional().describe("For kind=git: extra git -c flags (e.g. ['-c','http.sslBackend=openssl'])"),
       cmd: z.string().optional().describe('For kind=gate: verification command (exit 0 = pass)'),
       cwd: z.string().optional().describe('For kind=gate: working dir'),
+      timeoutMs: z.number().int().positive().max(300000).optional().describe('Gate/git deadline in milliseconds'),
       status: z.enum(['pass', 'fail', 'unverified']).optional().describe('For kind=manual: supplied status'),
       evidence: z.string().optional().describe('For kind=manual: backing evidence'),
     })).describe('Claims adjudicated from evidence'),
     context: z.record(z.string(), z.string()).optional().describe('Runtime context (repo / model / mode)'),
   },
-  async (args) => {
+  async (args, extra) => {
     try {
       // producer：报告与它自动记下的 agent-misjudge 都标上"哪个客户端、哪个宿主回合、哪一版裁决器"，
       // 裁决器以后被证明有缺陷时可以按版本批量撤回它的结论（F-023 那类）。
-      return jtext(makeVerificationReport({ ...args, producer: producerNow('mcp') }))
+      return jtext(await makeVerificationReport({ ...args, signal: extra?.signal, producer: producerNow('mcp') }))
     } catch (e) {
       return failure('verify_report rejected: ' + e.message, 'verify_report_rejected')
     }

@@ -65,7 +65,7 @@ UIA 确认没找到目标才尝试视觉定位；不对超时或执行结果未�
 | 工具 | 说明 |
 | --- | --- |
 | \`ui_status\` | 目标客户端进程/主窗口状态（只读） |
-| \`ui_launch\` | 启动客户端并等待主窗口；**视觉即返**：完成后自动截图+视觉模型描述界面（返回 \`uiState.description\`） |
+| \`ui_launch\` | 启动客户端并返回 readiness；includeScreenshot=true 才截图，describe=true 才调用视觉模型 |
 | \`ui_observe\` | **只读观察（推荐入口）**：find / read（含输入框真实值）/ state（窗口+焦点+交互控件快照）/ windows / waitfor / expectwindow / expecttext / waitany / shot |
 | \`ui_act\` | **真实操作**：click / setvalue / key / type / drag；\`observe=true\` 动作后附带界面快照；需 \`allowSideEffects=true\` |
 | \`ui_windows\` | 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，只读） |
@@ -248,9 +248,9 @@ node scripts/bench-ui-drive.mjs --proc-id <PID> --proc-name <进程名> --find-a
 | `DSH_UI_SERVE` | `0` 关闭常驻进程（默认开启） |
 | `DSH_UI_SERVE_IDLE_MS` | 常驻进程空闲回收毫秒，默认 300000 |
 | `DSH_UI_LIVE_DIR` | `ui_live` 帧目录，默认 `~/.dsh-agent-toolchain/ui-live`（可指向大盘/独立卷） |
-| `DSH_UI_LOCK` | 客户端进程级锁开关，`0` 关闭（默认开启，防多 agent 同时驱动同一客户端） |
-| `DSH_UI_LOCK_STALE_MS` | 锁的过期毫秒（持有者崩溃后自动失效），默认 120000 |
-| `DSH_UI_LOCK_WAIT_MS` | 抢锁等待上限毫秒，默认 30000 |
+| `DSH_UI_LOCK` | 可选的客户端互斥锁文件路径；空值关闭。冲突立即返回 UI_LOCK_BUSY 和 retryAfterMs，未执行动作 |
+
+互斥锁不再按年龄抢占或同步等待；持有者正常释放或退出时仅删除自己的锁。异常终止遗留的锁须确认持有者结束后清理。
 
 ## 行为变更与修复（2026-09-10）
 

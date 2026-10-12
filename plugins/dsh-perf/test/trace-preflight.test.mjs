@@ -77,7 +77,7 @@ const TMP = mkdtempSync(join(tmpdir(), 'dsh-perf-preflight-'))
 const mk = (opts) => {
   const { fake, calls } = fakeTools(opts)
   const evidenceDir = mkdtempSync(join(TMP, 'ev-'))
-  const t = makeTrace({ evidenceDir, wpr: process.execPath, xperf: process.execPath, runExe: fake })
+  const t = makeTrace({ evidenceDir, kernelLeaseFile: join(evidenceDir, 'kernel-lease.json'), wpr: process.execPath, xperf: process.execPath, runExe: fake })
   return { t, calls, evidenceDir }
 }
 /** 探针的唯一可辨识特征：它 stop 到 `_wpr-preflight.etl`（工具自己的采样是 `-start CPU -start DotNet`，不能用前缀区分） */

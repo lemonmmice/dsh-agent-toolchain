@@ -26,6 +26,20 @@ metadata and an `expired` flag without deleting or updating rows; only `memory_f
 Status includes `byKind` and `expired` counts. Legacy rows remain readable and count as facts.
 New index chunks carry `indexedAt` and embedding source/version, also returned in search hits.
 
+KV save/forget operations protect their complete read-modify-write transaction
+across processes. A contended writer fails promptly with
+`FILE_TRANSACTION_BUSY`, `retryable: true`, `writesApplied: false`; it may be
+retried after `retryAfterMs`. Locks left by exited processes are reclaimed.
+`forget` returns the actual `{ deleted }` count. Single-key reads reuse a file
+identity checked in-memory index and reload after another process publishes.
+
+Incremental indexing checks the content digest, embedding endpoint/mode/model,
+declared dimensions and chunker version. Every chunk is bounded to 800 characters;
+remote requests receive the remaining indexing deadline. Search hits retain
+their source root, digest/version and explicit truncation metadata. Directory
+enumeration and cold index loading remain synchronous; a budget is not a promise
+that those filesystem operations can be interrupted.
+
 From the monorepo root, build with Rust and the platform linker (Windows:
 Visual C++ build tools):
 

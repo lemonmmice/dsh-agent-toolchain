@@ -14,6 +14,14 @@ DSH（DeepSeek Harness）的**性能剖析插件**：与 dsh-hang-inspector（�
 
 ## 原理
 
+### 分析与清理边界
+
+- `perf_analyze` 为每次分析分配独立产物路径，失败退出码或无效 JSON 不会被旧文件替代；以返回的 `outPath` 和 `summaryPath` 引用证据。
+- `perf_clean` 默认 dry-run 返回 `planId`。执行删除须传 `confirm=true` 和相同 `planId`；清单、文件身份或采样状态变化时需要重新查看清单。允许显式配置的证据根为 junction，并以其真实路径为边界；子目录/文件链接和 junction 会被跳过，删除前再次检查根指向、真实路径、文件身份与 trace/UI-freeze 采样标记。标记不可读时保留 ETL。
+- `perf_clrevents` 的 `xmlPath` 是输出路径。复用须显式传 `reuse=true`，并保留旁边的 `.manifest.json` 与摘要文件。缓存校验 ETL 内容摘要、解码器身份和产物身份；PID 过滤每次重新应用。校验仍会流式读取 ETL，并非常数时间查询。XML 按事件流式读取，超过实际大小、单条事件或保留事件预算时明确失败。
+- `perf_trace` 用当前用户共享的独占租约协调跨进程内核采集，CLR/JIT/alloc 使用唯一会话名。没有匹配的运行记录与租约时拒绝 stop/cancel；竞争返回 busy。启动超时或进程崩溃留下的记录不会自动抢占，需要先核实系统会话。外部采集器不受文件租约约束，真实跨采集器所有权恢复仍需 Windows 集成验证。
+- 火焰图、分配火焰图、JIT XML 和热点报告的默认输出均按调用隔离。显式传入的 CSV 仍属于调用方提供的分析输入，尚未接入统一 ETL/JIT/DAC 缓存。
+
 **卡顿测量**：\`SendMessageTimeout(hWnd, WM_NULL, timeout=8s)\` 是同步等待消息处理完——
 窗口空闲时毫秒级返回，UI 线程忙则挂起到处理完，实测耗时 ≈ 当前 UI 线程忙碌程度。
 

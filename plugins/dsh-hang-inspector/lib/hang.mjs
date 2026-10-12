@@ -771,7 +771,7 @@ export function makeHangInspector(config = {}) {
       srcRootExists: !!srcRoot && existsSync(srcRoot),
     }
     // F-007：卡死取证对"代码版本"最敏感（修复旧代码时，工具行为与磁盘不一致会直接误导排查方向）
-    return { ...st, monitor, logTail: logTail(runState?.logPath, 150), ...(staleCodeInfo(moduleRoots(HANG_PLUGIN_DIR)) || {}) }
+    return { ...st, monitor, logTail: logTail(runState?.logPath, 150), ...(staleCodeInfo(moduleRoots(HANG_PLUGIN_DIR), { cacheMs: 1000 }) || {}) }
   }
 
   /** Start the hang monitor (no auto-clicking; the user drives the client). */

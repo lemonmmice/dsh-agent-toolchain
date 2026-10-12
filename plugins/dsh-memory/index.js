@@ -122,6 +122,8 @@ const tools = () => [
           '\n[' + (i + 1) + '] ' + (h.file || '(未知文件)') + (h.chunk != null ? ' #' + h.chunk : '') +
           (h.score != null ? '  score=' + h.score : '') + '\n    ' +
           String(h.text || '').replace(/\s*\n\s*/g, ' ').slice(0, 300) +
+          (h.truncated || String(h.text || '').length > 300 ? '…（片段已截断）' : '') +
+          (h.root ? '\n    root=' + h.root : '') +
           (h.indexedAt ? '\n    indexedAt=' + h.indexedAt + ' embed=' + JSON.stringify(h.embed) : ''))
         const fnote = value.freshnessNote ? '\n\n⚠ ' + value.freshnessNote : ''
         return [{ type: 'text', text: head + lines.join('') + fnote }]
@@ -133,7 +135,7 @@ const tools = () => [
       const { hits, freshness } = await mem().searchDetailed(args.query, k)
       return {
         embed: mem().embed.label,
-        hits: hits.map(h => ({ file: h.meta.file, chunk: h.meta.chunkIndex, score: +h.score.toFixed(3), text: String(h.meta.text).slice(0, 400), ...(h.meta.indexedAt ? { indexedAt: h.meta.indexedAt, embed: h.meta.embed ?? null } : {}) })),
+        hits: hits.map(h => ({ root: h.meta.root ?? null, file: h.meta.file, chunk: h.meta.chunkIndex, score: +h.score.toFixed(3), text: String(h.meta.text).slice(0, 400), truncated: h.meta.truncated === true || String(h.meta.text).length > 400, textLength: h.meta.textLength ?? String(h.meta.text).length, contentHash: h.meta.contentHash ?? null, indexVersion: h.meta.indexVersion ?? null, ...(h.meta.indexedAt ? { indexedAt: h.meta.indexedAt, embed: h.meta.embed ?? null } : {}) })),
         freshness,
         freshnessNote: freshness.note,
       }
@@ -150,7 +152,7 @@ const tools = () => [
         const row = mem().remember(args.key, args.value, args.scope || 'global', { kind: args.kind, reason: args.reason, ttlDays: args.ttlDays, source: buildProducer({ runtime: 'dsh' }) })
         return { saved: true, ...row }
       } catch (e) {
-        return { saved: false, key: args.key, error: e.message }
+        return { saved: false, key: args.key, error: e.message, ...(e.code ? { errorCode: e.code, retryable: e.retryable === true, retryAfterMs: e.retryAfterMs, writesApplied: e.writesApplied } : {}) }
       }
     },
   }),
@@ -171,10 +173,10 @@ const tools = () => [
     description: dshDescription('memory_forget'),
     parameters: dshParameters('memory_forget'),
     output: { schema: { type: 'object', additionalProperties: true, properties: { forgotten: { type: 'boolean' }, key: { type: 'string' } } },
-      render: (_args, value) => [{ type: 'text', text: `已忘记：${value.key}` }] },
+      render: (_args, value) => [{ type: 'text', text: value.forgotten ? `已忘记：${value.key}` : `没有找到记忆：${value.key}` }] },
     async execute(args) {
-      mem().forget(args.key, args.scope || 'global')
-      return { forgotten: true, key: args.key }
+      const { deleted } = mem().forget(args.key, args.scope || 'global')
+      return { forgotten: deleted > 0, deleted, key: args.key }
     },
   }),
   defineTool({

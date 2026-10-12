@@ -126,8 +126,14 @@ anonymized results are published in `bench/pilot/`.
   must be grouped by this field when aggregating.
 - `patchFiles` — files the agent changed
 
-Cost per verified task = sum of `costUsd` over verified runs of a mode ÷ number
-of verified runs of that mode.
+Cost per verified task = sum of `costUsd` over **all mode-valid attempts** of a
+mode (including failed attempts) ÷ number of verified mode-valid runs of that
+mode. Group comparable task/model/guidance conditions before aggregation.
+Always report verified runs / valid attempts, success rate, and the number of
+attempts with unknown `costUsd`. If any valid attempt has unknown cost, report
+the known-cost subtotal as a lower bound and the overall cost per verified task
+as unknown; if no task verifies, the ratio is undefined. The mean cost of only
+successful runs may be shown separately, labelled as such.
 
 ## Known limitations (pilot)
 

@@ -39,7 +39,7 @@ mkdirSync(join(root, 'symbol-cache'), { recursive: true })   // 目录 ⇒ 绝�
 // ---- 3. 采样进行中 ⇒ 不删 etl ----
 {
   writeFileSync(join(root, 'trace-session.json'), JSON.stringify({ etlPath: join(root, 'trace.etl'), startedAt: Date.now(), profile: 'cpu' }), 'utf8')
-  const r = cleanEvidence({ dir: root, confirm: true })
+  const r = cleanEvidence({ dir: root, confirm: true, planId: cleanEvidence({ dir: root }).planId })
   check('★★ 有采样会话标记时**不删 etl**（那可能正是它在写的文件），且如实说出为什么',
     existsSync(join(root, 'trace.etl')) && r.skipped.some((s) => /采样进行中/.test(s.reason)),
     JSON.stringify(r.skipped))
@@ -49,7 +49,7 @@ mkdirSync(join(root, 'symbol-cache'), { recursive: true })   // 目录 ⇒ 绝�
 
 // ---- 4. confirm=true 真的删（并在无标记后把 etl 也删掉）----
 {
-  const r = cleanEvidence({ dir: root, confirm: true })
+  const r = cleanEvidence({ dir: root, confirm: true, planId: cleanEvidence({ dir: root }).planId })
   check('confirm=true 后两个证据大件都没了', !existsSync(join(root, 'client.dmp')) && !existsSync(join(root, 'trace.etl')))
   check('★ 只删文件：目录与无关文件都在',
     existsSync(root) && existsSync(join(root, 'notes.txt')) && existsSync(join(root, 'symbol-cache')))
@@ -71,7 +71,7 @@ mkdirSync(join(root, 'symbol-cache'), { recursive: true })   // 目录 ⇒ 绝�
   writeFileSync(join(evA, 'a.dmp'), 'x'.repeat(64))
   writeFileSync(join(evB, 'b.dmp'), 'x'.repeat(64))
 
-  const cleanedA = cleanEvidence({ dir: evA, confirm: true })
+  const cleanedA = cleanEvidence({ dir: evA, confirm: true, planId: cleanEvidence({ dir: evA }).planId })
   check('★★ 清 A **不碰兄弟目录 B**（"只在自己的目录里动"这条性质的正身）',
     cleanedA.deleted.length === 1 && !existsSync(join(evA, 'a.dmp')) && existsSync(join(evB, 'b.dmp')),
     JSON.stringify({ deleted: cleanedA.deleted.map((d) => d.path), bStillThere: existsSync(join(evB, 'b.dmp')) }))

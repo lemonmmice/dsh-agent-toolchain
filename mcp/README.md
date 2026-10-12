@@ -30,10 +30,12 @@ Other tools retain their existing per-operation timeouts and stop controls.
 
 `DSH_OUTPUT_MAX_TOKENS` remains opt-in. When positive, all text blocks share the
 estimated token budget, including a truncation notice. Truncated JSON is a valid
-`{outputBudget:{truncated:true,originalFormat:"json"},previewText:...}` envelope,
-not the original complete payload. Tiny budgets report their minimum metadata
-overhead. Images, resources and `structuredContent` are preserved outside this
-text budget; narrow large queries at their source whenever possible.
+envelope retaining machine fields such as `state`, `errorCode`, `runId` and
+`jobId`, with a bounded `previewText`; it is not the original complete payload.
+`structuredContent` is bounded independently by the same estimate, and duplicate
+JSON text is reduced to a reference. Tiny budgets disclose minimum metadata
+overhead. Images and resources remain outside this text budget; narrow large
+queries at their source whenever possible.
 
 `node mcp/probe.mjs --seq '[["memory_status",{}],["failure_stats",{}]]'`
 executes calls in order in one session, shows progress on stderr, and stops with

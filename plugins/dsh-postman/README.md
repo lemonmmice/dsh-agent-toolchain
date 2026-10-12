@@ -10,6 +10,9 @@ DSH Web GUI 插件：一个**类 Postman** 的接口调试面板。
 
 ## 安装
 
+HTTP 调试入口拒绝调用 UI 运维审批、撤销和急停复位的写操作，并逐跳检查重定向。
+这只是工具入口防护；同账号 shell/文件访问仍须独立身份或 broker 才能形成严格授权边界。
+
 **方式 A：一键脚本**（安装 dsh-postman + dsh-api-visualizer 两个插件并自动注册）：
 
 ```powershell

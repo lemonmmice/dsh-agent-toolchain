@@ -13,10 +13,11 @@ AI 改完代码 → 增量编译 → 结构化错误回填 → 修复 → 再编
 
 ### 证据链：`runId`
 
-`build_run` 传了 `runId` 才会写 `run-<runId>.json`（落在构建日志目录），**而 `verify_report` 的
-`build` 类 claim 正是读这个文件**。不传 `runId` 时只写 `last.json`——多个 agent 并发时互相覆盖，
-`build` claim 就无法用于收尾裁决（只能退回人工判断）。建议统一用 `who-task-n` 形式，例如
-`dsh-logon-fix-1`、`codex-etf-2`，一条任务链全程复用同一个 runId。
+`build_run` 未传 `runId` 时生成 UUID；每次构建另有 `attemptId`，后台另有独立 `jobId`。
+`build_status`/`build_errors` 可按 `runId` 或 `jobId` 查询，不传时兼容最近一次结果。
+`run-<runId>.json` 是该任务最近尝试的别名；验证固定尝试用 build claim 的 `attemptId`。
+成功凭证绑定仓库 Git 文件内容、日志摘要与完成时间；旧凭证或源码变化返回未验证。
+这些摘要不涵盖忽略文件、外部 SDK 和最终 DLL 身份；静态编译成员检查是启发式提示，不证明本次进入编译器。
 
 ## msbuild 引擎的布局识别
 
