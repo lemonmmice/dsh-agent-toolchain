@@ -21,9 +21,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run test:capture-native
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/run-tests.mjs capture-stor
+          node scripts/run-tests.mjs capture-stor --all
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/run-tests.mjs dsh-api-visualizer
+          node scripts/run-tests.mjs dsh-api-visualizer --all
       - name: Native-stack unwind parser unit test
         run: node lib/native-stacks.test.mjs
         shell: bash
@@ -44,7 +44,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run test:memory-native
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/run-tests.mjs dsh-memory
+          node scripts/run-tests.mjs dsh-memory --all
       - name: dsh-ui-drive flow batch unit test
         run: node plugins/dsh-ui-drive/test/flow-batch.test.mjs
         shell: bash
@@ -75,7 +75,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run test:terminal-native
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/run-tests.mjs dsh-win-terminal-inspector
+          node scripts/run-tests.mjs dsh-win-terminal-inspector --all
       # `clrevents-interface.test.mjs` 会真启 `mcp/server.mjs` 子进程，需要 @modelcontextprotocol/sdk。
       # 原先装依赖只在最后一步 ⇒ 本步骤跑时子进程启动即死（2026-09-23 CI 实测：code=1 / ERR_MODULE_NOT_FOUND）。
       - name: Install MCP server dependencies
@@ -89,7 +89,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run test:trace-native
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/run-tests.mjs dsh-perf
+          node scripts/run-tests.mjs dsh-perf --all
       - name: Upload native modules
         uses: actions/upload-artifact@v4
         with:

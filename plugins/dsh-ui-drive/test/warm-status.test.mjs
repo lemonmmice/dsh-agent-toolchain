@@ -1,3 +1,4 @@
+// @heavy-test —— 真机/真进程重型用例（2026-10-12 全量剖面：单文件 >10s；14 个重型文件占全量 78% 时间）。默认层不跑，`npm test -- --all` 跑全量。
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
