@@ -71,8 +71,11 @@ async function waitFor(fn, timeout = 60000, interval = 500) {
 }
 function victimPids() {
   try {
-    const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + VICTIM + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
-    return [...out.matchAll(new RegExp('"' + VICTIM + '\\.exe","(\\d+)"', 'g'))].map((m) => Number(m[1]))
+    // 2026-10-12：tasklist（单次约 1s）→ Get-Process（约 0.22s）；两者 PID 集合实测一致。
+    // 用全量枚举 + -ieq 过滤：`-Name` 在未命中时 powershell 退出码 1（execFileSync 会抛）。
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "Get-Process -ErrorAction Ignore | Where-Object { $_.Name -ieq '" + VICTIM + "' } | Select-Object -ExpandProperty Id"], { encoding: 'utf8', windowsHide: true })
+    return out.split(/\r?\n/).map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0)
   } catch { return [] }
 }
 function killVictim() { for (const p of victimPids()) { try { spawn('taskkill', ['/PID', String(p), '/T', '/F'], { windowsHide: true }) } catch { /* ignore */ } } }

@@ -167,8 +167,12 @@ export function makeBuilder(cfg) {
     const name = String(proc || '').replace(/\.exe$/i, '')
     if (!name || !PROC_NAME_OK.test(name)) return []
     try {
+      // ⚠ 不用 `Get-Process -Name X`：**未命中时它让 powershell 以退出码 1 结束**（`-ErrorAction` 用
+      //   SilentlyContinue 还是 Ignore 都一样，实测），而 execFileSync 对非零退出**抛错** ——
+      //   "这个进程没在跑"会变成一次异常。全量枚举 + `-ieq` 过滤在命中/未命中下都是退出码 0（实测 217ms vs 207ms），
+      //   而且 `-ieq` 是精确匹配，顺带消掉 `-Name` 的通配符语义。
       const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-        "Get-Process -Name '" + name + "' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"], { encoding: 'utf8', windowsHide: true })
+        "Get-Process -ErrorAction Ignore | Where-Object { $_.Name -ieq '" + name + "' } | Select-Object -ExpandProperty Id"], { encoding: 'utf8', windowsHide: true })
       return out.split(/\r?\n/).map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0)
     } catch { return [] }
   }
@@ -226,7 +230,7 @@ export function makeBuilder(cfg) {
     if (!Number.isInteger(id) || id <= 0) return null
     try {
       const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-        '(Get-Process -Id ' + id + ' -ErrorAction SilentlyContinue).ProcessName'], { encoding: 'utf8', windowsHide: true })
+        'Get-Process -ErrorAction Ignore | Where-Object { $_.Id -eq ' + id + ' } | Select-Object -ExpandProperty ProcessName'], { encoding: 'utf8', windowsHide: true })
       const name = String(out || '').trim().split(/\r?\n/)[0]
       return name ? { pid: id, image: name.toLowerCase() + '.exe' } : null
     } catch { return null }
@@ -263,7 +267,7 @@ export function makeBuilder(cfg) {
     if (!Number.isInteger(id) || id <= 0) return ''
     try {
       const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-        '(Get-Process -Id ' + id + ' -ErrorAction SilentlyContinue).Path'], { encoding: 'utf8', windowsHide: true })
+        'Get-Process -ErrorAction Ignore | Where-Object { $_.Id -eq ' + id + ' } | Select-Object -ExpandProperty Path'], { encoding: 'utf8', windowsHide: true })
       return String(out || '').trim().split(/\r?\n/)[0] || ''
     } catch { return '' }
   }
