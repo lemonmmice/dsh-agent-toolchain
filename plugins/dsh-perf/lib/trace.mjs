@@ -94,13 +94,39 @@ export function traceSessionFile(evidenceDir) { return join(evidenceDir, 'trace-
  * `cpu` 档也带上 `DotNet` —— 实测：只开 CPU 时托管帧的**函数名解不出来**（只有模块名），
  * 因为缺 CLR 的 rundown 事件；而对 .NET 应用来说那些函数名才是真正要看的调用链。
  */
+/**
+ * 按镜像名枚举 PID。
+ *
+ * 2026-10-12：tasklist（本机实测单次 1120~1350ms，空载 13% CPU）→ `Get-Process -Name`（243ms，
+ * 两者 PID 集合**实测一致**）。本文件三处按名查 PID 的都是这条路径，统一走这里。
+ * 名字过白名单：既挡命令注入，也挡 `-Name` 的通配符语义（`foo*` 会把精确匹配变成模式匹配）。
+ * 失败返回 []（调用方按"查不到 ⇒ 留空/回退按名"处理）—— 与本文件既有口径一致，不改。
+ */
+const PROC_NAME_OK = /^[\p{L}\p{N}._\- ]+$/u
+function pidsByName(proc) {
+  const name = String(proc || '').trim().replace(/\.exe$/i, '')
+  if (!name || !PROC_NAME_OK.test(name)) return []
+  try {
+    // ⚠ **不用 `Get-Process -Name X`**：未命中时 powershell 退出码 1（`-ErrorAction` 用 SilentlyContinue
+    //   还是 Ignore 都一样，实测），execFileSync 会抛 —— "没这个进程"变成一次异常。
+    //   全量枚举 + `-ieq` 精确过滤在命中/未命中下都是退出码 0（实测 217ms vs 207ms）。
+    const out = execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      "Get-Process -ErrorAction Ignore | Where-Object { $_.Name -ieq '" + name + "' } | Select-Object -ExpandProperty Id"],
+    { encoding: 'utf8', timeout: 8000, windowsHide: true })
+    return out.split(/\r?\n/).map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0)
+  } catch { return [] }
+}
+
 /** 采样器进程在不在（wpr/xperf）—— **只作旁证**：查不到返回 null（≠ 没在跑），调用方必须按三态读。 */
 function samplerRunning() {
   try {
-    const r = spawnSync('tasklist', ['/fi', 'IMAGENAME eq wpr.exe'], { encoding: 'utf8', timeout: 8000, windowsHide: true })
-    if (/wpr\.exe/i.test(String(r.stdout || ''))) return true
-    const r2 = spawnSync('tasklist', ['/fi', 'IMAGENAME eq xperf.exe'], { encoding: 'utf8', timeout: 8000, windowsHide: true })
-    return /xperf\.exe/i.test(String(r2.stdout || ''))
+    // 2026-10-12：原实现串行起两个 tasklist（本机各约 1.35s）→ 一次 Get-Process 查两个名字（约 0.25s）。
+    // 三态语义不变：跑着 → true；没跑 → false；**读不到**（命令失败/输出不是数字）→ null。
+    const r = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      "Get-Process -ErrorAction Ignore | Where-Object { $_.Name -ieq 'wpr' -or $_.Name -ieq 'xperf' } | Select-Object -ExpandProperty Id"],
+    { encoding: 'utf8', timeout: 8000, windowsHide: true })
+    if (r.error) return null                       // 起不来/超时 ⇒ "不知道"，不许说成 false
+    return String(r.stdout || '').trim().length > 0
   } catch {
     return null   // 查不到就是「不知道」，不许说成 false
   }
@@ -1253,15 +1279,12 @@ export function makeTrace(cfg = {}) {
     const reusing = Boolean(args.csvPath) && existsSync(csv)
 
     // ★ 分配采样是 xperf 用户会话 ⇒ AllocationTick 行进程名多为 `"Unknown" (PID)`：必须按 **PID** 过滤。
-    //   优先用显式传入的 pid；否则按进程名 live 查 tasklist（采集刚停、进程通常还在）。查不到就回退按名。
+    //   优先用显式传入的 pid；否则按进程名 live 查（采集刚停、进程通常还在）。查不到就回退按名。
     let pidSet = null
     if (args.pid) pidSet = new Set(String(args.pid).split(/[,\s]+/).filter(Boolean))
     else {
-      try {
-        const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + proc + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
-        const pids = [...out.matchAll(/"[^"]*","(\d+)"/g)].map((m) => m[1])
-        if (pids.length) pidSet = new Set(pids)
-      } catch { /* 进程已退 / tasklist 不可用 ⇒ pidSet 留空，回退按名 */ }
+      const pids = pidsByName(proc).map(String)
+      if (pids.length) pidSet = new Set(pids)
     }
 
     let jitMap = null, jitInfo = null
@@ -1424,7 +1447,7 @@ export function makeTrace(cfg = {}) {
     if (jitEtl && args.noJit !== true) { const d = await jitMapFromEtl(jitEtl, {}); if (d.ok) jitMap = d.map }
 
     let pid = args.pid || null
-    if (!pid && proc) { try { const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + proc + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true }); const m = /"[^"]*","(\d+)"/.exec(out); if (m) pid = m[1] } catch { /* ignore */ } }
+    if (!pid && proc) { const found = pidsByName(proc); if (found.length) pid = String(found[0]) }
 
     const wa = await analyzeThreadWaits(csv, { tid, pid, frameMode: args.moduleOnly === true ? 'module' : 'symbols', jitMap })
     if (args.keepCsv !== true) { try { rmSync(csv, { force: true }) } catch { /* ignore */ } }

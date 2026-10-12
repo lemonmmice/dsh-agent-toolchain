@@ -281,9 +281,31 @@ export function makeDriver(cfg) {  const c = {
    * 结果里带 polls/statusTimeouts 心跳，便于区分「客户端真没起来」与「轮询自身被拖慢」。
    */
   /**
-   * 同名进程的 PID 列表（tasklist，不经 PowerShell —— 这条路径在 force 重启里是热路径）。
+   * 同名进程的 PID 列表。
    * 与 dsh-build 的 listClientPids 同一实现口径：按**镜像名**枚举，再由 exePathOf 做实例判别。
+   *
+   * 2026-10-12 换掉 tasklist —— 原注释写的是「不经 PowerShell，这条路径在 force 重启里是热路径」，
+   * 那个判断在本机**恰好反了**（实测，空载 13% CPU）：
+   *   · `tasklist /FI "IMAGENAME eq X"` 单次 **1120~1215ms**（疑似被安全软件扫描拖慢）
+   *   · `Get-Process -Name X`           单次 **243ms**，且两者返回的 PID 集合**实测一致**
+   * launch-force 一轮要枚举 49 次 ⇒ 67s 里 81% 花在 tasklist 的进程启动上。
    */
+  const PROC_NAME_OK = /^[\p{L}\p{N}._\- ]+$/u   // 镜像名白名单：挡命令注入，也挡 `-Name` 的通配符语义
+  function listPidsByName(proc) {
+    const name = String(proc || '').trim().replace(/\.exe$/i, '')
+    if (!name || !PROC_NAME_OK.test(name)) return []
+    try {
+      // ⚠ 不用 `Get-Process -Name X`：**未命中时 powershell 退出码 1**（`-ErrorAction` 用 SilentlyContinue
+      //   还是 Ignore 都一样，实测），execFileSync 会因此抛错 —— "这个进程没在跑"变成一次异常。
+      //   全量枚举 + `-ieq` 过滤在命中/未命中下都是退出码 0（实测 217ms vs 207ms），且是精确匹配。
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        "Get-Process -ErrorAction Ignore | Where-Object { $_.Name -ieq '" + name + "' } | Select-Object -ExpandProperty Id"], { encoding: 'utf8', windowsHide: true })
+      return out.split(/\r?\n/).map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0)
+    } catch (e) {
+      if (isProgrammingError(e)) throw e
+      return []
+    }
+  }
   /**
    * 编程错误识别 —— 让 "永不抛" 的兜底**不要吞掉自己的 bug**。
    *
@@ -299,22 +321,6 @@ export function makeDriver(cfg) {  const c = {
       /is not defined|is not a function|Cannot read propert/.test(s)
   }
 
-  function listPidsByName(proc) {
-    const name = String(proc || '').trim()
-    if (!name) return []
-    try {
-      const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + name + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
-      const pids = []
-      const re = new RegExp('"' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.exe","(\\d+)"', 'g')
-      let m
-      while ((m = re.exec(out)) !== null) pids.push(Number(m[1]))
-      return pids
-    } catch (e) {
-      if (isProgrammingError(e)) throw e
-      return []
-    }
-  }
-
   /** 单个 PID 是否还活着（按 PID 精确判定，不用"同名进程列表为空"当判据）。 */
   function isPidAlive(pid) {
     if (!pid) return false
@@ -327,11 +333,18 @@ export function makeDriver(cfg) {  const c = {
     }
   }
 
-  /** 某个 PID 的可执行文件全路径（拿不到返回空串，绝不抛）。只在真要动手/有歧义时调用。 */
+  /**
+   * 某个 PID 的可执行文件全路径（拿不到返回空串，绝不抛）。只在真要动手/有歧义时调用。
+   *
+   * 2026-10-12：`Get-CimInstance Win32_Process`（实测 1160ms）换成 `Get-Process -Id`（209ms）——
+   * 同一 PID 上两者返回的路径**实测逐字一致**；CIM 那句每个 pid 都要起一次 WMI 查询。
+   */
   function exePathOf(pid) {
+    const id = Number(pid)
+    if (!Number.isInteger(id) || id <= 0) return ''
     try {
       const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-        '(Get-CimInstance Win32_Process -Filter "ProcessId=' + Number(pid) + '").ExecutablePath'], { encoding: 'utf8', windowsHide: true })
+        'Get-Process -ErrorAction Ignore | Where-Object { $_.Id -eq ' + id + ' } | Select-Object -ExpandProperty Path'], { encoding: 'utf8', windowsHide: true })
       return String(out || '').trim().split(/\r?\n/)[0] || ''
     } catch (e) {
       if (isProgrammingError(e)) throw e

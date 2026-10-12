@@ -66,15 +66,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
  * 现在：失败**重试 3 次**；仍失败就**抛错**（明确说"无法判定"），绝不静默返回空列表。
  */
 function pidsOfOnce() {
-  const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + EXE + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
-  return [...out.matchAll(new RegExp('"' + EXE + '\\.exe","(\\d+)"', 'g'))].map((m) => Number(m[1]))
+  // 2026-10-12：枚举原语从 tasklist（单次 1120ms）换成 Get-Process（243ms，PID 集合实测一致）。
+  // 这一条不是"优化着玩"：本文件 67s 里有 81% 是 tasklist 的进程启动。
+  // ⚠ 用**全量枚举 + -ieq 精确过滤**，不用 `-Name`：`-Name` 在**未命中时让 powershell 退出码 1**，
+  //   而本函数的契约恰恰是"失败必须抛"（F-029），那样会把"没在跑"误报成"读不到"。
+  //   实测：过滤写法命中/未命中均为退出码 0（217ms vs 207ms）。
+  const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    "Get-Process -ErrorAction Ignore | Where-Object { $_.Name -ieq '" + EXE + "' } | Select-Object -ExpandProperty Id"], { encoding: 'utf8', windowsHide: true })
+  return out.split(/\r?\n/).map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0)
 }
 function pidsOf() {
   let lastErr = null
   for (let i = 0; i < 3; i++) {
     try { return pidsOfOnce() } catch (e) { lastErr = e }
   }
-  throw new Error('tasklist 连续 3 次失败，**无法判定**同名实例数：' + String(lastErr && lastErr.message)
+  throw new Error('枚举同名实例连续 3 次失败，**无法判定**同名实例数：' + String(lastErr && lastErr.message)
     + '（不把"没读到"当成"没有"—— 见 F-029）')
 }
 function killAll() {
