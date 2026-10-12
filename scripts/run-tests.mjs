@@ -5,9 +5,14 @@
  * 那种临时脚本无法被复核者复用，也容易漏掉新加的文件（我自己就漏过一次）。
  *
  * 用法：
- *   npm test                # 全部
+ *   npm test                # 轻型层（默认；跳过文件头标了 @heavy-test 的重型文件）
+ *   npm test -- --all       # 全量（含重型层）—— CI、npm run verify、发版前用这个
  *   npm test -- ui-drive    # 只跑路径里含该子串的（大小写不敏感）
  *   npm test -- --json      # 机器可读摘要
+ *
+ * 分层（2026-10-12 加，起因见文件末「分层」注释）：全量 177 个文件里，14 个重型文件占了
+ * 78% 的时间（单个 kill-client 就是 187s）。**文件多不是慢的原因，慢的是这几个**。
+ * 重型判据写在测试文件自己头上（`// @heavy-test`），不维护中央清单 —— 清单会漂，标记不会。
  *
  * 约定：每个测试文件自己打印 PASS/FAIL 并设置退出码；本脚本只负责**并发地找齐、跑全、汇总**，
  * 并且**绝不把"没跑"当成"通过"**（找不到任何测试文件 → 退出码 2，报错而不是静默成功）。
@@ -22,6 +27,7 @@ import { homedir, tmpdir } from 'node:os'
 const root = join(fileURLToPath(import.meta.url), '..', '..')
 const argv = process.argv.slice(2)
 const jsonOut = argv.includes('--json')
+const runAll = argv.includes('--all') || process.env.DSH_TEST_TIER === 'all'
 const filter = argv.filter((a) => !a.startsWith('--'))[0] || ''
 
 /**
@@ -88,6 +94,19 @@ function collect(dir, out = []) {
   return out
 }
 
+/**
+ * 重型层判据（2026-10-12）：测试文件自己头上写 `// @heavy-test`。
+ *
+ * 为什么标在文件里、不写中央清单：清单会和文件漂开（改名/移动/新增），而标记跟着文件走。
+ * 为什么默认不跑却**必须打印**：本仓库最硬的一条是「绝不把"没跑"当成"通过"」——
+ * 所以跳过的东西要出现在输出、--json、以及汇总行里；CI 与 verify 一律 --all。
+ * ⚠ 别把标记当"让红变绿"的开关：CI 全量跑，标了也躲不过去。
+ */
+const HEAVY_MARKER = /^\s*\/\/\s*@heavy-test\b/m
+function isHeavyTest(file) {
+  try { return HEAVY_MARKER.test(readFileSync(file, 'utf8').slice(0, 2048)) } catch { return false }
+}
+
 let files = []
 try {
   files = collect(root)
@@ -97,8 +116,17 @@ try {
 }
 if (filter) files = files.filter((f) => f.toLowerCase().includes(filter.toLowerCase()))
 files.sort()
+const tierSkipped = runAll ? [] : files.filter(isHeavyTest)
+if (!runAll) files = files.filter((f) => !isHeavyTest(f))
 if (files.length === 0) {
-  console.error(filter ? '没有匹配的测试文件：' + filter : '没找到任何 *.test.mjs —— 这不该发生，退出码 2（绝不把"没跑"当成"通过"）')
+  if (tierSkipped.length) {
+    // 别把它报成"没有匹配的测试文件" —— 那是**在跑**与**没跑**之间最容易被读错的一句话。
+    console.error('匹配到的测试全在重型层（默认不跑，' + tierSkipped.length + ' 个）：')
+    for (const f of tierSkipped) console.error('  · ' + relative(root, f))
+    console.error('  要跑它们：加 --all（npm test -- --all ' + (filter || '') + '）')
+  } else {
+    console.error(filter ? '没有匹配的测试文件：' + filter : '没找到任何 *.test.mjs —— 这不该发生，退出码 2（绝不把"没跑"当成"通过"）')
+  }
   process.exit(2)
 }
 
@@ -185,14 +213,20 @@ results.sort((a, b) => a.file.localeCompare(b.file))
 const bad = results.filter((r) => r.code !== 0)
 const elapsed = Date.now() - started
 
+const skippedFiles = tierSkipped.map((f) => relative(root, f))
+
 if (jsonOut) {
-  console.log(JSON.stringify({ total: results.length, failed: bad.length, elapsedMs: elapsed, results }, null, 2))
+  console.log(JSON.stringify({ total: results.length, failed: bad.length, elapsedMs: elapsed, tier: runAll ? 'all' : 'light', skipped: skippedFiles, results }, null, 2))
 } else {
   console.log('\n' + '─'.repeat(72))
-  console.log(`共 ${results.length} 个测试文件，失败 ${bad.length}，耗时 ${(elapsed / 1000).toFixed(1)}s`)
+  console.log(`共 ${results.length} 个测试文件（${runAll ? '全量' : '轻型层'}），失败 ${bad.length}，耗时 ${(elapsed / 1000).toFixed(1)}s`)
   for (const b of bad) {
     console.log(`  ✗ ${b.file}（exit=${b.code}） ${b.summary || b.tail.join(' / ')}`)
   }
-  if (bad.length === 0) console.log('全部通过')
+  if (skippedFiles.length) {
+    console.log(`\n⚠ 重型层未跑 ${skippedFiles.length} 个（默认层不含；npm test -- --all 才跑全量）：`)
+    for (const f of skippedFiles) console.log('  · ' + f)
+  }
+  if (bad.length === 0) console.log(skippedFiles.length ? '轻型层全部通过 —— 重型层未跑，别读成"全量通过"' : '全部通过')
 }
 process.exit(bad.length === 0 ? 0 : 1)

@@ -1,3 +1,4 @@
+// @heavy-test —— 真机/真进程重型用例（2026-10-12 全量剖面：单文件 >10s；14 个重型文件占全量 78% 时间）。默认层不跑，`npm test -- --all` 跑全量。
 // dsh-perf 单测：ETW 调用链（trace/hotstacks）的报告解析与两个"实测踩出来的"硬性细节
 //
 // 夹具是**真实报告**（xperf `-a stack -butterfly` 的 HTML），不是手写样例：

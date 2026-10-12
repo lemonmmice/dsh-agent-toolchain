@@ -52,7 +52,7 @@ CPU/分配火焰图的 CSV 扫描与栈折叠已使用 Rust Node-API 模块。�
 ```powershell
 npm run build:trace-fold
 npm run test:trace-native
-node scripts/run-tests.mjs dsh-perf
+node scripts/run-tests.mjs dsh-perf --all
 ```
 
 构建需要 Rust 与平台链接工具；Windows 使用 Visual C++ build tools。部署须包含

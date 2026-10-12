@@ -1,3 +1,4 @@
+// @heavy-test —— 真机/真进程重型用例（2026-10-12 全量剖面：单文件 >10s；14 个重型文件占全量 78% 时间）。默认层不跑，`npm test -- --all` 跑全量。
 // dsh-ui-drive P2：MCP 面 snapshotId 透传 + W1 新鲜度门（离线）
 //
 // 背景（P2 复核发现的缺口）：MCP 的 ui_drive / ui_act schema 原先**没有 snapshotId 字段**，

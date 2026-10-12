@@ -146,26 +146,45 @@ export function makeBuilder(cfg) {
 
   // ------------------------------------------------------------ 客户端进程检测
 
-  /** 列出同名进程的全部 PID（tasklist CSV 可能多行）；失败一律当「没在跑」。 */
+  /**
+   * 进程名白名单（2026-10-12 换原语时加的护栏）：只允许镜像名里合法出现的字符。
+   * 两个作用：① 名字要拼进 PowerShell 命令行，白名单把注入面关掉；
+   *          ② 排掉 `* ? [ ]` —— 那是 PowerShell `-Name` 的通配符，会把"精确匹配"悄悄变成"模式匹配"
+   *             （本文件的红线是"不误杀非目标进程"，模式匹配正是那条线的反面）。
+   */
+  const PROC_NAME_OK = /^[\p{L}\p{N}._\- ]+$/u
+
+  /**
+   * 列出同名进程的全部 PID；失败一律当「没在跑」。
+   *
+   * 2026-10-12 把原语从 `tasklist` 换成 `Get-Process`，因为它们在这台机器上差 5 倍：
+   *   · `tasklist /FI "IMAGENAME eq X"`   实测单次 **1215ms**（空载、13% CPU；疑似被安全软件扫描拖慢）
+   *   · `Get-Process -Name X`            实测单次 **243ms**，且两者返回的 PID 集合**实测一致**
+   * kill-client 一轮要枚举 50+ 次 ⇒ 187s 里 78% 花在 tasklist 的进程启动上，慢的是原语、不是被测逻辑。
+   * （在 tasklist 便宜的机器上这次换法会略慢一点点，但两者都在百毫秒量级，坏情况却差 5 倍。）
+   */
   function listClientPids(proc) {
-    if (!proc) return []
+    const name = String(proc || '').replace(/\.exe$/i, '')
+    if (!name || !PROC_NAME_OK.test(name)) return []
     try {
-      const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + proc + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
-      const pids = []
-      const re = new RegExp('"' + proc + '\\.exe","(\\d+)"', 'g')
-      let m
-      while ((m = re.exec(out)) !== null) pids.push(Number(m[1]))
-      return pids
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        "Get-Process -Name '" + name + "' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"], { encoding: 'utf8', windowsHide: true })
+      return out.split(/\r?\n/).map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0)
     } catch { return [] }
   }
 
-  /** 单个 PID 是否还活着（按 PID 精确判定，不用「同名进程列表」当判据）。 */
+  /**
+   * 单个 PID 是否还活着（按 PID 精确判定，不用「同名进程列表」当判据）。
+   *
+   * 2026-10-12 换成 Node 原生 `process.kill(pid, 0)`：原实现每次起一个 tasklist（1215~1400ms），
+   * 而它在 kill 等待循环里是**每 250ms 一次**的判据 —— 于是"等进程退出"变成"等 tasklist 返回"。
+   * 实测 200 次 kill(pid,0) 合计 0.4ms（单次 0.002ms）。语义不变：
+   * 存在 → true；不存在 → ESRCH → false；EPERM = 存在但没权限 → 仍算活着。
+   * 另实测过**没有**"句柄没释放所以退出后仍报活"的坑：detached 子进程退出后立刻返回 ESRCH。
+   */
   function isPidAlive(pid) {
-    if (!pid) return false
-    try {
-      const out = execFileSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
-      return new RegExp('","' + pid + '",').test(out)
-    } catch { return false }
+    if (!pid || pid <= 0) return false
+    try { process.kill(pid, 0); return true } catch (e) { return e && e.code === 'EPERM' }
   }
 
   /**
@@ -195,13 +214,21 @@ export function makeBuilder(cfg) {
     return img === want || img + '.exe' === want || img === want + '.exe'
   }
 
-  /** 这个 pid 现在被**谁**占着（用于把"pid 复用"这件事说出来，而不是只报一个 false）。 */
+  /**
+   * 这个 pid 现在被**谁**占着（用于把"pid 复用"这件事说出来，而不是只报一个 false）。
+   *
+   * 2026-10-12：同样从 tasklist（1400ms）换成 `Get-Process -Id`（实测 208ms）。返回的 `image`
+   * **保持旧形状**（`name.exe`）—— 调用方 `isTargetAlive` 对"带不带 .exe"两种写法都做过归一，
+   * 但这里没必要让它去兜底。
+   */
   function pidOwner(pid) {
+    const id = Number(pid)
+    if (!Number.isInteger(id) || id <= 0) return null
     try {
-      const out = execFileSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
-      const line = out.trim().split(/\r?\n/)[0] ?? ''
-      const m = /^"([^"]+)","(\d+)",/.exec(line)
-      return m === null ? null : { pid: Number(m[2]), image: m[1] }
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        '(Get-Process -Id ' + id + ' -ErrorAction SilentlyContinue).ProcessName'], { encoding: 'utf8', windowsHide: true })
+      const name = String(out || '').trim().split(/\r?\n/)[0]
+      return name ? { pid: id, image: name.toLowerCase() + '.exe' } : null
     } catch { return null }
   }
 
@@ -224,11 +251,19 @@ export function makeBuilder(cfg) {
     return pids.map((pid) => ({ pid, path: exePathOf(pid) }))
   }
 
-  /** 取某个 PID 的可执行文件全路径（拿不到就返回空串，绝不抛）。 */
+  /**
+   * 取某个 PID 的可执行文件全路径（拿不到就返回空串，绝不抛）。
+   *
+   * 2026-10-12：`Get-CimInstance Win32_Process`（实测 1549ms）换成 `Get-Process -Id`（209ms）——
+   * 同一 PID 上两者返回的路径**实测逐字一致**。CIM 那句每个 pid 都要起一次 WMI 查询，
+   * 而 clientInstances() 在多实例分支里对**每个** pid 都会调它。
+   */
   function exePathOf(pid) {
+    const id = Number(pid)
+    if (!Number.isInteger(id) || id <= 0) return ''
     try {
       const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-        '(Get-CimInstance Win32_Process -Filter "ProcessId=' + pid + '").ExecutablePath'], { encoding: 'utf8', windowsHide: true })
+        '(Get-Process -Id ' + id + ' -ErrorAction SilentlyContinue).Path'], { encoding: 'utf8', windowsHide: true })
       return String(out || '').trim().split(/\r?\n/)[0] || ''
     } catch { return '' }
   }

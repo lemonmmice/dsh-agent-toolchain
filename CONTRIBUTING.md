@@ -28,7 +28,14 @@ Memory vectors use a separate Node-API module: `npm run build:memory-store` and
 the JS adapter, indexing and persistence regressions.
 CPU/allocation CSV folding uses `npm run build:trace-fold` and
 `npm run test:trace-native`. Its JS differential tests run with
-`node scripts/run-tests.mjs dsh-perf` against a frozen pre-migration oracle.
+`node scripts/run-tests.mjs dsh-perf --all` against a frozen pre-migration oracle.
+
+Test tiers: `npm test` runs the light tier by default and skips every file whose
+header carries a `// @heavy-test` marker (14 real-process files; ≈40s instead of
+≈5min). The skip list is printed on every run and included in `--json`, so a green
+light-tier run is never a claim about the full suite. Use `npm test -- --all`,
+`npm run verify`, or CI when you need the heavy tier; add the marker only to files
+that genuinely need real processes, never to make a red test disappear.
 
 ## Pull request checklist
 

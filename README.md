@@ -223,7 +223,7 @@ At a glance:
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). `npm run check` is the repo gate (syntax, forbidden references, schema DSL, PowerShell encoding); `npm run verify` runs the whole suite.
+See [CONTRIBUTING.md](./CONTRIBUTING.md). `npm run check` is the repo gate (syntax, forbidden references, schema DSL, PowerShell encoding); `npm run verify` runs the whole suite. `npm test` runs the **light tier** by default — the 14 real-process files that carry a `// @heavy-test` marker are skipped (≈40s vs ≈5min), and every run prints exactly which ones were skipped; `npm test -- --all`, `npm run verify` and CI always run the full set.
 
 ## License
 

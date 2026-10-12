@@ -181,7 +181,7 @@ node plugins/dsh-win-terminal-inspector/test/bench-process-table.mjs 3
 node scripts/bench-memory-store.mjs '53d9c39^'
 node scripts/bench-capture-store.mjs '27daf1c^'
 node scripts/bench-trace-fold.mjs 10000 3
-node scripts/run-tests.mjs
+node scripts/run-tests.mjs --all
 node scripts/check.mjs
 node scripts/plugin-load-smoke.mjs
 node mcp/smoke.mjs

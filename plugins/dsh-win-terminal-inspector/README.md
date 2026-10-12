@@ -12,7 +12,7 @@ From the repository root:
 ```powershell
 npm run build:terminal-inspector
 npm run test:terminal-native
-node scripts/run-tests.mjs dsh-win-terminal-inspector
+node scripts/run-tests.mjs dsh-win-terminal-inspector --all
 ```
 
 The build uses the checked-in Cargo.lock and stages the executable at
