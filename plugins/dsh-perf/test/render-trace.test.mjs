@@ -244,7 +244,12 @@ for (const [action, c] of Object.entries(CASES)) {
   //   用同一套做法（从生产者读 enum + 手写真实返回形状 + 不许出现编造的量）把它们核了一遍，
   //   并且**一核就抓到 5 处**（capture / expectwindow / expecttext / waitany 掉进 default 渲染成「完成」，
   //   结构化数据被吞）。所以钉子按"只许缩短"的规矩拔掉 —— 这四个工具现在必须在 COVERED 里。
-  const COVERED = new Set(['perf_trace', 'perf_uifreeze', 'ui_drive', 'ui_observe', 'ui_act', 'ui_live'])
+  // ⚠ 2026-10-12：`ui_flow` 是被本节的扫描规则扫出来的 —— 它扫的是 defineTool 块里有没有 `action` enum，
+  //   **不区分**那 enum 属于工具自身还是它的**步骤**（ui_flow 本轮在 steps.items.properties.action 里
+  //   加了 clickat/doubleclick/move/wheel）。既然扫出来了就按规矩核，不把它钉回未覆盖名单：
+  //   同一个 `render-actions.test.mjs` 补了「任何步骤 action 失败都必须出现在渲染文本里」的覆盖
+  //   （ui_flow 渲染的是聚合，失败被计数吃掉就等于把失败渲染成成功）。
+  const COVERED = new Set(['perf_trace', 'perf_uifreeze', 'ui_drive', 'ui_observe', 'ui_act', 'ui_live', 'ui_flow'])
   const KNOWN_UNCOVERED = []   // 钉子：只许缩短（已空；新工具带 action enum 就会立刻红）
   const enumTools = []
   {
