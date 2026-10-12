@@ -29,13 +29,15 @@
  */
 import { envOr } from '../../../lib/env-fallback.mjs'
 import { spawn, spawnSync, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, createReadStream, realpathSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { parseClrEvents, parseTraceSummary, summarizeClr } from './clr-events.mjs'
+import { randomUUID, createHash } from 'node:crypto'
+import { parseTraceSummary, summarizeClr } from './clr-events.mjs'
 import { foldDumperCsv, foldAllocCsv, foldedToText, buildTree, renderFlameHtml } from './flame.mjs'
 import { buildJitMapStreaming } from './jitmap.mjs'
 import { analyzeThreadWaits } from './uifreeze.mjs'
+import { readClrEvents } from './clr-stream.mjs'
 
 const PROGRAM_FILES_X86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
 const SYSTEM32 = join(process.env.SystemRoot || 'C:\\Windows', 'System32')
@@ -206,6 +208,7 @@ export function makeTrace(cfg = {}) {
     xperf: DEFAULT_XPERF,
     tracerpt: DEFAULT_TRACERPT,
     logman: DEFAULT_LOGMAN,
+    kernelLeaseFile: join(homedir(), '.dsh-agent-toolchain', 'perf-kernel-session.json'),
     procName: envOr('DSH_UI_PROC_NAME'),
     symbolPath: envOr('DSH_PERF_SYMBOL_PATH') || process.env._NT_SYMBOL_PATH || '',
     // 符号缓存根（跨运行共享）。空 = evidenceDir/symbol-cache。
@@ -214,7 +217,7 @@ export function makeTrace(cfg = {}) {
   if (!c.evidenceDir) c.evidenceDir = join(homedir(), '.dsh-agent-toolchain', 'perf-evidence')
 
   const stamp = () => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const runDir = (tag) => join(c.evidenceDir, 'trace-' + stamp() + (tag ? '-' + tag : ''))
+  const runDir = (tag) => join(c.evidenceDir, 'trace-' + stamp() + '-' + randomUUID() + (tag ? '-' + String(tag).replace(/[^a-zA-Z0-9_-]/g, '_') : ''))
 
   /** 跑一个可执行文件并收全输出；超时杀进程树。 */
   function runExe(exe, args, opts = {}) {
@@ -280,23 +283,30 @@ export function makeTrace(cfg = {}) {
     const st = await runExe(c.wpr, ['-start', 'CPU', '-filemode'], { timeoutMs: 60000 })
     let stopCode = null, raw = ''
     let ok = false
-    if (st.code === 0) {
+    let stopped = false
+    if (st.code === 0 && !st.timedOut) {
       const sp = await runExe(c.wpr, ['-stop', probeEtl], { timeoutMs: 120000 })
       stopCode = sp.code
+      stopped = sp.code === 0 && !sp.timedOut
       raw = (sp.stdout + sp.stderr).trim()
-      ok = existsSync(probeEtl)
+      ok = sp.code === 0 && !sp.timedOut && existsSync(probeEtl)
       try { if (ok) rmSync(probeEtl, { force: true }) } catch { /* 探针产物，删不掉也无害 */ }
     } else {
       raw = (st.stdout + st.stderr).trim()
     }
     // 探针万一留下会话，收掉它 —— 否则真正的 start 会撞"已有会话"
-    try { await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 }) } catch { /* ignore */ }
-    wprStopProbeCache = {
-      ok, startCode: st.code, stopCode, elapsedMs: Date.now() - t0,
+    let cleanupOk = true
+    if (st.code === 0 && !st.timedOut && !stopped) {
+      const cleanup = await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 })
+      cleanupOk = cleanup.code === 0 && !cleanup.timedOut
+    }
+    const result = {
+      ok, startCode: st.code, stopCode, cleanupOk, busy: st.code !== 0 || st.timedOut === true, elapsedMs: Date.now() - t0,
       signature: /0x80010106|Cannot change thread mode/i.test(raw) ? 'RPC_E_CHANGED_MODE(0x80010106)' : null,
       raw: raw.slice(0, 300),
     }
-    return wprStopProbeCache
+    if (!result.busy && result.cleanupOk) wprStopProbeCache = result
+    return result
   }
 
   /**
@@ -314,26 +324,22 @@ export function makeTrace(cfg = {}) {
   //     与内核会话**并行互不干扰** ⇒ 对既有 xperf/WPR 路径**零改动**（这是刻意的：那条路很脆）。
   //   · 这正是 clr-events-spike FINDINGS.md 给出的形状（"已验证机制，未接入 trace.mjs"）。
 
-  /** logman 会话名（机器全局唯一；同一时刻不支持两次并行 CLR 采集，第二次会先停掉第一次）。 */
-  const CLR_SESSION = 'dshperfclr'
-
-  async function clrSessionStop() {
-    const r = await runExe(c.logman, ['stop', CLR_SESSION, '-ets'], { timeoutMs: 120000 })
+  async function clrSessionStop(sessionName) {
+    const r = await runExe(c.logman, ['stop', sessionName, '-ets'], { timeoutMs: 120000 })
     const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 300)
-    return { ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw }
+    return { ok: Boolean(r) && r.code === 0 && !r.timedOut, exitCode: r ? r.code : null, raw }
   }
 
   async function clrSessionStart(etlPath) {
-    // 上一次崩掉会留下同名会话，直接 start 会因"已存在"失败 ⇒ 先无条件停一次（停不掉也无所谓）。
-    await clrSessionStop()
-    const args = ['start', CLR_SESSION]
+    const sessionName = 'dshperfclr-' + randomUUID()
+    const args = ['start', sessionName]
     for (const p of CLR_PROVIDERS) args.push('-p', p.provider, p.keywords, p.level)
     args.push('-o', etlPath, '-ets')
     const r = await runExe(c.logman, args, { timeoutMs: 60000 })
     const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 500)
     return {
       ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw,
-      session: CLR_SESSION, etlPath, command: 'logman ' + args.join(' '),
+      session: sessionName, etlPath, command: 'logman ' + args.join(' '),
     }
   }
 
@@ -345,22 +351,20 @@ export function makeTrace(cfg = {}) {
   // ★ 为什么低污染（回应 docs §4.4）：keyword **不含** StartRundown(0x40) ⇒ 采样窗口内它基本不产事件，
   //   只在 stop 那一刻集中吐 —— 不会像自定义采样档那样把被观测进程搞热。实测（2026-09-17）15s 窗口内
   //   rundown 会话产出的采样期事件≈0，方法记录全部集中在 stop（devenv 单进程 46619 方法）。
-  const JIT_SESSION = 'dshperfjit'
-
-  async function jitSessionStop() {
-    const r = await runExe(c.logman, ['stop', JIT_SESSION, '-ets'], { timeoutMs: 120000 })
+  async function jitSessionStop(sessionName) {
+    const r = await runExe(c.logman, ['stop', sessionName, '-ets'], { timeoutMs: 120000 })
     const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 300)
-    return { ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw }
+    return { ok: Boolean(r) && r.code === 0 && !r.timedOut, exitCode: r ? r.code : null, raw }
   }
 
   async function jitSessionStart(etlPath) {
-    await jitSessionStop()
-    const args = ['start', JIT_SESSION, '-p', 'Microsoft-Windows-DotNETRuntimeRundown', '0x118', '0x5', '-o', etlPath, '-ets']
+    const sessionName = 'dshperfjit-' + randomUUID()
+    const args = ['start', sessionName, '-p', 'Microsoft-Windows-DotNETRuntimeRundown', '0x118', '0x5', '-o', etlPath, '-ets']
     const r = await runExe(c.logman, args, { timeoutMs: 60000 })
     const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 500)
     return {
       ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw,
-      session: JIT_SESSION, etlPath, command: 'logman ' + args.join(' '),
+      session: sessionName, etlPath, command: 'logman ' + args.join(' '),
     }
   }
 
@@ -374,25 +378,24 @@ export function makeTrace(cfg = {}) {
   //   ⚠ 只对**能解出 manifest 的 CLR**有效：本机 .NET Framework 客户端（ClientApp/OtherApp，manifest 已注册）
   //   会正常解成 GCAllocationTick；.NET Core/5+ 进程会落成 UnknownEvent/Crimson（manifest 未注册）——
   //   我们的目标客户端是 .NET Framework 4.5.2，正是能解的那类。
-  const ALLOC_SESSION = 'dshperfalloc'
   const ALLOC_PROVIDER = 'Microsoft-Windows-DotNETRuntime:0x1:0x5:\'stack\''
 
-  async function allocSessionStop(mergedEtl) {
+  async function allocSessionStop(sessionName, mergedEtl) {
     // -d 合并：把原始 etl 合成带模块归属的最终 etl（原生帧才有模块名）。给了 mergedEtl 才合并。
-    const args = mergedEtl ? ['-stop', ALLOC_SESSION, '-d', mergedEtl] : ['-stop', ALLOC_SESSION]
+    const args = mergedEtl ? ['-stop', sessionName, '-d', mergedEtl] : ['-stop', sessionName]
     const r = await runExe(c.xperf, args, { timeoutMs: 300000 })
     const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 300)
-    return { ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw }
+    return { ok: Boolean(r) && r.code === 0 && !r.timedOut, exitCode: r ? r.code : null, raw }
   }
 
   async function allocSessionStart(rawEtl) {
-    await allocSessionStop() // 清掉可能残留的同名会话
-    const args = ['-start', ALLOC_SESSION, '-on', ALLOC_PROVIDER, '-f', rawEtl]
+    const sessionName = 'dshperfalloc-' + randomUUID()
+    const args = ['-start', sessionName, '-on', ALLOC_PROVIDER, '-f', rawEtl]
     const r = await runExe(c.xperf, args, { timeoutMs: 120000 })
     const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 500)
     return {
       ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw,
-      session: ALLOC_SESSION, etlPath: rawEtl, command: 'xperf ' + args.join(' '),
+      session: sessionName, etlPath: rawEtl, command: 'xperf ' + args.join(' '),
     }
   }
 
@@ -423,12 +426,31 @@ export function makeTrace(cfg = {}) {
     const timeoutMs = Math.min(Math.max(Number(args.timeoutMs) || 900000, 10000), 3600000)
     const dir = dirname(etl)
     const stem = basename(etl).replace(/\.etl$/i, '')
-    const summaryPath = args.summaryPath ? String(args.summaryPath) : join(dir, stem + '.clr-summary.txt')
+    const attemptId = randomUUID()
+    const fileIdentity = path => {
+      const state = statSync(path)
+      return { path: realpathSync(path), size: state.size, mtimeMs: state.mtimeMs, ctimeMs: state.ctimeMs, ino: state.ino }
+    }
+    const inputBefore = fileIdentity(etl)
+    const inputHash = createHash('sha256')
+    for await (const chunk of createReadStream(etl)) inputHash.update(chunk)
+    const input = { sha256: inputHash.digest('hex'), decoder: fileIdentity(c.tracerpt), version: 1 }
+    if (JSON.stringify(inputBefore) !== JSON.stringify(fileIdentity(etl))) return { ok: false, state: 'input-changed', etlPath: etl, error: 'ETL 在计算指纹时变化，未开始分析' }
+    const xmlPath = args.xmlPath ? String(args.xmlPath) : join(dir, stem + '.' + attemptId + '.clr.xml')
+    const manifestPath = xmlPath + '.manifest.json'
+    let cached = null
+    if (args.reuse === true) {
+      try {
+        cached = JSON.parse(readFileSync(manifestPath, 'utf8'))
+        if (JSON.stringify(cached.input) !== JSON.stringify(input) || JSON.stringify(cached.xml) !== JSON.stringify(fileIdentity(xmlPath)) || JSON.stringify(cached.summary) !== JSON.stringify(fileIdentity(cached.summary.path))) throw new Error('输入、解码器或缓存产物已变化')
+      } catch (error) { return { ok: false, state: 'cache-mismatch', etlPath: etl, xmlPath, error: '无法复用 XML：' + error.message } }
+    } else if (existsSync(xmlPath)) return { ok: false, state: 'output-exists', etlPath: etl, xmlPath, error: 'XML 输出已存在；请使用新路径或显式 reuse=true 验证缓存' }
+    const summaryPath = cached?.summary.path || (args.summaryPath ? String(args.summaryPath) : join(dir, stem + '.' + attemptId + '.clr-summary.txt'))
     const etlBytes = statSync(etl).size
 
     // ① 便宜的先跑：`-summary` 且**不带 `-o`** ⇒ 不生成 XML。实测 79.5 MB 的 etl 14 秒出结果，
     //    足够回答"这个 etl 里到底有没有 CLR provider"这个真正的前置问题。
-    const g = await runExe(c.tracerpt, [etl, '-summary', summaryPath, '-y'], { timeoutMs })
+    const g = cached ? { code: 0, stdout: '', stderr: '' } : await runExe(c.tracerpt, [etl, '-summary', summaryPath, '-y'], { timeoutMs })
     const gateRaw = (((g && g.stdout) || '') + ((g && g.stderr) || '')).trim().slice(-500)
     if (!g || g.timedOut) {
       return { ok: false, state: 'tracerpt-timeout', etlPath: etl, etlBytes, summaryPath, raw: gateRaw, error: 'tracerpt 读摘要超时' }
@@ -467,7 +489,7 @@ export function makeTrace(cfg = {}) {
     //    几百 MB 的系统 trace 会变成 GB 级 —— 所以默认设闸，并把估算值如实报出来。
     const estXmlBytes = Math.round(etlBytes * 6)
     const maxXmlBytes = (Number(args.maxXmlMb) > 0 ? Number(args.maxXmlMb) : 2048) * 1024 * 1024
-    if (estXmlBytes > maxXmlBytes) {
+    if (!cached && estXmlBytes > maxXmlBytes) {
       return {
         ok: false, state: 'xml-too-large', etlPath: etl, etlBytes, summaryPath, summary,
         estimatedXmlBytes: estXmlBytes, maxXmlBytes,
@@ -475,11 +497,10 @@ export function makeTrace(cfg = {}) {
           Math.round(maxXmlBytes / 1048576) + ' MB（实测解码体积 ≈ etl × 4~6）⇒ 未解码。' +
           '**"有没有 GC"因此是未知，不是 0。**',
         hint: '三种走法：① 用 perf_trace(clr=true) 采一份**provider 独占**的小 etl（CLR 事件只占总量的极小部分）；' +
-          '② 传更大的 maxXmlMb；③ 传 xmlPath 直接复用已解好的 XML。',
+          '② 传更大的 maxXmlMb；③ 传 xmlPath 和 reuse=true 验证并复用本工具已解好的 XML。',
       }
     }
-    const xmlPath = args.xmlPath ? String(args.xmlPath) : join(dir, stem + '.clr.xml')
-    const d = await runExe(c.tracerpt, [etl, '-o', xmlPath, '-of', 'XML', '-y'], { timeoutMs })
+    const d = cached ? { code: 0, stdout: '', stderr: '' } : await runExe(c.tracerpt, [etl, '-o', xmlPath, '-of', 'XML', '-y'], { timeoutMs })
     const decRaw = (((d && d.stdout) || '') + ((d && d.stderr) || '')).trim().slice(-500)
     if (!d || d.timedOut) {
       return { ok: false, state: 'decode-timeout', etlPath: etl, summaryPath, summary, xmlPath, estimatedXmlBytes: estXmlBytes, raw: decRaw, error: '解码 XML 超时（**未解码 ⇒ 未知，不是 0**）' }
@@ -488,13 +509,14 @@ export function makeTrace(cfg = {}) {
       return { ok: false, state: 'decode-failed', etlPath: etl, summaryPath, summary, xmlPath, exitCode: d.code, raw: decRaw, error: '解码 XML 失败（exit ' + d.code + '）—— **未解码 ⇒ 未知，不是 0**' }
     }
     const xmlBytes = statSync(xmlPath).size
-    let events = []
-    try { events = parseClrEvents(readFileSync(xmlPath, 'utf8')) } catch (e) {
+    if (xmlBytes > maxXmlBytes) return { ok: false, state: 'xml-too-large', etlPath: etl, xmlPath, xmlBytes, maxXmlBytes, error: '实际 XML 超过 maxXmlMb，未读取分析' }
+    let parsed
+    try { parsed = await readClrEvents(xmlPath, { pid, maxBytes: maxXmlBytes }) } catch (e) {
       return { ok: false, state: 'xml-unreadable', etlPath: etl, xmlPath, error: '解码后的 XML 读不出来：' + e }
     }
-    const originalParsedEvents = events.length
-    const availableProcessIds = [...new Set(events.map(event => event.processId).filter(processId => processId != null))].sort((left, right) => left - right)
-    if (pid != null) events = events.filter(event => event.processId === pid)
+    if (JSON.stringify(inputBefore) !== JSON.stringify(fileIdentity(etl))) return { ok: false, state: 'input-changed', etlPath: etl, error: 'ETL 在解码分析期间变化，未采用结果' }
+    if (!cached) writeFileSync(manifestPath, JSON.stringify({ input, xml: fileIdentity(xmlPath), summary: fileIdentity(summaryPath) }), 'utf8')
+    const { events, originalParsedEvents, availableProcessIds } = parsed
     const eventScope = { scope, pid, originalParsedEvents, parsedEvents: events.length, filteredEvents: events.length, excludedEvents: originalParsedEvents - events.length, availableProcessIds }
     if (pid != null && events.length === 0) return {
       ok: false, state: 'not-captured-for-target', etlPath: etl, etlBytes, xmlPath, xmlBytes, summaryPath,
@@ -511,7 +533,7 @@ export function makeTrace(cfg = {}) {
     // ③ 与 ② 的分界：provider 在、但窗口内一条 GC/Start 都没有 —— 这是**真的没有 GC**，要说清楚。
     const noGcInWindow = s.gcCount === 0
     return {
-      ok: true, state: 'clr-present', etlPath: etl, etlBytes, xmlPath, xmlBytes, summaryPath,
+      ok: true, state: 'clr-present', etlPath: etl, etlBytes, xmlPath, xmlBytes, summaryPath, reused: Boolean(cached), manifestPath,
       clrRuntimeEvents: summary.clrRuntimeEvents, clrRundownEvents: summary.clrRundownEvents,
       ...eventScope, eventsByKind,
       noGcInWindow,
@@ -542,7 +564,7 @@ export function makeTrace(cfg = {}) {
     }
 
     const dir = runDir(args.tag)
-    const etl = args.etlPath || join(dir, 'trace.etl')
+    let etl = args.etlPath || join(dir, 'trace.etl')
     // ⚠ 标记**固定在证据目录根**，不跟着 runDir 的时间戳漂移（否则 R1-04 的三个连环后果复现，见 traceSessionFile 注释）
     const sessionFile = traceSessionFile(c.evidenceDir)
 
@@ -581,6 +603,19 @@ export function makeTrace(cfg = {}) {
       //   老标记没有 engine 字段 ⇒ 按 'wpr' 读 —— 与 R1-14 之前的行为逐字一致（零回归）。
       let session0 = null
       try { session0 = JSON.parse(readFileSync(sessionFile, 'utf8')) } catch { session0 = null }
+      let lease = null
+      try { lease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8')) } catch { lease = null }
+      if (!session0?.attemptId || session0.state !== 'running' || lease?.attemptId !== session0.attemptId || (args.etlPath && args.etlPath !== session0.etlPath)) return { ok: false, error: '没有匹配的本工具运行会话和内核租约，未停止任何会话', sessionFile }
+      etl = session0.etlPath
+      const operationFile = c.kernelLeaseFile + '.stop'
+      try { writeFileSync(operationFile, session0.attemptId, { encoding: 'utf8', flag: 'wx' }) }
+      catch (error) { return { ok: false, busy: error.code === 'EEXIST', error: '停止操作锁不可用：' + error.message } }
+      try {
+      const currentLease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8'))
+      const currentSession = JSON.parse(readFileSync(sessionFile, 'utf8'))
+      if (currentLease.attemptId !== session0.attemptId || currentSession.attemptId !== session0.attemptId) return { ok: false, error: '停止操作取得锁后会话已变化，未停止任何会话' }
+      session0 = currentSession
+      const persistStop = () => writeFileSync(sessionFile, JSON.stringify(session0), 'utf8')
       const engine = (session0 && session0.engine === 'xperf') ? 'xperf' : 'wpr'
       const rawEtlPath = session0 && session0.rawPath ? String(session0.rawPath) : null
       const cancelOnly = action === 'cancel'
@@ -592,7 +627,8 @@ export function makeTrace(cfg = {}) {
       const clrEtlPath = session0 && session0.clrEtl
         ? String(session0.clrEtl)
         : (existsSync(clrFixed) ? clrFixed : null)
-      const clrStop = (session0 && session0.clrSession) ? await clrSessionStop() : null
+      const clrStop = (session0 && session0.clrSession) ? await clrSessionStop(session0.clrSession) : null
+      if (clrStop?.ok) { delete session0.clrSession; persistStop() }
       const clrFields = clrEtlPath ? { clrEtlPath, ...(clrStop ? { clrStop } : {}) } : {}
       // start 时若 CLR 会话没起来，警告在这里**补回来**（`action="run"` 只看得到最终结果）。
       if (session0 && session0.clrWarning && !clrFields.clrWarning) clrFields.clrWarning = session0.clrWarning
@@ -602,19 +638,22 @@ export function makeTrace(cfg = {}) {
       const jitEtlPath = session0 && session0.jitEtl
         ? String(session0.jitEtl)
         : (existsSync(jitFixed) ? jitFixed : null)
-      const jitStop = (session0 && session0.jitSession) ? await jitSessionStop() : null
+      const jitStop = (session0 && session0.jitSession) ? await jitSessionStop(session0.jitSession) : null
+      if (jitStop?.ok) { delete session0.jitSession; persistStop() }
       const jitFields = jitEtlPath ? { jitEtlPath, ...(jitStop ? { jitStop } : {}) } : {}
       if (session0 && session0.jitWarning && !jitFields.jitWarning) jitFields.jitWarning = session0.jitWarning
       // ★ 分配会话（xperf 用户会话）同样必须在这里停；-d 合并成带模块归属的 alloc-events.etl（否则孤儿会话吃盘）。
       const allocMerged = join(dirname(etl), 'alloc-events.etl')
-      const allocStop = (session0 && session0.allocSession) ? await allocSessionStop(allocMerged) : null
+      const allocStop = (session0 && session0.allocSession) ? await allocSessionStop(session0.allocSession, allocMerged) : null
+      if (allocStop?.ok) { delete session0.allocSession; persistStop() }
       const allocEtlPath = existsSync(allocMerged) ? allocMerged : null
       const allocFields = allocEtlPath ? { allocEtlPath, ...(allocStop ? { allocStop } : {}) } : {}
       if (session0 && session0.allocWarning && !allocFields.allocWarning) allocFields.allocWarning = session0.allocWarning
       let r = null
       let mergeRun = null
       if (engine === 'xperf') {
-        r = await runExe(c.xperf, ['-stop'], { timeoutMs: 300000 })
+        r = session0.kernelStopped ? { code: 0, stdout: '', stderr: '' } : await runExe(c.xperf, ['-stop'], { timeoutMs: 300000 })
+        if (r.code === 0 && !r.timedOut) { session0.kernelStopped = true; persistStop() }
         // ★ R1-14（2026-09-15 实测）：**合并这一步不能省**。`xperf -help symbols` 原文：
         //   "For symbol decoding, the trace must be ... stopped and merged with -d or merged with -merge
         //    ... [xperf performs a special image identification process during its custom trace merge.]"
@@ -624,9 +663,17 @@ export function makeTrace(cfg = {}) {
           mergeRun = await runExe(c.xperf, ['-merge', rawEtlPath, etl], { timeoutMs: 900000 })
         }
       } else {
-        r = await runExe(c.wpr, cancelOnly ? ['-cancel'] : ['-stop', etl], { timeoutMs: 300000 })
+        r = session0.kernelStopped ? { code: 0, stdout: '', stderr: '' } : await runExe(c.wpr, cancelOnly ? ['-cancel'] : ['-stop', etl], { timeoutMs: 300000 })
+        if (r.code === 0 && !r.timedOut) { session0.kernelStopped = true; persistStop() }
       }
-      try { rmSync(sessionFile, { force: true }) } catch { /* 标记删不掉不影响停止结果 */ }
+      const releaseSession = () => {
+        const currentLease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8'))
+        if (currentLease.attemptId !== session0.attemptId) throw new Error('内核租约拥有者已变化')
+        rmSync(sessionFile, { force: true })
+        rmSync(c.kernelLeaseFile)
+      }
+      const auxiliariesStopped = [clrStop, jitStop, allocStop].every(result => !result || result.ok)
+      if (r?.code === 0 && !r.timedOut && auxiliariesStopped) releaseSession()
       // 兼容 R1-04 修复前写下的**孤儿标记**（在 trace-<stamp>/ 里）：只删属于本次这份 etl 的那个，
       // 免得误删另一次会话（虽然按新契约不该再有第二个位置，但盘上确实可能还留着旧的）。
       try {
@@ -635,7 +682,7 @@ export function makeTrace(cfg = {}) {
         if (s && String(s.etlPath || '').toLowerCase() === String(etl).toLowerCase()) rmSync(legacy, { force: true })
       } catch { /* 没有孤儿标记 / 不属于本次：都不动 */ }
       if (cancelOnly) {
-        return { ok: Boolean(r) && r.code === 0, cancelled: true, engine, ...clrFields, raw: (r ? (r.stdout + r.stderr) : '').slice(0, 400) }
+        return { ok: Boolean(r) && r.code === 0 && !r.timedOut && auxiliariesStopped, cancelled: r?.code === 0 && !r.timedOut, engine, ...clrFields, raw: (r ? (r.stdout + r.stderr) : '').slice(0, 400) }
       }
       if (!existsSync(etl)) {
         const rTxt = r ? (r.stdout + r.stderr) : ''
@@ -656,7 +703,12 @@ export function makeTrace(cfg = {}) {
         const sig = /0x80010106|Cannot change thread mode/i.test(rTxt) ? 'RPC_E_CHANGED_MODE(0x80010106)' : null
         const exitCode = r ? r.code : null
         let cleanup = null
-        try { const cr = await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 }); cleanup = (cr.stdout + cr.stderr).trim().slice(0, 200) } catch { /* ignore */ }
+        if (engine === 'wpr' && (r?.code !== 0 || r.timedOut)) {
+          const cleanupResult = await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 })
+          cleanup = (cleanupResult.stdout + cleanupResult.stderr).trim().slice(0, 200)
+          if (cleanupResult.code === 0 && !cleanupResult.timedOut) { session0.kernelStopped = true; persistStop() }
+          if (cleanupResult.code === 0 && !cleanupResult.timedOut && auxiliariesStopped) releaseSession()
+        }
         return {
           ok: false, engine, ...clrFields,
           error: '停止后未生成 etl' + (sig
@@ -675,6 +727,7 @@ export function makeTrace(cfg = {}) {
           cleanedUp: cleanup,
         }
       }
+      if (r?.code !== 0 || r.timedOut || !auxiliariesStopped || (mergeRun && (mergeRun.code !== 0 || mergeRun.timedOut))) return { ok: false, engine, error: '采集停止或合并失败，未采用已有 ETL', exitCode: r?.code, ...clrFields, ...jitFields, ...allocFields }
       const size = statSync(etl).size
       let clrEtlBytes = null
       if (clrEtlPath && existsSync(clrEtlPath)) { try { clrEtlBytes = statSync(clrEtlPath).size } catch { clrEtlBytes = null } }
@@ -702,6 +755,7 @@ export function makeTrace(cfg = {}) {
                 : '（' + clrEtlBytes + ' 字节）')
             : ''),
       }
+      } finally { rmSync(operationFile, { force: true }) }
     }
 
     // start / run
@@ -713,11 +767,28 @@ export function makeTrace(cfg = {}) {
     if (!['auto', 'wpr', 'xperf'].includes(engineArg)) {
       return { ok: false, error: '未知 engine（可用 auto | wpr | xperf）' }
     }
+    const attemptId = randomUUID()
+    const starting = { attemptId, ownerPid: process.pid, state: 'starting', etlPath: etl, startedAt: Date.now() }
+    try {
+      mkdirSync(dirname(c.kernelLeaseFile), { recursive: true })
+      writeFileSync(c.kernelLeaseFile, JSON.stringify(starting), { encoding: 'utf8', flag: 'wx' })
+    } catch (error) { return { ok: false, busy: error.code === 'EEXIST', error: '内核采集租约不可用：' + error.message, leaseFile: c.kernelLeaseFile } }
+    try { writeFileSync(sessionFile, JSON.stringify(starting), { encoding: 'utf8', flag: 'wx' }) }
+    catch (error) {
+      rmSync(c.kernelLeaseFile)
+      return { ok: false, busy: error.code === 'EEXIST', error: '采集会话标记不可用：' + error.message, sessionFile }
+    }
+    const abandonStart = () => { rmSync(sessionFile); rmSync(c.kernelLeaseFile) }
     const preflight = args.skipPreflight === true ? null : await probeWprStop()
+    if (preflight?.busy || preflight?.cleanupOk === false) {
+      if (preflight.cleanupOk && preflight.startCode != null) abandonStart()
+      return { ok: false, busy: true, preflight, error: 'WPR 预检未取得会话或清理未完成，未启动第二次采集' }
+    }
     const engine = engineArg === 'auto'
       ? ((preflight && preflight.ok === false) ? 'xperf' : 'wpr')
       : engineArg
     if (engine === 'xperf' && !existsSync(c.xperf)) {
+      abandonStart()
       return {
         ok: false, engine,
         error: 'xperf.exe 不存在：' + c.xperf + '（可用 DSH_PERF_XPERF 指定；engine=auto 时"WPR 收尾坏了"会路由到这里）',
@@ -761,7 +832,8 @@ export function makeTrace(cfg = {}) {
       startArgs.push('-filemode')
       started = await runExe(c.wpr, startArgs, { timeoutMs: 180000 })
     }
-    if (started.code !== 0) {
+    if (started.code !== 0 || started.timedOut) {
+      if (!started.timedOut) abandonStart()
       return { ok: false, engine, error: engine + ' -start 失败', raw: (started.stdout + started.stderr).slice(0, 500), profiles, ...(preflight ? { preflight } : {}) }
     }
     // CLR 会话（`clr=true`，默认关）。
@@ -812,7 +884,7 @@ export function makeTrace(cfg = {}) {
     // ★ CLR 同理：标记里记下会话名与 etl，stop 才能把它停掉（否则留下一直在写盘的孤儿会话）。
     try {
       writeFileSync(sessionFile, JSON.stringify({
-        etlPath: etl, startedAt: Date.now(), profile: key, tag: args.tag || null, dir, engine,
+        attemptId, ownerPid: process.pid, state: 'running', etlPath: etl, startedAt: Date.now(), profile: key, tag: args.tag || null, dir, engine,
         ...(engine === 'xperf' ? { rawPath: rawEtl } : {}),
         ...(clr && clr.ok ? { clrSession: clr.session, clrEtl: clr.etlPath } : {}),
         // ★ clrWarning 也要进标记：`action="run"` 是**一次性**调用，用户只读得到最后一个结果 ——
@@ -823,7 +895,7 @@ export function makeTrace(cfg = {}) {
         ...(alloc && alloc.ok ? { allocSession: alloc.session, allocRaw: alloc.etlPath } : {}),
         ...(allocWarning ? { allocWarning } : {}),
       }), 'utf8')
-    } catch { /* 标记写不进去要在 status 里如实体现 */ }
+    } catch (error) { return { ok: false, captureStarted: true, sessionFile, attemptId, error: '采集已启动但会话状态保存失败：' + error.message } }
     if (action === 'start') {
       return {
         ok: true, started: true, profile: key, profiles, etlPath: etl, engine,
@@ -925,7 +997,7 @@ export function makeTrace(cfg = {}) {
     if (!existsSync(c.xperf)) return { ok: false, error: 'xperf.exe 不存在：' + c.xperf + '（可用 DSH_PERF_XPERF 指定）' }
     const topN = Math.min(Math.max(Number(args.topN) || 15, 1), 200)
     const minHits = Math.min(Math.max(Number(args.minHits) || 5, 1), 10000)
-    const outHtml = args.outPath || join(join(etl, '..'), 'hotstacks.html')
+    const outHtml = args.outPath || join(dirname(etl), 'hotstacks-' + randomUUID() + '.html')
 
     // ⚠️ 关键：**必须显式带 `-symbols`**。xperf 的帮助原文是
     //   "If action symbols is not specified on the command line, symbol decoding is disabled."
@@ -991,6 +1063,7 @@ export function makeTrace(cfg = {}) {
         raw: rawTxt.slice(0, 800),
       }, rawFields)
     }
+    if (r.code !== 0) return { ok: false, etlPath: etl, error: 'xperf 执行失败，未采用报告', exitCode: r.code, ...rawFields }
     const html = readFileSync(outHtml, 'utf8')
     const parsed = parseStackReport(html)
     parsed.__etl = etl
@@ -1069,7 +1142,8 @@ export function makeTrace(cfg = {}) {
     const symbols = args.symbols === true
     const frameMode = symbols ? 'symbols' : 'module'
     const dir = dirname(etl)
-    const csv = args.csvPath || join(dir, 'flame-dumper.csv')
+    const attemptId = randomUUID()
+    const csv = args.csvPath || join(dir, 'flame-' + attemptId + '-dumper.csv')
     const reusing = Boolean(args.csvPath) && existsSync(csv)
 
     // ── JIT 映射（§4）：把客户端自己的 `"Unknown"!0xADDR` JIT 帧解成真实托管方法名。
@@ -1099,7 +1173,7 @@ export function makeTrace(cfg = {}) {
           error: 'xperf -a dumper 解码超时（' + dumperMs + 'ms）。dumper 的 CSV 是 etl 的 ~7×，大 etl 很慢 —— ' +
             '建议用更短的采集时长重采，或加大 timeoutMs。', raw: (r.stdout + '\n' + r.stderr).slice(-500) }
       }
-      if (!existsSync(csv)) {
+      if (r.code !== 0 || !existsSync(csv)) {
         return { ok: false, etlPath: etl, error: 'xperf -a dumper 未产出 CSV', raw: (r.stdout + '\n' + r.stderr).slice(-600) }
       }
     }
@@ -1124,8 +1198,8 @@ export function makeTrace(cfg = {}) {
     const resolvedLeafRatio = fold.stacksFolded ? resolvedLeafSamples / fold.stacksFolded : 0
 
     const tree = buildTree(fold.folded, proc + ' (CPU)')
-    const foldedPath = join(dir, 'flame.folded')
-    const htmlPath = join(dir, 'flame.html')
+    const foldedPath = join(dir, 'flame-' + attemptId + '.folded')
+    const htmlPath = join(dir, 'flame-' + attemptId + '.html')
     const jitSub = fold.jit && fold.jit.attempted
       ? ' · JIT 解析 ' + fold.jit.resolved + '/' + fold.jit.attempted + ' 帧'
       : ''
@@ -1146,7 +1220,7 @@ export function makeTrace(cfg = {}) {
       jit: fold.jit, jitEtl: jitEtl || null, jitInfo,
       csvBytes, csvKept: Boolean(reusing || args.keepCsv === true), csvPath: (reusing || args.keepCsv === true) ? csv : null,
       dumperMs, elapsedMs: Date.now() - t0,
-      hint: '产物：flame.html（浏览器打开，可点击缩放 / 悬停 / 搜索）；flame.folded（可直接拖进 https://speedscope.app，或喂 flamegraph.pl）。' +
+      hint: '产物见 htmlPath（浏览器打开，可点击缩放 / 悬停 / 搜索）和 foldedPath（可导入 speedscope）。' +
         (jitMap ? '\n已接 JIT 映射：客户端 `"Unknown"` 帧尽量解成了真实托管方法名（' + (fold.jit ? fold.jit.resolved + '/' + fold.jit.attempted : '0/0') + '）。'
           : (jitEtl ? '\n⚠ 找到 jit-methods.etl 但映射没建起来（见 jitInfo）——客户端 JIT 帧仍是 [unknown]。'
             : '\n未接 JIT 映射：客户端自己的方法名会聚成 [unknown]（JIT，见 §3）。要真实方法名，采集时带 perf_trace(jit=true)。')) +
@@ -1174,7 +1248,8 @@ export function makeTrace(cfg = {}) {
     const symbols = args.symbols === true
     const frameMode = symbols ? 'symbols' : 'module'
     const dir = dirname(etl)
-    const csv = args.csvPath || join(dir, 'alloc-dumper.csv')
+    const attemptId = randomUUID()
+    const csv = args.csvPath || join(dir, 'alloc-' + attemptId + '-dumper.csv')
     const reusing = Boolean(args.csvPath) && existsSync(csv)
 
     // ★ 分配采样是 xperf 用户会话 ⇒ AllocationTick 行进程名多为 `"Unknown" (PID)`：必须按 **PID** 过滤。
@@ -1202,7 +1277,7 @@ export function makeTrace(cfg = {}) {
       const r = await runExe(c.xperf, cmd, { timeoutMs: Number(args.timeoutMs) || 900000, env: symbolEnv(!symbols) })
       dumperMs = Date.now() - t0
       if (r.timedOut) { try { if (existsSync(csv)) rmSync(csv, { force: true }) } catch { /* ignore */ } ; return { ok: false, timedOut: true, etlPath: etl, error: 'xperf -a dumper 解码超时（' + dumperMs + 'ms）' } }
-      if (!existsSync(csv)) return { ok: false, etlPath: etl, error: 'xperf -a dumper 未产出 CSV', raw: (r.stdout + '\n' + r.stderr).slice(-600) }
+      if (r.code !== 0 || !existsSync(csv)) return { ok: false, etlPath: etl, error: 'xperf -a dumper 失败或未产出 CSV', exitCode: r.code, raw: (r.stdout + '\n' + r.stderr).slice(-600) }
     }
     const csvBytes = existsSync(csv) ? statSync(csv).size : null
 
@@ -1215,8 +1290,8 @@ export function makeTrace(cfg = {}) {
           '可能：① 采样期间它没怎么分配；② 进程名/正则不对；③ 它是 .NET Core/5+，其 GCAllocationTick 在本机解不出 manifest（落成 UnknownEvent）。**别读成"它不分配内存"**。' }
     }
     const tree = buildTree(fold.folded, proc + ' (alloc bytes)')
-    const foldedPath = join(dir, 'alloc-flame.folded')
-    const htmlPath = join(dir, 'alloc-flame.html')
+    const foldedPath = join(dir, 'alloc-flame-' + attemptId + '.folded')
+    const htmlPath = join(dir, 'alloc-flame-' + attemptId + '.html')
     const jitSub = fold.jit && fold.jit.attempted ? ' · JIT 解析 ' + fold.jit.resolved + '/' + fold.jit.attempted + ' 帧' : ''
     writeFileSync(foldedPath, foldedToText(fold.folded), 'utf8')
     writeFileSync(htmlPath, renderFlameHtml(tree, {
@@ -1230,7 +1305,7 @@ export function makeTrace(cfg = {}) {
       ticksAll: fold.ticksAll, ticksTarget: fold.ticksTarget, totalBytes: fold.totalBytes,
       topTypes: fold.topTypes, jit: fold.jit, jitEtl: jitEtl || null, jitInfo,
       csvBytes, dumperMs, elapsedMs: Date.now() - t0,
-      hint: '产物：alloc-flame.html（浏览器打开，按**分配字节**加权，可点击缩放/搜索）；alloc-flame.folded（可拖进 speedscope）。' +
+      hint: '产物见 htmlPath（浏览器打开，按分配字节加权，可点击缩放/搜索）和 foldedPath（可导入 speedscope）。' +
         '\n口径：AllocationTick 每 ~100KB 采一次 ⇒ 这是**采样**、权重是字节近似；**分配多 ≠ 泄漏**（泄漏看 perf_gcroot），它答的是"谁在制造 GC 压力/churn"。' +
         (jitMap ? '' : '\n未接 JIT 映射：客户端分配路径的自有方法会聚成 [unknown]（采集时带 perf_trace(jit=true) 可解名）。'),
     }
@@ -1251,7 +1326,7 @@ export function makeTrace(cfg = {}) {
     if (estXmlBytes > maxXmlBytes) {
       return { ok: false, info: { state: 'xml-too-large', jitEtl, etlBytes, estXmlBytes } }
     }
-    const xmlPath = join(dirname(jitEtl), basename(jitEtl).replace(/\.etl$/i, '') + '.jit.xml')
+    const xmlPath = join(dirname(jitEtl), basename(jitEtl).replace(/\.etl$/i, '') + '.' + randomUUID() + '.jit.xml')
     const d = await runExe(c.tracerpt, [jitEtl, '-o', xmlPath, '-of', 'XML', '-y'], { timeoutMs })
     if (!d || d.timedOut) return { ok: false, info: { state: 'decode-timeout', jitEtl, xmlPath } }
     if (d.code !== 0 || !existsSync(xmlPath)) {

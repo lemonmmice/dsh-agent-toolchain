@@ -10,7 +10,7 @@
  * 铁律：**任何异常都必须落到标记文件**，绝不能静默退出 —— 否则 build_status 只能看到
  * 「进程没了、也没结果」= crashed，虽然诚实但丢了原因。所以这里把错误写进 marker.error。
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { makeBuilder } from './builder.mjs'
 
 const markerPath = process.argv[2]
@@ -19,7 +19,9 @@ function patchMarker(patch) {
   let m = {}
   try { m = JSON.parse(readFileSync(markerPath, 'utf8')) } catch { /* 读不出就以空对象为底，至少把状态写下去 */ }
   const next = { ...m, ...patch }
-  try { writeFileSync(markerPath, JSON.stringify(next, null, 2), 'utf8') } catch { /* 写不出也没别的手段了 */ }
+  const temporary = markerPath + '.' + process.pid + '.tmp'
+  writeFileSync(temporary, JSON.stringify(next, null, 2), 'utf8')
+  renameSync(temporary, markerPath)
   return next
 }
 
@@ -31,7 +33,7 @@ async function main() {
     process.exit(2); return
   }
   // 记录 pid：build_status 用它判活（进程没了却仍 running ⇒ crashed）。
-  patchMarker({ pid: process.pid })
+  patchMarker({ pid: process.pid, state: 'running' })
   try {
     const builder = makeBuilder(marker.cfg || {})
     const result = await builder.build(marker.buildOpts || {})

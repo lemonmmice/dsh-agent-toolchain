@@ -135,11 +135,11 @@ const tools = () => [
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: (v && v.text) ? v.text : JSON.stringify(v) }] },
     async execute(args) {
       const mod = await loadStatus()
-      if (!mod || typeof mod.buildToolchainStatus !== 'function') {
+      if (!mod || typeof mod.toolchainStatusAsync !== 'function') {
         return { error: '环境自检不可用：插件被单独拷贝脱离了 monorepo（缺 lib/toolchain-status.mjs）' }
       }
       try {
-        const status = mod.buildToolchainStatus({ deep: args && args.deep === true })
+        const status = await mod.toolchainStatusAsync({ deep: args?.deep === true, fresh: args?.fresh === true })
         return { ...status, text: mod.renderToolchainStatus(status) }
       } catch (e) {
         return { error: String(e && e.message ? e.message : e) }

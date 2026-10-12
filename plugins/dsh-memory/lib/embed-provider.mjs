@@ -44,7 +44,8 @@ export class EmbedProvider {
 
   get label() { return this.mode === "minimax" ? "MiniMax embo-01" : "bigram（本地降级）"; }
 
-  async embed(text) {
+  async embed(text, { deadline = Infinity } = {}) {
+    if (Date.now() >= deadline) throw new Error('embedding deadline exceeded');
     if (this.mode === "bigram") {
       const { map, norm } = bigramVector(text);
       return { sparse: map, norm, dim: 0, kind: "bigram" };
@@ -60,7 +61,7 @@ export class EmbedProvider {
     //     后者内部的定时器是 **unref** 的，在"没有别的活动"的进程里**可能根本不触发**
     //     （本仓实测：单测里它就没触发，进程带着未 settle 的 await 退出）。
     //     保活与否不该决定"超时生不生效"。
-    const timeoutMs = Math.max(1000, Number(process.env.DSH_MEMORY_EMBED_TIMEOUT_MS) || 20000);
+    const timeoutMs = Math.min(Math.max(1000, Number(process.env.DSH_MEMORY_EMBED_TIMEOUT_MS) || 20000), Math.max(1, deadline - Date.now()));
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(new Error('embedding timeout')), timeoutMs);
     const aborted = new Promise((resolve, reject) => {

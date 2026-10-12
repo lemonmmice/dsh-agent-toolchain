@@ -13,6 +13,7 @@ const scratch = mkdtempSync(join(tmpdir(), 'dsh-mcp-bench-'))
 const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('DSH_')))
 Object.assign(env, {
   DSH_NO_ENV_FALLBACK: '1',
+  DSH_TEST: '1',
   DSH_MEMORY_DIR: join(scratch, 'memory'),
   DSH_FAILURE_CORPUS_DIR: join(scratch, 'failures'),
   DSH_API_CAPTURE_STORE: join(scratch, 'capture'),
@@ -25,7 +26,8 @@ const report = { measuredAt: new Date().toISOString(), node: process.version, pl
 const round = (value) => Math.round(value * 100) / 100
 const stats = (values) => {
   const sorted = [...values].sort((left, right) => left - right)
-  return { samples: values.map(round), median: round(sorted[Math.floor(sorted.length / 2)]), max: round(sorted.at(-1)) }
+  const percentile = fraction => round(sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)])
+  return { samples: values.map(round), median: percentile(0.5), p95: percentile(0.95), p99: percentile(0.99), max: round(sorted.at(-1)) }
 }
 let client
 let fixture
@@ -40,7 +42,7 @@ try {
     report.discovery = { tools: listed.tools.length, bytes: Buffer.byteLength(serialized), estimatedTokens: estimateTokens(serialized) }
     if (iteration < 2) await client.close()
   }
-  for (const name of ['toolchain_status', 'failure_stats', 'memory_status', 'memory_recall', 'ui_status', 'hang_packs']) {
+  for (const name of ['toolchain_status', 'build_status', 'failure_stats', 'memory_status', 'memory_recall', 'ui_status', 'hang_packs']) {
     const samples = []
     let result
     for (let iteration = 0; iteration < 5; iteration++) {
@@ -49,6 +51,23 @@ try {
       samples.push(performance.now() - started)
     }
     report.tools[name] = { ms: stats(samples), bytes: Buffer.byteLength(JSON.stringify(result)), isError: result.isError === true }
+  }
+  writeFileSync(join(scratch, 'slow-gate.mjs'), 'setTimeout(() => console.log("fixture completed"), 1500)')
+  report.gateConcurrency = {}
+  for (const concurrency of [1, 4, 8]) {
+    const gate = client.callTool({ name: 'verify_report', arguments: { runId: 'bench-gate-' + concurrency, task: 'controlled gate', claims: [{ kind: 'gate', statement: 'fixture completes', cmd: 'node slow-gate.mjs', cwd: scratch }] } })
+    await new Promise(resolve => setTimeout(resolve, 150))
+    const samples = []
+    for (let batch = 0; batch < 16; batch++) {
+      await Promise.all(Array.from({ length: concurrency }, async () => {
+        const started = performance.now()
+        const status = await client.callTool({ name: 'build_status', arguments: { runId: 'missing-fixture' } })
+        if (status.isError) throw new Error('benchmark status failed')
+        samples.push(performance.now() - started)
+      }))
+    }
+    const gateResult = await gate
+    report.gateConcurrency[concurrency] = { buildStatusMs: stats(samples), gateIsError: gateResult.isError === true }
   }
   fixture = createServer((request, response) => {
     const timer = setTimeout(() => response.end('{"fixture":true}'), 2300)

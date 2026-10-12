@@ -41,7 +41,7 @@ const GUIDANCE =
   '动态界面（登录、验证码、按界面情况分支）必须「看一步再做下一步」：用 ui_drive 逐步走，先用 ui_windows/read/shot(describe=true) 看现状，再用 waitFor={ms,state:"appear|gone|enabled|disabled"} 等条件成立再点（别靠猜 sleep），同名控件用 index，容器内定位用 inAid/inName，回车提交用 type 的 {ENTER}，滑块验证码用 drag。' +
   '实时性：ui_drive 走常驻 PowerShell 进程（启动成本只付一次，实测单动作 p50 30ms）；ui_flow 整段序列进一个进程批量执行（13 步实测 1.6s）。DSH_UI_SERVE=0 可退回一次性进程路径。' +
   '观测完整性（B-1）：read/state 结果恒带 skipped=N——本次枚举里「读不到状态」而被跳过的元素数（类型白名单/offscreen/match/去重这些正常过滤不算）；skipped>0 时同结果附带 warn，明确写出「本次清单不完整」。别把「没读到」当成「界面上没有」；skipped=null 表示该路径没回报（未知），不等于 0。' +
-  '视觉即返（推荐）：ui_launch 启动完成会自动截图并用视觉模型描述当前界面（返回 uiState.description，一步知道在登录页还是主界面）；ui_drive action=shot 加 describe=true 同样直接返回界面描述——优先用这两个，不必再单独 describe_image。需要深度视觉复核时才用 describe_image 对该 png 细看（当前主模型不读图）。' +
+  'ui_launch 默认只返回进程/窗口 readiness；includeScreenshot=true 才截图，describe=true 才截图并调用视觉模型。ui_drive action=shot 加 describe=true 同样可返回界面描述；像素是否能离开本机仍遵守敏感焦点检查。' +
   // ⚠ R1-09（2026-09-14 夜，黑盒验收 agent 原话）：「描述叫我调 describe_image，但本面只有 read_image，没有 describe_image」。
   //   这类"描述把人指去空处"本仓早有机器化的关（`lib/toolface-parity.test.mjs` 的 F-040：描述里 `` `工具名(` `` 必须在本面存在），
   //   但 `describe_image` 被写进了那张测试的**宿主工具白名单**（`NON_PLUGIN_TOOLS`）⇒ **白名单一写，关就绕过去了**，而本面根本没有它。
@@ -123,11 +123,12 @@ function autoRecord(failureClass, task, description, extra = {}) {
 }
 
 /** 截图 + 视觉描述（视觉即返）：失败不阻断，返回 null；黑屏/空白自动等渲染重试。 */
-async function shotWithVision({ workspace = '', label = 'state', waitBeforeMs = 0, maxRetries = 2, procId = 0, allowSensitive = false } = {}) {
+async function shotWithVision({ workspace = '', label = 'state', waitBeforeMs = 0, maxRetries = 2, procId = 0, allowSensitive = false, describe = true } = {}) {
   if (waitBeforeMs > 0) await sleep(waitBeforeMs)
   for (let i = 0; i <= maxRetries; i++) {
     const s = await drv().drive({ action: 'shot', label: i === 0 ? label : label + '-retry' + i, workspace, procId })
     if (!s.ok) return null
+    if (!describe) return { screenshot: s.workspacePath || s.path, size: s.w + 'x' + s.h, description: null }
     // r44：交给视觉模型之前先问一句「焦点在密码框上吗」。像素无法脱敏 ⇒ 默认拒，只留 allowSensitive 这个显式出口。
     // 截图文件本身照常落盘（本地证据目录，不出网）。
     const sens = await drv().secretFocusNow({ procId })
@@ -169,9 +170,9 @@ const WAIT_AFTER = {
     aid: { type: 'string' },
     name: { type: 'string' },
     state: { type: 'string', enum: ['appear', 'gone', 'enabled', 'disabled'] },
-    ms: { type: 'integer', minimum: 1, maximum: 30000 },
-    interval: { type: 'integer', minimum: 1, maximum: 1000 },
-    winHandle: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+    ms: { type: 'integer' },
+    interval: { type: 'integer' },
+    winHandle: { type: 'integer' },
     winTitle: { type: 'string' },
   },
   description: '副作用动作成功后，用明确的 aid/name 定向确认条件，不读取整窗快照。state 默认 appear，ms 默认 1500，interval 默认 50；优先于 observe。actionOk 表示动作结果，confirmed 表示后置条件结果，确认失败不重放动作。',
@@ -220,8 +221,9 @@ const tools = () => [
       //   真机实测（2026-09-17 16:09，客户端早已在跑）：建证据目录 16:09:39 → 截图落盘 16:09:55
       //   → 焦点检查 16:10:12 → 之后才调视觉模型，整轮 ≈33s，而 GUI 上看起来就是"还在等"。
       //   现在：started !== true ⇒ 直接返回；要看当前界面请走 ui_status / ui_drive(shot, describe=true)。
-      if (l.ok === true && l.started === true) {
-        const st = await shotWithVision({ workspace: args.workspace || '', label: 'launch-state', waitBeforeMs: 3500, allowSensitive: args.allowSensitive === true })
+      l.readiness = l.ok === true ? 'window-ready' : (l.started === true ? 'spawned' : 'unknown')
+      if (l.ok === true && (args.includeScreenshot === true || args.describe === true)) {
+        const st = await shotWithVision({ workspace: args.workspace || '', label: 'launch-state', allowSensitive: args.allowSensitive === true, describe: args.describe === true })
         if (st) l.uiState = st
       }
       return l
@@ -534,17 +536,17 @@ const tools = () => [
     name: 'ui_flow',
     description: dshDescription('ui_flow'),
     parameters: {
-      steps: { type: 'array', required: true, items: { type: 'object', required: ['action'], additionalProperties: true, properties: {
-        action: { type: 'string', enum: ['find', 'click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'move', 'wheel', 'pattern', 'scroll', 'selecttext', 'read', 'state', 'shot', 'wait', 'waitfor', 'expect', 'windows', 'expectwindow', 'expecttext', 'waitany'] },
-        procId: { type: 'integer', minimum: 1 },
-        waitMs: { type: 'integer', minimum: 0, maximum: 30000 },
+      steps: { type: 'array', required: true, items: { type: 'object', additionalProperties: true, properties: {
+        action: { type: 'string', required: true, enum: ['find', 'click', 'setvalue', 'key', 'type', 'drag', 'clickat', 'doubleclick', 'move', 'wheel', 'pattern', 'scroll', 'selecttext', 'read', 'state', 'shot', 'wait', 'waitfor', 'expect', 'windows', 'expectwindow', 'expecttext', 'waitany'] },
+        procId: { type: 'integer' },
+        waitMs: { type: 'integer' },
         x: { type: 'number' }, y: { type: 'number' }, delta: { type: 'number' }, count: { type: 'number' },
         double: { type: 'boolean' }, button: { type: 'string' }, mods: { type: 'string' }, holdMs: { type: 'number' },
         captureMode: { type: 'string', enum: ['print', 'screen'] },
       } }, description: '步骤数组；支持clickat/doubleclick/move/wheel及原有动作；每步procId/waitMs可覆盖流程默认值；targetRef不支持流程' },
       tag: { type: 'string', description: '证据目录标签（如 verify-etf-dialog），默认 flow' },
-      procId: { type: 'integer', minimum: 1, description: '固定目标进程ID，步骤未指定时继承' },
-      waitMs: { type: 'integer', minimum: 0, maximum: 30000, description: '步骤默认动作后等待，可设0并使用waitfor定向确认；步骤waitMs优先' },
+      procId: { type: 'integer', description: '固定目标进程ID，步骤未指定时继承（运行时要求正整数）' },
+      waitMs: { type: 'integer', description: '步骤默认动作后等待，可设0并使用waitfor定向确认；步骤waitMs优先（运行时限制 0–30000ms）' },
       failFast: { type: 'boolean', description: '断言失败即停，默认 false' },
       allowSideEffects: { type: 'boolean', description: '含点击/输入/拖拽步骤时必须显式传 true' },
       approvalId: { type: 'string', description: '步骤统一使用的授权 ID' },

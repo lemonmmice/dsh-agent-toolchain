@@ -1,7 +1,8 @@
 // dsh-memory 插件核心：索引 / 检索 / KV 记忆
 import fs from "node:fs";
 import path from "node:path";
-import { splitIntoChunks } from "./chunker.mjs";
+import { createHash } from 'node:crypto';
+import { splitIntoChunks, CHUNKER_VERSION } from "./chunker.mjs";
 import { VectorStore } from "./store.mjs";
 import { KvMemory } from "./kv.mjs";
 import { EmbedProvider } from "./embed-provider.mjs";
@@ -57,7 +58,7 @@ export class DshMemory {
    *   ② **有界**：每个分块前检查 `deadline`，到点就停（返回 `deferred`），绝不"再等一会儿就完了"。
    *      并发有上界（串行是卡死主因；但仍要有限，别把远程 API 打爆）。
    */
-  async indexFile(filePath, relPath, rootDir, { evict = true, deadline = Infinity, concurrency = DEFAULT_CONCURRENCY, maxFileBytes = DEFAULT_MAX_FILE_BYTES } = {}) {
+  async indexFile(filePath, relPath, rootDir, { evict = true, deadline = Infinity, concurrency = DEFAULT_CONCURRENCY, maxFileBytes = DEFAULT_MAX_FILE_BYTES, skipUnchanged = false } = {}) {
     const st = fs.statSync(filePath);
     if (st.size > maxFileBytes) return { chunks: 0, sensitive: [], tooBig: st.size };   // 如实报"没索引，因为太大"
     const meta = { file: relPath, root: rootDir, mtime: st.mtimeMs, size: st.size,
@@ -66,8 +67,15 @@ export class DshMemory {
     // eviction sweep can judge existence on disk instead of on "is this file
     // part of the root being indexed right now" (which wiped other roots).
     const prefix = "file:" + filePath + ":";
-    const key = prefix + st.mtimeMs;
     const text = fs.readFileSync(filePath, "utf-8");
+    const contentHash = createHash('sha256').update(text).digest('hex');
+    const indexVersion = createHash('sha256').update(JSON.stringify([
+      contentHash, CHUNKER_VERSION, this.project, this.embed.mode ?? null,
+      this.embed.model ?? null, this.embed.baseURL ?? null, this.embed.dimensions ?? this.embed.dimension ?? null,
+    ])).digest('hex');
+    const key = prefix + st.mtimeMs + '~' + indexVersion;
+    Object.assign(meta, { contentHash, indexVersion, chunkerVersion: CHUNKER_VERSION });
+    if (skipUnchanged && this.store.countPrefix(key + '#') > 0) return { chunks: 0, sensitive: [], skipped: true };
     // Fail-closed sensitive screening on the INDEX path, not just KV save:
     // a chunk containing a token/secret must never be embedded, because
     // embedding may egress to a remote API.
@@ -87,7 +95,7 @@ export class DshMemory {
         if (i >= chunks.length) return;
         const c = chunks[i];
         try {
-          const vector = await this.embed.embed(c.text);
+          const vector = await this.embed.embed(c.text, { deadline });
           // Commit a whole file only after all embeddings succeed; periodic
           // batch flushes must never persist half of a file as 'already indexed'.
           pendingRows[i] = { id: key + "#" + c.index, vector, meta: { ...meta, chunkIndex: c.index, text: c.text }, updatedAt: Date.now() };
@@ -96,7 +104,7 @@ export class DshMemory {
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, chunks.length)) }, worker));
-    if (done === chunks.length) {
+    if (done === chunks.length && Date.now() < deadline) {
       const after = fs.statSync(filePath);
       if (after.mtimeMs !== st.mtimeMs || after.size !== st.size) {
         return { chunks: 0, sensitive: [], failed: 'source file changed during indexing; retry', rolledBack: done };
@@ -107,7 +115,7 @@ export class DshMemory {
     // Incomplete work exists only in this temporary array; previous complete
     // chunks remain available until a successful replacement is published.
     const removed = done;
-    if (failed) {
+    if (failed && Date.now() < deadline) {
       return { chunks: 0, sensitive: [], failed: String((failed && failed.message) || failed).slice(0, 300), rolledBack: removed };
     }
     return { chunks: 0, sensitive: [], deferred: true, rolledBack: removed };
@@ -122,6 +130,7 @@ export class DshMemory {
    *   而"再调一次就能接着做"这件事本来天然成立（已完成的文件按 mtime 被跳过），**只是没人告诉调用方**。
    */
   async indexWorkspace(rootDir, opts = {}) {
+    rootDir = path.resolve(rootDir);
     const startedAt = Date.now();
     const budgetMs = Number.isFinite(Number(opts.budgetMs)) && Number(opts.budgetMs) > 0
       ? Math.max(1000, Number(opts.budgetMs)) : DEFAULT_BUDGET_MS;
@@ -169,13 +178,11 @@ export class DshMemory {
       for (const f of files) {
         if (Date.now() >= deadline) { stoppedBy = 'budget'; stoppedIn = 'files'; break; }
         const rel = path.relative(rootDir, f);
-        let st;
-        try { st = fs.statSync(f); } catch { processed++; continue; }
-        if (this.store.countPrefix("file:" + f + ":" + st.mtimeMs) > 0) { skipped++; processed++; continue; } // mtime 未变 → 增量跳过
         try {
-          const r = await this.indexFile(f, rel, rootDir, { deadline, concurrency, maxFileBytes });
+          const r = await this.indexFile(f, rel, rootDir, { deadline, concurrency, maxFileBytes, skipUnchanged: true });
           processed++;
-          if (r.tooBig) sizeSkippedFiles.push({ file: rel, bytes: r.tooBig });
+          if (r.skipped) skipped++;
+          else if (r.tooBig) sizeSkippedFiles.push({ file: rel, bytes: r.tooBig });
           else if (r.failed) failedFiles.push({ file: rel, error: r.failed });
           else if (r.sensitive.length) sensitiveSkipped++;
           else if (r.deferred) { deferred++; stoppedBy = 'budget'; break; }   // 这一个文件都没做完 ⇒ 后面的下次再说
@@ -197,6 +204,7 @@ export class DshMemory {
     // 这类旧键一律不动（孤儿块无害），绝不误删。
     let deleted = 0;
     const sweepStart = Date.now();
+    const checkedFiles = new Set();
     for (const id of this.store.ids()) {
       const i = id.lastIndexOf(":");
       if (i <= "file:".length) continue;
@@ -204,6 +212,8 @@ export class DshMemory {
       if (!p.startsWith("file:")) continue;
       const abs = p.slice("file:".length);
       if (!path.isAbsolute(abs)) continue;
+      if (checkedFiles.has(abs)) continue;
+      checkedFiles.add(abs);
       if (!fs.existsSync(abs)) deleted += this.store.removePrefix(p + ":");
     }
     const sweepMs = Date.now() - sweepStart;
@@ -218,7 +228,7 @@ export class DshMemory {
         ? '**本次没做完**（' + (stoppedBy === 'budget' ? '到了时间预算 ' + budgetMs + 'ms' : '有中断') +
           (stoppedIn === 'load' ? '，而且**预算是花在装载索引上的**（loadMs=' + loadMs + '）' : '') +
           '）：还剩 ' + remaining +
-          ' 个文件。**再调一次 memory_index(同一个 path) 就能接着做** —— 已完成的文件按 mtime 被跳过，不会重做；' +
+          ' 个文件。**再调一次 memory_index(同一个 path) 就能接着做** —— 内容、模型与切块版本均未变的文件会被跳过；' +
           '想一次多做一些可以传更大的 budgetMs（或设 DSH_MEMORY_INDEX_BUDGET_MS）。' +
           (stoppedIn === 'load' ? '⚠ 本次预算在装载阶段用尽；同进程下次可复用缓存，冷启动时可调大 budgetMs 或拆小索引目录。' : '')
         : '本次已处理完全部文件。')(remaining > 0 || deferred > 0 || failedFiles.length > 0),
@@ -253,8 +263,9 @@ export class DshMemory {
     const hits = this.store.search(qv, k);
     const out = hits.map(({ vector, ...rest }) => {
       const o = { ...rest, score: typeof rest.score === 'number' ? Math.round(rest.score * 10000) / 10000 : rest.score };
+      o.meta = { ...o.meta, truncated: false, textLength: typeof o.meta?.text === 'string' ? o.meta.text.length : 0 };
       if (o.meta && typeof o.meta.text === 'string' && o.meta.text.length > 800) {
-        o.meta = { ...o.meta, text: o.meta.text.slice(0, 800) + '…（片段已截断，需要全文请直接读该文件）' };
+        o.meta = { ...o.meta, text: o.meta.text.slice(0, 800) + '…（片段已截断，需要全文请直接读该文件）', truncated: true };
       }
       return o;
     });

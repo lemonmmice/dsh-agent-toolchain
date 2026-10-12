@@ -19,12 +19,10 @@
 //   perf-evidence"里发现最新的 `*-dump/client.analysis.json` 来取得；找不到就**显式 SKIP 并计数**。
 import { summarizeDump, summaryPathFor, writeSummary, makePerf } from '../lib/perf.mjs'
 import { envOr } from '../../../lib/env-fallback.mjs'
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, readdirSync, writeFileSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
-import { fileURLToPath } from 'node:url'
-
-const HERE = dirname(fileURLToPath(import.meta.url))
+import { execFileSync } from 'node:child_process'
 
 let failures = 0
 let skipped = 0
@@ -169,26 +167,48 @@ const RAW_ANALYSIS = findRawAnalysis()
 }
 
 // ---------------------------------------------------------------------------
-// 4. 源码顺序守卫：analyzeDump 必须**先落盘再返回**（否则又退回"只在内存里"）
+// 4. analyzeDump 返回时，引用的归纳证据已经落盘；写失败可见。
 // ---------------------------------------------------------------------------
 {
-  const src = readFileSync(join(HERE, '..', 'lib', 'perf.mjs'), 'utf8')
-  const fnStart = src.indexOf('async function analyzeDump(')
-  check('找到 analyzeDump 定义', fnStart > 0, String(fnStart))
-  if (fnStart > 0) {
-    const rest = src.slice(fnStart)
-    const fnEnd = rest.indexOf('\n  async function ')
-    const body = fnEnd > 0 ? rest.slice(0, fnEnd) : rest.slice(0, 4000)
-    const iWrite = body.indexOf('writeSummary(')
-    const iRet = body.indexOf('return { ok: true, outPath')
-    check('★ analyzeDump 里调用了 writeSummary', iWrite > 0, 'not found')
-    check('★ writeSummary 出现在 return 之前（先落盘，再返回）',
-      iWrite > 0 && iRet > 0 && iWrite < iRet, `write@${iWrite} return@${iRet}`)
-    check('★ 返回值里带上 summaryPath（调用方/文档可引用）',
-      /summaryPath/.test(body.slice(iRet, iRet + 200)), body.slice(iRet, iRet + 200))
-    check('★ 返回值里带上 summaryWriteError（写失败可被发现）',
-      /summaryWriteError/.test(body.slice(iRet, iRet + 200)), body.slice(iRet, iRet + 200))
+  const srcRoot = join(tmp, 'source-fixture')
+  mkdirSync(srcRoot)
+  const sourceFile = join(srcRoot, 'MainWindow.cs')
+  writeFileSync(sourceFile, 'namespace Fixture {\n  public class MainWindow {\n    public void OnLoaded() { }\n  }\n}\n', 'utf8')
+  execFileSync('git', ['-C', srcRoot, 'init', '-q'], { windowsHide: true })
+  execFileSync('git', ['-C', srcRoot, 'add', '--', 'MainWindow.cs'], { windowsHide: true })
+  const dumpPath = join(tmp, 'runner-fixture.dmp')
+  writeFileSync(dumpPath, 'fixture dump')
+  const raw = {
+    dump: dumpPath,
+    threads: [{ managedId: 1, osId: 100, uiLikely: true, lockCount: 0,
+      frames: [{ type: 'Fixture.MainWindow', method: 'OnLoaded', module: 'Fixture.dll' }] }],
   }
+  let failSummaryWrite = false
+  const driver = makePerf({ srcRoot, evidenceDir: tmp, dumpstack: process.execPath, runExe: async (_executable, argumentsList) => {
+    if (argumentsList[0] === 'dacinfo') return { code: 1, stdout: '', stderr: 'fixture has no DAC', timedOut: false }
+    writeFileSync(argumentsList[1], JSON.stringify(raw), 'utf8')
+    if (failSummaryWrite) mkdirSync(summaryPathFor(argumentsList[1]))
+    return { code: 0, stdout: '', stderr: '', timedOut: false }
+  } })
+  const result = await driver.analyzeDump(dumpPath)
+  check('★ analyzeDump 返回时 summaryPath 已是可读取文件',
+    result.ok === true && existsSync(result.summaryPath) && statSync(result.summaryPath).isFile(), JSON.stringify(result))
+  const persisted = JSON.parse(readFileSync(result.summaryPath, 'utf8'))
+  const source = persisted.uiThread.frames[0].src
+  check('★ 真分析包装器落盘了真实源码声明行和 srcMap 摘要',
+    source?.file === 'MainWindow.cs' && source.line === 3 && source.where === 'method' && persisted.srcMap.framesResolved === 1,
+    JSON.stringify({ source, srcMap: persisted.srcMap }))
+  check('★ 返回值与磁盘归纳证据相同，原始分析未被摘要覆盖',
+    JSON.stringify(result.uiThread) === JSON.stringify(persisted.uiThread) && !('srcMap' in JSON.parse(readFileSync(result.outPath, 'utf8'))))
+  check('★ 成功落盘时 summaryWriteError 为空', result.summaryWriteError === null, String(result.summaryWriteError))
+
+  failSummaryWrite = true
+  const failedWrite = await driver.analyzeDump(dumpPath)
+  check('★ 归纳目标被目录占用时，真实 analyzeDump 返回明确写入错误',
+    failedWrite.ok === true && typeof failedWrite.summaryWriteError === 'string' && failedWrite.summaryWriteError.length > 0,
+    JSON.stringify(failedWrite.summaryWriteError))
+  check('★ 写入失败仍带目标路径且不冒充已落成的证据文件',
+    Boolean(failedWrite.summaryPath) && statSync(failedWrite.summaryPath).isDirectory(), String(failedWrite.summaryPath))
 }
 
 // ---------------------------------------------------------------------------

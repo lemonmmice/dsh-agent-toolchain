@@ -121,7 +121,7 @@ Embedding 的超时覆盖头部和 JSON 正文。非成功响应不读取并回�
 
 ### 6. 输出预算与日志读取
 
-输出预算继续默认关闭。开启 `DSH_OUTPUT_MAX_TOKENS` 后，全部 `content.text` 按顺序共享预算，先为末尾的唯一说明块预留开销。超限 JSON 变为合法的 `{outputBudget:{truncated:true,originalFormat:'json'},previewText:...}`，不继续伪装原来的完整对象。极小预算容不下最低说明时明确报告实际最小开销；图片、资源与 structuredContent 原样保留，不属于文本 token 预算。
+输出预算继续默认关闭。开启 `DSH_OUTPUT_MAX_TOKENS` 后，全部 `content.text` 按顺序共享预算，先为末尾的唯一说明块预留开销。超限 JSON 变为合法的截断 envelope，并保留 `state`、`errorCode`、`retryable`、`runId`、`jobId`、`evidenceRefs` 与 `summary` 等机器字段；`structuredContent` 也按同一估算上限截断，重复的 JSON 文本改为引用，避免模型收到两份大结果。极小预算容不下最低说明时明确报告实际最小开销；图片与资源块仍原样保留，不属于文本 token 预算。
 
 通用字符串截断移除了全量 `Array.from` 字符数组。独立子进程的 2 MiB 文本单次诊断，堆增长约 18.15 → 2.13 MiB，耗时约 64 → 42 ms；这不是峰值 RSS 或多轮统计。JSON 识别仍会解析原文，不能拿输出预算替代生产者内存上限。独立复核额外覆盖 4480 种小规模输入/预算组合，未发现未披露超预算或非文本块丢失。
 

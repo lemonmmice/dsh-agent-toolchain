@@ -119,6 +119,7 @@ export function renderErrors(v) {
 function backgroundLine(bg) {
   if (!bg || typeof bg !== 'object') return ''
   const age = Number.isFinite(bg.elapsedMs) ? '，已 ' + ageText(bg.elapsedMs) : ''
+  if (bg.state === 'starting') return '\n\n后台构建 jobId=' + bg.jobId + '：已提交，等待执行器确认启动' + age + '（再 build_status 轮询）。'
   if (bg.state === 'running') return '\n\n后台构建 jobId=' + bg.jobId + '：**运行中**' + age + '（再 build_status 轮询）。'
   if (bg.state === 'crashed') return '\n\n后台构建 jobId=' + bg.jobId + '：⚠ **崩溃/未完成**' + age + ' —— ' + (bg.note || '进程没了却没写出结果，别当成通过。')
   if (bg.state === 'unreadable') return '\n\n后台构建 jobId=' + bg.jobId + '：标记文件暂读不出（可能正在写），稍后再查。'
@@ -221,6 +222,7 @@ export function renderBuild(v) {
 function renderBuildCore(v) {
   if (!v) return '构建没有返回结果（工具执行异常）'
   // W4：后台启动结果（不阻塞）。build() 还没跑，只是把它交给了分离子进程。
+  if (v.background === true && v.state === 'starting') return '后台构建已提交（jobId=' + (v.jobId || '?') + '），等待执行器确认；尚无构建结果。用 build_status({jobId}) 轮询。'
   if (v.background === true && v.state === 'running') {
     return '后台构建已启动（jobId=' + (v.jobId || '?') + '，target=' + (v.target || '?') + '）—— **不阻塞**，本次调用立即返回。\n' +
       '用 build_status 轮询：state=running→done/crashed；done 后结果照常写进 last.json 与 run-' + (v.runId || v.jobId || '?') + '.json。'

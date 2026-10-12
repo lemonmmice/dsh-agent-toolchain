@@ -106,6 +106,7 @@ function appendRecords(rawRecords, opts = {}) {
   for (const raw of rawRecords) {
     const rec = normalize(raw)
     if (rec !== null) {
+      rec.evidenceLevel = opts.evidenceLevel === 'observed' ? 'observed' : 'imported'
       if (runId && rec.runId === undefined) rec.runId = runId
       records.push(rec)
     }
@@ -1720,7 +1721,7 @@ function createCapture() {
     if (queue.length === 0) return
     const batch = queue.splice(0, queue.length)
     try {
-      appendRecords(batch)
+      appendRecords(batch, { evidenceLevel: 'observed' })
     } catch {
       queue.unshift(...batch)
     }
@@ -1891,7 +1892,7 @@ function createProxy() {
     if (queue.length === 0) return
     const batch = queue.splice(0, queue.length)
     try {
-      appendRecords(batch)
+      appendRecords(batch, { evidenceLevel: 'observed' })
     } catch {
       queue.unshift(...batch)
     }

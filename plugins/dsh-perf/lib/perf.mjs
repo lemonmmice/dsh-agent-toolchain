@@ -298,7 +298,7 @@ export function makePerf(cfg) {
         // Q3：历史报告同样是"只测了 UI 线程"的那一份 —— 口径随报告一起走，别只在刚跑完时说明。
         measurementScope: MEASUREMENT_SCOPE,
         // F-007：这份报告会不会是用**旧代码**读出来的？一并说清（不陈旧时不加字段）。
-        ...(staleCodeInfo(moduleRoots(PLUGIN_DIR)) || {}),
+        ...(staleCodeInfo(moduleRoots(PLUGIN_DIR), { cacheMs: 1000 }) || {}),
       }
     } catch (e) {
       return {
@@ -356,9 +356,11 @@ export function makePerf(cfg) {
 
   // ------------------------------------------------------------ dump 分析
 
-  function findDac(dumpPath) {
+  async function findDac(dumpPath) {
     try {
-      const info = execFileSync(c.dumpstack, ['dacinfo', dumpPath], { encoding: 'utf8', windowsHide: true }).trim()
+      const result = await runExe(c.dumpstack, ['dacinfo', dumpPath], 30000)
+      if (result.timedOut || result.code !== 0) return null
+      const info = String(result.stdout || '').trim()
       const key = info.split(/\r?\n/)[0]
       if (!key) return null
       const dac = join(c.dacDir, key.replace('|', '_') + '.dll')
@@ -371,12 +373,14 @@ export function makePerf(cfg) {
   async function analyzeDump(dumpPath) {
     if (!existsSync(dumpPath)) return { ok: false, error: 'dump 不存在：' + dumpPath }
     if (!existsSync(c.dumpstack)) return { ok: false, error: 'DumpStack 不可用：' + (TOOLS.warnings.find((w) => w.startsWith('DumpStack')) || ('DumpStack 缺失：' + c.dumpstack)), toolDiagnostics: { procdump: TOOLS.procdumpExists, dumpstack: TOOLS.dumpstackExists, dacDir: TOOLS.dacDirExists, origins: TOOLS.origins, searched: TOOLS.searched } }
-    const outPath = dumpPath.replace(/\.dmp$/i, '.analysis.json')
+    const attemptId = randomUUID()
+    const outPath = dumpPath.replace(/\.dmp$/i, '') + '.' + attemptId + '.analysis.json'
     const args = [dumpPath, outPath]
-    const dac = findDac(dumpPath)
+    const dac = await findDac(dumpPath)
     if (dac) args.push(dac)
     const r = await runExe(c.dumpstack, args, 180000)
     if (r.timedOut) return { ok: false, error: 'DumpStack 超时' }
+    if (r.code !== 0) return { ok: false, error: 'DumpStack 执行失败', exitCode: r.code, attemptId, tail: (r.stdout + r.stderr).slice(-600) }
     let data
     try {
       data = JSON.parse(readFileSync(outPath, 'utf8').replace(/^\uFEFF/, ''))
@@ -386,6 +390,8 @@ export function makePerf(cfg) {
         return { ok: false, error: 'DumpStack 输出解析失败', tail: (r.stdout + r.stderr).slice(-600) }
       }
     }
+    if (!data || data.ok === false || !Array.isArray(data.threads)) return { ok: false, error: 'DumpStack 未返回有效线程分析', attemptId }
+    if (!existsSync(outPath)) writeFileSync(outPath, JSON.stringify(data), 'utf8')
     const summary = summarize(data)
     // F-035：`client.analysis.json` 是 **DumpStack 的原始输出**（线程/帧，只有 module+method），
     //   **源码映射（`.cs:行号`）根本不在里面** —— 它由 summarize()→srcMap.mapFrames() 现算，
@@ -396,7 +402,7 @@ export function makePerf(cfg) {
     //       client.analysis.json        = 原始（谁都能拿别的工具复核）
     //       client.analysis.summary.json= 含 srcMap 的归纳（文档/agent 引用的那份）
     const w = writeSummary(outPath, summary)
-    return { ok: true, outPath, summaryPath: w.summaryPath, summaryWriteError: w.error, ...summary }
+    return { ok: true, attemptId, outPath, summaryPath: w.summaryPath, summaryWriteError: w.error, ...summary }
   }
 
   /**
@@ -409,12 +415,14 @@ export function makePerf(cfg) {
     if (!existsSync(dumpPath)) return { ok: false, error: 'dump 不存在：' + dumpPath }
     if (!existsSync(c.dumpstack)) return { ok: false, error: 'DumpStack 不可用：' + (TOOLS.warnings.find((w) => w.startsWith('DumpStack')) || ('DumpStack 缺失：' + c.dumpstack)), toolDiagnostics: { procdump: TOOLS.procdumpExists, dumpstack: TOOLS.dumpstackExists, dacDir: TOOLS.dacDirExists, origins: TOOLS.origins, searched: TOOLS.searched } }
     const args = ['heapstats', dumpPath, String(Math.min(Math.max(topN || 30, 5), 100))]
-    const dac = findDac(dumpPath)
+    const dac = await findDac(dumpPath)
     if (dac) args.push(dac)
     const r = await runExe(c.dumpstack, args, 300000)
     if (r.timedOut) return { ok: false, error: 'heapstats 超时' }
+    if (r.code !== 0) return { ok: false, error: 'heapstats 执行失败', exitCode: r.code, tail: (r.stdout + r.stderr).slice(-600) }
     try {
       const data = JSON.parse(r.stdout)
+      if (!data || data.ok === false || !Array.isArray(data.top)) return { ok: false, error: 'heapstats 未返回有效堆分析' }
       // **单次快照不能判定泄漏**（2026-09-12「用户可见结论的最坏情况」主题自查）：
       //   工具描述写的是"两次 dump 对比同一类型的对象数增长即泄漏嫌疑"，但**输出里没有任何一句**
       //   提醒"这是一次快照"。agent 拿到一份干净的 Top N，很容易直接下结论"没有泄漏" ——
@@ -476,10 +484,11 @@ export function makePerf(cfg) {
     }
     const args = [dumpPath, '--top', String(Math.min(Math.max(Number(opts.top) || 30, 5), 100))]
     if (opts.type) { args.push('--type', String(opts.type)); args.push('--paths', String(Math.min(Math.max(Number(opts.paths) || 5, 1), 50))) }
-    const dac = findDac(dumpPath)
+    const dac = await findDac(dumpPath)
     if (dac) { args.push('--dac', dac) }
     const r = await runExe(c.heapRoots, args, 300000)
     if (r.timedOut) return { ok: false, error: 'HeapRoots 超时（堆很大时可调小 --top / 只查一个 --type）' }
+    if (r.code !== 0) return { ok: false, error: 'HeapRoots 执行失败', exitCode: r.code, tail: (r.stdout + r.stderr).slice(-600) }
     let data
     try { data = JSON.parse(String(r.stdout).trim().split('\n').pop()) } catch {
       return { ok: false, error: 'HeapRoots 输出解析失败', tail: (r.stdout + r.stderr).slice(-600) }

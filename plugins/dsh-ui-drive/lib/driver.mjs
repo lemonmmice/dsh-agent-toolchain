@@ -61,49 +61,47 @@ export function forceRestartDecision({ killed, stillHere }) {
   return { proceed: false, lateExit: false, reason: 'still-running' }
 }
 
-/**
- * 进程级互斥锁：文件已存在则等待（最多 DSH_UI_LOCK_WAIT_MS，默认 5 分钟），
- * 超过 DSH_UI_LOCK_STALE_MS（默认 15 分钟）的锁视为陈旧并回收。
- * 用同步 API 实现（makeDriver 是同步构造函数），等待期间阻塞主线程——对测试脚本足够。
- */
-const HELD_LOCKS = new Set()
+const HELD_LOCKS = new Map()
 /** 进程退出/信号处理器只注册一次：长跑脚本每轮新建 driver 会累积 listener
  *  （Node 默认上限 10，实测第 10 轮报 MaxListenersExceededWarning）。 */
 let LOCK_EXIT_HOOKED = false
 function acquireProcessLock(lockPath) {
-  if (HELD_LOCKS.has(lockPath)) return
-  const waitMs = Number(process.env.DSH_UI_LOCK_WAIT_MS || 300000)
-  const staleMs = Number(process.env.DSH_UI_LOCK_STALE_MS || 900000)
-  const deadline = Date.now() + waitMs
-  for (;;) {
-    try {
-      if (existsSync(lockPath)) {
-        let stale = false
-        try {
-          const info = JSON.parse(readFileSync(lockPath, 'utf8'))
-          stale = Date.now() - (info.ts || 0) > staleMs
-        } catch { stale = true }
-        if (stale) { try { rmSync(lockPath, { force: true }) } catch { /* ignore */ } }
-      }
-      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' })
-      HELD_LOCKS.add(lockPath)
-      const release = () => {
-        for (const p of [...HELD_LOCKS]) { try { rmSync(p, { force: true }) } catch { /* ignore */ } }
-        HELD_LOCKS.clear()
-      }
-      if (!LOCK_EXIT_HOOKED) {
-        LOCK_EXIT_HOOKED = true
-        process.once('exit', release)
-        for (const sig of ['SIGINT', 'SIGTERM']) {
-          process.once(sig, () => { release(); process.exit(0) })
-        }
-      }
-      return
-    } catch {
-      if (Date.now() >= deadline) throw new Error('dsh-ui-drive: 等待客户端互斥锁超时（' + lockPath + '）')
-      const until = Date.now() + 1000
-      while (Date.now() < until) { /* 同步等待 1s */ }
+  const held = HELD_LOCKS.get(lockPath)
+  if (held) {
+    held.references++
+    return
+  }
+  const record = JSON.stringify({ pid: process.pid, ts: Date.now(), token: randomUUID() })
+  try {
+    writeFileSync(lockPath, record, { flag: 'wx' })
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error
+    throw Object.assign(new Error('dsh-ui-drive: 客户端互斥锁已占用；未执行操作，持有者释放后可重试'), {
+      code: 'UI_LOCK_BUSY', state: 'busy', retryable: true, retryAfterMs: 1000,
+    })
+  }
+  HELD_LOCKS.set(lockPath, { record, references: 1 })
+  if (!LOCK_EXIT_HOOKED) {
+    LOCK_EXIT_HOOKED = true
+    const release = () => {
+      for (const path of HELD_LOCKS.keys()) releaseProcessLock(path, true)
     }
+    process.once('exit', release)
+    for (const signal of ['SIGINT', 'SIGTERM']) {
+      process.once(signal, () => { release(); process.exit(0) })
+    }
+  }
+}
+
+function releaseProcessLock(lockPath, force = false) {
+  const held = HELD_LOCKS.get(lockPath)
+  if (!held || (!force && --held.references > 0)) return
+  try {
+    if (readFileSync(lockPath, 'utf8') === held.record) rmSync(lockPath)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  } finally {
+    HELD_LOCKS.delete(lockPath)
   }
 }
 
@@ -136,6 +134,7 @@ export function makeDriver(cfg) {  const c = {
   // 锁文件路径由 DSH_UI_LOCK 指定；同进程内重复 makeDriver 复用同一把锁。
   const lockPath = c.lockPath !== undefined ? c.lockPath : (process.env.DSH_UI_LOCK || '')
   if (lockPath) acquireProcessLock(lockPath)
+  let lockReleased = false
 
   // ------------------------------------------------------------ 进程执行
 
@@ -2778,9 +2777,9 @@ export function makeDriver(cfg) {  const c = {
     approvalStatus: () => policy.approvalStatus ? policy.approvalStatus() : [],
     // 显式释放客户端互斥锁（长跑脚本轮间让锁用；进程退出时会自动释放）
     releaseLock: () => {
-      if (!lockPath) return
-      try { rmSync(lockPath, { force: true }) } catch { /* ignore */ }
-      HELD_LOCKS.delete(lockPath)
+      if (!lockPath || lockReleased) return
+      lockReleased = true
+      releaseProcessLock(lockPath)
     },
     // r44：`shot` + `describe` 之前把门（G1 黑盒指出：ui_live 有 secretFocused 防线，
     //   而**会把像素交给视觉模型**的 describe 通道没有）。**实现见上面的 secretFocusNow 成员** ——

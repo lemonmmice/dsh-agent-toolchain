@@ -44,10 +44,10 @@ for (const condition of [
   { aid: 'Ready', winHandle: 0 },
   { aid: 'Ready', winHandle: Number.MAX_SAFE_INTEGER + 1 },
 ]) assert.equal(mcpSchema.safeParse(condition).success, false, JSON.stringify(condition))
-for (const [field, maximum] of [['ms', 30000], ['interval', 1000], ['winHandle', Number.MAX_SAFE_INTEGER]]) {
+for (const field of ['ms', 'interval', 'winHandle']) {
   assert.equal(dshSchema.properties[field].type, 'integer')
-  assert.equal(dshSchema.properties[field].minimum, 1)
-  assert.equal(dshSchema.properties[field].maximum, maximum)
+  assert.equal(Object.hasOwn(dshSchema.properties[field], 'minimum'), false)
+  assert.equal(Object.hasOwn(dshSchema.properties[field], 'maximum'), false)
 }
 const base = { ok: true, action: 'click', output: 'CLICKED target', actionOk: true }
 const confirmed = renderDrive({ ...base, confirmed: true, waitAfter: { ok: true, found: true, waitedMs: 22, detail: 'Ready button' } })

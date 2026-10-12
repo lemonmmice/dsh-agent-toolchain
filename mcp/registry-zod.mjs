@@ -15,7 +15,12 @@ import { REGISTRY } from '../lib/tool-registry.mjs'
 function baseOf(p) {
   if (p.enum) return z.enum(p.enum)
   if (p.type === 'boolean') return z.boolean()
-  if (p.type === 'number' || p.type === 'integer') return z.number()
+  if (p.type === 'number' || p.type === 'integer') {
+    let schema = p.type === 'integer' ? z.number().int() : z.number()
+    if (p.minimum !== undefined) schema = schema.min(p.minimum)
+    if (p.maximum !== undefined) schema = schema.max(p.maximum)
+    return schema
+  }
   return z.string()
 }
 function zodOfParam(p) {
