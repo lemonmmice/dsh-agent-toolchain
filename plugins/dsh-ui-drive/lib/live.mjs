@@ -34,7 +34,7 @@
 import { envOr } from '../../../lib/env-fallback.mjs'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 // 落盘前也要脱敏（latest.json 是消费面）。render.mjs 不反向 import 本模块，无环。
 import { sanitizeLive } from './render.mjs'
@@ -76,6 +76,8 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
   }
   const st = {
     running: false,
+    starting: false,
+    generation: 0,
     timer: null,
     seq: 0,          // 帧序号（递增）
     frameCount: 0,
@@ -96,11 +98,12 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
 
   // ------------------------------------------------------------ 单帧捕获
   /** 抓一帧：capture 动作 → frame-<seq>.png → md5 → 原子 rename → latest.json。 */
-  async function captureFrame() {
+  async function captureFrame(generation = st.generation) {
     const seq = ++st.seq
     const out = join(c.dir, 'frame-' + seq + '.png')
     const t0 = Date.now()
     const r = await driver.drive({ action: 'capture', label: 'frame-' + seq, shotsDir: c.dir, timeoutMs: 8000 })
+    if (generation !== st.generation) return null
     const captureMs = Date.now() - t0
 
     // 客户端消失/最小化/无窗口：不是「坏帧」，是状态，绝不抛错
@@ -141,6 +144,7 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
     // 用 frame.path 指针兜底（读端永远拿到完整帧）。
     let renamed = false
     for (let i = 0; i < 3 && !renamed; i++) {
+      if (generation !== st.generation) return null
       try {
         renameSync(capPath, join(c.dir, 'latest.png'))
         renamed = true
@@ -151,7 +155,7 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
     }
 
     st.frameCount++
-    const fileName = renamed ? 'latest.png' : 'frame-' + seq + '.png'
+    const fileName = renamed ? 'latest.png' : basename(capPath)
     st.lastFrame = {
       seq,
       ts: Date.now(),
@@ -184,8 +188,9 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
    * Claude 评审 1.1）；失败不致命，但返回 null 时调用方必须 fail-closed（跳过抓帧）。
    * 返回 {ui, secretFocused}。
    */
-  async function refreshUi() {
+  async function refreshUi(generation = st.generation) {
     const r = await driver.drive({ action: 'state-live', max: c.maxControls, timeoutMs: 10000 })
+    if (generation !== st.generation) return null
     if (!r.ok) {
       st.lastError = 'ui state-live: ' + (r.error || 'failed')
       return null
@@ -210,7 +215,8 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
   }
 
   // ------------------------------------------------------------ tick
-  async function tick() {
+  async function tick(generation = st.generation) {
+    if (generation !== st.generation) return
     if (st.tickInFlight) return   // 单飞行：上一帧还在跑（agent 长动作占用通道）就跳过
     st.tickInFlight = true
     try {
@@ -221,7 +227,8 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
       let secretFocused = false
       const due = !st.lastUi || Date.now() - st.lastUi.ts >= c.stateIntervalMs
       if (due) {
-        const r = await refreshUi()
+        const r = await refreshUi(generation)
+        if (generation !== st.generation) return
         if (r) {
           secretFocused = r.secretFocused
           st.lastSecret = { value: r.secretFocused, ts: Date.now() }
@@ -248,10 +255,26 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
         }
         return
       }
-      await captureFrame()
+      await captureFrame(generation)
     } finally {
       st.tickInFlight = false
+      if (generation === st.generation) {
+        st.starting = false
+        writeLatestJson()
+      } else if (st.running) scheduleTick(st.generation)
     }
+  }
+
+  function scheduleTick(generation) {
+    setImmediate(() => {
+      if (!st.running || generation !== st.generation) return
+      tick(generation).catch(error => {
+        if (generation !== st.generation) return
+        st.starting = false
+        st.lastError = 'tick: ' + error.message
+        writeLatestJson()
+      })
+    })
   }
 
   // ------------------------------------------------------------ 对外
@@ -276,6 +299,8 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
     return {
       live: {
         running: st.running,
+        state: st.running ? (st.starting ? 'starting' : 'running') : 'stopped',
+        firstFrameReady: st.frameCount > 0,
         intervalMs: c.intervalMs,
         startedAt: st.startedAt,
         frameCount: st.frameCount,
@@ -298,21 +323,30 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
     if (opts.stateIntervalMs) c.stateIntervalMs = Math.max(1000, Math.min(Number(opts.stateIntervalMs) || 3000, 120000))
     if (opts.maxControls) c.maxControls = Math.max(5, Math.min(Number(opts.maxControls) || 40, 200))
     st.running = true
+    st.starting = true
+    const generation = ++st.generation
     st.startedAt = Date.now()
     st.autostopReason = null
-    st.seq = 0
     st.frameCount = 0
     st.failStreak = 0
-    // 立即抓第一帧（不等到第一个 interval）——agent 刚 start 就能看到画面
-    try { await tick() } catch (e) { st.lastError = 'first tick: ' + e.message }
-    st.timer = setInterval(() => { tick().catch((e) => { st.lastError = 'tick: ' + e.message }) }, c.intervalMs)
+    st.lastFrame = null
+    st.lastUi = null
+    st.lastClient = null
+    st.lastSecret = null
+    st.lastError = null
+    st.lastSkips = 0
+    scheduleTick(generation)
+    st.timer = setInterval(() => scheduleTick(generation), c.intervalMs)
     if (st.timer.unref) st.timer.unref()
+    writeLatestJson()
     return snapshot()
   }
 
   /** 停止循环（幂等）。Claude 1.6：stop/autostop 后回写 latest.json——
    *  否则只读该文件的脚本/面板永远看到 running:true（谎报）。 */
   function stop(reason = 'user') {
+    st.generation++
+    st.starting = false
     if (st.timer) {
       clearInterval(st.timer)
       st.timer = null
@@ -332,12 +366,14 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
    *  - allowSensitive=true：敏感帧（焦点=密码/验证码）也返回 path
    */
   async function frame(opts = {}) {
+    const generation = st.generation
     if (!st.running) {
       // 未启动：单次捕获（不启动循环，调用方自己决定要不要 start）。
       // Claude 2.1：一次性路径必须与循环路径一样先做敏感预检——否则
       // 「零配置 frame」对着登录页 = 密码/验证码画面路径直接裸奔。
-      st.seq = 0; st.frameCount = 0; st.failStreak = 0
-      const r = await refreshUi()
+      st.frameCount = 0; st.failStreak = 0
+      const r = await refreshUi(generation)
+      if (generation !== st.generation) return snapshot()
       if (r && r.secretFocused) {
         st.lastSkips = (st.lastSkips || 0) + 1
         st.lastSecret = { value: true, ts: Date.now() }
@@ -349,7 +385,7 @@ export function makeLive({ driver, dir = '', intervalMs = 1500, stateIntervalMs 
         st.lastError = (st.lastError || '') + ' | frame 一次性路径 state 失败，敏感判定未知 → 不出帧'
         return snapshot()
       }
-      await captureFrame()
+      await captureFrame(generation)
       return snapshot()
     }
     if (opts.fresh) await tick()

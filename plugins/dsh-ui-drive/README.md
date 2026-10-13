@@ -60,6 +60,13 @@ UIA 确认没找到目标才尝试视觉定位；不对超时或执行结果未�
 
 ## 能力
 
+`ui_launch` 默认只等待进程/窗口 readiness，不等待登录，不截图或调用视觉模型。
+`runtime.pid` 与 `runtime.processStartedAt` 标识实际执行的工具进程；`codeStale=true` 表示磁盘代码比该进程新。
+MCP 连接可能持续数小时，修改源码不会使已有连接自动加载新代码。需要重新连接并核对运行进程，不能把新起 stdio 测试的结果当成已有连接已更新。
+
+`ui_live(action=start)` 立即返回 `live.state=starting`、`firstFrameReady=false` 和空帧；首帧在后台采集。
+用 `wait` 或 `frame` 等待首帧，以 `firstFrameReady` 区分启动受理和画面已就绪。停止/重启会丢弃上一代未完成采集的结果。
+
 **Agent 工具（host 侧注册）**
 
 | 工具 | 说明 |
@@ -371,7 +378,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File test\read-skips-live.ps1
   一律返回 `{ok:false, unknown:true}` 并提示「先复核控件状态再决定」，绝不走回退路径重跑。
 - **`status` 超时 ≠ 未运行**：状态查询超时改为返回 `{running:false, unknown:true, error:'status 超时…'}`，
   `ui_status` 渲染成「客户端状态未知」——把「查询卡住」误报成「客户端没起来」会导致反复重启客户端（踩过）。
-- **启动/重启调用有硬上限**：`ui_launch` 的整段调用受 `waitMs` 硬上限约束（最小 3s），
+- **启动等待有预算**：`ui_launch` 的窗口轮询受 `waitMs` 预算约束（最小 3s），显式请求的截图/视觉描述不属于这个预算，
   **每次轮询都把剩余预算传给 `status()`**，任何一次卡住的状态查询都拖不垮整个调用；
   返回里带 `polls`/`statusTimeouts` 心跳，便于区分「客户端真没起来」与「轮询自身被拖慢」。
 - 诊断出口：`warmStatus()` 现在带 `lastOkAt` / `stalls` / `lastStallAt` / `lastStallReason`。

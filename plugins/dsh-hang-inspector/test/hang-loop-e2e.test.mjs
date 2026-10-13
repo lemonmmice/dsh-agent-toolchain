@@ -139,10 +139,10 @@ try {
     consecutive: 1,
   })
 
-  const st = insp.runStatus()
+  const st = await insp.runStatus()
   check('监测脚本解析到了**仓库自带副本**（不再是"未找到监测脚本"）', st.monitor.scriptExists === true && /plugins[\\/]dsh-hang-inspector[\\/]scripts/.test(st.monitor.scriptPath), JSON.stringify(st.monitor).slice(0, 300))
 
-  const run = insp.startRun({ maxSeconds: 90 })
+  const run = await insp.startRun({ maxSeconds: 90 })
   check('监测启动成功（ok:true）', run.ok === true, JSON.stringify(run).slice(0, 240))
 
   // 等一个证据包出现（受害者每 12s 堵 6s；监测每 1s 探一次、1.5s 超时判定）

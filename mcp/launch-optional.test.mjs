@@ -68,6 +68,12 @@ try {
       else assert.equal(result.uiState, undefined, surface)
       if (descriptions) assert.equal(result.uiState.description, 'fixture application ready', surface)
     }
+    launchResult = { ok: true, started: false, alreadyRunning: true }
+    calls.length = 0
+    const existing = await launch({})
+    assert.equal(existing.readiness, 'window-ready', surface)
+    assert.equal(existing.uiState, undefined, surface)
+    assert.equal(calls.length, 1, 'existing client must return without screenshot or vision by default')
     launchResult = { ok: false, started: true }
     calls.length = 0
     const partial = await launch({ includeScreenshot: true, describe: true })

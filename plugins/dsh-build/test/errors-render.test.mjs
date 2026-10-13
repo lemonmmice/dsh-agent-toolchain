@@ -60,6 +60,7 @@ function check(name, cond, extra = '') {
   check('★ 解析不出条目时**明说"空 ≠ 没有错误"**（这是工具描述里的原话，必须出现在渲染里）',
     /0 错误 \/ 0 警告/.test(empty) && /空 ≠ 没有错误/.test(empty), empty.slice(0, 260))
   check('没跑过时说"没有构建记录"', renderErrors({ hasRun: false }) === '没有构建记录', renderErrors({ hasRun: false }))
+  check('读取失败必须显示未完成原因', /解析未完成：read failed/.test(renderErrors({ hasRun: true, incomplete: true, readError: 'read failed', errors: [], warnings: [] })))
 }
 
 // ---------------------------------------------------------------- 5. 形状残缺不炸

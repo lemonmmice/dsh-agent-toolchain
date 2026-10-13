@@ -269,7 +269,7 @@ try {
   // 生产层早就算出了目标进程/取证工具/警告，渲染层却一个都不印 → agent 只能先启动监测、等用户复现、
   // 拿到一个没有 dump 的包，才知道本机抓不了 dump。源码根连生产层都没放进状态（现已补）。
   {
-    const real = { ...hng.runStatus(), evidenceDir: packsRoot }      // ← 真实产出，不是手写形状
+    const real = { ...await hng.runStatus(), evidenceDir: packsRoot }
     const rt = renderStatus(real)
     console.log('\n[renderStatus 真实产出]\n' + rt + '\n')
     check('生产层状态里有 monitor 预检字段（procName/toolWarnings/srcRoot…）',
@@ -326,7 +326,7 @@ try {
 
     // 生产层的真实键并集：**全部来自刚跑出来的对象**，没有一个是手写的
     const producer = new Set([
-      ...Object.keys(hng.runStatus()),
+      ...Object.keys(await hng.runStatus()),
       ...Object.keys(detail),
       ...Object.keys(report),
       ...Object.keys(report.source || {}),
@@ -402,8 +402,9 @@ try {
       for (const lit of sliceReturnLiterals(body)) for (const k of keysOfLiteral(lit)) keys.add(k)
       return keys.size ? keys : null
     }
-    const startKeys = extractKeys('startRun')
-    const stopKeys = extractKeys('stopRun')
+    check('启停包装器返回异步内部实现的结果', /return await startRunInner\(options\)/.test(hangSrc) && /return await stopRunInner\(\)/.test(hangSrc))
+    const startKeys = new Set([...(extractKeys('startRun') || []), ...(extractKeys('startRunInner') || [])])
+    const stopKeys = new Set([...(extractKeys('stopRun') || []), ...(extractKeys('stopRunInner') || [])])
     // `analyzePack()` 的产物字段：它靠 `writeState({...})` 落盘（不是 `return {`），而且需要**真 dump**
     // 才能执行 —— 所以这里用**源码断言**把它钉住（字段名必须在写盘处真实出现），再并入并集。
     // 不这么做的话，渲染层新加的 `cached/srcRoot/...` 会被判成"凭空读"（本轮就是这么被拓出来的）。

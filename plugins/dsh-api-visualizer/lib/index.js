@@ -35,6 +35,7 @@ import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote, re
 import { envOr } from '../../../lib/env-fallback.mjs'
 import { storeDir, normalize, readAll, getCaptureStorage, writeTrimMarker, clearRecords as clearSharedRecords } from '../../../lib/capture-store.mjs'
 import { shardName } from '../../../lib/capture-storage.mjs'
+import { queryCaptureAsync } from '../../../lib/capture-query-service.mjs'
 
 /** Stable cordis plugin name. */
 export const name = 'api-visualizer'
@@ -717,37 +718,32 @@ function makeRoutes(capture, proxy) {
 
         // GET /records?limit&offset&cursor&q&regex&method&source&status&flag&host&contentType&minDurationMs&minBytes&maxBytes&fromTs&toTs&sessionId&traceId&errors&noNoise&bodyQ&includeBody
         if (method === 'GET' && rest === '/records') {
-          const all = readAll()
           const includeBody = params.get('includeBody') === '1'
           const limitRaw = Number(params.get('limit'))
           const limit = Math.min(Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 200, 1), 2000)
           const offsetRaw = Number(params.get('offset'))
           const offset = Math.max(Number.isFinite(offsetRaw) ? Math.floor(offsetRaw) : 0, 0)
-          let items = sortNewestFirst(applyFilters(all, params))
-          const cursor = params.get('cursor')
-          if (cursor !== null && cursor !== '') {
-            const [tsText, id] = cursor.split('|')
-            const ts = Number(tsText)
-            if (Number.isFinite(ts)) items = items.filter((r) => Number(r.ts) < ts || (Number(r.ts) === ts && String(r.id) < String(id ?? '')))
-          }
-          const total = items.length
-          const page = items.slice(offset, offset + limit)
-          const oldest = page.length > 0 ? page[page.length - 1] : null
-          const nextCursor = oldest !== null ? `${oldest.ts}|${oldest.id}` : null
+          const filter = Object.fromEntries(params)
+          for (const key of ['regex', 'flag', 'errors', 'noNoise']) filter[key] = params.get(key) === '1'
+          for (const key of ['minDurationMs', 'minBytes', 'maxBytes', 'fromTs', 'toTs']) filter[key] = params.has(key) && params.get(key) !== '' ? Number(params.get(key)) : undefined
+          const snapshot = await queryCaptureAsync({ ...filter, limit, offset, includeBody }, storeDir(), { maxLimit: 2000, legacyCursor: true })
+          const page = snapshot.page.items
+          const total = snapshot.page.total
+          const nextCursor = snapshot.page.nextCursor
           // 面板路由同样要带新鲜度/归因（第十轮自查：它此前只回 total/items/cursor，
           // 于是面板与脚本消费者看不到"引擎没在跑 = 这是历史数据"和"归因没有生产者"）。
           let stForRoute = null
           try { stForRoute = capture && typeof capture.status === 'function' ? capture.status() : null } catch { stForRoute = null }
-          const view = buildQueryView({ records: page, all, status: stForRoute, callerFilter: String(params.get('caller') ?? ''), retention: retentionInfo() })
+          const view = buildQueryView({ records: page, summary: snapshot.summary, status: stForRoute, callerFilter: String(params.get('caller') ?? ''), retention: snapshot.retention })
           // 过滤掉的"字段缺失"记录必须出声：空结果有两种成因（"确实没有" vs "这些记录没有该字段"），
           // 只说一个 total 会让调用方把后者读成前者（F-046，G1 黑盒测试提的场景 A）。
-          const noField = items.excludedNoField
+          const noField = snapshot.page.excludedNoField
           const noFieldAny = noField && (noField.durationMs > 0 || noField.bytesRes > 0 || noField.status > 0)
           writeJson(res, 200, {
             total,
-            items: includeBody ? page : withoutBodies(page),
+            items: page,
             nextCursor,
-            hasMore: offset + page.length < items.length,
+            hasMore: snapshot.page.hasMore,
             ...(noFieldAny ? { excludedNoField: noField } : {}),
             ...(noFieldAny
               ? {
@@ -1565,6 +1561,7 @@ function apiQueryTool(capture) {
           total: { type: 'integer', required: true },
           returned: { type: 'integer', required: true },
           hasMore: { type: 'boolean', required: true },
+          nextCursor: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           items: { type: 'array', items: { type: 'object', additionalProperties: true } },
           freshness: { type: 'object', additionalProperties: true, description: '新鲜度：最新记录年龄 + 捕获引擎是否在跑' },
           callerAttribution: { type: 'object', additionalProperties: true, description: '调用方归因是否真的有数据' },
@@ -1588,40 +1585,28 @@ function apiQueryTool(capture) {
       render: (args, value) => renderQuery(args, value),
     },
     async execute(args) {
-      const params = paramsFromObj(args)
-      const all = readAll()
-      let items = sortNewestFirst(applyFilters(all, params))
-      const caller = (args.caller ?? '').trim().toLowerCase()
-      if (caller !== '') {
-        items = items.filter((r) => {
-          const c = r.caller ?? {}
-          const hay = [c.viewModel, c.view, c.apiMethod, c.trigger, ...(Array.isArray(c.stack) ? c.stack : [])].filter(Boolean).join('\n').toLowerCase()
-          return hay.includes(caller)
-        })
-      }
-      const total = items.length
-      const limit = Math.min(Math.max(Number(args.limit) || 50, 1), 500)
-      const offset = Math.max(Number(args.offset) || 0, 0)
-      const page = items.slice(offset, offset + limit)
-      const out = args.includeBody === true ? page : withoutBodies(page)
+      const snapshot = await queryCaptureAsync(args)
+      const page = snapshot.page
+      const out = page.items
 
       // F-005 / F-004c：新鲜度 + 调用方归因 —— **走共享的单一产出点**（第十轮自查：这段原来只写在这里，
       // 于是 MCP 面与面板路由都拿不到它）。见 lib/query-view.mjs。
       let st = null
       try { st = capture && typeof capture.status === 'function' ? capture.status() : null } catch { st = null }
       // 保留期同样要带出来（工具面与路由面不许各说各话）
-      const retention = retentionInfo()
-      const { freshness, callerAttribution } = buildQueryView({ records: page, all, status: st, callerFilter: String(args.caller ?? ''), retention })
+      const retention = snapshot.retention
+      const { freshness, callerAttribution } = buildQueryView({ records: out, summary: snapshot.summary, status: st, callerFilter: String(args.caller ?? ''), retention })
 
       // F-046：**空结果必须可解释**。`minDurationMs`/`minBytes`/`maxBytes`/`status`/`errors` 这些过滤，
       // 会把**没有那个字段**的记录排除掉（旧实现里 maxBytes 更糟：把"字节未知"当成 0 字节，于是**放行**了它）。
       // 于是"0 条"有两种完全不同的含义 —— 不把计数带出来，调用方只能猜成"没有慢请求/没有错误"。
-      const noField = items.excludedNoField
+      const noField = page.excludedNoField
       const noFieldAny = noField && (noField.durationMs > 0 || noField.bytesRes > 0 || noField.status > 0)
       return {
-        total,
+        total: page.total,
         returned: out.length,
-        hasMore: offset + page.length < items.length,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
         items: out,
         ...(noFieldAny ? { excludedNoField: noField } : {}),
         ...(noFieldAny

@@ -51,6 +51,11 @@ try {
   const snapshot = kv.get('worker-0-1')
   snapshot.value = 'caller mutation'
   assert.equal(kv.get('worker-0-1').value, 'value')
+  const mutableValue = { nested: ['original'] }
+  const saved = kv.save('snapshot-owner', mutableValue)
+  mutableValue.nested[0] = 'input mutation'
+  saved.value.nested.push('return mutation')
+  assert.deepEqual(kv.get('snapshot-owner').value, { nested: ['original'] })
 
   const blocked = launch(`import {withFileTransaction} from ${JSON.stringify(lockModule)}; withFileTransaction(process.argv[1],()=>{process.stdout.write('ready');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,60000)});`, [kv.file])
   await once(blocked.stdout, 'data')

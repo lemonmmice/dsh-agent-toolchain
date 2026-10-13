@@ -8,7 +8,9 @@
  *  - 证据库：~/.dsh-agent-toolchain/ui-evidence/<时间戳>[-<tag>]\steps.json + 截图
  *  - Web 路由（仅回环）：证据浏览 / 截图直出，为后续 GUI 面板预留
  */
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool as sdkDefineTool } from '@deepseek-ai/dsh-tools'
+import { wrapTaskDefinition } from '../../lib/task-tool-support.mjs'
+const defineTool = definition => sdkDefineTool(wrapTaskDefinition(definition))
 // W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name）。
 import { dshParameters, dshDescription } from '../../lib/tool-registry.mjs'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'

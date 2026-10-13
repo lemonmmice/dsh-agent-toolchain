@@ -23,6 +23,11 @@ A manual-only report is incomplete; imported API records cannot certify observed
 Build claims require current source/log fingerprints and may select an immutable `attemptId`.
 Static `compiled` hints remain unverified until MSBuild evaluation/compiler input evidence is available.
 Gate/Git work is asynchronous, has a deadline and observes cancellation; exit zero proves only that command.
+`failure_query` and `failure_stats` use a shared read worker with a bounded queue (32 waiting requests),
+a 60-second deadline including queue time, and observable worker errors. Unchanged shards reuse parsed rows;
+changed shards verify the previous prefix hash before parsing only appended JSONL lines. This still reads the
+changed shard's bytes and recomputes derived views; it is not a persistent database index. `readMetrics`
+reports bytes read, lines parsed, reused shards and cache hits. Corruption and concurrent changes remain incomplete.
 `toolchain_status` runs diagnostics in bounded workers and caches completed snapshots for two seconds;
 `fresh=true` bypasses the cache, with `observedAt`, `completedAt`, `ageMs` and `source` in each result.
 

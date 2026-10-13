@@ -51,6 +51,9 @@ const MISSING_BACKOFF = 8
 const MAX_PARSE_RETRY = 8
 export const MAX_TAIL_READ_BYTES = 1024 * 1024
 export const MAX_TAIL_LINE_BYTES = 32 * 1024 * 1024
+// 解压输出上限：挡住"解压炸弹"（小压缩体解出巨量数据，同步 gunzip/inflate/brotli 会卡主线程 / 爆内存）。
+// zlib 在解压**过程中**一旦分配超过该上限就抛 RangeError（不是先解完再查），因此是真正的背压；正常 body 远小于此。
+export const MAX_DECODE_BYTES = 8 * 1024 * 1024
 
 /** Soft cap on pending (unfinished) requests. */
 const MAX_PENDING = 1000
@@ -84,11 +87,11 @@ function tryGunzip(buf) {
   for (let i = 0; i < starts.length; i++) {
     const end = i + 1 < starts.length ? starts[i + 1] : buf.length
     try {
-      parts.push(gunzipSync(buf.subarray(starts[i], end)))
+      parts.push(gunzipSync(buf.subarray(starts[i], end), { maxOutputLength: MAX_DECODE_BYTES }))
     } catch {
       if (i === 0) {
         try {
-          return gunzipSync(buf)
+          return gunzipSync(buf, { maxOutputLength: MAX_DECODE_BYTES })
         } catch {
           return null
         }
@@ -114,15 +117,15 @@ function charsetOf(contentType) {
 }
 
 /** Decode a body per content-encoding: gzip / deflate / br, else passthrough. */
-function decodeContent(buf, encoding) {
+export function decodeContent(buf, encoding) {
   const enc = String(encoding ?? '').toLowerCase()
   if (enc.includes('gzip')) return tryGunzip(buf)
   if (enc.includes('deflate')) {
     try {
-      return inflateSync(buf)
+      return inflateSync(buf, { maxOutputLength: MAX_DECODE_BYTES })
     } catch {
       try {
-        return inflateRawSync(buf)
+        return inflateRawSync(buf, { maxOutputLength: MAX_DECODE_BYTES })
       } catch {
         return null
       }
@@ -130,7 +133,7 @@ function decodeContent(buf, encoding) {
   }
   if (enc.includes('br')) {
     try {
-      return brotliDecompressSync(buf)
+      return brotliDecompressSync(buf, { maxOutputLength: MAX_DECODE_BYTES })
     } catch {
       return null
     }

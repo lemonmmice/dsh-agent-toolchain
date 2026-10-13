@@ -26,8 +26,10 @@ metadata and an `expired` flag without deleting or updating rows; only `memory_f
 Status includes `byKind` and `expired` counts. Legacy rows remain readable and count as facts.
 New index chunks carry `indexedAt` and embedding source/version, also returned in search hits.
 
-KV save/forget operations protect their complete read-modify-write transaction
-across processes. A contended writer fails promptly with
+KV save/forget operations protect their complete read-modify-write transaction across processes.
+They retain their committed snapshot for subsequent point reads. Returned values cannot mutate that snapshot;
+external file replacements invalidate it. Saving still serializes and backs up the JSONL file in full.
+A contended writer fails promptly with
 `FILE_TRANSACTION_BUSY`, `retryable: true`, `writesApplied: false`; it may be
 retried after `retryAfterMs`. Locks left by exited processes are reclaimed.
 `forget` returns the actual `{ deleted }` count. Single-key reads reuse a file

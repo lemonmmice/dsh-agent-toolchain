@@ -311,7 +311,7 @@ export function renderLive(v) {
   const f = v.frame || null
   const ui = v.ui || null
   const lines = []
-  lines.push('实时视图：' + (l.running ? '运行中' : '已停止') + '（帧 ' + (l.frameCount || 0) + '，间隔 ' + (l.intervalMs || '-') + 'ms' + (l.autostopReason ? '，autostop=' + l.autostopReason : '') + (l.lastError ? '，最近错误：' + l.lastError : '') + '）')
+  lines.push('实时视图：' + (l.state === 'starting' ? '启动中，等待首帧' : l.running ? '运行中' : '已停止') + '（帧 ' + (l.frameCount || 0) + '，间隔 ' + (l.intervalMs || '-') + 'ms' + (l.autostopReason ? '，autostop=' + l.autostopReason : '') + (l.lastError ? '，最近错误：' + l.lastError : '') + '）')
   if (v.client && v.client.pid) lines.push('客户端：pid=' + v.client.pid + ' ' + (v.client.window || '') + (v.client.running === false ? '（未运行）' : ''))
   if (f) {
     const state = f.state || '?'

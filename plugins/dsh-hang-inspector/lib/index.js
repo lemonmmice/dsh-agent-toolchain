@@ -20,7 +20,9 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool as sdkDefineTool } from '@deepseek-ai/dsh-tools'
+import { wrapTaskDefinition } from '../../../lib/task-tool-support.mjs'
+const defineTool = definition => sdkDefineTool(wrapTaskDefinition(definition))
 import { makeHangInspector } from './hang.mjs'
 // W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name）。
 import { dshParameters, dshDescription } from '../../../lib/tool-registry.mjs'
@@ -122,7 +124,7 @@ const tools = (hang) => [
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderStatus(v) }] },
     timeoutMs: 30 * 1000,
     async execute() {
-      const r = hang.runStatus() || {}
+      const r = await hang.runStatus() || {}
       return { ...r, evidenceDir: hang.packsDir() }
     },
   }),
@@ -153,8 +155,8 @@ const tools = (hang) => [
     isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderPacks(v, { now: Date.now() }) }] },
     timeoutMs: 30 * 1000,
-    async execute() {
-      const items = hang.listPacks()
+    async execute(args) {
+      const items = hang.listPacks({ limit: args?.limit })
       return { total: items.length, evidenceDir: hang.packsDir(), items }
     },
   }),
@@ -292,7 +294,7 @@ function makeRoutes(hang) {
 
         // GET /run — run status + log tail
         if (method === 'GET' && rest === '/run') {
-          writeJson(res, 200, hang.runStatus())
+          writeJson(res, 200, await hang.runStatus())
           return
         }
 
@@ -304,7 +306,7 @@ function makeRoutes(hang) {
           } catch {
             // treat unparsable body as {}
           }
-          const r = hang.startRun({ maxSeconds: body.maxSeconds })
+          const r = await hang.startRun({ maxSeconds: body.maxSeconds })
           if (r.ok !== true) {
             writeJson(res, r.error === '监测已在运行' ? 409 : 500, r)
             return
@@ -315,7 +317,7 @@ function makeRoutes(hang) {
 
         // POST /run/stop — kill the run tree
         if (method === 'POST' && rest === '/run/stop') {
-          writeJson(res, 202, hang.stopRun())
+          writeJson(res, 202, await hang.stopRun())
           return
         }
 

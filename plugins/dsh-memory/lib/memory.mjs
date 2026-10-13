@@ -9,6 +9,9 @@ import { EmbedProvider } from "./embed-provider.mjs";
 import { findSensitive } from "./sensitive.mjs";
 import { envOr } from "../../../lib/env-fallback.mjs";
 import { buildProducer } from "../../../lib/failure-provenance.mjs";
+import { createWorkerService } from '../../../lib/worker-service.mjs';
+import { createProcessService } from '../../../lib/process-service.mjs';
+import { checkTaskCancellation } from '../../../lib/process-cancellation.mjs';
 
 const SKIP = new Set([".git", "node_modules", "bin", "obj", ".vs", "dist", ".venv", "packages", ".memory"]);
 
@@ -43,6 +46,9 @@ export class DshMemory {
     this.embed = embedProvider || new EmbedProvider({ cacheDir: path.join(this.dataDir, ".cache") });
     this.store = new VectorStore(path.join(this.dataDir, "vectors"), project);
     this.kv = new KvMemory(path.join(this.dataDir, "kv"));
+    this.readWorker = null;
+    this.writeProcess = null;
+    this.indexProcess = null;
   }
 
   /**
@@ -89,6 +95,7 @@ export class DshMemory {
     const pendingRows = new Array(chunks.length);
     const worker = async () => {
       for (;;) {
+        checkTaskCancellation();
         if (failed) return;
         if (Date.now() >= deadline) return;                 // 预算用尽：交给下一次
         const i = cursor++;
@@ -143,6 +150,7 @@ export class DshMemory {
     const files = [];
     const stack = [rootDir];
     while (stack.length) {
+      checkTaskCancellation();
       const d = stack.pop();
       let entries;
       try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
@@ -176,6 +184,7 @@ export class DshMemory {
         stoppedBy = 'budget'; stoppedIn = 'load';   // 预算在装载阶段就用完了
       } else
       for (const f of files) {
+        checkTaskCancellation();
         if (Date.now() >= deadline) { stoppedBy = 'budget'; stoppedIn = 'files'; break; }
         const rel = path.relative(rootDir, f);
         try {
@@ -260,7 +269,7 @@ export class DshMemory {
    */
   async searchDetailed(query, k = 5) {
     const qv = await this.embed.embed(query);
-    const hits = this.store.search(qv, k);
+    const { value: hits } = await this.readService().call({ action: 'search', vector: qv, limit: k });
     const out = hits.map(({ vector, ...rest }) => {
       const o = { ...rest, score: typeof rest.score === 'number' ? Math.round(rest.score * 10000) / 10000 : rest.score };
       o.meta = { ...o.meta, truncated: false, textLength: typeof o.meta?.text === 'string' ? o.meta.text.length : 0 };
@@ -299,6 +308,10 @@ export class DshMemory {
   }
 
   remember(key, value, scope = "global", { kind = 'fact', reason = '', ttlDays, source } = {}) {
+    return this.kv.save(key, value, scope, this.rememberMetadata(value, { kind, reason, ttlDays, source }));
+  }
+
+  rememberMetadata(value, { kind = 'fact', reason = '', ttlDays, source } = {}) {
     if (!['fact', 'convention', 'debug'].includes(kind)) throw new Error('kind must be fact, convention or debug');
     if (typeof reason !== 'string' || [...reason].length > 200) throw new Error('reason must be a string of at most 200 characters');
     const days = ttlDays === undefined ? (kind === 'debug' ? 14 : 0) : ttlDays;
@@ -308,7 +321,7 @@ export class DshMemory {
     if (hits.length) {
       throw new Error("value contains sensitive content (" + hits.map(h => h.name).join(", ") + ") — rewrite without tokens/keys and retry");
     }
-    return this.kv.save(key, value, scope, { kind, reason, source: source || buildProducer({ runtime: 'memory' }), expiresAt });
+    return { kind, reason, source: source || buildProducer({ runtime: 'memory' }), expiresAt };
   }
   recall(key, scope = "global") {
     const row = this.kv.get(key, scope);
@@ -317,21 +330,60 @@ export class DshMemory {
   memories(scope) { return this.kv.all(scope); }
   forget(key, scope = "global") { return this.kv.forget(key, scope); }
 
+  writeService() {
+    if (!this.writeProcess) this.writeProcess = createProcessService(new URL('./write-process.mjs', import.meta.url), { args: [path.join(this.dataDir, 'kv')] });
+    return this.writeProcess;
+  }
+
+  async rememberAsync(key, value, scope = 'global', options = {}) {
+    const metadata = this.rememberMetadata(value, options);
+    return (await this.writeService().call({ action: 'save', key, value, scope, metadata })).value;
+  }
+
+  async forgetAsync(key, scope = 'global') {
+    return (await this.writeService().call({ action: 'forget', key, scope })).value;
+  }
+
+  async indexWorkspaceAsync(root, options = {}) {
+    if (!this.indexProcess) this.indexProcess = createProcessService(new URL('./index-process.mjs', import.meta.url));
+    const budgetMs = Math.max(1000, Math.min(3600000, Number(options.budgetMs) || DEFAULT_BUDGET_MS));
+    const config = { dataDir: this.dataDir, project: this.project, apiKey: this.embed.apiKey, cacheDir: this.embed.cacheDir,
+      mode: this.embed.mode, model: this.embed.model, baseURL: this.embed.baseURL };
+    return (await this.indexProcess.call({ config, path: root, options: { budgetMs, concurrency: options.concurrency, maxFileBytes: options.maxFileBytes } }, { deadlineMs: budgetMs + 60000 })).value;
+  }
+
+  close() { this.closeReadWorker(); this.writeProcess?.close(); this.indexProcess?.close(); this.indexProcess = null; this.writeProcess = null; this.kv.close(); }
+
+  readService() {
+    if (!this.readWorker) this.readWorker = createWorkerService(new URL('./read-worker.mjs', import.meta.url), {
+      workerData: { dataDir: this.dataDir, project: this.project },
+    });
+    return this.readWorker;
+  }
+
+  closeReadWorker() { this.readWorker?.close(); this.readWorker = null; }
+
+  async recallAsync(key, scope = 'global') {
+    return (await this.readService().call({ action: 'recall', key, scope })).value;
+  }
+
+  async statusAsync() {
+    const { value, timing } = await this.readService().call({ action: 'status' });
+    return { ...value, ...this.embeddingStatus(), project: this.project, dataDir: this.dataDir, timing };
+  }
+
   status() {
-    const memories = this.kv.all();
-    const byKind = { fact: 0, convention: 0, debug: 0 };
-    let expired = 0;
-    for (const row of memories) {
-      byKind[row.kind || 'fact']++;
-      if (row.expiresAt && Date.parse(row.expiresAt) <= Date.now()) expired++;
-    }
     return {
       project: this.project,
       chunks: this.store.count(),
-      kvEntries: memories.length,
-      byKind,
-      expired,
+      ...this.kv.stats(),
       dataDir: this.dataDir,
+      ...this.embeddingStatus(),
+    };
+  }
+
+  embeddingStatus() {
+    return {
       embed: this.embed.label,
       embedEndpoint: this.embed.mode === "minimax" ? "remote (api.minimax.chat)" : "local",
       note: this.embed.mode === "minimax"

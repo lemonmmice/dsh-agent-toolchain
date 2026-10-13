@@ -93,12 +93,12 @@ const repoRoot = join(here, '..', '..', '..')
   const mcp = readFileSync(join(repoRoot, 'mcp', 'server.mjs'), 'utf8')
   check('插件面：import 了 query-view', /from '\.\/query-view\.mjs'/.test(plugin))
   check('插件面：api_capture_query 用 buildQueryView 且传 callerFilter',
-    /buildQueryView\(\{ records: page, all, status: st, callerFilter: String\(args\.caller/.test(plugin), '未传 callerFilter → "过滤+0 条"又会被误读')
+    /buildQueryView\(\{ records: out, summary: snapshot\.summary, status: st, callerFilter: String\(args\.caller/.test(plugin), '未传 callerFilter → "过滤+0 条"又会被误读')
   check('插件面：/records 路由也用 buildQueryView（此前它只回 total/items/cursor）',
-    /buildQueryView\(\{ records: page, all, status: stForRoute, callerFilter: String\(params\.get\('caller'\)/.test(plugin) && /freshnessNote: freshnessNote\(view\.freshness\)/.test(plugin))
+    /buildQueryView\(\{ records: page, summary: snapshot\.summary, status: stForRoute, callerFilter: String\(params\.get\('caller'\)/.test(plugin) && /freshnessNote: freshnessNote\(view\.freshness\)/.test(plugin))
   check('MCP 面：import 了 query-view', /from '\.\.\/plugins\/dsh-api-visualizer\/lib\/query-view\.mjs'/.test(mcp))
   check('MCP 面：capture_query 用 buildQueryView 且传 callerFilter',
-    /buildQueryView\(\{ records: page && page\.items, all: readAll\(\), status: hostStatus\.value, callerFilter: String\(args\.caller/.test(mcp), '未传 callerFilter → 过滤+0 条会被误读')
+    /buildQueryView\(\{ records: page && page\.items, summary: snapshot\.summary, status: hostStatus\.value, callerFilter: String\(args\.caller/.test(mcp), '未传 callerFilter → 过滤+0 条会被误读')
   check('MCP 面：宿主状态通过带年龄的缓存读取', /capture\/status/.test(mcp) && /captureStatusCache\.get\(\{ fresh: args\.fresh === true \}\)/.test(mcp))
   // 反例护栏：插件里不该再出现这段逻辑的手写副本（那正是反复漂移的根源）
   check('插件面：不再手写 freshness 对象（应只剩调用）', !/const freshness = \{/.test(plugin), '又出现手写副本了')
@@ -130,8 +130,8 @@ const repoRoot = join(here, '..', '..', '..')
   const mcpSrc = readFileSync(join(import.meta.dirname, '..', '..', '..', 'mcp', 'server.mjs'), 'utf8')
   const pluginSrc = readFileSync(join(import.meta.dirname, '..', 'lib', 'index.js'), 'utf8')
   const storeSrc = readFileSync(join(import.meta.dirname, '..', '..', '..', 'lib', 'capture-store.mjs'), 'utf8')
-  check('MCP 面：capture_query 传 readRetention 并渲染 retentionNote',
-    /retention: readRetention\(\)/.test(mcpSrc) && /retentionNote: retentionNote\(view\.retention\)/.test(mcpSrc))
+  check('MCP 面：capture_query 传同一快照的 retention 并渲染 retentionNote',
+    /await queryCaptureAsync\(args\)/.test(mcpSrc) && /retention: snapshot\.retention/.test(mcpSrc) && /retentionNote: retentionNote\(view\.retention\)/.test(mcpSrc))
   check('DSH 面：路由与工具面都传 retentionInfo 并渲染 retentionNote',
     (pluginSrc.match(/retentionInfo\(\)/g) || []).length >= 2 && /retentionNote: retentionNote\(retention\)/.test(pluginSrc))
   check('★ store 裁剪时**落盘**标记（否则跨进程看不到）', /writeTrimMarker\(dir/.test(storeSrc) && /trimmed\.json/.test(storeSrc))
