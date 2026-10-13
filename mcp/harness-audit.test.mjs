@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { REGISTRY } from '../lib/tool-registry.mjs'
 
 const scratch = mkdtempSync(join(tmpdir(), 'dsh-harness-mcp-'))
 const client = new Client({ name: 'harness-audit', version: '1' })
@@ -19,7 +20,7 @@ try {
     stderr: 'pipe',
   }))
   const tools = (await client.listTools()).tools
-  assert.equal(tools.length, 55)
+  assert.deepEqual(tools.map(tool => tool.name).sort(), Object.keys(REGISTRY).sort())
   const gate = client.callTool({ name: 'verify_report', arguments: { runId: 'latency-fixture', task: 'controlled delay', claims: [{ kind: 'gate', statement: 'fixture command completes', cmd: 'node slow.mjs', cwd: scratch }] } })
   await new Promise(resolve => setTimeout(resolve, 150))
   const started = performance.now()
@@ -45,7 +46,7 @@ try {
   assert.equal(busy.errorCode, 'UI_LOCK_BUSY')
   assert.equal(busy.retryable, true)
   assert.equal(busy.writesApplied, false)
-  console.log('PASS MCP audit: 55 tools, gate concurrency status=' + statusMs.toFixed(2) + 'ms, provenance, manual, integer schema, forget count')
+  console.log('PASS MCP audit: ' + tools.length + ' tools, gate concurrency status=' + statusMs.toFixed(2) + 'ms, provenance, manual, integer schema, forget count')
 } finally {
   await client.close()
   rmSync(scratch, { recursive: true, force: true })

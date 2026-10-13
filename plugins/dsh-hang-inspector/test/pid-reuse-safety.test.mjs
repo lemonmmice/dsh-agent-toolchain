@@ -48,7 +48,7 @@ const makeHang = (runDir) => makeHangInspector({ runDir })
   }))
   const hang = makeHang(runDir)
 
-  const st = hang.runStatus()
+  const st = await hang.runStatus()
   ok('★ 状态不再自称 running', st.status !== 'running', `status=${JSON.stringify(st.status)}`)
   ok('★ 状态为 exited（进程活着，但**不是我们的**）', st.status === 'exited', `status=${JSON.stringify(st.status)}`)
   ok('★ 带出 pidIdentity=reused（可核对）', st.pidIdentity === 'reused', `pidIdentity=${JSON.stringify(st.pidIdentity)}`)
@@ -59,7 +59,7 @@ const makeHang = (runDir) => makeHangInspector({ runDir })
   ok('★ 拒杀理由必须与实际判据一致（此例是命令行不含脚本）', /命令行不含 hang-loop 脚本/.test(String(st.note)),
     String(st.note).slice(0, 200))
 
-  const stop = hang.stopRun()
+  const stop = await hang.stopRun()
   ok('★ stopRun 拒绝执行（stopped:false）', stop.stopped === false, JSON.stringify(stop))
   ok('★ reason 说明是 pid 复用', stop.reason === 'pid-reused', `reason=${JSON.stringify(stop.reason)}`)
   await sleep(500)
@@ -83,11 +83,11 @@ const makeHang = (runDir) => makeHangInspector({ runDir })
     logPath: join(runDir, 'run.log'),
   }))
   const hang = makeHang(runDir)
-  const st = hang.runStatus()
+  const st = await hang.runStatus()
   ok('命令行含 hang-loop 脚本时身份命中', st.pidIdentity === 'match', `pidIdentity=${JSON.stringify(st.pidIdentity)}`)
   ok('身份命中时状态仍是 running（没有把正常情形也判死）', st.status === 'running', `status=${JSON.stringify(st.status)}`)
 
-  const stop = hang.stopRun()
+  const stop = await hang.stopRun()
   ok('身份确认后才执行停止', stop.stopped === true && stop.pidIdentity === 'match', JSON.stringify(stop))
   // ★ Codex r29 抓到的、**我自己造的**形状漂移：上一版把 killVerified 硬编码成 true，
   //   于是"taskkill 回来了但进程还活着"时，机器可读字段说"已确认退出"、而 note 说"仍存活"，同一返回里自相矛盾。
@@ -124,13 +124,13 @@ const makeHang = (runDir) => makeHangInspector({ runDir })
     logPath: join(runDir, 'run.log'),
   }))
   const hang = makeHang(runDir)
-  const st = hang.runStatus()
+  const st = await hang.runStatus()
   ok('命令行像监测、但创建时间对不上 ⇒ 不认（pidIdentity=reused）', st.pidIdentity === 'reused',
     `pidIdentity=${JSON.stringify(st.pidIdentity)} note=${String(st.note).slice(0, 120)}`)
   ok('★ 拒杀理由说的是**创建时间对不上**（而不是"命令行不含脚本"）',
     /创建时间与本次监测的开始时间对不上/.test(String(st.note)),
     String(st.note).slice(0, 220))
-  const stop = hang.stopRun()
+  const stop = await hang.stopRun()
   ok('★ 伪造命令行也拒杀（reason=pid-reused）', stop.stopped === false && stop.reason === 'pid-reused', JSON.stringify(stop))
   await sleep(400)
   ok('★★ 伪造者进程**仍然活着**（创建时间这道判据挡住了它）', alive(forger.pid), `pid=${forger.pid}`)
@@ -152,12 +152,12 @@ const makeHang = (runDir) => makeHangInspector({ runDir })
     pid: decoy.pid, status: 'running', exitCode: null, logPath: join(runDir, 'run.log'),   // ★ 故意不给 startedAt
   }))
   const hang = makeHang(runDir)
-  const st = hang.runStatus()
+  const st = await hang.runStatus()
   ok('★ 命令行像监测、但**拿不到创建时间** ⇒ 记为 unknown（不是 match）', st.pidIdentity === 'unknown',
     `pidIdentity=${JSON.stringify(st.pidIdentity)}`)
   ok('★ 状态说明里点出"无法正面确认"而不是含糊过去',
     /无法\*\*正面确认\*\*|无法正面确认/.test(String(st.note)), String(st.note).slice(0, 200))
-  const stop = hang.stopRun()
+  const stop = await hang.stopRun()
   ok('★★ **无法确认时不得杀**（reason=pid-identity-unknown）',
     stop.stopped === false && stop.reason === 'pid-identity-unknown', JSON.stringify(stop))
   await sleep(400)
@@ -173,10 +173,10 @@ const makeHang = (runDir) => makeHangInspector({ runDir })
     pid: 999999, startedAt: Date.now(), status: 'running', exitCode: null, logPath: join(runDir, 'run.log'),
   }))
   const hang = makeHang(runDir)
-  const st = hang.runStatus()
+  const st = await hang.runStatus()
   ok('进程不存在 → exited', st.status === 'exited', `status=${JSON.stringify(st.status)}`)
   ok('原因仍是"进程已不在"', /进程已不在/.test(String(st.note)), String(st.note).slice(0, 120))
-  const stop = hang.stopRun()
+  const stop = await hang.stopRun()
   ok('已死时 stopRun 如实说 not-running', stop.stopped === false && stop.reason === 'not-running', JSON.stringify(stop))
   rmSync(runDir, { recursive: true, force: true })
 }

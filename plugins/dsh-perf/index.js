@@ -6,7 +6,9 @@
  *  - perf_heap：托管堆类型统计 Top N（泄漏初筛）
  *  - perf_analyze：对已有 dump 重分析
  */
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool as sdkDefineTool } from '@deepseek-ai/dsh-tools'
+import { wrapTaskDefinition } from '../../lib/task-tool-support.mjs'
+const defineTool = definition => sdkDefineTool(wrapTaskDefinition(definition))
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -98,7 +100,7 @@ const tools = () => [
     name: 'perf_dump',
     description: dshDescription('perf_dump'),
     parameters: dshParameters('perf_dump'),
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.ok ? ('dump: ' + v.dumpPath + '（' + (v.sizeBytes / 1024 / 1024).toFixed(0) + 'MB，' + (v.durationMs / 1000).toFixed(1) + 's）\n' + renderAnalysis(v.analysis)) : ('失败：' + v.error) }] },
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: v.ok ? ('dump: ' + v.dumpPath + '（' + (v.sizeBytes / 1024 / 1024).toFixed(0) + 'MB，' + (v.durationMs / 1000).toFixed(1) + 's）\n' + (v.analysisState === 'not-requested' ? '采集完成，未请求分析；可用 perf_analyze 读取。' : renderAnalysis(v.analysis))) : ('失败：' + v.error) }] },
     timeoutMs: 6 * 60 * 1000,
     async execute(args) {
       return await prf().dump(args)

@@ -116,11 +116,31 @@ const READONLY_CALLS = {
   capture_query: { tool: 'capture_query', args: { limit: 1 }, expect: 'any' },
 }
 
-// 有源码根时，**真的**跑一次 build_compile_check 的成功路径（F-051 就是在这一层炸的）。
-// 没有源码根就明说跳过 —— 静默少跑一条比不做更糟（那会变成又一层"看着绿其实没测"）。
+// build_compile_check 的**成功路径**（F-051 就是在这一层炸的）：用确定性夹具稳定覆盖，
+// 真实源码根仅作可选探针。详见下面块内两段注释。
 {
-  const { existsSync, readdirSync, statSync } = await import('node:fs')
+  const { existsSync, readdirSync, statSync, mkdtempSync, writeFileSync } = await import('node:fs')
   const { join: j } = await import('node:path')
+
+  // (1) 确定性夹具：临时目录里写最小 legacy .csproj + 显式 <Compile Include="Program.cs" />、无 Condition
+  //     ⇒ 必定 included=true / basis:'explicit-item'，与本机环境完全解耦，任何机器都稳定走到成功路径。
+  //     （改用夹具的原因见上一条 git 历史：靠 DSH_*_SRC_ROOT 里碰运气找的 .cs 可能落在带条件编译的
+  //      真实工程里，heuristic 会如实返回 conditions-not-evaluated，那是正确行为、却被当成冒烟失败。）
+  const ccDir = mkdtempSync(j(tmpdir(), 'dsh-mcp-smoke-compile-'))
+  process.on('exit', () => { try { rmSync(ccDir, { recursive: true, force: true }) } catch { /* best effort */ } })
+  writeFileSync(j(ccDir, 'SmokeFixture.csproj'),
+    '<?xml version="1.0" encoding="utf-8"?>\n' +
+    '<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">\n' +
+    '  <PropertyGroup><OutputType>Library</OutputType><AssemblyName>SmokeFixture</AssemblyName></PropertyGroup>\n' +
+    '  <ItemGroup><Compile Include="Program.cs" /></ItemGroup>\n' +
+    '</Project>\n')
+  const fixtureCs = j(ccDir, 'Program.cs')
+  writeFileSync(fixtureCs, 'namespace SmokeFixture { class Program { static void Main() { } } }\n')
+  READONLY_CALLS['build_compile_check(fixture)'] = { tool: 'build_compile_check', args: { file: fixtureCs }, expect: 'ok' }
+
+  // (2) 真实源码根探针（可选，expect:'any'）：配了 DSH_*_SRC_ROOT 就**额外**在真实工程上跑一次，
+  //     但真实工程可能带未求值条件，heuristic 会如实返回 unknown（reason:'conditions-not-evaluated'），
+  //     那是正确行为不是缺陷 —— 所以这条不拿来当 expect:'ok' 判据（成功路径已由上面的夹具覆盖）。
   // ⚠ 用 env-fallback 读（进程环境 → HKCU\Environment）：源码根常常只配在**用户级环境变量**里，
   //   而本进程是宿主启动之后才拉起的，环境块里没有它 —— 直接读 `process.env` 会**误判成"没配"**，
   //   于是这段本该跑的冒烟静默跳过（正是本仓反复出现的那类"看着绿其实没测"）。
@@ -141,9 +161,8 @@ const READONLY_CALLS = {
     }
   }
   if (root && existsSync(root)) walk(root, 0)
-  if (cs) READONLY_CALLS['build_compile_check(src)'] = { tool: 'build_compile_check', args: { file: cs }, expect: 'ok' }
-  else console.log('SMOKE NOTE: 未配置可用的源码根（DSH_HANG_SRC_ROOT / DSH_PERF_SRC_ROOT）—— 跳过 build_compile_check 的成功路径；' +
-    '**这不等于它没问题**，配好源码根后这段才会真的跑起来。')
+  if (cs) READONLY_CALLS['build_compile_check(src)'] = { tool: 'build_compile_check', args: { file: cs }, expect: 'any' }
+  else console.log('SMOKE NOTE: 未配置源码根（DSH_HANG_SRC_ROOT / DSH_PERF_SRC_ROOT）—— 跳过真实工程探针；确定性夹具已覆盖成功路径。')
 }
 
 let listDone = false

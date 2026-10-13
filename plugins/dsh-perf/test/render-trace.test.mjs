@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { renderTrace, renderUiFreeze } from '../lib/render.mjs'
+import { renderTaskJob } from '../../../lib/task-tool-support.mjs'
 
 let failures = 0
 function check(name, cond, extra = '') {
@@ -249,7 +250,14 @@ for (const [action, c] of Object.entries(CASES)) {
   //   加了 clickat/doubleclick/move/wheel）。既然扫出来了就按规矩核，不把它钉回未覆盖名单：
   //   同一个 `render-actions.test.mjs` 补了「任何步骤 action 失败都必须出现在渲染文本里」的覆盖
   //   （ui_flow 渲染的是聚合，失败被计数吃掉就等于把失败渲染成成功）。
-  const COVERED = new Set(['perf_trace', 'perf_uifreeze', 'ui_drive', 'ui_observe', 'ui_act', 'ui_live', 'ui_flow'])
+  const COVERED = new Set(['perf_trace', 'perf_uifreeze', 'ui_drive', 'ui_observe', 'ui_act', 'ui_live', 'ui_flow', 'toolchain_job'])
+  for (const action of REGISTRY.toolchain_job.params.find(parameter => parameter.name === 'action').enum) {
+    for (const state of ['queued', 'running', 'cancelling', 'cancelled', 'done', 'failed', 'unknown']) {
+      const output = renderTaskJob({ action }, { jobId: 'fixture', state }).map(block => block.text).join('\n')
+      check('任务渲染 ' + action + '/' + state + ' 保留实际状态', output.includes(state) && !/undefined|NaN/.test(output))
+      check('只有 done 渲染执行结束 ' + action + '/' + state, /执行已结束/.test(output) === (state === 'done'))
+    }
+  }
   const KNOWN_UNCOVERED = []   // 钉子：只许缩短（已空；新工具带 action enum 就会立刻红）
   const enumTools = []
   {

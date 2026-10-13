@@ -4,7 +4,9 @@
  * AI 的代码输出因此带上硬校验（改完必须编译，错误必须清零），
  * 配合 dsh-ui-drive 形成「改 → 编 → 驱动 → 看」的自验链路。
  */
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool as sdkDefineTool } from '@deepseek-ai/dsh-tools'
+import { wrapTaskDefinition } from '../../lib/task-tool-support.mjs'
+const defineTool = definition => sdkDefineTool(wrapTaskDefinition(definition))
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -168,7 +170,7 @@ function makeRoutes() {
           return
         }
         if (method === 'GET' && rest === '/errors') {
-          writeJson(res, 200, bld().errorsOfLast(selection))
+          writeJson(res, 200, await bld().errorsOfLast(selection))
           return
         }
         // GET /log/{file} — 构建日志原文（basename 白名单）

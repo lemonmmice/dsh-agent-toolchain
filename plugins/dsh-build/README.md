@@ -11,12 +11,18 @@ AI 改完代码 → 增量编译 → 结构化错误回填 → 修复 → 再编
 | \`build_status\` | 最近一次构建结果（目标/耗时/错误数/日志路径） |
 | \`build_errors\` | 从最近日志重解析错误/警告列表 |
 
+`build_errors` 在独立工作线程流式解析日志，按文件身份缓存最多四份诊断；日志追加、替换或删除使缓存失效。
+返回 `cacheHit`、`bytesRead`、`parseMs`、`timing.queueMs/workerMs` 与 `incomplete`；解析期间变化不能解释为完整结果。
+直接使用 builder 时，`errorsOfLast()` 现在返回 Promise；DSH 工具、HTTP `/errors` 与 MCP 均等待该结果。
+
 ### 证据链：`runId`
 
 `build_run` 未传 `runId` 时生成 UUID；每次构建另有 `attemptId`，后台另有独立 `jobId`。
 `build_status`/`build_errors` 可按 `runId` 或 `jobId` 查询，不传时兼容最近一次结果。
 `run-<runId>.json` 是该任务最近尝试的别名；验证固定尝试用 build claim 的 `attemptId`。
 成功凭证绑定仓库 Git 文件内容、日志摘要与完成时间；旧凭证或源码变化返回未验证。
+源码摘要维持 `sha256-git-files-v1` 字节顺序，小文件按最多 16 个并发有界读取，大文件流式处理；结束时复核文件身份和 Git 清单。
+`filesScanned/filesHashed/bytesRead/revision/cacheHit/completeness/hashMs` 描述实际工作；当前仍每次重读内容，没有持久 manifest 缓存。
 这些摘要不涵盖忽略文件、外部 SDK 和最终 DLL 身份；静态编译成员检查是启发式提示，不证明本次进入编译器。
 
 ## msbuild 引擎的布局识别

@@ -14,6 +14,8 @@ import { staleCodeInfo, moduleRoots } from '../../../lib/code-freshness.mjs'
 import { resolveDumpTools } from '../../../lib/dump-tools.mjs'
 import { dirname as dirNameOf } from 'node:path'
 import { fileURLToPath as fileUrlToPath } from 'node:url'
+import { decodeBuffer } from '../../../lib/decode.mjs'
+import { attachProcessCancellation, checkTaskCancellation } from '../../../lib/process-cancellation.mjs'
 
 const PLUGIN_DIR = dirNameOf(dirNameOf(fileUrlToPath(import.meta.url)))
 
@@ -55,21 +57,22 @@ export function perfViewEnvironment(env = process.env, nativeMachine = machine()
 }
 
 export function runPerfExecutable(exe, args, timeoutMs, options = {}) {
+  checkTaskCancellation()
   return new Promise(resolve => {
     let child
     try { child = spawn(exe, args.map(String), { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: options.env || process.env }) }
     catch (error) { resolve({ code: -1, stdout: '', stderr: 'spawn failed: ' + error, timedOut: false }); return }
+    attachProcessCancellation(child, options.signal)
     const chunks = []
-    let stderr = ''
+    const errorChunks = []
     let settled = false
     const finish = (code, timedOut, error = '') => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       const buffer = Buffer.concat(chunks)
-      let stdout
-      try { stdout = new TextDecoder('utf-8', { fatal: true }).decode(buffer) }
-      catch { try { stdout = new TextDecoder('gbk').decode(buffer) } catch { stdout = buffer.toString('utf8') } }
+      const stdout = decodeBuffer(buffer).text
+      const stderr = decodeBuffer(Buffer.concat(errorChunks)).text
       resolve({ code, stdout, stderr: stderr + error, timedOut })
     }
     const timer = setTimeout(() => {
@@ -81,7 +84,7 @@ export function runPerfExecutable(exe, args, timeoutMs, options = {}) {
       finish(null, true, '\n[TIMEOUT]')
     }, timeoutMs)
     child.stdout.on('data', chunk => chunks.push(Buffer.from(chunk)))
-    child.stderr.on('data', chunk => { stderr += chunk.toString('utf8') })
+    child.stderr.on('data', chunk => { errorChunks.push(Buffer.from(chunk)) })
     child.on('error', error => finish(-1, false, '\n' + error))
     child.on('close', code => finish(code, false))
   })
@@ -119,6 +122,7 @@ export function makePerf(cfg) {
   const srcMap = makeSrcMap({ srcRoot: c.srcRoot })
 
   function runPs1(script, args, timeoutMs) {
+    checkTaskCancellation()
     return new Promise((resolve) => {
       let child
       try {
@@ -127,6 +131,7 @@ export function makePerf(cfg) {
         resolve({ code: -1, stdout: '', stderr: 'spawn failed: ' + e, timedOut: false })
         return
       }
+      attachProcessCancellation(child)
       let out = ''
       let err = ''
       let settled = false
@@ -162,6 +167,30 @@ export function makePerf(cfg) {
   /** 直接跑原生 exe（DumpStack/procdump），stdout 按 UTF-8/GBK 双解码。 */
   function runExe(exe, args, timeoutMs, options = {}) {
     return typeof c.runExe === 'function' ? c.runExe(exe, args, timeoutMs, options) : runPerfExecutable(exe, args, timeoutMs, options)
+  }
+
+  function hasMinidumpHeader(path) {
+    let descriptor
+    try {
+      const size = statSync(path).size
+      if (size < 32) return false
+      descriptor = openSync(path, 'r')
+      const header = Buffer.alloc(32)
+      if (readSync(descriptor, header, 0, 32, 0) !== 32) return false
+      const streams = header.readUInt32LE(8)
+      const directoryOffset = header.readUInt32LE(12)
+      return header.toString('ascii', 0, 4) === 'MDMP' && (header.readUInt32LE(4) & 0xffff) === 0xa793
+        && streams > 0 && directoryOffset >= 32 && directoryOffset + streams * 12 <= size
+    } catch { return false }
+    finally { if (descriptor !== undefined) closeSync(descriptor) }
+  }
+
+  function procdumpCompleted(result, dumpPath) {
+    if (result.timedOut || ![0, 1].includes(result.code)) return false
+    if (!hasMinidumpHeader(dumpPath)) return false
+    if (result.code === 0) return true
+    const output = String(result.stdout || '') + '\n' + String(result.stderr || '')
+    return /Dump\s+\d+\s+complete\s*:/i.test(output) && /Dump\s+count\s+reached/i.test(output)
   }
 
   // ------------------------------------------------------------ 卡顿监测
@@ -311,20 +340,22 @@ export function makePerf(cfg) {
 
   // ------------------------------------------------------------ dump 抓取
 
-  function clientPid() {
-    try {
-      const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq ' + c.procName + '.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
-      const m = out.match(/"[^"]*\.exe","(\d+)"/)
-      if (m) return Number(m[1])
-    } catch { /* ignore */ }
-    return null
+  async function clientPid() {
+    const result = await runExe('tasklist', ['/FI', 'IMAGENAME eq ' + c.procName + '.exe', '/FO', 'CSV', '/NH'], 10000)
+    if (result.code !== 0 || result.timedOut) throw new Error('无法查询目标进程：' + (result.timedOut ? '查询超时' : 'tasklist 失败'))
+    const matches = [...result.stdout.matchAll(/"[^"]*\.exe","(\d+)"/g)]
+    if (matches.length > 1) throw new Error('目标进程有多个实例，无法唯一确定 dump 目标')
+    return matches.length ? Number(matches[0][1]) : null
   }
 
-  async function dump({ note = '' } = {}) {
-    const pid = clientPid()
+  async function dump({ note = '', analyze = true } = {}) {
+    let pid
+    try { pid = await clientPid() }
+    catch (error) { return { ok: false, error: error.message, errorCode: 'DUMP_TARGET_UNAVAILABLE' } }
     if (!pid) return { ok: false, error: '客户端未运行，无法抓 dump（进程名由 DSH_UI_PROC_NAME 指定）' }
     if (!existsSync(c.procdump)) return { ok: false, error: 'procdump 不可用：' + (TOOLS.warnings.find((w) => w.startsWith('procdump')) || ('procdump 缺失：' + c.procdump)), toolDiagnostics: { procdump: TOOLS.procdumpExists, dumpstack: TOOLS.dumpstackExists, dacDir: TOOLS.dacDirExists, origins: TOOLS.origins, searched: TOOLS.searched } }
-    const dir = join(c.evidenceDir, tsDir() + '-dump')
+    const attemptId = randomUUID()
+    const dir = join(c.evidenceDir, tsDir() + '-dump-' + attemptId)
     mkdirSync(dir, { recursive: true })
     const dumpPath = join(dir, 'client.dmp')
     const label = String(note || '').replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 30)
@@ -332,26 +363,13 @@ export function makePerf(cfg) {
       try { writeFileSync(join(dir, 'note.txt'), note + '\n', 'utf8') } catch { /* ignore */ }
     }
     const startedAt = Date.now()
-    const r = await new Promise((resolve) => {
-      let child
-      try {
-        child = spawn(c.procdump, ['-ma', '-accepteula', String(pid), dumpPath], { windowsHide: true })
-      } catch (e) { resolve({ code: -1, stdout: '', stderr: String(e) }); return }
-      let out = ''
-      let err = ''
-      const timer = setTimeout(() => {
-        try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }) } catch { /* ignore */ }
-        resolve({ code: null, stdout: out, stderr: err + '\n[TIMEOUT 180s]' })
-      }, 180000)
-      child.stdout.on('data', (d) => { out += d.toString('utf8') })
-      child.stderr.on('data', (d) => { err += d.toString('utf8') })
-      child.on('exit', (code) => { clearTimeout(timer); resolve({ code, stdout: out, stderr: err }) })
-    })
+    const r = await runExe(c.procdump, ['-ma', '-accepteula', String(pid), dumpPath], 180000)
     const durationMs = Date.now() - startedAt
-    if (!existsSync(dumpPath)) return { ok: false, error: 'dump 未生成', procdumpOut: (r.stdout + '\n' + r.stderr).slice(-800) }
+    if (!procdumpCompleted(r, dumpPath)) return { ok: false, captureComplete: false, attemptId, dumpPath: existsSync(dumpPath) ? dumpPath : null, exitCode: r.code, timedOut: r.timedOut === true, error: 'dump 采集未成功完成', procdumpOut: (r.stdout + '\n' + r.stderr).slice(-800) }
     const size = statSync(dumpPath).size
-    const analysis = await analyzeDump(dumpPath)
-    return { ok: true, dumpPath, sizeBytes: size, durationMs, dir, analysis }
+    if (size === 0) return { ok: false, captureComplete: false, attemptId, dumpPath, error: 'dump 文件为空' }
+    const analysis = analyze === false ? null : await analyzeDump(dumpPath)
+    return { ok: true, captureComplete: true, attemptId, dumpPath, sizeBytes: size, durationMs, dir, exitCode: r.code, nonZeroExitWithCompleteOutput: Number(r.code) !== 0, procdumpOut: (r.stdout + '\n' + r.stderr).slice(-800), analysis, analysisState: analyze === false ? 'not-requested' : analysis.ok ? 'done' : 'failed' }
   }
 
   // ------------------------------------------------------------ dump 分析

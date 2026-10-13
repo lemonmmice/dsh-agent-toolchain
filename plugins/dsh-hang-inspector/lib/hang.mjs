@@ -14,8 +14,8 @@
  * as-is — callers own the confirmation policy (the MCP tools require an
  * explicit confirm flag for deletion).
  */
-import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { spawn, spawnSync } from 'node:child_process'
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { spawn, execFile } from 'node:child_process'
 import { join, basename, relative, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -40,6 +40,14 @@ const MAX_TEXT = 512 * 1024
 
 /** How long a 'running' analysis marker stays authoritative. */
 const ANALYSIS_RUNNING_TTL = 15 * 60 * 1000
+
+function runMonitorCommand(executable, args, timeout) {
+  return new Promise(resolve => {
+    execFile(executable, args, { encoding: null, windowsHide: true, timeout, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      resolve({ status: error ? error.code ?? null : 0, stdout, stderr, error })
+    })
+  })
+}
 
 /** Text evidence file keys served in pack detail. */
 const TEXT_KEYS = [
@@ -546,7 +554,7 @@ export function makeHangInspector(config = {}) {
    *
    * @returns {{ours: boolean|null, commandLine: string|null, error: string|null}}
    */
-  function pidIdentity(pid) {
+  async function pidIdentity(pid, startedAt) {
     try {
       // ★ Codex r29 证伪：**命令行里的字符串可以伪造** —— 它起了一个普通 node 进程、只在参数里带上
       //   `hang-loop.ps1`，就被判成 `match` 并被 `taskkill /T /F` 干掉了。
@@ -555,9 +563,9 @@ export function makeHangInspector(config = {}) {
       const psCmd = '$p = Get-CimInstance Win32_Process -Filter "ProcessId=' + Number(pid) + '"; '
         + 'if ($p -ne $null) { Write-Output ([string]$p.CommandLine); '
         + 'try { Write-Output ("__CREATED__" + ([datetime]$p.CreationDate).ToString("o")) } catch { Write-Output "__CREATED__unknown" } }'
-      const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd],
-        { encoding: 'utf8', windowsHide: true, timeout: 8000, maxBuffer: 1024 * 1024 })
-      const out = String(r.stdout ?? '').trim()
+      const r = await runMonitorCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], 8000)
+      if (r.status !== 0) return { ours: null, commandLine: null, error: r.error?.message ?? 'process identity query failed' }
+      const out = decodeBuffer(r.stdout).text.trim()
       if (out === '') return { ours: null, commandLine: null, error: r.error ? String(r.error.message ?? r.error) : null }
       const lines = out.split(/\r?\n/)
       const commandLine = String(lines[0] ?? '').trim()
@@ -565,7 +573,7 @@ export function makeHangInspector(config = {}) {
       const createdMs = (createdRaw === '' || createdRaw === 'unknown') ? NaN : Date.parse(createdRaw)
       const scriptName = basename(hangLoop)
       const cmdMatch = commandLine.includes(scriptName) || commandLine.includes(hangLoop)
-      const ref = runState !== null && Number.isFinite(runState.startedAt) ? runState.startedAt : NaN
+      const ref = Number.isFinite(startedAt) ? startedAt : NaN
       // 容忍 120s：进程创建时刻与"我们写完 run.json"之间可能有解析/调度延迟，但绝不可能是小时级。
       const startMatch = (Number.isFinite(createdMs) && Number.isFinite(ref))
         ? (Math.abs(createdMs - ref) <= 120000)
@@ -589,10 +597,12 @@ export function makeHangInspector(config = {}) {
   }
 
   /** 只在"状态自称 running 且 pid 活着"时才去核对身份（避免给常态调用加开销）。 */
-  function liveIdentity() {
+  async function liveIdentity() {
     if (runState === null || runState.status !== 'running') return null
     if (!pidAlive(runState.pid)) return null
-    const id = pidIdentity(runState.pid)
+    const observedRun = runState
+    const id = await pidIdentity(observedRun.pid, observedRun.startedAt)
+    if (runState !== observedRun || observedRun.status !== 'running' || !pidAlive(observedRun.pid)) return null
     runState.pidIdentity = id.ours === true ? 'match' : (id.ours === false ? 'reused' : 'unknown')
     if (id.commandLine !== null) runState.pidCommandLine = id.commandLine.slice(0, 400)
     // 身份判据的**依据**也要落盘：否则事后无法解释"为什么这次判它不是我们的"
@@ -630,10 +640,10 @@ export function makeHangInspector(config = {}) {
     return bits.length > 0 ? bits.join('；') : '身份判据未命中'
   }
 
-  function runIsActive() {
+  async function runIsActive() {
     if (runState === null || runState.status !== 'running') return false
     if (!pidAlive(runState.pid)) return false
-    const id = liveIdentity()
+    const id = await liveIdentity()
     // 这里保守：**只有"正面确认不是我们"** 才不当作在跑（宁可拒绝再起一个，也不要起两个监测）。
     // 杀不杀是另一回事 —— 见 stopRun：那里要求**正面确认**。
     if (id === null) return true
@@ -642,15 +652,33 @@ export function makeHangInspector(config = {}) {
 
   /** Last N lines of the run log (empty string when absent). */
   function logTail(logPath, maxLines) {
+    let descriptor
     try {
-      const p = logPath ?? RUN_LOG
-      if (!existsSync(p)) return ''
-      const text = readFileSync(p, 'utf8')
+      const path = logPath ?? RUN_LOG
+      descriptor = openSync(path, 'r')
+      const before = fstatSync(descriptor, { bigint: true })
+      const size = Number(before.size)
+      const start = Math.max(0, size - 256 * 1024)
+      const buffer = Buffer.alloc(size - start)
+      let bytesRead = 0
+      while (bytesRead < buffer.length) {
+        const count = readSync(descriptor, buffer, bytesRead, buffer.length - bytesRead, start + bytesRead)
+        if (!count) break
+        bytesRead += count
+      }
+      let bytes = buffer.subarray(0, bytesRead)
+      if (start > 0) {
+        const newline = bytes.indexOf(10)
+        bytes = newline >= 0 ? bytes.subarray(newline + 1) : Buffer.alloc(0)
+      }
+      const text = bytes.toString('utf8')
       const lines = text.split(/\r?\n/).filter((l) => l.length > 0)
-      return lines.slice(-maxLines).join('\n')
-    } catch {
-      return ''
-    }
+      const after = statSync(path, { bigint: true })
+      const changed = ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key] !== after[key])
+      return { text: lines.slice(-maxLines).join('\n'), available: true, bytesRead, fileBytes: size, truncated: start > 0 || lines.length > maxLines, incomplete: changed || bytesRead !== buffer.length }
+    } catch (error) {
+      return { text: '', available: false, bytesRead: 0, incomplete: error.code !== 'ENOENT', errorCode: error.code ?? 'LOG_READ_FAILED' }
+    } finally { if (descriptor !== undefined) closeSync(descriptor) }
   }
 
   /** Read a text evidence file (null when missing, empty string when empty). */
@@ -674,18 +702,21 @@ export function makeHangInspector(config = {}) {
   }
 
   /** Enumerate evidence packs, newest first. */
-  function listPacks() {
+  function listPacks({ limit } = {}) {
     if (!existsSync(packs)) return []
-    const out = []
+    // 先只 stat 目录本身列出 (id, ts) 并排序，再**只对选中的页**取完整元数据（文件清单 / summary / analysis）——
+    // 10+ 个包时不必对每个包都 stat 全部文件、读 summary（审计「列表只读元数据」）。排查刚发生的卡死通常只看最新几个。
+    const dirs = []
     for (const name of readdirSync(packs)) {
-      const dir = join(packs, name)
-      let st
       try {
-        st = statSync(dir)
-      } catch {
-        continue
-      }
-      if (!st.isDirectory()) continue
+        const st = statSync(join(packs, name))
+        if (st.isDirectory()) dirs.push({ id: name, ts: st.mtimeMs })
+      } catch { /* 读不到的目录项跳过 */ }
+    }
+    dirs.sort((a, b) => (b.ts - a.ts) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+    const page = (Number.isFinite(limit) && limit > 0) ? dirs.slice(0, Math.floor(limit)) : dirs
+    return page.map(({ id, ts }) => {
+      const dir = join(packs, id)
       const files = []
       for (const f of readdirSync(dir)) {
         try {
@@ -698,23 +729,22 @@ export function makeHangInspector(config = {}) {
       const summary = readText(dir, 'summary.txt') ?? ''
       const procInfo = readText(dir, 'process-info.txt') ?? ''
       const analysis = readJsonFile(join(dir, 'analysis.json'))
-      out.push({
-        id: name,
-        ts: st.mtimeMs,
+      return {
+        id,
+        ts,
         files,
         dumpBytes: dump !== undefined ? dump.bytes : 0,
         hasScreenshot: files.some((f) => f.name === 'frozen-screen.png'),
         analysisStatus: analysis === null ? null : analysis.status ?? null,
         summaryFirst: (summary.split('\n').find((l) => l.trim() !== '') ?? '').slice(0, 200),
         procInfo: (procInfo.split('\n').find((l) => l.trim() !== '') ?? '').slice(0, 200),
-      })
-    }
-    out.sort((a, b) => b.ts - a.ts)
-    return out
+      }
+    })
   }
 
   /** Run status + log tail. */
-  function runStatus() {
+  async function runStatus() {
+    const observedRun = runState
     const st = runState === null ? { status: 'idle' } : { ...runState }
     if (st.status === 'running' && !pidAlive(st.pid)) {
       st.status = 'exited'
@@ -722,7 +752,8 @@ export function makeHangInspector(config = {}) {
     } else if (st.status === 'running') {
       // F-024：pid 活着**不等于**它还是我们的监测。这里把"身份判定"如实带出去 ——
       // 否则一个被复用的 pid 会让整份状态看起来"正在监测"（而真相是那次监测早就结束了）。
-      const id = liveIdentity()
+      const id = await liveIdentity()
+      if (runState !== observedRun || observedRun.status !== st.status || !pidAlive(st.pid)) return runStatus()
       st.pidIdentity = id === null ? 'unknown' : (id.confirmed === true ? 'match' : (id.excluded === true ? 'reused' : 'unknown'))
       if (id !== null && id.excluded === true) {
         st.status = 'exited'
@@ -771,12 +802,20 @@ export function makeHangInspector(config = {}) {
       srcRootExists: !!srcRoot && existsSync(srcRoot),
     }
     // F-007：卡死取证对"代码版本"最敏感（修复旧代码时，工具行为与磁盘不一致会直接误导排查方向）
-    return { ...st, monitor, logTail: logTail(runState?.logPath, 150), ...(staleCodeInfo(moduleRoots(HANG_PLUGIN_DIR), { cacheMs: 1000 }) || {}) }
+    const { text: tail, ...logRead } = logTail(runState?.logPath, 150)
+    return { ...st, monitor, logTail: tail, logRead, ...(staleCodeInfo(moduleRoots(HANG_PLUGIN_DIR), { cacheMs: 1000 }) || {}) }
   }
 
   /** Start the hang monitor (no auto-clicking; the user drives the client). */
-  function startRun({ maxSeconds = 0 } = {}) {
-    if (runIsActive()) return { ok: false, error: '监测已在运行', run: runState }
+  let transition = false
+  async function startRun(options = {}) {
+    if (transition) return { ok: false, error: '监测正在启动或停止', errorCode: 'MONITOR_BUSY', retryable: true, writesApplied: false }
+    transition = true
+    try { return await startRunInner(options) } finally { transition = false }
+  }
+
+  async function startRunInner({ maxSeconds = 0 } = {}) {
+    if (await runIsActive()) return { ok: false, error: '监测已在运行', run: runState }
     const max = clampInt(maxSeconds, 0, 86400, 0)
     if (!existsSync(hangLoop)) {
       return {
@@ -813,12 +852,15 @@ export function makeHangInspector(config = {}) {
     // ⚠ `maxSeconds` 必须**存进 runState**（不只是参数）：渲染层要印「将在 N 秒后自动停止」，
     //   而 runStatus() 是把 runState 摊开返回的 —— 参数不落地，那句话就永远是空的（第 11 处形状漂移）。
     runState = { pid: child.pid, startedAt: Date.now(), status: 'running', exitCode: null, logPath, maxSeconds: max }
+    const launchedRun = runState
     child.on('exit', (code) => {
+      if (runState !== launchedRun) return
       runState.status = 'exited'
       runState.exitCode = code
       persistRun()
     })
     child.on('error', (e) => {
+      if (runState !== launchedRun) return
       runState.status = 'error'
       runState.error = String(e)
       persistRun()
@@ -832,7 +874,13 @@ export function makeHangInspector(config = {}) {
   }
 
   /** Kill the run tree. */
-  function stopRun() {
+  async function stopRun() {
+    if (transition) return { ok: false, error: '监测正在启动或停止', errorCode: 'MONITOR_BUSY', retryable: true, writesApplied: false }
+    transition = true
+    try { return await stopRunInner() } finally { transition = false }
+  }
+
+  async function stopRunInner() {
     // 「本来就没在跑」必须**如实回报**（`stopped:false` + 原因）：渲染层过去只认 `killed`，
     // 于是这种情形会打出「已停止监测」——把"无事可做"说成了"我停了它"（第 12 处形状漂移）。
     if (runState === null || runState.status !== 'running') {
@@ -843,7 +891,9 @@ export function makeHangInspector(config = {}) {
     // pid 复用 + `taskkill /T /F` 会连带杀掉一棵无关的进程树（最坏情况：用户的客户端）。
     // 判据不够强（能改 run.json 的同机进程仍能伪造）⇒ 定位是**误杀防护**，不是身份认证；
     // 而"无法确认"时**一律不杀**（宁可少杀，不可错杀）。
-    const id = liveIdentity()
+    const observedRun = runState
+    const id = await liveIdentity()
+    if (runState !== observedRun || runState.status !== 'running' || !pidAlive(observedRun.pid)) return { ok: true, stopped: false, reason: 'not-running', pidIdentity: null }
     if (id === null || id.confirmed !== true) {
       const unknown = id === null || id.excluded !== true
       return {
@@ -865,8 +915,7 @@ export function makeHangInspector(config = {}) {
     // 渲染层于是打出「已停止监测（结束进程树 X）」—— 如果 taskkill 因权限/pid 变化失败，
     // 这句话就是**把没做成的事说成了做成了**（本仓"说做了≠真做了"那一类）。
     // 现在：同步等 taskkill 结束，再**核对进程是否真的没了**，把结果如实带出去。
-    const tk = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'],
-      { windowsHide: true, timeout: 15000 })
+    const tk = await runMonitorCommand('taskkill', ['/PID', String(pid), '/T', '/F'], 15000)
     const died = !pidAlive(pid)
     runState.status = died ? 'stopped' : 'stopping'
     runState.killVerified = died

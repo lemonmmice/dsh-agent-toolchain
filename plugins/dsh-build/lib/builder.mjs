@@ -13,6 +13,12 @@ import { staleCodeInfo, moduleRoots } from '../../../lib/code-freshness.mjs'
 import { fileURLToPath as fileUrlToPath } from 'node:url'
 import { sanitizeRunId, newRunId } from '../../../lib/run-identity.mjs'
 import { sourceIdentity, fileDigest } from '../../../lib/build-evidence.mjs'
+import { createWorkerService } from '../../../lib/worker-service.mjs'
+import { parseErrors } from './diagnostics.mjs'
+import { taskSignal } from '../../../lib/task-context.mjs'
+import { attachProcessCancellation, checkTaskCancellation } from '../../../lib/process-cancellation.mjs'
+
+const diagnosticsService = createWorkerService(new URL('./diagnostics-worker.mjs', import.meta.url))
 
 function writeRecord(path, record) {
   const temporary = path + '.' + newRunId('write') + '.tmp'
@@ -402,22 +408,6 @@ export function makeBuilder(cfg) {
 
   // ------------------------------------------------------------ 错误解析
 
-  // Code prefixes can be long (CS/MSB/NU/NETSDK/…) — NETSDK1004 needs 6 letters.
-  // The code group is optional: NuGet compat notices print code-less
-  // "file(line,col): warning : message". Code-less ERROR prose is dropped in
-  // the loop — MSBuild's own summary does not count it (count parity).
-  const ERR_LINE = /^(.*?)\((\d+),(\d+)\):\s*(error|warning)\s+(?:([A-Z]{1,7}\d+):)?\s*(.*)$/
-  // Top-level MSBuild errors carry no (line,col): "MSBUILD : error MSB1009: …"
-  // or "MSBUILD : 错误 MSB1009: …". Dropping them produced ok:false with
-  // errors:[] — the structured list disagreed with the summary line.
-  const ERR_TOP = /^MSBUILD\s*:\s*(?:error|错误)\s+([A-Z]{1,7}\d+):\s*(.*)$/
-  // dotnet/NuGet form without position: "Foo.csproj : error NU1301: …".
-  const ERR_PLAIN = /^(.*?)\s*:\s*(?:error|错误)\s+([A-Z]{1,7}\d+):\s*(.*)$/
-  // SDK-resolution chains embed the code mid-message: "Foo.csproj : error : MSB4276: …".
-  // Pure-prose chain lines without an embedded code are NOT separate errors
-  // (MSBuild's own summary does not count them) — skipping them keeps the
-  // parsed count in parity with the summary line.
-  const ERR_EMBED = /^(.*?)\s*:\s*(?:error|错误)\s*:\s*(.*)$/
 
   /** 环境性错误（文件锁/目标占用/SDK 解析/NuGet 源不可达等），不是代码错误。 */
   function isEnvError(e) {
@@ -426,62 +416,6 @@ export function makeBuilder(cfg) {
       /MSB302[0-9]|MSB4018|MSB4023|MSB4236|MSB4276|NETSDK1004|NETSDK1045|NU1301/.test(e.code || '')
   }
 
-  function parseErrors(text) {
-    const errors = []
-    const warnings = []
-    // MSBuild prints each error twice (inline + the trailing summary block);
-    // dedupe on (file,line,col,code) so errorCount matches the summary line
-    // instead of being 2x the truth.
-    const seenErr = new Set()
-    const seenWarn = new Set()
-    const dedupeKey = (e) => `${e.file}|${e.line}|${e.col}|${e.code}`
-    const pushErr = (entry) => {
-      const k = dedupeKey(entry)
-      if (seenErr.has(k)) return
-      seenErr.add(k)
-      errors.push(entry)
-    }
-    const pushWarn = (entry) => {
-      const k = dedupeKey(entry)
-      if (seenWarn.has(k)) return
-      seenWarn.add(k)
-      warnings.push(entry)
-    }
-    for (const line of text.split(/\r?\n/)) {
-      const m = line.match(ERR_LINE)
-      if (m) {
-        const kind = m[4]
-        const code = m[5] || ''
-        const message = (m[6] || '').replace(/^:\s*/, '').trim()
-        // Code-less positioned ERROR prose is part of SDK-resolution chains;
-        // MSBuild's summary does not count it, so skipping keeps errorCount
-        // in parity with the summary line.
-        if (kind === 'error' && !code) continue
-        const entry = { file: m[1].trim(), line: Number(m[2]), col: Number(m[3]), code: code || '(none)', message }
-        if (kind === 'error') pushErr(entry)
-        else pushWarn(entry)
-        continue
-      }
-      const t = line.match(ERR_TOP)
-      if (t) {
-        pushErr({ file: '(top-level)', line: 0, col: 0, code: t[1], message: t[2].trim() })
-        continue
-      }
-      const p = line.match(ERR_PLAIN)
-      if (p) {
-        pushErr({ file: p[1].trim() || '(top-level)', line: 0, col: 0, code: p[2], message: p[3].trim() })
-        continue
-      }
-      const e2 = line.match(ERR_EMBED)
-      if (e2) {
-        // "file : error : MSB4276: …" — the code is embedded in the message.
-        const cm = e2[2].match(/\b([A-Z]{1,7}\d{4,5})\b/)
-        if (cm) pushErr({ file: e2[1].trim() || '(top-level)', line: 0, col: 0, code: cm[1], message: e2[2].trim() })
-        continue
-      }
-    }
-    return { errors, warnings }
-  }
 
   // ------------------------------------------------------------ 构建执行
 
@@ -667,7 +601,8 @@ export function makeBuilder(cfg) {
       : [targetArg, '/t:' + target, '/p:Configuration=' + configuration, ...(platformArg ? ['/p:Platform=' + platformArg] : []), '/m', '/v:m', '/nologo', '/restore', '/nodeReuse:false', '/clp:Summary']
     const timeoutMs = target === 'Rebuild' ? c.rebuildTimeoutMs : c.incrementalTimeoutMs
     const startedAt = Date.now()
-    const sourceBefore = await sourceIdentity(repoRoot)
+    const sourceBefore = await sourceIdentity(repoRoot, { algorithm: 'sha256-git-file-hashes-v2', signal: taskSignal() })
+    checkTaskCancellation()
     // Evidence-pack spine: runId 已在函数开头算好（见上面 earlyFail 的说明），
     // 这里只用它命名日志与 per-run 记录。
 
@@ -679,6 +614,7 @@ export function makeBuilder(cfg) {
         resolve({ spawnError: String(e), code: -1, chunks: [] })
         return
       }
+      attachProcessCancellation(child)
       const chunks = []
       let settled = false
       const timer = setTimeout(() => {
@@ -800,7 +736,7 @@ export function makeBuilder(cfg) {
     result.evidenceManifest = {
       version: 1,
       source: sourceBefore,
-      sourceAfter: await sourceIdentity(repoRoot),
+      sourceAfter: await sourceIdentity(repoRoot, { algorithm: 'sha256-git-file-hashes-v2', signal: taskSignal() }),
       logSha256: await fileDigest(logPath),
       completedAt: new Date().toISOString(),
       invocation: { engine, target, project: targetDisplay || '(default)', configuration, platform: platformArg || null },
@@ -978,7 +914,7 @@ export function makeBuilder(cfg) {
    * 宿主把 build_errors 变成裸异常。**偏偏是在最需要日志的那一刻**（构建被挡下），
    * agent 拿到的是宿主崩溃而不是"没有日志，因为这次没跑"。
    */
-  function errorsOfLast(options = {}) {
+  async function errorsOfLast(options = {}) {
     const s = status(options)
     if (!s.hasRun) return { hasRun: false }
     if (typeof s.logPath !== 'string' || s.logPath === '') {
@@ -993,21 +929,22 @@ export function makeBuilder(cfg) {
           : '最近一次记录里没有日志路径（可能是老版本记录），无法解析历史错误。',
       }
     }
-    let text = ''
     try {
-      text = readFileSync(s.logPath, 'utf8')
+      const { value, timing } = await diagnosticsService.call({ path: s.logPath })
+      return { hasRun: true, logPath: s.logPath, ...value, timing }
     } catch (e) {
       return {
         hasRun: true,
         logPath: s.logPath,
         errors: [],
         warnings: [],
+        incomplete: true,
+        errorCode: e.code || 'LOG_READ_FAILED',
+        ...(e.retryable ? { retryable: true } : {}),
         readError: '日志文件读不到：' + (e && e.message ? e.message : String(e)),
         note: '日志路径存在但读不到（可能被轮转/删除）—— 不要把它读成"0 个错误"。',
       }
     }
-    const { errors, warnings } = parseErrors(text)
-    return { hasRun: true, logPath: s.logPath, errors, warnings }
   }
 
   return { config: c, build, startBackground, backgroundStatus, status, errorsOfLast, parseErrors, isEnvError, findMsbuild, decodeBuffer, clientProcess, clientInstances, isPidAlive, exePathOf, killClientProcess, listClientPids, lockedFilesOf, logsDir: () => c.logsDir }

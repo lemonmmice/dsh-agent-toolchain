@@ -19,10 +19,10 @@
  *   · status   捕获引擎状态快照（可空；拿不到就如实标 null，不要编）
  * @returns {{freshness:object, callerAttribution:object}}
  */
-export function buildQueryView({ records = [], all = [], status = null, now = Date.now(), callerFilter = '', retention = null } = {}) {
+export function buildQueryView({ records = [], all = [], summary = null, status = null, now = Date.now(), callerFilter = '', retention = null } = {}) {
   const st = status && typeof status === 'object' ? status : null
-  let newestTs = null
-  for (const r of (Array.isArray(all) ? all : [])) {
+  let newestTs = summary ? summary.newestTs : null
+  for (const r of (!summary && Array.isArray(all) ? all : [])) {
     const t = Number(r && r.ts)
     if (Number.isFinite(t) && (newestTs === null || t > newestTs)) newestTs = t
   }
@@ -30,7 +30,7 @@ export function buildQueryView({ records = [], all = [], status = null, now = Da
     captureRunning: st ? st.running === true : null,
     newestAt: newestTs,
     newestAgeMs: newestTs === null ? null : now - newestTs,
-    storeRecords: Array.isArray(all) ? all.length : 0,
+    storeRecords: summary ? summary.total : Array.isArray(all) ? all.length : 0,
     engineNote: st && st.note ? st.note : null,
     // ⚠ **主日志的存在性不能丢**（Claude r17 的 A2）：
     //   `/capture/status` 本来给了 `logExists`，但这里只取了 `running` 一个布尔 ——
@@ -44,8 +44,8 @@ export function buildQueryView({ records = [], all = [], status = null, now = Da
   }
 
   // 归因到底有没有数据 —— 不让"0 条"冒充"没有发生"。
-  const scan = Array.isArray(all) ? all : []
-  let withCaller = 0
+  const scan = !summary && Array.isArray(all) ? all : []
+  let withCaller = summary ? summary.withCaller : 0
   for (const r of scan) {
     const c = r && r.caller
     if (c && (c.viewModel || c.apiMethod || c.view || c.trigger || (Array.isArray(c.stack) && c.stack.length))) withCaller++
@@ -62,7 +62,7 @@ export function buildQueryView({ records = [], all = [], status = null, now = Da
   const callerAttribution = {
     available: withCaller > 0,
     recordsWithCaller: withCaller,
-    scannedRecords: scan.length,
+    scannedRecords: summary ? summary.total : scan.length,
     callerLogExists: callerLogMissing === null ? null : !callerLogMissing,
     callerFilter: usedCallerFilter ? String(callerFilter) : null,
     reason: baseReason === null

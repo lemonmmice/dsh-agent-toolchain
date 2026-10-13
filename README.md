@@ -96,7 +96,7 @@ Then `pwsh -File install.ps1` (dry run) or `pwsh -File install.ps1 -Apply` to co
 - **Jev-assisted UI decisions.** `ui_jev` sends a sanitized UIA control list to Jev, lets it choose one bounded candidate action, then reuses the same deterministic UI executor and safety gates. Jev never receives pixels, generates arbitrary input, or bypasses authorization; see [docs/jev-ui.md](./docs/jev-ui.md).
 - **Refuse to take the agent's word for it.** A closing summary becomes a claims list, and `verify_report` adjudicates each claim against machine evidence — a build record, the API capture store, a file on disk, a real command, git state — producing `pass` / `incomplete` / `fail`. Claims that the evidence contradicts are recorded in the failure corpus (class `agent-misjudge`) automatically. When the tools cannot see something, they say "unverified", not "passed".
 
-## Tools — 55, of which 23 are read-only
+## Tools — 56, of which 23 are read-only
 
 The single source of truth is [`lib/tool-registry.mjs`](./lib/tool-registry.mjs); both faces (DSH plugins and MCP) are generated from it, so they cannot drift apart. **Every tool, one line each, sorted by what you are trying to do → [docs/tools.md](./docs/tools.md).**
 
@@ -212,7 +212,7 @@ At a glance:
 | --- | --- |
 | [ROADMAP.md](./ROADMAP.md) | The public three-year plan and its design principles |
 | [docs/architecture.md](./docs/architecture.md) | How the pieces compose |
-| [docs/tools.md](./docs/tools.md) | All 55 tools, one line each, grouped by what you are trying to do |
+| [docs/tools.md](./docs/tools.md) | All 56 tools, one line each, grouped by what you are trying to do |
 | [docs/prior-art.md](./docs/prior-art.md) | What this project learned from (per package), and what it deliberately did not copy |
 | [docs/verify-package.md](./docs/verify-package.md) | Proposal: extracting the verification core as a standalone package — **status: not implemented** |
 | [docs/failure-corpus.md](./docs/failure-corpus.md) | Failure taxonomy and record schema |

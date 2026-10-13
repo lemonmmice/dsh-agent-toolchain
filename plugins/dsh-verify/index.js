@@ -16,6 +16,7 @@ import { dshParameters, dshDescription } from '../../lib/tool-registry.mjs'
 // 注意：这里必须是**静态** import（本插件目录内的文件永远在），不能走下面那个带守卫的动态 import
 // （那个是给 `../../lib/verify/report.mjs` —— 共享库，插件被拷出 monorepo 时可能不存在）。
 import { renderFailureQuery, renderFailureStats } from './lib/render-failure.mjs'
+import { taskControl, renderTaskJob } from '../../lib/task-tool-support.mjs'
 
 export const name = 'dsh-verify'
 
@@ -79,9 +80,9 @@ async function withCorpus(fn) {
     return { ok: false, error: '失败样本库不可用：插件被单独拷贝脱离了 monorepo（缺 lib/failure-corpus.mjs）' }
   }
   try {
-    return fn(mod.makeFailureCorpus())
+    return await fn(mod.makeFailureCorpus())
   } catch (e) {
-    return { ok: false, error: String(e && e.message ? e.message : e) }
+    return { ok: false, error: String(e && e.message ? e.message : e), ...(e.code ? { errorCode: e.code } : {}), ...(e.incomplete ? { incomplete: true } : {}), ...(e.retryable ? { retryable: true } : {}) }
   }
 }
 
@@ -146,6 +147,13 @@ const tools = () => [
       }
     },
   }),
+  defineTool({
+    name: 'toolchain_job',
+    description: dshDescription('toolchain_job'),
+    parameters: dshParameters('toolchain_job'),
+    output: { schema: OBJECT, render: renderTaskJob },
+    async execute(args) { return taskControl({ action: args.action, jobId: args.jobId }) },
+  }),
 
   // ------------------------------------------------------------------ 失败样本库
   // F-003 / E4（2026-09-12 r35）：这四个工具原先**只有 MCP 面**有（mcp/server.mjs），
@@ -160,7 +168,7 @@ const tools = () => [
     isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => renderFailureQuery(v) },
     async execute(args) {
-      return withCorpus((c) => c.query(args))
+      return withCorpus((c) => c.queryAsync(args))
     },
   }),
 
@@ -171,7 +179,7 @@ const tools = () => [
     isConcurrencySafe: () => true, // P1-1c 只读（真源 lib/tool-registry READ_ONLY）
     output: { schema: OBJECT, render: (_a, v) => renderFailureStats(v) },
     async execute() {
-      return withCorpus((c) => c.stats())
+      return withCorpus((c) => c.statsAsync())
     },
   }),
 

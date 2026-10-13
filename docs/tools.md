@@ -5,7 +5,7 @@ and zero disables expiry. Recall preserves expired rows and returns `expired`, p
 expiry metadata. Status reports per-kind and expired counts; search hits include index time
 and embedding identity for newly indexed chunks.
 
-55 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
+56 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
 face and the MCP face cannot drift apart. `Read` = the registry marks it read-only (safe to call with
 no permission); `Write` = it can change something — a file, a process, a client window, a running
 capture — and therefore carries the gate described in
@@ -20,6 +20,7 @@ capture — and therefore carries the gate described in
 | Tool | | What it does |
 | --- | --- | --- |
 | `toolchain_status` | Read | Environment self-check: is the target client running, is a source root configured (that is what decides whether you get `file:line`), are the dump/trace tools present, are you admin. Every value is reported **with its source**, and things it cannot check are reported as unchecked. |
+| `toolchain_job` | Write | Read a long-task status/result or request cancellation by `jobId`; accepted is not completed and unknown side effects are never replayed. |
 
 ## Build
 

@@ -92,6 +92,7 @@ export function renderErrors(v) {
   const errors = Array.isArray(v.errors) ? v.errors : []
   const warnings = Array.isArray(v.warnings) ? v.warnings : []
   const head = errors.length + ' 错误 / ' + warnings.length + ' 警告（日志 ' + (v.logPath || '?') + '）'
+    + (v.incomplete ? '\n解析未完成：' + (v.readError || v.note || v.errorCode || '日志快照不完整') : '')
   if (errors.length === 0 && warnings.length === 0) {
     return head + '\n（没有解析出任何条目 —— ⚠ **空 ≠ 没有错误**：先确认这份日志是不是你要的那一次，见工具描述。）'
   }

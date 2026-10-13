@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { makeHangInspector } from '../lib/hang.mjs'
 
 const work = mkdtempSync(join(tmpdir(), 'dsh-hang-stop-encoding-'))
-const previousSpawn = childProcess.spawnSync
+const previousSpawn = childProcess.execFile
 const previousKill = process.kill
 const previousGate = process.env.DSH_NO_ENV_FALLBACK
 process.env.DSH_NO_ENV_FALLBACK = '1'
@@ -22,12 +22,12 @@ process.kill = (pid, signal) => {
   if (!alive) throw Object.assign(new Error('not running'), { code: 'ESRCH' })
   return true
 }
-childProcess.spawnSync = (file, args, options) => {
-  if (file === 'powershell.exe') return { status: 0, stdout: 'pwsh -File fixture/hang-loop.ps1\n__CREATED__' + new Date(startedAt).toISOString(), stderr: '' }
+childProcess.execFile = (file, args, options, callback) => {
+  if (file === 'powershell.exe') { setImmediate(() => callback(null, Buffer.from('pwsh -File fixture/hang-loop.ps1\n__CREATED__' + new Date(startedAt).toISOString()), Buffer.alloc(0))); return }
   assert.equal(file, 'taskkill')
   assert.deepEqual(args, ['/PID', String(fixturePid), '/T', '/F'])
   if (killSucceeded) alive = false
-  return { status: killSucceeded ? 0 : 1, stdout: options.encoding ? message.toString(options.encoding) : message, stderr: Buffer.alloc(0) }
+  setImmediate(() => callback(killSucceeded ? null : Object.assign(new Error('fixture failure'), { code: 1 }), message, Buffer.alloc(0)))
 }
 syncBuiltinESMExports()
 try {
@@ -36,14 +36,14 @@ try {
     writeFileSync(join(work, 'run.json'), JSON.stringify({ pid: fixturePid, startedAt, status: 'running' }))
     return makeHangInspector({ runDir: work, uiDrive: work, packs: work, hangLoop: join(work, 'hang-loop.ps1'), srcRoot: '' })
   }
-  const stopped = makeInspector().stopRun()
+  const stopped = await makeInspector().stopRun()
   assert.equal(stopped.taskkillOut, '成功: 已终止')
   assert.equal(stopped.stopped, true)
   assert.equal(stopped.killVerified, true)
   assert.equal(stopped.taskkillExit, 0)
   alive = true
   killSucceeded = false
-  const failed = makeInspector().stopRun()
+  const failed = await makeInspector().stopRun()
   assert.equal(failed.taskkillOut, '成功: 已终止')
   assert.equal(failed.stopped, false)
   assert.equal(failed.killVerified, false)
@@ -51,7 +51,7 @@ try {
   assert.equal(failed.taskkillExit, 1)
   console.log('PASS taskkill OEM output decodes without changing observed process-exit semantics')
 } finally {
-  childProcess.spawnSync = previousSpawn
+  childProcess.execFile = previousSpawn
   process.kill = previousKill
   syncBuiltinESMExports()
   if (previousGate === undefined) delete process.env.DSH_NO_ENV_FALLBACK

@@ -41,6 +41,10 @@ dsh-hang-inspector/
 
 ## API（host 侧，loopback-only）
 
+`startRun`、`runStatus`、`stopRun` 是异步接口，进程身份查询与停止命令不会同步占住 Node 主线程。
+同一实例的重叠启停返回 `MONITOR_BUSY`；旧监测进程的延迟回调不能覆盖新一轮状态。
+停止前仍核对命令行和创建时间，身份未知/复用时拒绝结束进程。日志尾读最多 256 KiB，并通过 `logRead` 报告不可读、截断和并发变化。
+
 - `GET /api/dsh-hang-inspector/` — 探活
 - `GET /api/dsh-hang-inspector/run` — 监测运行状态 + 日志尾部
 - `POST /api/dsh-hang-inspector/run` — 启动监测（body 可选 `{maxSeconds}`，0 = 一直监测）

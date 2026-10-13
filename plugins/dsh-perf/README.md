@@ -16,6 +16,8 @@ DSH（DeepSeek Harness）的**性能剖析插件**：与 dsh-hang-inspector（�
 
 ### 分析与清理边界
 
+- `perf_dump(analyze=false)` 只采集，返回 `captureComplete=true`、`analysisState=not-requested` 和 `dumpPath`；之后可单独调用 `perf_analyze`。默认仍采集并分析，分析失败由 `analysisState=failed` 与 `analysis.ok=false` 表示。
+- 采集目录按 UUID 隔离；目标进程查询异步执行，多实例时拒绝猜测。ProcDump 输出支持 UTF-8、GBK 和 UTF-16；退出码 1 只有在输出含完整采集标记且文件通过 minidump 头检查时才认作采集完成，原退出码仍保留。超时、其他失败退出码和不完整文件不会成为成功证据。头检查不替代分析器对整个 dump 的校验。
 - `perf_analyze` 为每次分析分配独立产物路径，失败退出码或无效 JSON 不会被旧文件替代；以返回的 `outPath` 和 `summaryPath` 引用证据。
 - `perf_clean` 默认 dry-run 返回 `planId`。执行删除须传 `confirm=true` 和相同 `planId`；清单、文件身份或采样状态变化时需要重新查看清单。允许显式配置的证据根为 junction，并以其真实路径为边界；子目录/文件链接和 junction 会被跳过，删除前再次检查根指向、真实路径、文件身份与 trace/UI-freeze 采样标记。标记不可读时保留 ETL。
 - `perf_clrevents` 的 `xmlPath` 是输出路径。复用须显式传 `reuse=true`，并保留旁边的 `.manifest.json` 与摘要文件。缓存校验 ETL 内容摘要、解码器身份和产物身份；PID 过滤每次重新应用。校验仍会流式读取 ETL，并非常数时间查询。XML 按事件流式读取，超过实际大小、单条事件或保留事件预算时明确失败。

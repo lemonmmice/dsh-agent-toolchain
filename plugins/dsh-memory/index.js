@@ -3,7 +3,9 @@
  * 给 AI 编程助手长期记忆：文档索引 + 语义检索 + 跨会话 KV 记忆。
  * 只注册 agent 工具与 systemPrompt 公告，不挂 Web 路由（面板后续版本）。
  */
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool as sdkDefineTool } from '@deepseek-ai/dsh-tools'
+import { wrapTaskDefinition } from '../../lib/task-tool-support.mjs'
+const defineTool = definition => sdkDefineTool(wrapTaskDefinition(definition))
 import { DshMemory } from './lib/memory.mjs'
 import { buildProducer } from '../../lib/failure-provenance.mjs'
 // W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name）。
@@ -78,10 +80,10 @@ const tools = () => [
       }],
     },
     async execute(args) {
-      const r = await mem().indexWorkspace(args.path, { budgetMs: args.budgetMs })
+      const r = await mem().indexWorkspaceAsync(args.path, { budgetMs: args.budgetMs })
       // BV-07：把"这次索引有没有把内容发出去"直接放进**这次调用的返回值**里 ——
       // 让 agent 不必先想到去查 memory_status 才知道文件分块是否离开了本机。
-      const st = mem().status()
+      const st = mem().embeddingStatus()
       return { ...r, embed: st.embed, embedEndpoint: st.embedEndpoint, privacyNote: st.note }
     },
   }),
@@ -146,13 +148,13 @@ const tools = () => [
     description: dshDescription('memory_save'),
     parameters: dshParameters('memory_save'),
     output: { schema: { type: 'object', additionalProperties: true, properties: { saved: { type: 'boolean' }, key: { type: 'string' }, error: { type: 'string' } } },
-      render: (_args, value) => [{ type: 'text', text: value.saved ? (`已记住：${value.key}`) : (`保存被拒绝：${value.error}`) }] },
+      render: (_args, value) => [{ type: 'text', text: value.unknown ? '保存结果未知，请先 recall 核对，未自动重试。' : value.saved ? (`已记住：${value.key}`) : (`保存被拒绝：${value.error}`) }] },
     async execute(args) {
       try {
-        const row = mem().remember(args.key, args.value, args.scope || 'global', { kind: args.kind, reason: args.reason, ttlDays: args.ttlDays, source: buildProducer({ runtime: 'dsh' }) })
+        const row = await mem().rememberAsync(args.key, args.value, args.scope || 'global', { kind: args.kind, reason: args.reason, ttlDays: args.ttlDays, source: buildProducer({ runtime: 'dsh' }) })
         return { saved: true, ...row }
       } catch (e) {
-        return { saved: false, key: args.key, error: e.message, ...(e.code ? { errorCode: e.code, retryable: e.retryable === true, retryAfterMs: e.retryAfterMs, writesApplied: e.writesApplied } : {}) }
+        return { saved: false, key: args.key, error: e.message, ...(e.code ? { errorCode: e.code, retryable: e.retryable === true, retryAfterMs: e.retryAfterMs, writesApplied: e.writesApplied, unknown: e.unknown === true, incomplete: e.incomplete === true } : {}) }
       }
     },
   }),
@@ -164,7 +166,7 @@ const tools = () => [
     output: { schema: { type: 'object', additionalProperties: true, properties: { found: { type: 'boolean' }, key: { type: 'string' }, value: { type: 'string' } } },
       render: (_args, value) => [{ type: 'text', text: value.found ? (`${value.key} = ${value.value}\n${JSON.stringify({ kind: value.kind, reason: value.reason, source: value.source, expiresAt: value.expiresAt, expired: value.expired })}`) : (`没有找到记忆：${value.key}`) }] },
     async execute(args) {
-      const r = mem().recall(args.key, args.scope || 'global')
+      const r = await mem().recallAsync(args.key, args.scope || 'global')
       return r ? { found: true, ...r } : { found: false, key: args.key }
     },
   }),
@@ -173,10 +175,14 @@ const tools = () => [
     description: dshDescription('memory_forget'),
     parameters: dshParameters('memory_forget'),
     output: { schema: { type: 'object', additionalProperties: true, properties: { forgotten: { type: 'boolean' }, key: { type: 'string' } } },
-      render: (_args, value) => [{ type: 'text', text: value.forgotten ? `已忘记：${value.key}` : `没有找到记忆：${value.key}` }] },
+      render: (_args, value) => [{ type: 'text', text: value.unknown ? '删除结果未知，请先 recall 核对，未自动重试。' : value.error ? `删除未完成：${value.error}` : value.forgotten ? `已忘记：${value.key}` : `没有找到记忆：${value.key}` }] },
     async execute(args) {
-      const { deleted } = mem().forget(args.key, args.scope || 'global')
-      return { forgotten: deleted > 0, deleted, key: args.key }
+      try {
+        const { deleted } = await mem().forgetAsync(args.key, args.scope || 'global')
+        return { forgotten: deleted > 0, deleted, key: args.key }
+      } catch (error) {
+        return { forgotten: false, key: args.key, error: error.message, errorCode: error.code, retryable: error.retryable === true, writesApplied: error.writesApplied, unknown: error.unknown === true }
+      }
     },
   }),
   defineTool({
@@ -213,10 +219,10 @@ const tools = () => [
         }]
       } },
     async execute() {
-      const s = mem().status()
+      const s = await mem().statusAsync()
       // ⚠ F-054：**必须把渲染层要用的字段一起带出来**。少了 `embedEndpoint`，渲染就只能瞎猜，
       //   而它猜的方向是"本地/安全" —— 一个字段漏传 = 一句隐私假承诺。
-      return { chunks: s.chunks, kvEntries: s.kvEntries, byKind: s.byKind, expired: s.expired, embed: s.embed, embedEndpoint: s.embedEndpoint, note: s.note }
+      return { chunks: s.chunks, kvEntries: s.kvEntries, byKind: s.byKind, expired: s.expired, embed: s.embed, embedEndpoint: s.embedEndpoint, note: s.note, timing: s.timing, vectorMetadata: s.vectorMetadata }
     },
   }),
 ]

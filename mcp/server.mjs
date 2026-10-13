@@ -12,6 +12,7 @@
  *   DSH_FAILURE_CORPUS_DIR (failure corpus, default ~/.dsh-agent-toolchain/failure-corpus)
  */
 import { envOr } from '../lib/env-fallback.mjs'
+import { parseProfile, toolAllowed } from '../lib/tool-profiles.mjs'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
@@ -42,7 +43,8 @@ import { captureStatusSummary as summarizeCapture, doubleWriteVerdict, sampleDel
 // 不在这里再写一份（第 24 类缺陷：同一件事不许有第二份实现）。
 import { toolchainStatusAsync } from '../lib/toolchain-status.mjs'
 import { createCaptureStatusCache } from './capture-status-cache.mjs'
-import { queryPage, appendRecords, readAll, readRetention } from '../lib/capture-store.mjs'
+import { appendRecords, readAll } from '../lib/capture-store.mjs'
+import { queryCaptureAsync } from '../lib/capture-query-service.mjs'
 import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote } from '../plugins/dsh-api-visualizer/lib/query-view.mjs'
 import { makeVerificationReport } from '../lib/verify/report.mjs'
 import { attachInlineImage } from './inline-image.mjs'
@@ -55,6 +57,8 @@ import { makeJevUiController } from '../lib/jev-ui.mjs'
 import { mcpDescription, mcpAnnotations } from '../lib/tool-registry.mjs'
 import { mcpShape } from './registry-zod.mjs'
 import { makeToolProgress } from './tool-progress.mjs'
+import { runTaskTool, taskControl } from '../lib/task-tool-support.mjs'
+import { TASK_TOOLS, TASK_PARAMETERS } from '../lib/task-tools.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -77,6 +81,12 @@ const _toolTrace = makeToolTrace({
 const _outputBudget = makeOutputBudget({ maxTokens: outputMaxTokens({}, process.env) })
 const _toolProgress = makeToolProgress()
 const _origTool = server.tool.bind(server)
+function injectTaskParameters(args) {
+  if (!TASK_TOOLS.has(args[0])) return args
+  const shape = mcpShape(args[0])
+  args[2] = { ...args[2], ...Object.fromEntries(TASK_PARAMETERS.map(parameter => [parameter.name, shape[parameter.name]])) }
+  return args
+}
 // P1-1c —— 只读工具注解（readOnlyHint）。单一 chokepoint 同处注入：从注册表读该工具是否只读，
 // 是则在 handler 前插入 { readOnlyHint: true } 作 annotations 实参（SDK 支持 tool(name,desc,shape,annotations,cb)
 // 且注解原样进 tools/list，已实证；非只读工具不注解）。客户端据此可对只读工具并行分发。名字仍取自第一个字面量实参。
@@ -99,11 +109,15 @@ function injectAnnotations(args) {
 const _callCtx = new AsyncLocalStorage()
 const withCallContext = (name, handler) => (args, extra) =>
   _callCtx.run({ tool: name, agentTurn: agentTurnFromMeta(extra?._meta) }, async () => {
-    try { return await handler(args, extra) }
+    try {
+      const result = await runTaskTool(name, args, handler, extra)
+      return result?.taskJob === true ? jtext(result) : result
+    }
     catch (error) {
-      if (error.code === 'UI_LOCK_BUSY' || error.code === 'FILE_TRANSACTION_BUSY') {
+      if (error.code === 'UI_LOCK_BUSY' || error.code === 'FILE_TRANSACTION_BUSY' || error.code === 'WORKER_BUSY' || error.code === 'TASK_BUSY') {
         return jtext({ ok: false, state: 'busy', errorCode: error.code, retryable: true, retryAfterMs: error.retryAfterMs, writesApplied: false })
       }
+      if (error.incomplete === true) return jtext({ ok: false, incomplete: true, errorCode: error.code, error: error.message })
       throw error
     }
   })
@@ -113,7 +127,21 @@ function producerNow(runtime = 'mcp') {
   try { client = server.server.getClientVersion?.() ?? null } catch { client = null }
   return buildProducer({ runtime, client, agentTurn: _callCtx.getStore()?.agentTurn ?? null })
 }
-server.tool = (...args) => _origTool(...wrapToolArgs(injectAnnotations(args), (name, handler) => withCallContext(name, _toolProgress.wrap(name, _toolTrace.wrap(name, _outputBudget.wrap(name, handler))))))
+// 工具 profile（见 lib/tool-profiles.mjs）：设 DSH_TOOL_PROFILE 时只注册选中域 + core，精简 tools/list 的 token；
+// 默认（未设）全开 —— 不支持动态发现的客户端零影响，mcp/smoke 的 DECLARED 比对也仍成立（它不设该环境变量）。
+const _toolProfile = parseProfile(envOr('DSH_TOOL_PROFILE'))
+server.tool = (...args) => {
+  const toolName = typeof args[0] === 'string' ? args[0] : null
+  if (toolName && !toolAllowed(toolName, _toolProfile)) return undefined
+  return _origTool(...wrapToolArgs(injectAnnotations(injectTaskParameters(args)), (name, handler) => withCallContext(name, _toolProgress.wrap(name, _toolTrace.wrap(name, _outputBudget.wrap(name, handler))))))
+}
+
+server.tool(
+  'toolchain_job',
+  mcpDescription('toolchain_job'),
+  mcpShape('toolchain_job'),
+  async args => jtext(await taskControl({ action: args.action, jobId: args.jobId }))
+)
 
 // ---------------------------------------------------------------- shared
 
@@ -323,11 +351,12 @@ server.tool(
   'jev_decide',
   mcpDescription('jev_decide'),
   mcpShape('jev_decide'),
-  async (args) => {
+  async (args, extra) => {
     if (args.allowRemoteData !== true) return failure('jev_decide 默认不联网；确认 state/questions 已脱敏后重发并带 allowRemoteData=true', 'remote_data_not_allowed')
     const parsed = parseJevArguments(args)
     if (!parsed.ok) return jtext(parsed)
-    const result = await jv().evaluate(parsed.request)
+    // extra.signal：MCP 侧取消 / 期限贯穿到远程请求（整段取消）。
+    const result = await jv().evaluate({ ...parsed.request, signal: extra?.signal })
     if (!result.ok) return jtext(result)
     return jtext({ ...result, advisoryOnly: true, executedActions: 0, remote: true })
   },
@@ -1061,29 +1090,29 @@ server.tool(
   'hang_status',
   mcpDescription('hang_status'),
   mcpShape('hang_status'),
-  async () => jtext(hng().runStatus())
+  async () => jtext(await hng().runStatus())
 )
 
 server.tool(
   'hang_run',
   mcpDescription('hang_run'),
   mcpShape('hang_run'),
-  async (args) => jtext(hng().startRun({ maxSeconds: args.maxSeconds ?? 0 }))
+  async (args) => jtext(await hng().startRun({ maxSeconds: args.maxSeconds ?? 0 }))
 )
 
 server.tool(
   'hang_stop',
   mcpDescription('hang_stop'),
   mcpShape('hang_stop'),
-  async () => jtext(hng().stopRun())
+  async () => jtext(await hng().stopRun())
 )
 
 server.tool(
   'hang_packs',
   mcpDescription('hang_packs'),
   mcpShape('hang_packs'),
-  async () => {
-    const items = hng().listPacks()
+  async (args) => {
+    const items = hng().listPacks({ limit: args?.limit })
     return jtext({ total: items.length, evidenceDir: hng().packsDir(), items })
   }
 )
@@ -1155,7 +1184,7 @@ server.tool(
   'memory_index',
   mcpDescription('memory_index'),
   mcpShape('memory_index'),
-  async (args) => jtext(await mem().indexWorkspace(args.path, { budgetMs: args.budgetMs }))
+  async (args) => jtext(await mem().indexWorkspaceAsync(args.path, { budgetMs: args.budgetMs }))
 )
 
 server.tool(
@@ -1182,9 +1211,9 @@ server.tool(
   mcpShape('memory_save'),
   async (args) => {
     try {
-      return jtext(mem().remember(args.key, args.value, args.scope, { kind: args.kind, reason: args.reason, ttlDays: args.ttlDays, source: producerNow() }))
+      return jtext(await mem().rememberAsync(args.key, args.value, args.scope, { kind: args.kind, reason: args.reason, ttlDays: args.ttlDays, source: producerNow() }))
     } catch (e) {
-      if (e.retryable === true) return jtext({ ok: false, errorCode: e.code, retryable: true, retryAfterMs: e.retryAfterMs, writesApplied: e.writesApplied })
+      if (e.code) return jtext({ ok: false, state: e.unknown ? 'unknown' : 'failed', errorCode: e.code, error: e.message, retryable: e.retryable === true, retryAfterMs: e.retryAfterMs, writesApplied: e.writesApplied, unknown: e.unknown === true, incomplete: e.incomplete === true })
       return failure('memory_save rejected: ' + e.message, 'memory_save_rejected')
     }
   }
@@ -1195,7 +1224,7 @@ server.tool(
   mcpDescription('memory_recall'),
   mcpShape('memory_recall'),
   async (args) => {
-    const v = mem().recall(args.key, args.scope)
+    const v = await mem().recallAsync(args.key, args.scope)
     // Flat shape: value is the stored string, not a nested row object.
     return jtext(v == null ? { found: false } : { found: true, ...v })
   }
@@ -1205,7 +1234,7 @@ server.tool(
   'memory_status',
   mcpDescription('memory_status'),
   mcpShape('memory_status'),
-  async () => jtext(mem().status())
+  async () => jtext(await mem().statusAsync())
 )
 
 server.tool(
@@ -1214,10 +1243,10 @@ server.tool(
   mcpShape('memory_forget'),
   async (args) => {
     try {
-      const result = mem().forget(args.key, args.scope || 'global')
+      const result = await mem().forgetAsync(args.key, args.scope || 'global')
       return jtext({ forgotten: result.deleted > 0, deleted: result.deleted, key: args.key })
     } catch (error) {
-      if (error.retryable === true) return jtext({ ok: false, errorCode: error.code, retryable: true, retryAfterMs: error.retryAfterMs, writesApplied: error.writesApplied })
+      if (error.code) return jtext({ ok: false, state: error.unknown ? 'unknown' : 'failed', errorCode: error.code, error: error.message, retryable: error.retryable === true, retryAfterMs: error.retryAfterMs, writesApplied: error.writesApplied, unknown: error.unknown === true, incomplete: error.incomplete === true })
       return failure('memory_forget rejected: ' + error.message, 'memory_forget_rejected')
     }
   }
@@ -1238,7 +1267,7 @@ server.tool(
   'build_errors',
   mcpDescription('build_errors'),
   mcpShape('build_errors'),
-  async (args) => jtext(bld().errorsOfLast({ runId: args.runId, jobId: args.jobId }))
+  async (args) => jtext(await bld().errorsOfLast({ runId: args.runId, jobId: args.jobId }))
 )
 
 server.tool(
@@ -1283,14 +1312,14 @@ server.tool(
   'failure_query',
   mcpDescription('failure_query'),
   mcpShape('failure_query'),
-  async (args) => jtext(fc().query(args))
+  async (args) => jtext(await fc().queryAsync(args))
 )
 
 server.tool(
   'failure_stats',
   mcpDescription('failure_stats'),
   mcpShape('failure_stats'),
-  async () => jtext(fc().stats())
+  async () => jtext(await fc().statsAsync())
 )
 
 // E3 / F-042（2026-09-12 r36）：**"统一 health 工具"是一个 P0 能力缺口**，不是"测试没找到"。
@@ -1329,15 +1358,19 @@ server.tool(
     //   只回 total/returned/items —— 于是"引擎没在跑 = 你看到的是历史数据"和
     //   "调用方归因根本没有生产者（F-004）"这两件事，在 MCP 面上完全不可见。
     //   现在三个面（插件工具 / 面板路由 / MCP）共用同一个 lib/query-view.mjs。
-    const page = queryPage(args)
+    const snapshot = await queryCaptureAsync(args)
+    const page = snapshot.page
     // 捕获引擎跑在**宿主进程**里，MCP 进程看不到它 —— 但宿主开了回环路由，可以直接问。
     // 问不到就保持 null（"未知"），绝不猜成"没在跑"或"在跑"。
     const hostStatus = await captureStatusCache.get({ fresh: args.fresh === true })
-    const view = buildQueryView({ records: page && page.items, all: readAll(), status: hostStatus.value, callerFilter: String(args.caller ?? ''), retention: readRetention() })
+    const view = buildQueryView({ records: page && page.items, summary: snapshot.summary, status: hostStatus.value, callerFilter: String(args.caller ?? ''), retention: snapshot.retention })
     view.freshness.hostStatus = { ...hostStatus, value: undefined }
     return jtext({
       ...page,
       ...view,
+      timing: snapshot.timing,
+      revision: snapshot.summary.revision,
+      complete: snapshot.complete,
       freshnessNote: freshnessNote(view.freshness),
       callerAttributionNote: callerAttributionNote(view.callerAttribution),
       // 「没读到」≠「没有」：库被裁剪过时必须说清，否则 0 条会被读成"这段时间没这种调用"。

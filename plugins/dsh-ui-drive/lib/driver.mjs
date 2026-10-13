@@ -23,6 +23,8 @@ import { protocolId, contentHash, observationOf, createReplay, validateReplay, n
 import { executeVisualFallback } from './visual-fallback.mjs'
 import { isGateDenied } from './refusal.mjs'
 import { loadControlPolicy, controlPolicyStatus } from './control-policy.mjs'
+import { moduleRoots, processStartedAtMs, staleCodeInfo } from '../../../lib/code-freshness.mjs'
+import { attachProcessCancellation, checkTaskCancellation } from '../../../lib/process-cancellation.mjs'
 
 // 解释器路径用户可配：经 env-fallback（长活宿主的进程环境里可能没有用户后来设的值）。
 const PS = envOr('DSH_UI_POWERSHELL') || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
@@ -139,6 +141,7 @@ export function makeDriver(cfg) {  const c = {
   // ------------------------------------------------------------ 进程执行
 
   function runPs1(script, args, timeoutMs = c.defaultTimeoutMs) {
+    checkTaskCancellation()
     return new Promise((resolve) => {
       let child
       try {
@@ -170,6 +173,7 @@ export function makeDriver(cfg) {  const c = {
         resolve({ code: -1, stdout: '', stderr: 'spawn 失败: ' + e, timedOut: false, spawnError: String(e) })
         return
       }
+      attachProcessCancellation(child)
       const outChunks = []
       const errChunks = []
       let settled = false
@@ -827,6 +831,7 @@ export function makeDriver(cfg) {  const c = {
    * 反例：agent 正常动作超时仍杀进程（卡住的 serve 没救），保持原语义。
    */
   function warmSend(payload, timeoutMs = c.defaultTimeoutMs, opts = {}) {
+    checkTaskCancellation()
     payload = { ...payload, controlPolicy: loadControlPolicy() }
     return new Promise((resolve) => {
       if (!warm.proc) { resolve(null); return }
@@ -1217,6 +1222,7 @@ export function makeDriver(cfg) {  const c = {
    * 证据写入失败**不得**影响驱动结果，但也**不得静默** —— 失败时结果里带 evidenceError。
    */
   async function drive(args) {
+    checkTaskCancellation()
     const actionId = protocolId('act')
     const before = latestObservation
     const waitAfter = args.waitAfter === undefined ? null : validateWaitAfter(args.action, args.waitAfter)
@@ -2722,7 +2728,11 @@ export function makeDriver(cfg) {  const c = {
   return {
     config: c,
     status,
-    launch,
+    async launch(options) {
+      const result = await launch(options)
+      return { ...result, runtime: { pid: process.pid, processStartedAt: new Date(processStartedAtMs()).toISOString() },
+        ...staleCodeInfo(moduleRoots(dirname(import.meta.dirname)), { cacheMs: 1000 }) }
+    },
     drive,
     tree,
     flow,

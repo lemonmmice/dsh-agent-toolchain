@@ -38,6 +38,7 @@ import { foldDumperCsv, foldAllocCsv, foldedToText, buildTree, renderFlameHtml }
 import { buildJitMapStreaming } from './jitmap.mjs'
 import { analyzeThreadWaits } from './uifreeze.mjs'
 import { readClrEvents } from './clr-stream.mjs'
+import { attachProcessCancellation, checkTaskCancellation } from '../../../lib/process-cancellation.mjs'
 
 const PROGRAM_FILES_X86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
 const SYSTEM32 = join(process.env.SystemRoot || 'C:\\Windows', 'System32')
@@ -247,6 +248,7 @@ export function makeTrace(cfg = {}) {
 
   /** 跑一个可执行文件并收全输出；超时杀进程树。 */
   function runExe(exe, args, opts = {}) {
+    checkTaskCancellation()
     // 测试接缝（理由同 env-fallback 的 env/exec 注入）：采集前自检的行为必须能被**离线**验住 ——
     // 否则"这台机器的 WPR 能不能收尾"只能靠真机碰运气，而它恰恰是"白跑一轮复现"的分水岭。
     if (typeof c.runExe === 'function') return c.runExe(exe, args, opts)
@@ -259,6 +261,7 @@ export function makeTrace(cfg = {}) {
         resolve({ code: -1, stdout: '', stderr: 'spawn failed: ' + e, timedOut: false })
         return
       }
+      attachProcessCancellation(child)
       let out = '', err = '', settled = false
       const timer = setTimeout(() => {
         if (settled) return
