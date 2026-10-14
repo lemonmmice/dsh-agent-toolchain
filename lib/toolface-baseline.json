@@ -1,7 +1,7 @@
 {
   "version": 1,
   "note": "工具**能力基线**：两面（DSH 插件面 / MCP 面）都必须至少提供这些参数。由 lib/toolface-params.test.mjs 维护；刷新须显式带 DSH_TOOLFACE_BASELINE_UPDATE=1 跑一次。删除条目 = 声明\"这个能力不要了\"，请在提交说明里写理由。",
-  "generatedAt": "2026-09-21T07:57:14.603Z",
+  "generatedAt": "2026-10-14T07:27:16.754Z",
   "tools": {
     "api_capture_append": [
       "records",
@@ -10,7 +10,9 @@
     "api_capture_query": [
       "bodyQ",
       "caller",
+      "cursor",
       "errors",
+      "fresh",
       "fromTs",
       "host",
       "includeBody",
@@ -38,19 +40,28 @@
       "sampleSeconds"
     ],
     "build_run": [
+      "asyncJob",
       "background",
       "clientRoot",
       "configuration",
       "engine",
+      "jobTimeoutMs",
       "killClient",
       "platform",
       "project",
       "repoRoot",
+      "requestKey",
       "runId",
       "target"
     ],
-    "build_status": [],
-    "build_errors": [],
+    "build_status": [
+      "jobId",
+      "runId"
+    ],
+    "build_errors": [
+      "jobId",
+      "runId"
+    ],
     "build_compile_check": [
       "file",
       "project",
@@ -61,20 +72,28 @@
       "maxSeconds"
     ],
     "hang_stop": [],
-    "hang_packs": [],
+    "hang_packs": [
+      "limit"
+    ],
     "hang_pack": [
       "id"
     ],
     "hang_analyze": [
+      "asyncJob",
       "id",
+      "jobTimeoutMs",
       "refresh",
+      "requestKey",
       "wait",
       "waitMs"
     ],
     "hang_delete": [
       "all",
+      "asyncJob",
       "confirm",
-      "id"
+      "id",
+      "jobTimeoutMs",
+      "requestKey"
     ],
     "jev_decide": [
       "allowRemoteData",
@@ -84,8 +103,11 @@
       "timeoutMs"
     ],
     "memory_index": [
+      "asyncJob",
       "budgetMs",
-      "path"
+      "jobTimeoutMs",
+      "path",
+      "requestKey"
     ],
     "memory_search": [
       "k",
@@ -93,7 +115,10 @@
     ],
     "memory_save": [
       "key",
+      "kind",
+      "reason",
       "scope",
+      "ttlDays",
       "value"
     ],
     "memory_recall": [
@@ -106,86 +131,125 @@
     ],
     "memory_status": [],
     "perf_probe": [
+      "asyncJob",
       "capture",
       "intervalMs",
+      "jobTimeoutMs",
+      "requestKey",
       "seconds",
       "thresholdMs"
     ],
     "perf_report": [],
     "perf_dump": [
-      "note"
+      "analyze",
+      "asyncJob",
+      "jobTimeoutMs",
+      "note",
+      "requestKey"
     ],
     "perf_analyze": [
-      "dumpPath"
+      "asyncJob",
+      "dumpPath",
+      "jobTimeoutMs",
+      "requestKey"
     ],
     "perf_heap": [
+      "asyncJob",
       "dumpPath",
+      "jobTimeoutMs",
+      "requestKey",
       "topN"
+    ],
+    "perf_gcroot": [
+      "asyncJob",
+      "dumpPath",
+      "jobTimeoutMs",
+      "paths",
+      "requestKey",
+      "top",
+      "type"
     ],
     "perf_trace": [
       "action",
       "alloc",
+      "asyncJob",
       "clr",
       "engine",
       "etlPath",
       "jit",
+      "jobTimeoutMs",
       "profile",
+      "requestKey",
       "seconds",
       "skipPreflight",
       "tag"
     ],
-    "perf_allocflame": [
-      "etlPath",
-      "noJit",
-      "pid",
-      "process",
-      "symbols"
-    ],
-    "perf_uifreeze": [
-      "action",
-      "keepEtl",
-      "process",
-      "symbols",
-      "tid",
-      "top"
-    ],
-    "perf_flame": [
-      "csvPath",
-      "etlPath",
-      "jitEtl",
-      "keepCsv",
-      "noJit",
-      "process",
-      "symbols",
-      "timeoutMs"
-    ],
-    "perf_gcroot": [
-      "dumpPath",
-      "paths",
-      "top",
-      "type"
-    ],
     "perf_clean": [
+      "asyncJob",
       "confirm",
+      "jobTimeoutMs",
       "keepDays",
+      "planId",
+      "requestKey",
       "what"
     ],
     "perf_hotstacks": [
+      "asyncJob",
       "debugSymbols",
       "etlPath",
       "focus",
+      "jobTimeoutMs",
       "minHits",
       "offline",
       "process",
+      "requestKey",
       "timeoutMs",
       "topN"
     ],
     "perf_clrevents": [
+      "asyncJob",
       "etlPath",
+      "jobTimeoutMs",
       "maxXmlMb",
       "pid",
+      "requestKey",
+      "reuse",
       "timeoutMs",
       "xmlPath"
+    ],
+    "perf_flame": [
+      "asyncJob",
+      "csvPath",
+      "etlPath",
+      "jitEtl",
+      "jobTimeoutMs",
+      "keepCsv",
+      "noJit",
+      "process",
+      "requestKey",
+      "symbols",
+      "timeoutMs"
+    ],
+    "perf_allocflame": [
+      "asyncJob",
+      "etlPath",
+      "jobTimeoutMs",
+      "noJit",
+      "pid",
+      "process",
+      "requestKey",
+      "symbols"
+    ],
+    "perf_uifreeze": [
+      "action",
+      "asyncJob",
+      "jobTimeoutMs",
+      "keepEtl",
+      "process",
+      "requestKey",
+      "symbols",
+      "tid",
+      "top"
     ],
     "http_request": [
       "body",
@@ -198,22 +262,24 @@
       "procId"
     ],
     "ui_launch": [
-      "allowSensitive",
+      "asyncJob",
       "extraArgs",
       "force",
+      "includeScreenshot",
+      "jobTimeoutMs",
+      "requestKey",
       "waitMs"
     ],
     "ui_drive": [
       "action",
       "aid",
-      "allowSensitive",
       "allowSideEffects",
       "approvalId",
       "ascii",
       "button",
+      "captureMode",
       "count",
       "delta",
-      "describe",
       "diff",
       "double",
       "expectValue",
@@ -231,18 +297,21 @@
       "name",
       "observeMax",
       "procId",
+      "requireUnique",
       "secret",
       "sessionId",
       "shotsDir",
       "snapshotId",
       "state",
       "steps",
+      "targetRef",
       "toX",
       "toY",
       "value",
       "visualFallback",
       "visualMinConfidence",
       "visualTarget",
+      "waitAfter",
       "waitFor",
       "waitMs",
       "winHandle",
@@ -261,9 +330,8 @@
     "ui_observe": [
       "action",
       "aid",
-      "allowSensitive",
+      "captureMode",
       "conds",
-      "describe",
       "diff",
       "gone",
       "inAid",
@@ -305,15 +373,18 @@
       "observeMatch",
       "observeMax",
       "procId",
+      "requireUnique",
       "secret",
       "sessionId",
       "snapshotId",
+      "targetRef",
       "toX",
       "toY",
       "value",
       "visualFallback",
       "visualMinConfidence",
       "visualTarget",
+      "waitAfter",
       "waitFor",
       "waitMs",
       "winHandle",
@@ -321,28 +392,60 @@
       "x",
       "y"
     ],
+    "ui_jev": [
+      "allowRemoteData",
+      "allowSideEffects",
+      "allowedNamesJson",
+      "approvalId",
+      "asyncJob",
+      "confidenceThreshold",
+      "expectSelected",
+      "goal",
+      "inputValue",
+      "jobTimeoutMs",
+      "maxControls",
+      "maxSteps",
+      "model",
+      "procId",
+      "requestKey",
+      "secret",
+      "sessionId",
+      "timeoutMs",
+      "winHandle"
+    ],
     "ui_tree": [
+      "asyncJob",
       "inAid",
       "inName",
-      "maxDepth"
+      "jobTimeoutMs",
+      "maxDepth",
+      "requestKey"
     ],
     "ui_flow": [
       "allowSideEffects",
       "approvalId",
+      "asyncJob",
       "failFast",
+      "jobTimeoutMs",
+      "procId",
+      "requestKey",
       "secret",
       "sessionId",
       "steps",
       "tag",
       "visualFallback",
       "visualMinConfidence",
-      "visualTarget"
+      "visualTarget",
+      "waitMs"
     ],
     "ui_replay": [
       "allowSideEffects",
       "approvalId",
+      "asyncJob",
       "failFast",
+      "jobTimeoutMs",
       "replayPath",
+      "requestKey",
       "sessionId",
       "tag"
     ],
@@ -357,15 +460,22 @@
       "timeoutMs"
     ],
     "verify_report": [
+      "bundle",
       "claims",
       "context",
       "runId",
       "task"
     ],
     "toolchain_status": [
-      "deep"
+      "deep",
+      "fresh"
+    ],
+    "toolchain_job": [
+      "action",
+      "jobId"
     ],
     "failure_query": [
+      "cursor",
       "failureClass",
       "fromTs",
       "includeRetracted",
@@ -388,7 +498,8 @@
     "failure_retract": [
       "by",
       "id",
-      "reason"
+      "reason",
+      "ts"
     ]
   }
 }

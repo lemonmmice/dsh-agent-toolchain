@@ -25,6 +25,7 @@ import { makeBuilder } from '../plugins/dsh-build/lib/builder.mjs'
 import { checkCompileMembership } from '../lib/compile-membership.mjs'
 import { makeDriver } from '../plugins/dsh-ui-drive/lib/driver.mjs'
 import { makeLive } from '../plugins/dsh-ui-drive/lib/live.mjs'
+import { shotState } from '../plugins/dsh-ui-drive/lib/shot-state.mjs'
 import { sanitizeLive } from '../plugins/dsh-ui-drive/lib/render.mjs'
 import { makePerf } from '../plugins/dsh-perf/lib/perf.mjs'
 import { makeTrace } from '../plugins/dsh-perf/lib/trace.mjs'
@@ -516,9 +517,6 @@ server.tool(
     steps: z.number().optional().describe('drag: interpolation steps (default 12)'),
     holdMs: z.number().optional().describe('drag: pause before press/release (default 120)'),
     label: z.string().optional().describe('Screenshot file label (shot mode)'),
-    describe: z.boolean().optional().describe('shot mode: also return a vision description of the screen (uses the plugin vision config in ~/.dsh/settings.yaml). ' +
-      'If the focused control is a password/captcha/token field the description is REFUSED by default (pixels cannot be redacted) — pass allowSensitive=true to override'),
-    allowSensitive: z.boolean().optional().describe('Override the secret-focus guard on describe=true (only when you have confirmed the screen holds no sensitive content)'),
     waitMs: z.number().optional(),
     allowSideEffects: z.boolean().optional().describe('REQUIRED true for click/setvalue/key/type/drag'),
     snapshotId: z.string().optional().describe('W1 freshness token returned by a prior read/state. When set, a side-effect action is rejected if the snapshot is stale (a newer read happened: staleSnapshot) or expired (client/serve restarted: expiredSnapshot). Omit to skip the freshness gate (legacy, zero-regression).'),
@@ -550,7 +548,6 @@ server.tool(
     focus: z.boolean().optional().describe('true = also set keyboard focus to the target'),
     winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows) instead of the main window'),
     secret: z.boolean().optional().describe('Mask the value in output/evidence (password-like controls are masked automatically; this covers inputs that do not look like password fields)'),
-    allowSensitive: z.boolean().optional().describe('describe=true: override the secret-focus guard (see describe)'),
     procId: z.number().optional().describe('Target process PID (disambiguate when several instances are running)'),
     // R42：这里原来声明了 expectEnabled/expectMatch，但 ui_drive 的 action 枚举里**没有** 'expect'，
     // 而这两个字段只有流程里的 expect 步骤会读 ⇒ 传进来永远没人看（幽灵参数）。真要断言请用 ui_flow 的 expect 步。
@@ -575,9 +572,7 @@ server.tool(
     const r = await drv().drive({ ...args, action: args.action, allowSideEffects: args.allowSideEffects })
     // 闸门按设计拒绝（快照三件套 / 策略 / 未授权）与"目标未配置"不是工具失灵，不进失败库（见 refusal.mjs）
     if (!r.ok && !isExpectedRefusal(r)) autoRecord('tool-error', 'ui_drive', `ui_drive ${args.action} failed: ${String(r.error ?? 'unknown error').slice(0, 200)}`)
-    // r44：`describe=true` 以前是**幽灵参数**（声明了、handler 从不实现 ⇒ 模型以为拿到了描述，其实没有）。
-    // 现在真的接上：vision 模块是自包含的（读 ~/.dsh/settings.yaml + .credentials.yaml），不需要宿主 API。
-    await attachVision(r, args)
+    // 2026-10-14：shot 不再有 describe（插件不调任何视觉模型）——出图即结果，看图由调用方 read_image。
     return uiJtext(r)
   }
 )
@@ -764,9 +759,7 @@ server.tool(
     winTitle: z.string().optional().describe('Scope the search/read to the window whose title matches'),
     max: z.number().optional(),
     label: z.string().optional(),
-    describe: z.boolean().optional().describe('shot: also return a vision description (refused by default when the focused control is a password/captcha/token field; allowSensitive=true overrides)'),
     captureMode: z.enum(['print', 'screen']).optional().describe('shot/capture: print window rendering by default, or screen pixels inside the target window rectangle'),
-    allowSensitive: z.boolean().optional().describe('Override the secret-focus guard on describe=true'),
     winHandle: z.number().optional().describe('Target a specific top-level window by handle (from ui_windows) — steadier than winTitle'),
     // move/wheel are reversible input primitives: the driver classifies them as kind 'input' and
     // checkSideEffectGate waves that kind through, so NO allowSideEffects is required (verified in
@@ -791,27 +784,16 @@ server.tool(
   mcpShape('ui_launch'),
   async (args) => {
     const l = await drv().launch({ extraArgs: args.extraArgs || '', waitMs: args.waitMs || 60000, force: args.force === true })
-    // r44：与 DSH 面同一件事（视觉即返）——启动成功就顺带截一张并交给视觉模型，
-    // 让「我现在到底在哪个页面」一步可答，省掉 shot + 读图两轮往返。
+    // 2026-10-14（用户决定）：**去掉远程视觉描述**，只出截图 —— 看图交给有读图能力的调用方。
+    // 截图判据（distinctColors）与重拍逻辑与 DSH 面共用 plugins/dsh-ui-drive/lib/shot-state.mjs。
     // 只在窗口真的可用（ok===true）时才做：半成功时没有主窗口，截到的可能是闪屏或别的进程。
     l.readiness = l.ok === true ? 'window-ready' : (l.started === true ? 'spawned' : 'unknown')
-    if (l && l.ok === true && (args.includeScreenshot === true || args.describe === true)) {
+    if (l && l.ok === true && args.includeScreenshot !== false) {
       try {
-        const s = await drv().drive({ action: 'shot', label: 'launch-state' })
-        if (s && s.ok === true) {
-          const shot = { ...s }
-          await attachVision(shot, { describe: args.describe === true, allowSensitive: args.allowSensitive === true })
-          l.uiState = {
-            screenshot: shot.workspacePath || shot.path,
-            size: shot.w + 'x' + shot.h,
-            description: shot.description || null,
-            describeSkipped: shot.describeSkipped || null,
-            visionError: shot.visionError || null,
-            note: shot.warning || null,
-          }
-        }
+        const st = await shotState(drv(), { label: 'launch-state', settleMs: 400, procId: l.pid || 0 })
+        if (st) l.uiState = st
       } catch (e) {
-        // 截图/描述失败**不影响**启动结论（启动本身成功了），但必须让调用方看得见
+        // 截图失败**不影响**启动结论（启动本身成功了），但必须让调用方看得见
         l.uiState = { error: String((e && e.message) || e) }
       }
     }
@@ -919,33 +901,6 @@ server.tool(
     return uiJtext(r)
   }
 )
-
-/**
- * r44：给 `shot` + `describe=true` 接上视觉描述（MCP 面此前声明了 describe 却从不实现 = 幽灵参数）。
- *
- * 两道前置：① 敏感把关 —— 焦点在密码/验证码/token 控件上时**默认拒**（像素无法脱敏，复用驱动侧的
- * secretFocusNow，fail-closed）；② 视觉模块拿不到时如实报 `visionError`，绝不假装拿到了描述。
- */
-async function attachVision(r, args) {
-  if (!r || r.ok !== true || r.action !== 'shot' || args.describe !== true) return
-  const sens = await drv().secretFocusNow({ procId: args.procId || 0 })
-  if (args.allowSensitive !== true && (sens.secret === true || sens.unknown === true)) {
-    r.describeSkipped = sens.unknown ? 'sensitivity-unknown' : 'secretFocused'
-    r.warning = sens.unknown
-      ? 'Vision description refused: the focused control could not be read (' + sens.reason + ') — fail-closed. The PNG is still on disk: ' + (r.workspacePath || r.path)
-      : 'Vision description refused: the focused control is a password/captcha/token field (' + (sens.focused || 'unknown') + ') — pixels cannot be redacted. The PNG is still on disk: ' + (r.workspacePath || r.path)
-    return
-  }
-  try {
-    const mod = await import('../plugins/dsh-ui-drive/lib/vision.mjs')
-    // 注意：vision.mjs 导出的是**工厂** makeVision(cfg) → { describeImage, … }，不是裸函数
-    const vision = mod.makeVision({})
-    const v = await vision.describeImage(r.workspacePath || r.path, mod.UI_STATE_PROMPT)
-    if (v && v.ok) { r.description = v.text; r.visionModel = v.model || null } else r.visionError = (v && v.error) || 'vision module returned no result'
-  } catch (e) {
-    r.visionError = 'vision module unavailable in this process: ' + String((e && e.message) || e)
-  }
-}
 
 // ---------------------------------------------------------------- perf
 

@@ -1287,10 +1287,19 @@ function Render-WindowPng([IntPtr]$h, $r, [int]$w, [int]$hh, [string]$outPath, [
   # 把窗口自身内容渲染成 PNG。PrintWindow(PW_RENDERFULLCONTENT=2) 优先：让窗口把内容（含 WPF/DWM
   # 合成）画进我们给的 DC，**不依赖窗口是否显示在物理屏上**——无头/断开(RDP)会话里屏幕 DC 是全黑的，
   # 纯 CopyFromScreen 会把截图抓成一片黑（shot 曾经就是这么黑的）。PrintWindow 失败（个别无 DWM
-  # 窗口）才退回 CopyFromScreen（此时窗口需在前台、未被遮挡才可信）。返回 'print' | 'screen'。
+  # 窗口）才退回 CopyFromScreen（此时窗口需在前台、未被遮挡才可信）。
+  # 返回 @{ method = 'print'|'screen'; distinctColors = 采样到的颜色种数 }。
+  #
+  # distinctColors（2026-10-14）：本地「疑似未渲染」判据。原实现靠视觉模型回答里出现
+  # 「纯黑/空白」来判定没渲染完并重拍；视觉描述去掉后，改由截图侧直接给信号——
+  # 真机实测确实抓到过纯白画面（E:\dsh-agent-toolchain\ui-evidence\20260916-130157\launch-state.png，
+  # 1266x741 仅 3767B，肉眼确认整幅纯白），所以这个判据不能省。
+  # 采样 24x24 网格，**一旦出现 >2 种颜色就提前退出**：真实界面头几次采样就退出（~0.1ms），
+  # 只有纯色画面才会走满 576 次 GetPixel（实测 ~10ms）。调用方按 distinctColors<=2 决定是否重拍。
   $bmp = New-Object System.Drawing.Bitmap($w, $hh)
   $g = [System.Drawing.Graphics]::FromImage($bmp)
   $method = 'print'
+  $distinctColors = 0
   try {
     $ok = $false
     if ($captureMode -ne 'screen') {
@@ -1300,8 +1309,16 @@ function Render-WindowPng([IntPtr]$h, $r, [int]$w, [int]$hh, [string]$outPath, [
     }
     if (-not $ok) { $method = 'screen'; $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size, [System.Drawing.CopyPixelOperation]::SourceCopy) }
     $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    # 采样必须在 $bmp.Dispose() 之前（下面 finally 里就释放了）
+    $seen = New-Object 'System.Collections.Generic.HashSet[int]'
+    for ($gx = 0; $gx -lt 24 -and $seen.Count -le 2; $gx++) {
+      for ($gy = 0; $gy -lt 24 -and $seen.Count -le 2; $gy++) {
+        [void]$seen.Add($bmp.GetPixel([int](($w - 1) * $gx / 23), [int](($hh - 1) * $gy / 23)).ToArgb())
+      }
+    }
+    $distinctColors = $seen.Count
   } finally { $g.Dispose(); $bmp.Dispose() }
-  return $method
+  return @{ method = $method; distinctColors = $distinctColors }
 }
 
 function Save-Shot($main, [string]$outPath, [string]$captureMode = 'print') {
@@ -1317,8 +1334,8 @@ function Save-Shot($main, [string]$outPath, [string]$captureMode = 'print') {
   if ($w -le 0 -or $hh -le 0) {
     throw ('窗口尺寸非法 ' + $w + 'x' + $hh + '；请先恢复窗口再截图')
   }
-  $method = Render-WindowPng $h $r $w $hh $outPath $captureMode
-  return @{ path = $outPath; w = $w; h = $hh; captureMethod = $method; windowHandle = [long]$h; rect = @{ x = $r.Left; y = $r.Top; w = $w; h = $hh }; coordinateSpace = 'window'; physicalPixels = ([UiDriveInputWin32]::GetDpiAwareness() -eq 2) }
+  $rendered = Render-WindowPng $h $r $w $hh $outPath $captureMode
+  return @{ path = $outPath; w = $w; h = $hh; captureMethod = $rendered.method; distinctColors = $rendered.distinctColors; windowHandle = [long]$h; rect = @{ x = $r.Left; y = $r.Top; w = $w; h = $hh }; coordinateSpace = 'window'; physicalPixels = ([UiDriveInputWin32]::GetDpiAwareness() -eq 2) }
 }
 
 # ------------------------------------------------------------ 单步执行
@@ -2401,7 +2418,7 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
         if ($null -eq $shotWindow) { throw 'Could not resolve target window for screenshot' }
         $s = Save-Shot $shotWindow ([string]$step.out) ([string]$step.captureMode)
         $res.ok = $true; $res.path = $s.path; $res.w = $s.w; $res.h = $s.h
-        foreach ($field in @('captureMethod', 'windowHandle', 'rect', 'coordinateSpace', 'physicalPixels')) { $res[$field] = $s[$field] }
+        foreach ($field in @('captureMethod', 'distinctColors', 'windowHandle', 'rect', 'coordinateSpace', 'physicalPixels')) { $res[$field] = $s[$field] }
       }
       'capture' {
         $null = [UiDriveInputWin32]::UsePhysicalPixels()
@@ -2464,9 +2481,9 @@ function Invoke-Step($main, $step, [int]$index, [int]$procId) {
               if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
               # 抓帧统一走 Render-WindowPng（PrintWindow 优先，见其定义处注释）——与 shot 同一条实现，
               # 避免两处各写一份、日后再次漂移（这正是当初 shot 全黑而 capture 正常的根因）。
-              $method = Render-WindowPng $h $r $w $hh $outPath ([string]$step.captureMode)
+              $rendered = Render-WindowPng $h $r $w $hh $outPath ([string]$step.captureMode)
               $res.ok = $true; $res.path = $outPath; $res.w = $w; $res.h = $hh
-              $res.state = 'visible'; $res.captureMethod = $method; $res.windowHandle = [int64]$h
+              $res.state = 'visible'; $res.captureMethod = $rendered.method; $res.distinctColors = $rendered.distinctColors; $res.windowHandle = [int64]$h
               $res.rect = @{ x = $r.Left; y = $r.Top; w = $w; h = $hh }; $res.coordinateSpace = 'window'; $res.physicalPixels = ([UiDriveInputWin32]::GetDpiAwareness() -eq 2)
             }
           }
@@ -2567,6 +2584,12 @@ if ($Serve) {
             $selectedHandle = [UiDriveInputWin32]::ResolveWindow($sp.Id, $requestedHandle, $requestedTitle, $sp.MainWindowHandle)
             $resp.ok = $true; $resp.pid = $sp.Id; $resp.window = $(if ($selectedHandle -eq [IntPtr]::Zero) { 'NONE' } else { [UiDriveInputWin32]::GetWindowTitle($selectedHandle) })
             $resp.handle = [int64]$selectedHandle
+            # 可见性（2026-10-14）：ResolveWindow 是**按标题精确匹配**枚举顶层窗口的 —— 窗口刚被创建、
+            # 还没 Show 出来时它就已经能匹配上，于是"窗口存在"会被当成"窗口可用"。旧口径（-Status
+            # -SkipIdentity 快路径）走的是 Process.MainWindowHandle，**只有可见窗口才算**。
+            # ui_launch 的就绪判定必须与旧口径一致，否则会在窗口还不可见时就宣布就绪，
+            # 紧接着的截图必然拿到 "Could not resolve target window"（真机实测：连试 3 次全失败）。
+            $resp.visible = $(if ($selectedHandle -eq [IntPtr]::Zero) { $false } else { [UiDriveBatchWin32]::IsWindowVisible($selectedHandle) })
             # 进程身份（W2 policy 门用）：
             #   授权主键 = 规范化 exe 绝对路径（GetFullPath + 小写，跨"短/长路径、大小写"统一）；
             #   版本元数据只作**可选二次约束** —— 实测 codex.exe 与自研 exe 的

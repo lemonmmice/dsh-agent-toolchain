@@ -72,7 +72,7 @@ MCP 连接可能持续数小时，修改源码不会使已有连接自动加载�
 | 工具 | 说明 |
 | --- | --- |
 | \`ui_status\` | 目标客户端进程/主窗口状态（只读） |
-| \`ui_launch\` | 启动客户端并返回 readiness；includeScreenshot=true 才截图，describe=true 才调用视觉模型 |
+| \`ui_launch\` | 启动客户端并返回 readiness；**就绪后默认截一张图**（\`includeScreenshot=false\` 跳过）——只出 PNG，**不调用任何视觉模型** |
 | \`ui_observe\` | **只读观察（推荐入口）**：find / read（含输入框真实值）/ state（窗口+焦点+交互控件快照）/ windows / waitfor / expectwindow / expecttext / waitany / shot |
 | \`ui_act\` | **真实操作**：click / setvalue / key / type / drag；\`observe=true\` 动作后附带界面快照；需 \`allowSideEffects=true\` |
 | \`ui_windows\` | 列出该进程所有顶层窗口（登录窗口/弹窗/主窗口各自一行，只读） |
@@ -109,8 +109,10 @@ ui_observe(action="waitany", ms=30000, conds=[
 **硬护栏（驱动层强制，不是提示词）**：命中「按名硬拒」名单的控件一律拒绝（**默认名单为空 = 默认不拦任何控件**，拦哪些由 \`DSH_UI_DENY_RE\` 指定），
 \`allowSideEffects=true\` 也解锁不了；副作用超时返回 \`unknown\` 且绝不重放。
 
-**视觉闭环**：主模型不读图也能视觉复核——截图 → 插件内置视觉模型（复用 \`describe-image\` 配置）描述界面，
-或截图复制到 \`<workspace>/.dsh-ui-evidence/\` 后用 \`describe_image\` 深度复核。
+**看图闭环（2026-10-14 起）**：本插件**不调用任何视觉模型**——它只产出 PNG 路径，看图由**调用方**完成
+（有读图能力的模型 \`read_image\` 那张图）。旧行为（\`describe=true\` → 把截图 base64 发给远程视觉模型换一段文字描述）
+已移除：真机实测那次调用 ≈24s（2026-10-14 15:16 冷启动：窗口就绪 19.6s + 截图 1.3s + 视觉 24.4s），
+而用户要的是「一步拿到截图」。\`visualFallback\`（UIA 找不到控件时的**坐标定位**）仍走视觉模型，未受影响。
 
 **Web 路由**（仅回环 127.0.0.1）：
 
@@ -242,7 +244,8 @@ node scripts/bench-ui-drive.mjs --proc-id <PID> --proc-name <进程名> --find-a
 
 - `index.js` — host 插件入口：工具注册 + systemPrompt 公告 + 证据路由
 - `lib/driver.mjs` — PowerShell 进程封装（常驻进程协议、批量执行、超时、杀进程树、输出解析）
-- `lib/vision.mjs` — 界面截图视觉描述（复用 describe-image 配置）
+- `lib/vision.mjs` — **视觉定位**（`locateImage`，供 `visualFallback` 用；不再有界面描述）
+- `lib/shot-state.mjs` — 截图就绪态（两面共用：出图 + `distinctColors<=2` 疑似未渲染时重拍）
 - `scripts/ui-drive.ps1` — UIA 单步驱动（find/click/setvalue/key/read/shot/status）
 - `scripts/ui-drive-batch.ps1` — 批量执行（`-StepsFile`）+ 常驻进程（`-Serve`）+ 快路径状态（`-Status`）
 - `scripts/ui-probe.ps1` + `probe/UiProbe.cs` — 进程内只读视觉树探针（复用 Snoop 注入器）
@@ -378,9 +381,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File test\read-skips-live.ps1
   一律返回 `{ok:false, unknown:true}` 并提示「先复核控件状态再决定」，绝不走回退路径重跑。
 - **`status` 超时 ≠ 未运行**：状态查询超时改为返回 `{running:false, unknown:true, error:'status 超时…'}`，
   `ui_status` 渲染成「客户端状态未知」——把「查询卡住」误报成「客户端没起来」会导致反复重启客户端（踩过）。
-- **启动等待有预算**：`ui_launch` 的窗口轮询受 `waitMs` 预算约束（最小 3s），显式请求的截图/视觉描述不属于这个预算，
+- **启动等待有预算**：`ui_launch` 的窗口轮询受 `waitMs` 预算约束（最小 3s），就绪后的那次截图**属于**这个预算内的固定开销
+  （实测 ≈0.9s：静置 0.4s + 截图 ≈0.5s；`includeScreenshot=false` 可省掉），
   **每次轮询都把剩余预算传给 `status()`**，任何一次卡住的状态查询都拖不垮整个调用；
   返回里带 `polls`/`statusTimeouts` 心跳，便于区分「客户端真没起来」与「轮询自身被拖慢」。
+- **就绪 = 窗口「可见」，不是「存在」**（2026-10-14）：轮询走常驻进程（~30ms/次、150ms 间隔），而常驻进程的 `status`
+  是**按标题匹配**枚举顶层窗口的 ⇒ 窗口"已创建但还没 Show"时它也能匹配上。因此 `status` 现在如实回报 `visible`
+  （`IsWindowVisible` 于解析出的句柄），`ui_launch` 以 `visible !== false` 为就绪条件。
+  少了这一步的后果是实测过的：宣布就绪后截图**连续 3 次** `Could not resolve target window`（窗口还没画出来）。
+  同理，常驻进程的 status **不带 pid 的 `ok:true` 不再算"在运行"**（缺 pid = 响应不完整 ⇒ 未知）。
 - 诊断出口：`warmStatus()` 现在带 `lastOkAt` / `stalls` / `lastStallAt` / `lastStallReason`。
 
 **环境变量**：`DSH_UI_STALL_MS`（僵死判定阈值，默认 90000ms）。
