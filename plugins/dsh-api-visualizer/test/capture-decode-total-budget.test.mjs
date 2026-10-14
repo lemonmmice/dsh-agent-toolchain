@@ -1,7 +1,7 @@
 // F02 回归：gzip 解压上限是**整条响应共享**一个预算，不是每个成员各一份；任何成员超限一律返回 null，
 // 绝不返回只含前几个成员的"部分正文"（下游会把部分当完整用）。复刻审查 19b-delta-probes 的两个反例。
 import assert from 'node:assert/strict'
-import { gzipSync } from 'node:zlib'
+import { gzipSync, gunzipSync } from 'node:zlib'
 import { decodeContent, MAX_DECODE_BYTES } from '../lib/capture-engine.mjs'
 
 let failures = 0
@@ -43,6 +43,17 @@ const check = (name, cond, extra = '') => { if (cond) console.log('  ok   ' + na
 {
   const bomb = gzipSync(Buffer.alloc(MAX_DECODE_BYTES + 2 * 1024 * 1024, 0x41))
   check('单成员炸弹 ⇒ null', decodeContent(bomb, 'gzip') === null)
+}
+
+// ---- 6. R5：合法多成员流，且后一个成员的 payload 内部**恰好含 1F 8B 08** —— 不得被当成员边界丢正文 ----
+{
+  // 第二个成员用存储块(level 0)，payload 里嵌入 gzip 魔数字节，复刻审查反例
+  const binaryPayload = Buffer.concat([Buffer.from('second-member-'), Buffer.from([0x1f, 0x8b, 0x08]), Buffer.from('-suffix')])
+  const valid = Buffer.concat([gzipSync(Buffer.from('first-')), gzipSync(binaryPayload, { level: 0 })])
+  const expected = gunzipSync(valid, { maxOutputLength: MAX_DECODE_BYTES })  // Node 真解码器能完整解出两成员
+  const decoded = decodeContent(valid, 'gzip')
+  check('★ 合法多成员(含 payload 内魔数) ⇒ 完整解出，不返回 null', decoded !== null && Buffer.compare(decoded, expected) === 0,
+    decoded === null ? 'got null' : 'len ' + decoded.length + ' vs ' + expected.length)
 }
 
 if (failures) { console.log('\nFAILED: ' + failures + ' 项'); process.exit(1) }
