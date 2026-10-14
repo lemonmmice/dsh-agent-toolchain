@@ -813,13 +813,43 @@ export function makeTrace(cfg = {}) {
       rmSync(c.kernelLeaseFile)
       return { ok: false, busy: error.code === 'EEXIST', error: '采集会话标记不可用：' + error.message, sessionFile }
     }
-    const abandonStart = () => { rmSync(sessionFile); rmSync(c.kernelLeaseFile) }
-    const preflight = args.skipPreflight === true ? null : await probeWprStop()
+    const abandonStart = () => { try { rmSync(sessionFile, { force: true }) } catch { /* ignore */ } try { rmSync(c.kernelLeaseFile, { force: true }) } catch { /* ignore */ } }
+    // R2：从这里起（租约 + 标记已写下）任何抛出（尤其主任务取消）都必须收尾 —— 否则留下孤儿 ETW 会话 + 租约 + 标记。
+    //   记录本次 attempt 已成功起了哪些会话，收尾在**独立有限期限信号**下逐个停、校验拥有者后释放租约；
+    //   不依赖「最终 running 标记」才知道要清什么（它在全部启动成功后才写，取消往往发生在它之前）。
+    let kernelStarted = false
+    let preflight = null, preflightWarning = null, engine, rawEtl, started
+    let clr = null, clrWarning = null, jit = null, jitWarning = null, alloc = null, allocWarning = null
+    const teardownPartialStart = async () => {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(new Error('trace start teardown deadline exceeded')), TRACE_CLEANUP_DEADLINE_MS)
+      if (typeof timer.unref === 'function') timer.unref()
+      try {
+        await withTaskContext({ signal: ctrl.signal }, async () => {
+          if (alloc && alloc.ok) { try { await allocSessionStop(alloc.session) } catch { /* 逐项收尾，单项失败不中断其余 */ } }
+          if (jit && jit.ok) { try { await jitSessionStop(jit.session) } catch { /* ignore */ } }
+          if (clr && clr.ok) { try { await clrSessionStop(clr.session) } catch { /* ignore */ } }
+          if (kernelStarted) {
+            try {
+              if (engine === 'xperf') await runExe(c.xperf, ['-stop'], { timeoutMs: 120000 })
+              else await runExe(c.wpr, ['-cancel'], { timeoutMs: 120000 })
+            } catch { /* ignore */ }
+          }
+        })
+      } finally { clearTimeout(timer) }
+      // 仅在仍是本次 attempt 时释放租约 + 标记（避免误删别人的会话）
+      try {
+        const lease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8'))
+        if (lease && lease.attemptId === attemptId) abandonStart()
+      } catch { abandonStart() }
+    }
+    try {
+    preflight = args.skipPreflight === true ? null : await probeWprStop()
     if (preflight?.busy || preflight?.cleanupOk === false) {
       if (preflight.cleanupOk && preflight.startCode != null) abandonStart()
       return { ok: false, busy: true, preflight, error: 'WPR 预检未取得会话或清理未完成，未启动第二次采集' }
     }
-    const engine = engineArg === 'auto'
+    engine = engineArg === 'auto'
       ? ((preflight && preflight.ok === false) ? 'xperf' : 'wpr')
       : engineArg
     if (engine === 'xperf' && !existsSync(c.xperf)) {
@@ -831,8 +861,8 @@ export function makeTrace(cfg = {}) {
       }
     }
     // xperf 通道的中间产物：`-f` 写的是**未合并**的原始 etl，合并要在 stop 时另做一步（模块归属全靠那一步）。
-    const rawEtl = join(dir, 'trace-raw.etl')
-    let preflightWarning = null
+    rawEtl = join(dir, 'trace-raw.etl')
+    preflightWarning = null
     if (preflight && !preflight.ok) {
       preflightWarning = engine === 'xperf'
         ? '⚠ **采集前自检不通过**：这台机器的 `wpr -stop` **收不了尾**' +
@@ -851,7 +881,6 @@ export function makeTrace(cfg = {}) {
           '② 复现后 `action="stop"` 会如实报结果（含实测退出码）。' +
           '（自检本身只花 ' + preflight.elapsedMs + 'ms；`skipPreflight: true` 可跳过）'
     }
-    let started
     if (engine === 'xperf') {
       // PROC_THREAD+LOADER 是"镜像事件"的来源（LOADER 原文：Kernel and user mode Image Load/Unload events），
       //   PROFILE 是采样，CSWITCH 让调用链能连起来；-stackwalk 必须显式给，否则只有采样点、没有栈。
@@ -871,11 +900,10 @@ export function makeTrace(cfg = {}) {
       if (!started.timedOut) abandonStart()
       return { ok: false, engine, error: engine + ' -start 失败', raw: (started.stdout + started.stderr).slice(0, 500), profiles, ...(preflight ? { preflight } : {}) }
     }
+    kernelStarted = true  // R2：内核会话已起 —— 若后续启动阶段抛出，teardown 要把它停掉
     // CLR 会话（`clr=true`，默认关）。
     // ★ 它**失败不推翻**主采集：内核那条已经采上了，为了一个附加会话把整次采样判失败，
     //   只会让调用方白跑一轮复现。失败如实带 clrWarning，并明确写出「没有 GC 数据 ≠ 没有 GC 停顿」。
-    let clr = null
-    let clrWarning = null
     if (args.clr === true) {
       const clrEtl = join(dir, 'clr-events.etl')
       clr = await clrSessionStart(clrEtl)
@@ -888,8 +916,6 @@ export function makeTrace(cfg = {}) {
     }
     // JIT/rundown 会话（`jit=true`，默认关）—— 给 perf_flame 的 §4 地址→方法映射供数据。
     // ★ 同 CLR：失败不推翻主采集；DCEnd 在 stop 才吐 ⇒ 采样窗口内低污染（见 jitSessionStart 注释）。
-    let jit = null
-    let jitWarning = null
     if (args.jit === true) {
       const jitEtl = join(dir, 'jit-methods.etl')
       jit = await jitSessionStart(jitEtl)
@@ -902,8 +928,6 @@ export function makeTrace(cfg = {}) {
     }
     // 分配采样会话（`alloc=true`，默认关）—— 给 perf_allocflame 供数据（AllocationTick + 栈）。
     // ★ 同 CLR/JIT：失败不推翻主采集。它是 xperf **命名用户会话**，与内核会话并存。
-    let alloc = null
-    let allocWarning = null
     if (args.alloc === true) {
       const allocRaw = join(dir, 'alloc-events-raw.etl')
       alloc = await allocSessionStart(allocRaw)
@@ -931,6 +955,12 @@ export function makeTrace(cfg = {}) {
         ...(allocWarning ? { allocWarning } : {}),
       }), 'utf8')
     } catch (error) { return { ok: false, captureStarted: true, sessionFile, attemptId, error: '采集已启动但会话状态保存失败：' + error.message } }
+    } catch (error) {
+      // R2：启动/预检/各会话 start 任一步抛出（主任务取消最常见）⇒ 停掉已起的会话并释放租约，
+      //   再把异常抛给任务层（落成 unknown，而不是留下孤儿会话 + "starting" 标记）。
+      await teardownPartialStart()
+      throw error
+    }
     if (action === 'start') {
       return {
         ok: true, started: true, profile: key, profiles, etlPath: etl, engine,
@@ -989,7 +1019,18 @@ export function makeTrace(cfg = {}) {
     } finally {
       clearTimeout(cleanupTimer)
     }
-    return { ...stopResult, seconds, engine, ...(cancelledDuringWait ? { cancelled: true, stoppedBy: 'cancel' } : {}) }
+    if (!cancelledDuringWait) return { ...stopResult, seconds, engine }
+    // R3：取消路径下**只有收尾命令确实成功**才声明 cancelled；否则绝不把「请求了取消」谎报成「已停止」。
+    //   cancel 分支的 ok 已含「kernel -cancel 成功 + 附加会话都停了」。失败/不确定 ⇒ unknown + incomplete + 保留租约，
+    //   让任务层落成 unknown（而不是 cancelled/complete），并给出恢复入口。
+    const cleanedUp = Boolean(stopResult) && stopResult.ok === true && stopResult.cancelled === true
+    if (cleanedUp) return { ...stopResult, seconds, engine, cancelled: true, stoppedBy: 'cancel' }
+    return {
+      ...stopResult, seconds, engine,
+      ok: false, cancelled: false, unknown: true, incomplete: true, stoppedBy: 'cancel', cleanupFailed: true,
+      error: (stopResult && stopResult.error) || '采集取消命令未确认完成，ETW 会话可能仍在运行（租约已保留）',
+      recovery: 'perf_trace(action="cancel") 重试收尾；仍失败则重启机器释放内核会话，再 action="status" 复核。',
+    }
   }
 
   /**

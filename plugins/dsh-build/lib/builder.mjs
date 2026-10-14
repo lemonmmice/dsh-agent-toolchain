@@ -29,6 +29,15 @@ function writeRecord(path, record) {
   renameSync(temporary, path)
 }
 
+/**
+ * R4：构建互斥锁的**机器共享锁根**——与输出日志目录脱钩。
+ * 默认 `~/.dsh-agent-toolchain/build-locks`，所有 builder/宿主（无论各自 logsDir）对同一仓库都落到这里，
+ * 同根构建才真正互斥。`DSH_BUILD_LOCK_DIR` 仅供测试隔离，不应按宿主分别配不同值（那等于各自为政、退回并发）。
+ */
+function buildLockRoot() {
+  return envOr('DSH_BUILD_LOCK_DIR') || join(homedir(), '.dsh-agent-toolchain', 'build-locks')
+}
+
 /** 本插件目录（仓库与 profile 两种布局下都成立）。 */
 const BUILD_PLUGIN_DIR = dirNameOf(dirNameOf(fileUrlToPath(import.meta.url)))
 /** 本插件 lib/ 目录 —— 后台构建执行器（build-bg-runner.mjs）与本文件同级。 */
@@ -470,8 +479,9 @@ export function makeBuilder(cfg) {
     // accidental cwd.
     // R42：opts.clientRoot 之前**不被读取** —— 参数声明了、build() 却只认 opts.repoRoot，
   // 那样加参数等于加了个幽灵。两者语义相同（谁给用谁），顺序：本次调用 > 环境/配置。
-  // F06：根解析收敛到 resolveBuildRoot（与资源锁键**同一套**口径）；c.repoRoot/c.clientRoot 仍作构造期回退。
-  const repoRoot = resolveBuildRoot(opts) || c.repoRoot || c.clientRoot
+  // F06：根解析收敛到 resolveBuildRoot（与资源锁键**同一套**口径）。
+  //   R6：传入 c（构造配置）保留「opts > cfg > env」的原优先级——否则显式 makeBuilder({repoRoot}) 会被 env 盖过。
+  const repoRoot = resolveBuildRoot(opts, c)
     if (!repoRoot || !existsSync(repoRoot)) {
       return earlyFail('仓库根目录不存在：' + (repoRoot || '(未配置)') + '（传 repoRoot 或设置 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT）')
     }
@@ -959,11 +969,15 @@ export function makeBuilder(cfg) {
    * 取不到锁（已有同根构建在跑）即 FILE_TRANSACTION_BUSY 冒泡：同步调用由 server 统一翻成 busy 回执、
    * 后台/异步作业如实记为未完成——绝不并发构建同一根（会互相污染 obj/bin）。
    * 根缺失/不存在时不加锁，交给 build() 自己 fail-closed 早返回（render-bv03 等依赖"早返回不抛"的行为不变）。
+   *
+   * R4：锁父目录是**按机器共享的固定锁根**（lockRoot），**不能用 c.logsDir**——否则两个宿主/builder
+   *   各配不同 DSH_BUILD_LOGS_DIR 时会拿到不同锁、同仓库并发构建（互相覆盖 obj/bin、证据归属混淆）。
+   *   锁身份只由 canonicalPath(root) 决定，所有 logsDir 下的 builder 对同一仓库拿到**同一把**锁。
    */
   function buildLocked(opts = {}) {
-    const root = resolveBuildRoot(opts) || c.repoRoot || c.clientRoot
+    const root = resolveBuildRoot(opts, c)
     if (!root || !existsSync(root)) return build(opts)
-    const lockFile = join(c.logsDir, 'build-lock-' + createHash('sha1').update(canonicalPath(root)).digest('hex').slice(0, 16))
+    const lockFile = join(buildLockRoot(), 'build-lock-' + createHash('sha1').update(canonicalPath(root)).digest('hex').slice(0, 16))
     return withFileTransaction(lockFile, () => build(opts))
   }
 

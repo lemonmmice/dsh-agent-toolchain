@@ -83,14 +83,17 @@ const MAX_GZIP_MEMBERS = 64
 /** Decompress a (possibly multi-member / trailing-junk) gzip buffer. */
 function tryGunzip(buf) {
   if (buf.length < 10 || buf[0] !== 0x1f || buf[1] !== 0x8b) return null
-  // Concatenated members: gunzip each 1F 8B .. segment and join.
+  // R5：**首选真正的解码器一次解整条流**。gunzipSync 原生支持标准的拼接多成员流（zlib 规范），
+  //   且因为是真解码器，**不会被 payload 里恰好出现的 1F 8B 08 误判成成员边界**（魔数扫描才会）。
+  //   同样受 maxOutputLength 总上限约束 —— 这既修了"合法多成员被当边界丢正文"，也保住了解压炸弹防护。
+  try { return gunzipSync(buf, { maxOutputLength: MAX_DECODE_BYTES }) } catch { /* 可能是「有效成员 + 尾部垃圾/拼接残片」：退回成员切分 */ }
+  // 回退：**仅当整条解码抛错时**才按 1F 8B 08 切成员（非标准流：尾部垃圾 / 需重新对齐的拼接）。
+  //   魔数扫描在这里是 best-effort；整条已先试过，所以成员数异常多直接判不可解、不再回头整条解。
   const starts = []
   for (let i = 0; i < buf.length - 2; i++) {
     if (buf[i] === 0x1f && buf[i + 1] === 0x8b && buf[i + 2] === 0x08) starts.push(i)
   }
-  if (starts.length === 0) return null
-  const wholeStream = () => { try { return gunzipSync(buf, { maxOutputLength: MAX_DECODE_BYTES }) } catch { return null } }
-  if (starts.length > MAX_GZIP_MEMBERS) return wholeStream()
+  if (starts.length === 0 || starts.length > MAX_GZIP_MEMBERS) return null
   const parts = []
   // F02：整条响应**共享一个**输出预算（而不是每个成员各给 MAX_DECODE_BYTES —— 那样 N 个成员合计可超限）。
   let remaining = MAX_DECODE_BYTES
@@ -101,9 +104,7 @@ function tryGunzip(buf) {
     try {
       member = gunzipSync(buf.subarray(starts[i], end), { maxOutputLength: remaining })
     } catch {
-      // 首成员失败：可能是"误判的成员边界"，按整条再试一次（仍受总上限约束）。
-      if (i === 0) return wholeStream()
-      // 非首成员失败（超出剩余预算 / 解不开）：**绝不**返回只含前几个成员的部分正文，整条判不可解。
+      // 回退路径里任一成员失败（含误判边界）：**绝不**返回只含前几个成员的部分正文，整条判不可解。
       return null
     }
     remaining -= member.length

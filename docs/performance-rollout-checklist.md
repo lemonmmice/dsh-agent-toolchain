@@ -22,6 +22,21 @@
 > - **F06** 构建互斥：资源锁键与 builder 共用 `lib/build-root.mjs` 的根解析；builder 自带按根的文件锁，同步/后台/异步共用一把。
 >   用例 `lib/build-root-mutex.test.mjs`。
 
+> 第五轮（2026-10-14，按 474134c 复核意见收口 R1–R6 的边界遗漏/回归，均补反例）：
+> - **R1**（F01 续）编译缓存：`collectItemSources` 把 import 的**所有**候选路径（含未命中的）登记为探测点，
+>   不再只在 `!hit` 时登记——否则「备用候选命中后、更高优先候选出现」签名不变、缓存沿用备用结论。
+> - **R2**（F05 续）采集启动取消：从租约/标记写下起整段 start 包 try/catch，抛出（主任务取消）时在独立信号下
+>   逐个停已起的 kernel/CLR/JIT/alloc 会话并校验 attempt 后释放租约，不再依赖「最终 running 标记」才知道要清什么。
+> - **R3**（F05 续）取消失败不谎报：`trace.run` 仅当收尾命令确实成功才声明 `cancelled`；失败/不确定落
+>   `unknown+incomplete`、保留租约、给恢复入口（任务层据此裁为 unknown 而非 cancelled）。
+> - **R4**（F06 续）锁位置：构建互斥锁父目录改为机器共享锁根 `~/.dsh-agent-toolchain/build-locks`（`DSH_BUILD_LOCK_DIR` 仅测试隔离），
+>   与 `logsDir` 脱钩——否则不同 `DSH_BUILD_LOGS_DIR` 的宿主会拿到不同锁、同仓库并发构建。
+> - **R5**（F02 续）gzip 解码：首选 `gunzipSync` 一次解整条流（真解码器，不被 payload 内 `1F 8B 08` 误判边界），
+>   仅在其抛错时才回退到成员切分；代理路径随之受益。修「合法多成员被当边界、代理丢正文」。
+> - **R6**（F06 续）根优先级：`resolveBuildRoot(opts, cfg)` 新增 cfg 形参，顺序 opts > cfg > env，
+>   恢复「显式 `makeBuilder({repoRoot})` 优先于全局环境变量」的原语义。
+>   用例：`trace-cancel-cleanup`（S2/S3）、`build-root-mutex`（R4/R6）、`compile-membership-invalidate`（R1）、`capture-decode-total-budget`（R5）。
+
 ## A 轻请求与观测
 
 - [x] build_errors worker、流式解析、身份缓存和并发 MCP 验证。
