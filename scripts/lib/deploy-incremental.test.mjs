@@ -18,6 +18,10 @@ try {
   mkdirSync(profile)
   const deploy = join(source, 'scripts', 'deploy-plugins.mjs')
   copyFileSync(join(repository, 'scripts', 'deploy-plugins.mjs'), deploy)
+  // deploy-plugins.mjs 现在依赖 lib/plugin-deploy-drift.mjs（比对实现只有一份：
+  // 它也供 toolchain_status 用）。脚本被单独复制到临时目录跑，所以依赖必须一起复制 ——
+  // 少了它脚本会 MODULE_NOT_FOUND（这条断言就是这么红的，别删）。
+  copyFileSync(join(repository, 'lib', 'plugin-deploy-drift.mjs'), join(source, 'lib', 'plugin-deploy-drift.mjs'))
   writeFileSync(join(plugin, 'bin', 'unchanged.node'), 'unchanged binary fixture')
   writeFileSync(join(plugin, 'index.js'), 'version one')
   writeFileSync(join(source, 'lib', 'nested', 'shared.mjs'), 'shared fixture')

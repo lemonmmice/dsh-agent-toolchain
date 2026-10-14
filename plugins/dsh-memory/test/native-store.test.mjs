@@ -123,7 +123,12 @@ try {
   // binaries stop before copying; a full deployment works with spaces in paths.
   const repo=fileURLToPath(new URL('../../../',import.meta.url))
   const source=path.join(dir,'deploy-source'),profile=path.join(dir,'profile with spaces')
-  fs.mkdirSync(path.join(source,'scripts'),{recursive:true});fs.mkdirSync(path.join(source,'plugins','dsh-memory','lib'),{recursive:true});fs.mkdirSync(profile)
+  fs.mkdirSync(path.join(source,'scripts'),{recursive:true});fs.mkdirSync(path.join(source,'plugins','dsh-memory','lib'),{recursive:true})
+  // deploy-plugins.mjs 依赖 lib/plugin-deploy-drift.mjs（比对实现只有一份，也供 toolchain_status 用）。
+  // 脚本被单独复制到临时目录跑，所以依赖必须一起复制 —— 少了它是 MODULE_NOT_FOUND，不是正常退出。
+  fs.mkdirSync(path.join(source,'lib'),{recursive:true})
+  fs.copyFileSync(path.join(repo,'lib','plugin-deploy-drift.mjs'),path.join(source,'lib','plugin-deploy-drift.mjs'))
+  fs.mkdirSync(profile)
   fs.copyFileSync(path.join(repo,'scripts','deploy-plugins.mjs'),path.join(source,'scripts','deploy-plugins.mjs'))
   fs.copyFileSync(path.join(repo,'plugins','dsh-memory','lib','store.mjs'),path.join(source,'plugins','dsh-memory','lib','store.mjs'))
   const deploy=()=>spawnSync(process.execPath,[path.join(source,'scripts','deploy-plugins.mjs'),'--profile',profile,'--only','dsh-memory'],{encoding:'utf8',windowsHide:true,timeout:20000})
