@@ -46,6 +46,9 @@ import { taskSignal, withTaskContext } from '../../../lib/task-context.mjs'
 //   留下一直写 etl 的孤儿 ETW 会话。期限取得比最长收尾（merge 15 分钟）更宽，纯作兜底，不切断正常收尾。
 const TRACE_CLEANUP_DEADLINE_MS = 20 * 60 * 1000
 
+// 收尾未全部确认时统一给出的恢复入口文案（run-cancel / 直接 cancel / 启动阶段 teardown 共用，避免各写一份漂移）。
+const TRACE_RECOVERY_HINT = 'perf_trace(action="cancel") 重试收尾；仍失败则重启机器释放内核会话，再 action="status" 复核。'
+
 const PROGRAM_FILES_X86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
 const SYSTEM32 = join(process.env.SystemRoot || 'C:\\Windows', 'System32')
 export const DEFAULT_WPR = process.env.DSH_PERF_WPR || join(SYSTEM32, 'wpr.exe')
@@ -319,21 +322,33 @@ export function makeTrace(cfg = {}) {
     let stopCode = null, raw = ''
     let ok = false
     let stopped = false
+    let cleanupOk = true
+    // ★ C2（6988a0f 复核）：`-start` 一旦成功，这条预检 WPR 会话就是**真实的内核会话** —— 它的
+    //   -stop/-cancel 必须跑完，哪怕主任务此刻正好被取消。所以收尾走**独立、有限期限**的信号
+    //   （不是主任务信号）：否则 runExe 开头的 checkTaskCancellation() 会把 -stop/-cancel 挡掉、
+    //   让预检会话泄漏成一直写盘的孤儿，而且抛出的异常会一路冒泡、让外层 teardown 误判「没起过内核」
+    //   （teardown 看 kernelStarted=false ⇒ 不发任何内核收尾命令，就把预检会话漏在那里）。
     if (st.code === 0 && !st.timedOut) {
-      const sp = await runExe(c.wpr, ['-stop', probeEtl], { timeoutMs: 120000 })
-      stopCode = sp.code
-      stopped = sp.code === 0 && !sp.timedOut
-      raw = (sp.stdout + sp.stderr).trim()
-      ok = sp.code === 0 && !sp.timedOut && existsSync(probeEtl)
-      try { if (ok) rmSync(probeEtl, { force: true }) } catch { /* 探针产物，删不掉也无害 */ }
+      const cleanupCtrl = new AbortController()
+      const cleanupTimer = setTimeout(() => cleanupCtrl.abort(new Error('wpr preflight cleanup deadline exceeded')), TRACE_CLEANUP_DEADLINE_MS)
+      if (typeof cleanupTimer.unref === 'function') cleanupTimer.unref()
+      try {
+        await withTaskContext({ signal: cleanupCtrl.signal }, async () => {
+          const sp = await runExe(c.wpr, ['-stop', probeEtl], { timeoutMs: 120000 })
+          stopCode = sp.code
+          stopped = sp.code === 0 && !sp.timedOut
+          raw = (sp.stdout + sp.stderr).trim()
+          ok = sp.code === 0 && !sp.timedOut && existsSync(probeEtl)
+          try { if (ok) rmSync(probeEtl, { force: true }) } catch { /* 探针产物，删不掉也无害 */ }
+          // 探针万一留下会话（stop 没成），收掉它 —— 否则真正的 start 会撞"已有会话"
+          if (!stopped) {
+            const cleanup = await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 })
+            cleanupOk = cleanup.code === 0 && !cleanup.timedOut
+          }
+        })
+      } finally { clearTimeout(cleanupTimer) }
     } else {
       raw = (st.stdout + st.stderr).trim()
-    }
-    // 探针万一留下会话，收掉它 —— 否则真正的 start 会撞"已有会话"
-    let cleanupOk = true
-    if (st.code === 0 && !st.timedOut && !stopped) {
-      const cleanup = await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 })
-      cleanupOk = cleanup.code === 0 && !cleanup.timedOut
     }
     const result = {
       ok, startCode: st.code, stopCode, cleanupOk, busy: st.code !== 0 || st.timedOut === true, elapsedMs: Date.now() - t0,
@@ -717,7 +732,22 @@ export function makeTrace(cfg = {}) {
         if (s && String(s.etlPath || '').toLowerCase() === String(etl).toLowerCase()) rmSync(legacy, { force: true })
       } catch { /* 没有孤儿标记 / 不属于本次：都不动 */ }
       if (cancelOnly) {
-        return { ok: Boolean(r) && r.code === 0 && !r.timedOut && auxiliariesStopped, cancelled: r?.code === 0 && !r.timedOut, engine, ...clrFields, raw: (r ? (r.stdout + r.stderr) : '').slice(0, 400) }
+        // ★ C3（6988a0f 复核）：`cancelled` 必须与 `ok` 同口径 —— 只有内核 -cancel 成功**且**所有已登记的
+        //   附加会话（CLR/JIT/分配）都确认停止，才算真取消。只要有一项没确认，就**绝不**把「请求了取消」
+        //   谎报成「已取消」：落 unknown + incomplete + 保留租约（releaseSession 已因 auxiliariesStopped=false
+        //   而未执行）+ 恢复入口，让任务层裁为 unknown/incomplete，而不是 cancelled/complete。
+        const kernelOk = Boolean(r) && r.code === 0 && !r.timedOut
+        const raw = (r ? (r.stdout + r.stderr) : '').slice(0, 400)
+        if (kernelOk && auxiliariesStopped) {
+          return { ok: true, cancelled: true, engine, ...clrFields, ...jitFields, ...allocFields, stoppedBy: 'cancel', raw }
+        }
+        return {
+          ok: false, cancelled: false, unknown: true, incomplete: true, cleanupFailed: true, engine,
+          ...clrFields, ...jitFields, ...allocFields, stoppedBy: 'cancel', raw,
+          error: '采集取消未全部确认：' + (kernelOk ? '附加会话（CLR/JIT/分配）停止未确认' : '内核 -cancel 未确认完成')
+            + '，ETW 会话可能仍在运行（租约已保留）',
+          recovery: TRACE_RECOVERY_HINT,
+        }
       }
       if (!existsSync(etl)) {
         const rTxt = r ? (r.stdout + r.stderr) : ''
@@ -820,28 +850,68 @@ export function makeTrace(cfg = {}) {
     let kernelStarted = false
     let preflight = null, preflightWarning = null, engine, rawEtl, started
     let clr = null, clrWarning = null, jit = null, jitWarning = null, alloc = null, allocWarning = null
+    // ★ C1/C5（6988a0f 复核）：启动阶段失败/取消的收尾，三条纪律：
+    //   ① 全局内核 stop/cancel 作用在「当前内核会话」上、**不按 attempt 隔离** —— 发命令**前**先取操作锁、
+    //      再校验租约仍属本 attempt；拥有者已变（被接管/并发恢复）就**绝不**发全局命令、也不碰任何文件（C5）。
+    //   ② 逐项收尾要**检查返回值**：命名的附加会话按名停（本 attempt 独有，安全），内核按引擎停；
+    //      只有内核与各附加会话都**确认停止**、且仍持租约，才释放租约+标记（C1：删除≠停止证明，没确认停就别删）。
+    //   ③ 收尾未全部确认时写一份**完整恢复标记**（state=running + 仍在跑的会话名/引擎），让事后 status/cancel
+    //      能看见并重试；身份读/解析失败一律按「拥有者未知」保留，不进删除分支。
     const teardownPartialStart = async () => {
+      const operationFile = c.kernelLeaseFile + '.stop'
+      let holdsOperationLock = false
+      try { writeFileSync(operationFile, attemptId, { encoding: 'utf8', flag: 'wx' }); holdsOperationLock = true }
+      catch { /* 已有 stop/cancel 在操作同一会话：不与之竞争全局命令 */ }
+      let ownershipHeld = false
+      try { const lease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8')); ownershipHeld = Boolean(lease) && lease.attemptId === attemptId } catch { ownershipHeld = false }
+      const detail = {}
+      let kernelStopped = true   // 没起内核 ⇒ 视作"无需停止 = 已停"
       const ctrl = new AbortController()
       const timer = setTimeout(() => ctrl.abort(new Error('trace start teardown deadline exceeded')), TRACE_CLEANUP_DEADLINE_MS)
       if (typeof timer.unref === 'function') timer.unref()
       try {
         await withTaskContext({ signal: ctrl.signal }, async () => {
-          if (alloc && alloc.ok) { try { await allocSessionStop(alloc.session) } catch { /* 逐项收尾，单项失败不中断其余 */ } }
-          if (jit && jit.ok) { try { await jitSessionStop(jit.session) } catch { /* ignore */ } }
-          if (clr && clr.ok) { try { await clrSessionStop(clr.session) } catch { /* ignore */ } }
+          // 命名会话（dshperf{clr,jit,alloc}-<uuid>）按名停 —— 名字本 attempt 独有，停它们不会误伤别人（逐项失败不中断其余）。
+          if (alloc && alloc.ok) { try { detail.alloc = await allocSessionStop(alloc.session) } catch (e) { detail.alloc = { ok: false, error: String(e) } } }
+          if (jit && jit.ok) { try { detail.jit = await jitSessionStop(jit.session) } catch (e) { detail.jit = { ok: false, error: String(e) } } }
+          if (clr && clr.ok) { try { detail.clr = await clrSessionStop(clr.session) } catch (e) { detail.clr = { ok: false, error: String(e) } } }
+          // 内核会话（全局命令）：仅在**持操作锁且拥有者仍是本 attempt**时才发（C5：身份不确定就不做破坏性动作）。
           if (kernelStarted) {
+            if (!holdsOperationLock || !ownershipHeld) { kernelStopped = false; detail.kernel = { ok: false, skipped: holdsOperationLock ? 'ownership-changed' : 'stop-in-progress' }; return }
             try {
-              if (engine === 'xperf') await runExe(c.xperf, ['-stop'], { timeoutMs: 120000 })
-              else await runExe(c.wpr, ['-cancel'], { timeoutMs: 120000 })
-            } catch { /* ignore */ }
+              const kr = engine === 'xperf' ? await runExe(c.xperf, ['-stop'], { timeoutMs: 120000 }) : await runExe(c.wpr, ['-cancel'], { timeoutMs: 120000 })
+              kernelStopped = Boolean(kr) && kr.code === 0 && !kr.timedOut
+              detail.kernel = { ok: kernelStopped, exitCode: kr ? kr.code : null }
+            } catch (e) { kernelStopped = false; detail.kernel = { ok: false, error: String(e) } }
           }
         })
       } finally { clearTimeout(timer) }
-      // 仅在仍是本次 attempt 时释放租约 + 标记（避免误删别人的会话）
+      const auxStopped = [detail.alloc, detail.jit, detail.clr].every((r) => !r || r.ok)
+      const fullyStopped = kernelStopped && auxStopped
+      let released = false
       try {
-        const lease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8'))
-        if (lease && lease.attemptId === attemptId) abandonStart()
-      } catch { abandonStart() }
+        if (!holdsOperationLock || !ownershipHeld) {
+          /* 拥有者未知/已变，或没拿到操作锁：不碰租约与标记（C5）。*/
+        } else if (fullyStopped) {
+          // 释放前再复核一次身份（C5：资源释放前再校验 attempt）。
+          try { const lease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8')); if (lease && lease.attemptId === attemptId) { abandonStart(); released = true } } catch { /* 身份读失败 ⇒ 不删 */ }
+        } else {
+          // C1/C4：收尾未全部确认 —— 落一份**完整恢复标记**（state=running，只列仍在跑的会话），
+          //   让事后 action="status"/"cancel" 能看见并重试（已确认停的内核/会话不再列入，避免重试徒劳报错）。
+          try {
+            const remaining = { attemptId, ownerPid: process.pid, state: 'running', etlPath: etl, startedAt: starting.startedAt, dir, engine: engine || 'wpr' }
+            if (engine === 'xperf' && rawEtl) remaining.rawPath = rawEtl
+            if (kernelStopped) remaining.kernelStopped = true
+            if (clr && clr.ok && !(detail.clr && detail.clr.ok)) { remaining.clrSession = clr.session; remaining.clrEtl = clr.etlPath }
+            if (jit && jit.ok && !(detail.jit && detail.jit.ok)) { remaining.jitSession = jit.session; remaining.jitEtl = jit.etlPath }
+            if (alloc && alloc.ok && !(detail.alloc && detail.alloc.ok)) { remaining.allocSession = alloc.session; remaining.allocRaw = alloc.etlPath }
+            writeFileSync(sessionFile, JSON.stringify(remaining), 'utf8')
+          } catch { /* 恢复标记落盘失败（如磁盘满）：保留盘上已有标记 + 租约，靠租约仍提示"可能在跑" */ }
+        }
+      } finally {
+        if (holdsOperationLock) { try { rmSync(operationFile, { force: true }) } catch { /* ignore */ } }
+      }
+      return { fullyStopped, ownershipHeld, released, detail }
     }
     try {
     preflight = args.skipPreflight === true ? null : await probeWprStop()
@@ -954,11 +1024,29 @@ export function makeTrace(cfg = {}) {
         ...(alloc && alloc.ok ? { allocSession: alloc.session, allocRaw: alloc.etlPath } : {}),
         ...(allocWarning ? { allocWarning } : {}),
       }), 'utf8')
-    } catch (error) { return { ok: false, captureStarted: true, sessionFile, attemptId, error: '采集已启动但会话状态保存失败：' + error.message } }
+    } catch (error) {
+      // ★ C4（6988a0f 复核）：最终 running 标记落盘失败（如磁盘满）—— 采集已起来但无法持久化追踪它。
+      //   不再直接早返回（那样会跳过收尾、把已起的内核/附加会话漏成孤儿，还留个 starting 标记永久挡住恢复）：
+      //   改走统一收尾（内存里的会话账本仍在，teardown 据此停）。全部确认停 ⇒ 干净回滚；没确认 ⇒ unknown+恢复入口。
+      const teardown = await teardownPartialStart()
+      if (teardown.released) {
+        return { ok: false, captureStarted: true, cleanedUp: true, sessionFile, attemptId, engine,
+          error: '采集已启动但会话状态保存失败（' + error.message + '）；已回滚并停掉本次采集会话。' }
+      }
+      return { ok: false, captureStarted: true, unknown: true, incomplete: true, cleanupFailed: true, sessionFile, attemptId, engine,
+        error: '采集已启动但会话状态保存失败（' + error.message + '）；回滚收尾未全部确认，ETW 会话可能仍在运行（租约已保留）。',
+        recovery: TRACE_RECOVERY_HINT }
+    }
     } catch (error) {
       // R2：启动/预检/各会话 start 任一步抛出（主任务取消最常见）⇒ 停掉已起的会话并释放租约，
-      //   再把异常抛给任务层（落成 unknown，而不是留下孤儿会话 + "starting" 标记）。
-      await teardownPartialStart()
+      //   再把异常抛给任务层。收尾未全部确认时把 unknown/incomplete + 恢复入口挂到异常上（C1/C5：
+      //   让任务层落成 unknown 而不是 failed，且不把"可能仍在运行"从状态证据里抹掉）。
+      const teardown = await teardownPartialStart()
+      if (!teardown.fullyStopped) {
+        error.unknown = true
+        error.incomplete = true
+        if (!error.recovery) error.recovery = TRACE_RECOVERY_HINT
+      }
       throw error
     }
     if (action === 'start') {
@@ -1029,7 +1117,7 @@ export function makeTrace(cfg = {}) {
       ...stopResult, seconds, engine,
       ok: false, cancelled: false, unknown: true, incomplete: true, stoppedBy: 'cancel', cleanupFailed: true,
       error: (stopResult && stopResult.error) || '采集取消命令未确认完成，ETW 会话可能仍在运行（租约已保留）',
-      recovery: 'perf_trace(action="cancel") 重试收尾；仍失败则重启机器释放内核会话，再 action="status" 复核。',
+      recovery: TRACE_RECOVERY_HINT,
     }
   }
 
