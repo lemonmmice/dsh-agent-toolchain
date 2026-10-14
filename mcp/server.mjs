@@ -133,7 +133,10 @@ const _toolProfile = parseProfile(envOr('DSH_TOOL_PROFILE'))
 server.tool = (...args) => {
   const toolName = typeof args[0] === 'string' ? args[0] : null
   if (toolName && !toolAllowed(toolName, _toolProfile)) return undefined
-  return _origTool(...wrapToolArgs(injectAnnotations(injectTaskParameters(args)), (name, handler) => withCallContext(name, _toolProgress.wrap(name, _toolTrace.wrap(name, _outputBudget.wrap(name, handler))))))
+  // F04：输出预算放在**最外层**（任务层之外）。任务作业的执行闭包只包 progress/trace（不含预算），
+  //   于是落盘与完整性裁决用的是**未截断**的原始结果；预算只裁剪**展示层**——同步调用裁剪最终结果，
+  //   异步作业裁剪的是受理回执（jtext(taskJob) 很小）。这样"原始结果先判定并落盘，再只裁展示"。
+  return _origTool(...wrapToolArgs(injectAnnotations(injectTaskParameters(args)), (name, handler) => _outputBudget.wrap(name, withCallContext(name, _toolProgress.wrap(name, _toolTrace.wrap(name, handler))))))
 }
 
 server.tool(

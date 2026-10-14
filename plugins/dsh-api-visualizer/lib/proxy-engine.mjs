@@ -20,12 +20,14 @@ import http from 'node:http'
 import https from 'node:https'
 import tls from 'node:tls'
 import net from 'node:net'
-import zlib from 'node:zlib'
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { execFile, execFileSync } from 'node:child_process'
 import { decodeConsole } from '../../../lib/env-fallback.mjs'
+// F02：代理路径复用与实时捕获**同一个有界解码器**（gzip 多成员总预算 + deflate/br 的 maxOutputLength），
+//   原先这里直接 zlib.gunzipSync/inflateSync/... 无 maxOutputLength，解压炸弹会卡主线程 / 爆内存。
+import { decodeContent } from './capture-engine.mjs'
 
 const require = createRequire(import.meta.url)
 
@@ -238,28 +240,12 @@ function bodyForStore(rawBuf, encoding, contentType) {
   if (rawBuf.length === 0) return ''
   let buf = rawBuf
   const enc = String(encoding ?? '').toLowerCase()
-  if (enc.includes('gzip')) {
-    try {
-      buf = zlib.gunzipSync(buf)
-    } catch {
-      return '' // undecodable compressed stream
-    }
-  } else if (enc.includes('deflate')) {
-    try {
-      buf = zlib.inflateSync(buf)
-    } catch {
-      try {
-        buf = zlib.inflateRawSync(buf)
-      } catch {
-        return ''
-      }
-    }
-  } else if (enc.includes('br')) {
-    try {
-      buf = zlib.brotliDecompressSync(buf)
-    } catch {
-      return ''
-    }
+  if (enc.includes('gzip') || enc.includes('deflate') || enc.includes('br')) {
+    // F02：走共享有界解码器；解不开 / 超出解码预算一律返回 ''（与原"undecodable 压缩流"语义一致），
+    //   绝不把未完整解出的字节当正文落库。
+    const decoded = decodeContent(buf, enc)
+    if (decoded === null) return ''
+    buf = decoded
   }
   const ct = String(contentType ?? '').toLowerCase()
   if (ct.includes('image/')) {
