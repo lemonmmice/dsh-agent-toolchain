@@ -249,12 +249,24 @@ export function makeDriver(cfg) {  const c = {
     if (includeIdentity && warmEnabled() && warm.proc && warm.ready === true && warm.activeId === null && warm.pending.size === 0 && warmScriptIsCurrent()) {
       const result = await warmSend({ cmd: 'status', procName, procId, winHandle: winHandle || 0, winTitle: winTitle || c.windowName }, timeoutMs)
       if (result?.error === 'NOT_RUNNING') return { running: false, pid: null, title: null, controlPolicy, raw: 'NOT_RUNNING' }
-      if (!result?.ok) return { ...result, running: false, unknown: true, controlPolicy, error: result?.error || 'status 无法确认目标进程状态' }
+      // 「ok 但没有 pid」**不能**读成"在运行"：真实脚本里 ok:true ⟺ 找到了进程（必然带 pid），
+      // 所以缺 pid 只说明这条响应不完整 ⇒ 按**未知**处理。
+      // 这条不是洁癖：launch 的就绪判定读的就是这里的 running —— 一个不带 pid 的 ok 会让
+      // ui_launch 报出 started:true / partial:true（"进程已起但主窗口超时未出现"），
+      // 而它其实什么都没确认（restart-watchdog 的假体正好复现了这条：改前走冷路径看不见，改后走热路径就暴露了）。
+      if (!result?.ok || !Number.isInteger(result.pid) || result.pid <= 0) {
+        return { ...result, running: false, unknown: true, controlPolicy, error: result?.error || 'status 响应缺少 pid，无法确认进程是否在运行' }
+      }
       return {
         running: true,
         pid: result.pid,
         title: result.window === 'NONE' ? null : result.window || null,
         handle: result.handle ?? null,
+        // 2026-10-14：常驻进程的 status 是**按标题匹配**枚举顶层窗口的 ⇒ 窗口"已创建但未显示"时
+        // 也会返回标题。旧口径（冷路径 -SkipIdentity）用 Process.MainWindowHandle，**只有可见才算**。
+        // 这里如实把可见性带出来，由调用方（ui_launch 的就绪判定）决定要不要它 —— 不再让两条路径
+        // 对"窗口可用"给出不同答案。字段缺失（旧部署副本）⇒ null（未知），**不冒充可见**。
+        visible: typeof result.visible === 'boolean' ? result.visible : null,
         identity: result.identity || null,
         desktopState: result.desktopState || 'unknown',
         rect: result.rect || null,
@@ -561,20 +573,32 @@ export function makeDriver(cfg) {  const c = {
       return { ok: false, started: false, error: '启动失败: ' + e }
     }
     child.unref()
+    // 就绪检测提速（2026-10-14，用户报障「客户端几秒钟就出来了，工具还在等」）：
+    //   旧循环每次轮询 = sleep ≤1000ms + 一次 **PowerShell 冷启动**的 status（实测 0.5~0.8s），
+    //   于是"窗口出现"到"工具发现"平均要多等 ~1.5s（最坏 ~2.5s）。
+    //   现在：① 立刻把**常驻进程**拉起来（它的启动成本与客户端十几秒的启动重叠，不额外花时间）；
+    //        ② 轮询改走常驻进程（实测单动作 p50 30ms）+ 150ms 间隔 ⇒ 探测粒度 ~0.2s；
+    //        ③ 常驻进程还没就绪时退回冷启动路径，间隔放宽到 500ms（别刷 PowerShell 进程）。
+    if (warmEnabled()) warmStart().catch(() => {})
     const deadline = startedAt + budget
     let last = st0
     let polls = 0
     let statusTimeouts = 0
     while (Date.now() < deadline) {
+      const warmReady = !!(warm.proc && warm.ready === true && warmScriptIsCurrent())
       const remain = deadline - Date.now()
       if (remain <= 0) break
-      await sleep(Math.min(1000, Math.max(50, remain)))
+      await sleep(Math.min(warmReady ? 150 : 500, Math.max(20, remain)))
       const budgetLeft = deadline - Date.now()
       if (budgetLeft <= 0) break
-      last = await status({ timeoutMs: Math.max(1000, Math.min(30000, budgetLeft)), includeIdentity: false })
+      // includeIdentity 只在走常驻进程时才打开：冷路径带上身份查询要慢一倍（实测），而轮询只要 pid/窗口。
+      last = await status({ timeoutMs: Math.max(1000, Math.min(5000, budgetLeft)), includeIdentity: warmReady })
       polls++
       if (last.unknown) statusTimeouts++
-      if (last.running && last.title) {
+      // 就绪判据 = 「有标题」且**可见性不是 false**（false=明确不可见；null=该路径没回报，按旧口径放行，
+      // 因为冷路径的标题本来就只在窗口可见时才非空）。不这样判，就会在窗口还没显示时宣布就绪，
+      // 紧接着截图 3 连失败（真机实测，见 ui-drive-batch.ps1 status 的 visible 注释）。
+      if (last.running && last.title && last.visible !== false) {
         return { ok: true, windowReady: true, started: true, alreadyRunning: false, pid: last.pid, title: last.title, waitedMs: Date.now() - startedAt, polls, ...(forceKill ? { forceKill, restarted: true } : {}) }
       }
     }
@@ -1862,6 +1886,7 @@ export function makeDriver(cfg) {  const c = {
         action,
         state: res.state || null,
         captureMethod: res.captureMethod || null,
+        distinctColors: typeof res.distinctColors === 'number' ? res.distinctColors : null,
         pid: res.pid ?? null,
         window: res.window ?? null,
         windowHandle: res.windowHandle ?? null,
@@ -1888,7 +1913,10 @@ export function makeDriver(cfg) {  const c = {
    */
   function shapeShot(action, res, shotPlan, workspace) {
     const src = res.path
-    return { ok: true, action, path: src, w: res.w, h: res.h, workspacePath: null, captureMethod: res.captureMethod || null, windowHandle: res.windowHandle ?? null, rect: res.rect || null, coordinateSpace: res.coordinateSpace || null, physicalPixels: res.physicalPixels === true }
+    // distinctColors（2026-10-14）：截图侧本地采样的颜色种数（PS 的 Render-WindowPng 算），
+    // 供「疑似纯色未渲染」判定用（见 lib/shot-state.mjs）。老脚本不返回 ⇒ 明确给 null（**未知**），
+    // 不要默认成一个大数字——那等于替调用方断言"渲染好了"。
+    return { ok: true, action, path: src, w: res.w, h: res.h, workspacePath: null, captureMethod: res.captureMethod || null, distinctColors: typeof res.distinctColors === 'number' ? res.distinctColors : null, windowHandle: res.windowHandle ?? null, rect: res.rect || null, coordinateSpace: res.coordinateSpace || null, physicalPixels: res.physicalPixels === true }
   }
 
   function parseStatusText(text) {

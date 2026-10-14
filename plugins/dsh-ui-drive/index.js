@@ -18,8 +18,8 @@ import { basename, join, extname } from 'node:path'
 import { homedir } from 'node:os'
 import { makeDriver } from './lib/driver.mjs'
 import { renderDrive, renderState, renderFlow, sanitizeLive, launchText, renderLive, framePathText } from './lib/render.mjs'
-import { makeVision, UI_STATE_PROMPT } from './lib/vision.mjs'
 import { makeLive } from './lib/live.mjs'
+import { shotState } from './lib/shot-state.mjs'
 import { envOr } from '../../lib/env-fallback.mjs'
 import { createJevClient } from '../../lib/jev-client.mjs'
 import { makeJevUiController } from '../../lib/jev-ui.mjs'
@@ -40,15 +40,15 @@ const GUIDANCE =
   'ui_flow(steps, tag, failFast, allowSideEffects) 按步骤序列驱动并收集证据（find/click/setvalue/key/type/drag/read/windows/shot/wait/waitfor/expect），每步输出+截图写进证据目录 steps.json，返回 transcript。' +
   'ui_flow 同时生成含校验哈希的 replay.json，ui_replay(replayPath) 可重新执行；回放继续校验当前应用身份与授权。ui_drive/ui_act/ui_flow 支持 approvalId/sessionId，授权范围为 once/session/persistent，可过期和撤销。' +
   '只有显式 visualFallback=true 时，click/doubleclick 的 UIA 定位失败才尝试视觉坐标定位；visualMinConfidence 默认 0.78，visualTarget 可指定目标，敏感画面或无法确认敏感状态时拒绝外发。' +
-  '动态界面（登录、验证码、按界面情况分支）必须「看一步再做下一步」：用 ui_drive 逐步走，先用 ui_windows/read/shot(describe=true) 看现状，再用 waitFor={ms,state:"appear|gone|enabled|disabled"} 等条件成立再点（别靠猜 sleep），同名控件用 index，容器内定位用 inAid/inName，回车提交用 type 的 {ENTER}，滑块验证码用 drag。' +
+  '动态界面（登录、验证码、按界面情况分支）必须「看一步再做下一步」：用 ui_drive 逐步走，先用 ui_windows/read/shot 看现状（shot 出 PNG，自己 read_image 看），再用 waitFor={ms,state:"appear|gone|enabled|disabled"} 等条件成立再点（别靠猜 sleep），同名控件用 index，容器内定位用 inAid/inName，回车提交用 type 的 {ENTER}，滑块验证码用 drag。' +
   '实时性：ui_drive 走常驻 PowerShell 进程（启动成本只付一次，实测单动作 p50 30ms）；ui_flow 整段序列进一个进程批量执行（13 步实测 1.6s）。DSH_UI_SERVE=0 可退回一次性进程路径。' +
   '观测完整性（B-1）：read/state 结果恒带 skipped=N——本次枚举里「读不到状态」而被跳过的元素数（类型白名单/offscreen/match/去重这些正常过滤不算）；skipped>0 时同结果附带 warn，明确写出「本次清单不完整」。别把「没读到」当成「界面上没有」；skipped=null 表示该路径没回报（未知），不等于 0。' +
-  'ui_launch 默认只返回进程/窗口 readiness；includeScreenshot=true 才截图，describe=true 才截图并调用视觉模型。ui_drive action=shot 加 describe=true 同样可返回界面描述；像素是否能离开本机仍遵守敏感焦点检查。' +
-  // ⚠ R1-09（2026-09-14 夜，黑盒验收 agent 原话）：「描述叫我调 describe_image，但本面只有 read_image，没有 describe_image」。
-  //   这类"描述把人指去空处"本仓早有机器化的关（`lib/toolface-parity.test.mjs` 的 F-040：描述里 `` `工具名(` `` 必须在本面存在），
-  //   但 `describe_image` 被写进了那张测试的**宿主工具白名单**（`NON_PLUGIN_TOOLS`）⇒ **白名单一写，关就绕过去了**，而本面根本没有它。
-  //   修法不是删引用（有它的面仍然该用），而是把依赖说清楚 + 给出没有它时的退路。
-  '⚠ 但 `describe_image` 是**宿主提供的工具、不属于本插件**：**当前这一面不一定有它**（本机实测：只有 `read_image`）。没有它时就用 `read_image` 自己看那张 png，或改用 `shot` 的 `describe=true` 直接拿界面描述。' +
+  // 2026-10-14（用户决定）：插件**不再调用任何视觉模型**——不产出界面文字描述，只产出 PNG。
+  // 看图这件事交给**有读图能力的调用方**（read_image / 宿主视觉工具）。旧文本里"describe=true 直接拿界面描述"
+  // 已经不存在；保留它会把人指去一个空处（与 R1-09 同族）。
+  'ui_launch 就绪后**默认截一张图**（includeScreenshot=false 可跳过），返回 PNG 路径 —— **自己 read_image 它**看当前界面；ui_drive action=shot 同样只出图。' +
+  '⚠ **本插件不调用任何视觉模型、不产出界面文字描述**：没有 describe 参数、没有 describe_image 调用，看界面一律靠你自己读那张 PNG。' +
+  '截图可能撞上"窗口刚出现还没画完"（真机抓到过整幅纯白图）：结果里的 `distinctColors`（截图侧本地采样的颜色种数，≤2 = 疑似纯色未渲染，ui_launch 会自动重拍）是**启发式**，仍请自己看一眼图再下结论。' +
   '实时看见（agent 专用）：ui_live(action=start|stop|status|frame|wait) 后台循环抓「窗口内容」帧（1500ms 默认，不抢前台不恢复最小化）；frame 返回帧 hash+控件状态+**绝对路径 frame.pathAbs**，read_image(frame.pathAbs) 即看见当前画面（frame.path 只是文件名，别直接喂给 read_image）；wait({fromHash}) 阻塞等画面变化；未 start 时 frame 退化为一次捕获。敏感帧（焦点=密码/验证码）默认不给路径（allowSensitive=true 才给）。截图一律在 E 盘证据目录。' +
   '安全边界：点击=真实操作（保存/生成/跳转可能落库）；「保存/删除/清空/导出」类按钮点击前先把按钮名报给用户确认；' +
   '「按名硬拒」名单**只有运维显式配置 DSH_UI_DENY_RE 后才存在**——**默认为空 = 什么都不拦**，所以**不能拿它当兜底**，' +
@@ -64,7 +64,6 @@ const GUIDANCE =
   '用户提到「UI 自验 / 驱动客户端 / 自动验证页面 / 截图验证 / 帮我点一下客户端」时即指本插件，请据此协作。'
 
 let driver = null
-let vision = null
 function drv() {
   if (!driver) {
     driver = makeDriver({
@@ -80,11 +79,6 @@ function drv() {
     })
   }
   return driver
-}
-
-function vsn() {
-  if (!vision) vision = makeVision({})
-  return vision
 }
 
 let live = null
@@ -124,44 +118,15 @@ function autoRecord(failureClass, task, description, extra = {}) {
   })
 }
 
-/** 截图 + 视觉描述（视觉即返）：失败不阻断，返回 null；黑屏/空白自动等渲染重试。 */
-async function shotWithVision({ workspace = '', label = 'state', waitBeforeMs = 0, maxRetries = 2, procId = 0, allowSensitive = false, describe = true } = {}) {
-  if (waitBeforeMs > 0) await sleep(waitBeforeMs)
-  for (let i = 0; i <= maxRetries; i++) {
-    const s = await drv().drive({ action: 'shot', label: i === 0 ? label : label + '-retry' + i, workspace, procId })
-    if (!s.ok) return null
-    if (!describe) return { screenshot: s.workspacePath || s.path, size: s.w + 'x' + s.h, description: null }
-    // r44：交给视觉模型之前先问一句「焦点在密码框上吗」。像素无法脱敏 ⇒ 默认拒，只留 allowSensitive 这个显式出口。
-    // 截图文件本身照常落盘（本地证据目录，不出网）。
-    const sens = await drv().secretFocusNow({ procId })
-    if (!allowSensitive && (sens.secret === true || sens.unknown === true)) {
-      return {
-        screenshot: s.workspacePath || s.path, size: s.w + 'x' + s.h,
-        description: null, visionModel: null, visionError: null,
-        describeSkipped: sens.unknown ? 'sensitivity-unknown' : 'secretFocused',
-        note: sens.unknown
-          ? '**没有把这张截图交给视觉模型**：查不到当前焦点（' + sens.reason + '），而密码输入那一刻查不到正是常态 —— 按 fail-closed 拒了。截图已落证据目录：' + (s.workspacePath || s.path) + '；确认画面无敏感内容后可传 allowSensitive=true 解锁。'
-          : '**没有把这张截图交给视觉模型**：当前焦点在密码/验证码/token 类控件上（' + (sens.focused || '未知控件') + '），像素无法脱敏。截图已落证据目录：' + (s.workspacePath || s.path) + '；确认画面无敏感内容后可传 allowSensitive=true 解锁。',
-      }
-    }
-    const v = await vsn().describeImage(s.workspacePath || s.path, UI_STATE_PROMPT)
-    if (!v.ok) {
-      return {
-        screenshot: s.workspacePath || s.path,
-        size: s.w + 'x' + s.h,
-        description: null,
-        visionError: v.error,
-        visionModel: null,
-      }
-    }
-    const looksBlank = /纯黑|全黑|黑屏|空白|无法识别/.test(v.text)
-    if (!looksBlank) {
-      return { screenshot: s.workspacePath || s.path, size: s.w + 'x' + s.h, description: v.text, visionError: null, visionModel: v.model }
-    }
-    if (i < maxRetries) await sleep(3000) // 窗口刚创建还没渲染完，等 3s 再截
-    else return { screenshot: s.workspacePath || s.path, size: s.w + 'x' + s.h, description: v.text, visionError: null, visionModel: v.model, note: '界面可能尚未渲染完成' }
-  }
-  return null
+/**
+ * 截图（**只出图，不调任何视觉模型**）——实现见 lib/shot-state.mjs（与 MCP 面共用同一份）。
+ *
+ * 2026-10-14 用户决定：去掉远程视觉描述。因此这里不再需要敏感焦点门（那是为阻止像素出网
+ * 而存在的；现在像素只落本机证据目录），也不需要视觉模型的黑屏识别 —— 纯色判定改由截图侧
+ * 本地给出（distinctColors）。
+ */
+function shotStateFor(opts) {
+  return shotState(drv(), opts)
 }
 
 const OBJECT = { type: 'object', additionalProperties: true }
@@ -181,15 +146,6 @@ const WAIT_AFTER = {
 }
 const READ_ONLY_NOTE = '。注意：点击/输入是真实副作用操作（可能落库），必须先报按钮名给用户确认再执行；「按名硬拒」名单默认为空（未配 DSH_UI_DENY_RE 时什么都不拦），别拿它当兜底；运维若配了急停（DSH_UI_ESTOP_FILE）或策略表（DSH_UI_APP_POLICY），被拦时返回带 policyCode，复位走运维路径 /api/dsh-ui-drive/estop/reset'
 
-/** R-01（2026-09-17）：把「没有界面描述」的原因显示出来 —— 旧写法只渲染 description，
- *  视觉调用失败时**什么都不显示**，于是 agent/用户只看到"等了半天、什么都没有"。 */
-function launchVisionNote(v) {
-  const s = v && v.uiState
-  if (!s || s.description) return ''
-  const why = s.visionError || s.describeSkipped || s.note || '未产出描述（原因未回报）'
-  return '\n（没有界面描述：' + why + '）'
-}
-
 const tools = () => [
   defineTool({
     name: 'ui_status',
@@ -207,25 +163,34 @@ const tools = () => [
     name: 'ui_launch',
     description: dshDescription('ui_launch'),
     parameters: dshParameters('ui_launch'),
-    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: launchText(v) + (v.uiState && v.uiState.description ? '\n当前界面：' + v.uiState.description : '') + launchVisionNote(v) }] },
+    output: {
+      schema: OBJECT,
+      render: (_a, v) => {
+        const s = v.uiState
+        const shotLine = s && s.screenshot
+          ? '\n界面截图：' + s.screenshot + '（' + s.size + '）—— 自己 read_image 这张 PNG 看当前界面' + (s.note ? '\n⚠ ' + s.note : '')
+          : (s && s.error ? '\n⚠ 这次没截到图：' + s.error + '（**别读成"客户端没有界面"**；可稍后 ui_drive(shot) 重试）' : '')
+        return [{ type: 'text', text: launchText(v) + shotLine }]
+      },
+    },
     timeoutMs: 120000,
     async execute(args) {
       const l = await drv().launch({ extraArgs: args.extraArgs || '', waitMs: args.waitMs || 60000, force: args.force === true })
-      // 视觉即返：等窗口渲染 3.5s 再截图描述（带黑屏重试），agent 一步知道当前在哪个页面。
+      // 就绪后截图（2026-10-14 起默认开）：**只出图，不调视觉模型**。
       // UD-06：只在**窗口真的可用**（ok）时才截图 —— 半成功时没有主窗口，
       // 截图要么失败、要么抓到别的窗口（闪屏/其它进程），把一张不相干的画面当成"客户端界面"。
       //
-      // R-01（2026-09-17，用户报障「客户端都启动半天了，ui_launch 还在等待」）：
-      //   **只有"这次真的启动了"才做视觉即返**。旧写法只判 `l.ok === true`，而"客户端已在运行"
-      //   这条路径同样返回 ok:true（driver.launch 走到 432-435 行 ⇒ alreadyRunning:true /
-      //   started:false / waitedMs:0，判启动本身是 0 秒），于是**什么都没启动也照样**跑完
-      //   「截图 → 焦点检查 → 远程视觉描述」三步。
-      //   真机实测（2026-09-17 16:09，客户端早已在跑）：建证据目录 16:09:39 → 截图落盘 16:09:55
-      //   → 焦点检查 16:10:12 → 之后才调视觉模型，整轮 ≈33s，而 GUI 上看起来就是"还在等"。
-      //   现在：started !== true ⇒ 直接返回；要看当前界面请走 ui_status / ui_drive(shot, describe=true)。
+      // 历史（R-01，2026-09-17 用户报障「客户端都启动半天了，ui_launch 还在等待」）：那时这里
+      // 无条件跑「截图 → 焦点检查 → 远程视觉描述」，客户端早已在跑也照样跑完，整轮 ≈33s。
+      // 现在这条链路上**没有远程调用**了，只剩一次本地截图（实测 ≈1.3s）；`includeScreenshot=false`
+      // 可完全跳过。
       l.readiness = l.ok === true ? 'window-ready' : (l.started === true ? 'spawned' : 'unknown')
-      if (l.ok === true && (args.includeScreenshot === true || args.describe === true)) {
-        const st = await shotWithVision({ workspace: args.workspace || '', label: 'launch-state', allowSensitive: args.allowSensitive === true, describe: args.describe === true })
+      if (l.ok === true && args.includeScreenshot !== false) {
+        // 窗口句柄出现 ≠ 画面已经画完（WPF 客户端实测：窗口可见后仍有短暂空白帧）。
+        // 定 400ms 静置 + distinctColors 启发式重拍，见 shotState 的注释。
+        const st = await shotStateFor({ workspace: args.workspace || '', label: 'launch-state', settleMs: 400, procId: l.pid || 0 })
+        // 失败也带上（含 error 字段）：静默丢掉会让 agent 以为"本来就没有图"，
+        // 而真相是"这次没截到" —— 没读到 ≠ 没有（本仓的诚实口径）。
         if (st) l.uiState = st
       }
       return l
@@ -258,10 +223,8 @@ const tools = () => [
       procId: { type: 'number', description: '指定进程 PID（默认自动找）' },
       allowSideEffects: { type: 'boolean', description: 'click/setvalue/key/type/drag/clickat/doubleclick 必须显式传 true 才执行' },
       secret: { type: 'boolean', description: 'true = 输出与证据里对该值打码（默认 false）。**密码/验证码类控件本来就自动掩码**（读回来是 <secret:Nchars>）；secret 是给「长得不像密码框的敏感输入」（例如令牌框）用的 —— 两者取或' },
-      allowSensitive: { type: 'boolean', description: 'describe=true 时的显式解锁：焦点在密码/验证码/token 控件上时**默认拒绝**把截图交给视觉模型（像素无法脱敏）。确认画面无敏感内容才传 true' },
 
       label: { type: 'string', description: '截图文件名标签（shot 用）' },
-      describe: { type: 'boolean', description: 'shot 时顺带用视觉模型描述界面内容（视觉即返，一步拿到界面状态）' },
       snapshotId: { type: 'string', description: '副作用动作可选：绑定某次 read/state 返回的 snapshotId。若自那次读之后界面已被更新的权威读刷新（staleSnapshot）或客户端已重启（expiredSnapshot），本次动作被拒不执行；不传则不校验（零回归）' },
       targetRef: { type: 'string', description: 'find/state 返回的30秒常驻控件引用，仅用于pattern/doubleclick；不能混用name/aid/match/index/inAid/inName/waitFor/requireUnique/visualFallback，失效明确拒绝且不重试' },
       requireUnique: { type: 'boolean', description: '要求name/aid/match恰好匹配一个控件；不能与targetRef混用' },
@@ -290,21 +253,9 @@ const tools = () => [
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderDrive(v) }] },
     timeoutMs: 90000,
     async execute(args) {
-      const r = await drv().drive(args)
-      // shot 视觉即返：describe=true 时截图后直接返回界面描述
-      if (r.ok && r.action === 'shot' && args.describe) {
-        const sens = await drv().secretFocusNow({ procId: args.procId || 0 })
-        if (args.allowSensitive !== true && (sens.secret === true || sens.unknown === true)) {
-          r.describeSkipped = sens.unknown ? 'sensitivity-unknown' : 'secretFocused'
-          r.warning = '没有把截图交给视觉模型：' + (sens.unknown ? ('查不到当前焦点（' + sens.reason + '），按 fail-closed 拒') : ('焦点在密码/验证码/token 类控件上（' + (sens.focused || '未知控件') + '）')) +
-            '。截图已落盘：' + (r.workspacePath || r.path) + '；确认画面无敏感内容后传 allowSensitive=true 解锁。'
-        } else {
-          const v = await vsn().describeImage(r.workspacePath || r.path, UI_STATE_PROMPT)
-          if (v.ok) r.description = v.text
-          else r.visionError = v.error
-        }
-      }
-      return r
+      // shot 只出图（2026-10-14 起不再有 describe：本插件不调任何视觉模型）——
+      // 拿到 path 后自己 read_image。distinctColors 由截图侧本地给出（<=2 疑似纯色未渲染）。
+      return await drv().drive(args)
     },
   }),
   defineTool({
@@ -376,29 +327,15 @@ const tools = () => [
       label: { type: 'string', description: 'shot 文件名标签' },
       procId: { type: 'number', description: '指定进程 PID（默认自动找）' },
       winHandle: { type: 'number', description: '按顶层窗口 handle 定位（ui_windows 返回的 handle 直接用），比 winTitle 稳' },
-      allowSensitive: { type: 'boolean', description: 'describe=true 时：焦点在密码/验证码/token 控件上默认拒（像素无法脱敏），确认无敏感内容才传 true' },
-
-      describe: { type: 'boolean', description: 'shot：顺带返回视觉描述' },
       captureMode: { type: 'string', enum: ['print', 'screen'], description: 'shot/capture：默认print窗口渲染；screen截取目标窗口矩形内屏幕像素' },
       diff: { type: 'boolean', description: 'read 专用：与上一次完整读做增量，返回 diff={added,removed,unchanged}（首读给 diffBaseline；读不完整时抑制并回落完整清单）' },
     },
     output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: renderDrive(v) }] },
     timeoutMs: 120000,
     async execute(args) {
-      const r = await drv().drive({ ...args, action: args.action })
-      if (r.ok && r.action === 'shot' && args.describe) {
-        const sens = await drv().secretFocusNow({ procId: args.procId || 0 })
-        if (args.allowSensitive !== true && (sens.secret === true || sens.unknown === true)) {
-          r.describeSkipped = sens.unknown ? 'sensitivity-unknown' : 'secretFocused'
-          r.warning = '没有把截图交给视觉模型：' + (sens.unknown ? ('查不到当前焦点（' + sens.reason + '），按 fail-closed 拒') : ('焦点在密码/验证码/token 类控件上（' + String(sens.focused || '未知控件') + '）')) +
-            '。截图已落盘：' + (r.workspacePath || r.path) + '；确认画面无敏感内容后传 allowSensitive=true 解锁。'
-        } else {
-          const v = await vsn().describeImage(r.workspacePath || r.path, UI_STATE_PROMPT)
-          if (v.ok) r.description = v.text
-          else r.visionError = v.error
-        }
-      }
-      return r
+      // shot 只出图（2026-10-14 起不再有 describe / allowSensitive：本插件不调视觉模型，
+      // 也就不存在"要不要把像素交给模型"这道门）。
+      return await drv().drive({ ...args, action: args.action })
     },
   }),
   defineTool({

@@ -167,6 +167,9 @@ public static class UiDriveBatchWin32 {
   public static bool GetWindowRect(IntPtr handle, out RECT rectangle) {
     rectangle=new RECT { Left=-20, Top=30, Right=620, Bottom=510 }; return true;
   }
+  // 2026-10-14：status 现在要如实回报「窗口可见吗」——ResolveWindow 按标题匹配，
+  // 窗口"已创建但还没 Show"时也能匹配上，于是必须由可见性来区分"存在"与"可用"。
+  public static bool IsWindowVisible(IntPtr handle) { return handle != IntPtr.Zero; }
 }
 "@
 function Get-Process {
@@ -212,6 +215,10 @@ $results | ConvertTo-Json -Depth 8 -Compress
   assert.deepEqual(results.slice(0, 4).map(result => result.response.identity.generation), [1, 2, 3, 4])
   assert.deepEqual(results[0].response.rect, { w: 640, h: 480, x: -20, y: 30 })
   assert.equal(results[4].response.window, 'NONE')
+  // 2026-10-14：句柄为 0 ⇒ 明确 visible=false（不是"未知"）；有句柄 ⇒ true。
+  // ui_launch 的就绪判定就看这个字段，缺了它会在窗口还没显示时宣布就绪（截图必然失败）。
+  assert.equal(results[4].response.visible, false)
+  assert.deepEqual(results.slice(0, 4).map(result => result.response.visible), [true, true, true, true])
   assert.equal(results[4].response.rect, undefined)
   assert.equal(results[5].response.error, 'NOT_RUNNING')
   assert.equal(results[6].response.pid, 700)

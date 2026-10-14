@@ -8,11 +8,29 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ## [Unreleased]
 
+### Changed
+
+- `ui_launch` no longer calls a vision model. The plugin produces screenshots only (`read_image` is the
+  caller's job), the screenshot is taken by default (`includeScreenshot=false` skips it), and the
+  `describe` / `allowSensitive` parameters are gone from `ui_launch`, `ui_drive` and `ui_observe` on both
+  faces. `visualFallback` keeps its vision **locate** path. Measured on the real client (2026-10-14, cold
+  start): the tool call went from ~49s to ~17.7s, and the tail **after** the main window appears from
+  ~26s to **0.9s**.
+- `ui_launch` readiness now means "the main window is **visible**", not merely "a window with the expected
+  title exists": the status protocol reports `visible`, and a warm-status answer without a pid is treated
+  as unknown instead of "running". Polling runs through the resident worker (~30ms per poll, 150ms
+  interval) instead of one cold PowerShell per second.
+- Screenshots carry `distinctColors` (24×24 sample of the captured bitmap). A frame with ≤2 colours is
+  treated as *probably not rendered yet* and re-shot — this replaces the vision-model black-screen check
+  that was removed with the description path.
+
 ### Fixed
 
 - Remove application-specific names from public fixtures and examples. The repository reference
   scan now matches case-insensitive substrings and stores private terms as SHA-256 fingerprints,
   including the scanner itself in checks without printing the matched private text.
+- `shotState` retries a **failed** screenshot (the window's first visible frame can fail) and reports the
+  error instead of silently returning nothing.
 
 ## [0.2.0] — 2026-10-09
 
