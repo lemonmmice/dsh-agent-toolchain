@@ -74,6 +74,12 @@ function hexBytes(line) {
   return Buffer.from(pairs.map((p) => Number.parseInt(p, 16)))
 }
 
+/**
+ * 一条响应最多允许的 gzip 成员数（F02）：真实响应几乎都是 1 个；成员数异常多多半是单条流里
+ * 1F 8B 08 的**误判边界** —— 按整条解（仍受总上限约束），而不是逐"成员"把 CPU 工作量堆到无界。
+ */
+const MAX_GZIP_MEMBERS = 64
+
 /** Decompress a (possibly multi-member / trailing-junk) gzip buffer. */
 function tryGunzip(buf) {
   if (buf.length < 10 || buf[0] !== 0x1f || buf[1] !== 0x8b) return null
@@ -83,20 +89,25 @@ function tryGunzip(buf) {
     if (buf[i] === 0x1f && buf[i + 1] === 0x8b && buf[i + 2] === 0x08) starts.push(i)
   }
   if (starts.length === 0) return null
+  const wholeStream = () => { try { return gunzipSync(buf, { maxOutputLength: MAX_DECODE_BYTES }) } catch { return null } }
+  if (starts.length > MAX_GZIP_MEMBERS) return wholeStream()
   const parts = []
+  // F02：整条响应**共享一个**输出预算（而不是每个成员各给 MAX_DECODE_BYTES —— 那样 N 个成员合计可超限）。
+  let remaining = MAX_DECODE_BYTES
   for (let i = 0; i < starts.length; i++) {
+    if (remaining <= 0) return null                       // 预算用尽却还有成员 ⇒ 整条判不可解，绝不返回"部分正文"
     const end = i + 1 < starts.length ? starts[i + 1] : buf.length
+    let member
     try {
-      parts.push(gunzipSync(buf.subarray(starts[i], end), { maxOutputLength: MAX_DECODE_BYTES }))
+      member = gunzipSync(buf.subarray(starts[i], end), { maxOutputLength: remaining })
     } catch {
-      if (i === 0) {
-        try {
-          return gunzipSync(buf, { maxOutputLength: MAX_DECODE_BYTES })
-        } catch {
-          return null
-        }
-      }
+      // 首成员失败：可能是"误判的成员边界"，按整条再试一次（仍受总上限约束）。
+      if (i === 0) return wholeStream()
+      // 非首成员失败（超出剩余预算 / 解不开）：**绝不**返回只含前几个成员的部分正文，整条判不可解。
+      return null
     }
+    remaining -= member.length
+    parts.push(member)
   }
   if (parts.length === 0) return null
   return Buffer.concat(parts)

@@ -7,6 +7,21 @@
 > 另一进程）无法验证收益 —— 按分级交付做了纯逻辑骨架 + 单测 + 诚实边界，**绝不假称真机验证通过**。
 > 详见 docs/performance-audit-round3-validation-2026-10-13.md。
 
+> 第四轮（2026-10-14，按 e0a0cd5→19b9734 复核意见修 6 组正确性缺陷，均带回归用例）：
+> - **F01** 编译集缓存失效：`collectItemSources` 改为按「已解析源 ∪ 探测点」的身份签名（dev/ino/size/mtime/ctime，
+>   不存在记 `absent`），新建 `Directory.Build.props/.targets` 或原本解析不到的 import 目标出现即失效重算；缓存对象冻结后返回。
+>   （原先只重查已解析源，会把"未编译"误判成"已编译"。）用例 `lib/compile-membership-invalidate.test.mjs`。
+> - **F02** 解压总预算：gzip 多成员改为**整条响应共享**一个输出预算，任何成员超限返回 null（绝不返回部分正文）、
+>   限成员数；代理路径 `proxy-engine` 复用同一有界解码器。用例 `plugins/dsh-api-visualizer/test/capture-decode-total-budget.test.mjs`。
+> - **F03** failure 查询稳定排序：按 (ts,id) 全序的派生快照按版本构建一次并缓存，热查询不再每次复制 + 全量重排；游标改二分定位。
+>   用例 `lib/failure-corpus-order.test.mjs`（叠加既有 `failure-corpus-cursor`）。
+> - **F04** 任务完整性：完整性口径收敛到 `lib/result-completeness.mjs`（MCP 封套 + 纯对象都判）；输出预算上移到任务层之外，
+>   落盘与裁决用未截断原始结果，预算封套保留 incomplete/stoppedBy/剩余量。用例 `lib/task-completeness.test.mjs`。
+> - **F05** 采样取消收尾：`perf_trace` run 的等待响应 AbortSignal；收尾用独立有限期限信号运行，取消后仍发停止/取消命令并释放租约。
+>   用例 `plugins/dsh-perf/test/trace-cancel-cleanup.test.mjs`。
+> - **F06** 构建互斥：资源锁键与 builder 共用 `lib/build-root.mjs` 的根解析；builder 自带按根的文件锁，同步/后台/异步共用一把。
+>   用例 `lib/build-root-mutex.test.mjs`。
+
 ## A 轻请求与观测
 
 - [x] build_errors worker、流式解析、身份缓存和并发 MCP 验证。
@@ -31,7 +46,8 @@
 - [x] failure stable cursor（keyset `(ts,id)` 全序，翻页不重不漏、顶部新增稳定；两面参数证到，修复 queryAsync 漏传 cursor）。
       (超大库待验：按分类/runId/指纹的持久倒排索引 —— 现有 shardCache/parsedShards 增量解析 + statsCache 已覆盖常见规模)
 - [x] capture 方法/来源/安全条件下的 runId 索引、stable cursor、按页/正文投影；MCP 与面板读取进入 worker。
-- [x] 项目 XML/依赖身份缓存（`collectItemSources` 按 (mtime,size) 签名缓存，hook 热路径重复读合并；`.csproj` 变更即失效）。
+- [x] 项目 XML/依赖身份缓存（`collectItemSources` 按「已解析源 ∪ 探测点」的身份签名缓存——dev/ino/size/mtime/ctime + 不存在态，
+      hook 热路径重复读合并；`.csproj` 改写、或新建 props/targets/import 目标**都**失效重算；结果冻结。F01）。
       (后续：memory 查询向量单飞行 / 紧凑存储对照 —— embedding 已有 endpoint+model+text 缓存 + index-process 已存在)
 
 ## C 长任务

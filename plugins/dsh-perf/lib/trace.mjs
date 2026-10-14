@@ -39,6 +39,12 @@ import { buildJitMapStreaming } from './jitmap.mjs'
 import { analyzeThreadWaits } from './uifreeze.mjs'
 import { readClrEvents } from './clr-stream.mjs'
 import { attachProcessCancellation, checkTaskCancellation } from '../../../lib/process-cancellation.mjs'
+import { taskSignal, withTaskContext } from '../../../lib/task-context.mjs'
+
+// F05：采样收尾（stop/cancel）要能在**主任务已取消**后继续跑完 —— 用一个独立、有限期限的信号驱动，
+//   否则 stop/cancel 分支里的 checkTaskCancellation()/attachProcessCancellation 会把收尾命令挡掉 / 秒杀，
+//   留下一直写 etl 的孤儿 ETW 会话。期限取得比最长收尾（merge 15 分钟）更宽，纯作兜底，不切断正常收尾。
+const TRACE_CLEANUP_DEADLINE_MS = 20 * 60 * 1000
 
 const PROGRAM_FILES_X86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
 const SYSTEM32 = join(process.env.SystemRoot || 'C:\\Windows', 'System32')
@@ -948,9 +954,42 @@ export function makeTrace(cfg = {}) {
       }
     }
     const seconds = Math.min(Math.max(Number(args.seconds) || 20, 3), 600)
-    await new Promise((r) => setTimeout(r, seconds * 1000))
+    // F05：采样等待必须**响应取消** —— 中途 abort 立刻醒来去收尾，而不是干等满 seconds 才发现早该停。
+    const taskSig = taskSignal()
+    let cancelledDuringWait = false
+    await new Promise((resolve) => {
+      let settled = false
+      const finish = (fromAbort) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (taskSig) taskSig.removeEventListener('abort', onAbort)
+        cancelledDuringWait = fromAbort
+        resolve()
+      }
+      const timer = setTimeout(() => finish(false), seconds * 1000)
+      const onAbort = () => finish(true)
+      if (taskSig) {
+        if (taskSig.aborted) { finish(true); return }
+        taskSig.addEventListener('abort', onAbort, { once: true })
+      }
+    })
     // ★ R1-14：`run` **复用 stop 分支**（含 xperf 的 `-merge`）—— 免得两条路各写一份、日后漂移。
-    return { ...(await trace({ action: 'stop', etlPath: etl, tag: args.tag })), seconds, engine }
+    // F05：收尾用**独立、有限期限**的信号运行（不是主任务信号）。否则主任务一旦取消，stop/cancel 分支里
+    //   runExe 开头的 checkTaskCancellation() 会把收尾命令挡掉、attachProcessCancellation 会把它秒杀，
+    //   结果留下一个一直写 etl 的孤儿 ETW 会话（内核租约 + running 标记都还在）。
+    //   取消时用 'cancel'（干净拆除、不做 merge），正常跑满用 'stop'（产出合并后的 etl）。
+    const cleanupAction = cancelledDuringWait ? 'cancel' : 'stop'
+    const cleanupController = new AbortController()
+    const cleanupTimer = setTimeout(() => cleanupController.abort(new Error('trace cleanup deadline exceeded')), TRACE_CLEANUP_DEADLINE_MS)
+    if (typeof cleanupTimer.unref === 'function') cleanupTimer.unref()
+    let stopResult
+    try {
+      stopResult = await withTaskContext({ signal: cleanupController.signal }, () => trace({ action: cleanupAction, etlPath: etl, tag: args.tag }))
+    } finally {
+      clearTimeout(cleanupTimer)
+    }
+    return { ...stopResult, seconds, engine, ...(cancelledDuringWait ? { cancelled: true, stoppedBy: 'cancel' } : {}) }
   }
 
   /**

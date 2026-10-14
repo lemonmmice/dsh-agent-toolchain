@@ -17,6 +17,9 @@ import { createWorkerService } from '../../../lib/worker-service.mjs'
 import { parseErrors } from './diagnostics.mjs'
 import { taskSignal } from '../../../lib/task-context.mjs'
 import { attachProcessCancellation, checkTaskCancellation } from '../../../lib/process-cancellation.mjs'
+import { resolveBuildRoot, canonicalPath } from '../../../lib/build-root.mjs'
+import { withFileTransaction } from '../../../lib/file-transaction.mjs'
+import { createHash } from 'node:crypto'
 
 const diagnosticsService = createWorkerService(new URL('./diagnostics-worker.mjs', import.meta.url))
 
@@ -467,7 +470,8 @@ export function makeBuilder(cfg) {
     // accidental cwd.
     // R42：opts.clientRoot 之前**不被读取** —— 参数声明了、build() 却只认 opts.repoRoot，
   // 那样加参数等于加了个幽灵。两者语义相同（谁给用谁），顺序：本次调用 > 环境/配置。
-  const repoRoot = opts.repoRoot || opts.clientRoot || c.repoRoot || c.clientRoot
+  // F06：根解析收敛到 resolveBuildRoot（与资源锁键**同一套**口径）；c.repoRoot/c.clientRoot 仍作构造期回退。
+  const repoRoot = resolveBuildRoot(opts) || c.repoRoot || c.clientRoot
     if (!repoRoot || !existsSync(repoRoot)) {
       return earlyFail('仓库根目录不存在：' + (repoRoot || '(未配置)') + '（传 repoRoot 或设置 DSH_BUILD_REPO_ROOT / DSH_BUILD_CLIENT_ROOT）')
     }
@@ -947,5 +951,21 @@ export function makeBuilder(cfg) {
     }
   }
 
-  return { config: c, build, startBackground, backgroundStatus, status, errorsOfLast, parseErrors, isEnvError, findMsbuild, decodeBuffer, clientProcess, clientInstances, isPidAlive, exePathOf, killClientProcess, listClientPids, lockedFilesOf, logsDir: () => c.logsDir }
+  /**
+   * F06 —— 构建互斥（所有执行方式共用的一层）。
+   * 同步 build()、异步作业的 execute、以及后台子进程最终都走到这个**导出的** build；在这里按「本次构建根」
+   * 取一把文件锁，于是三条路径共用同一把锁，不再只有异步任务层才互斥（第 39 行普通调用直接执行会绕过任务锁）。
+   * 锁键与资源锁键用同一套 resolveBuildRoot+canonicalPath，口径一致。
+   * 取不到锁（已有同根构建在跑）即 FILE_TRANSACTION_BUSY 冒泡：同步调用由 server 统一翻成 busy 回执、
+   * 后台/异步作业如实记为未完成——绝不并发构建同一根（会互相污染 obj/bin）。
+   * 根缺失/不存在时不加锁，交给 build() 自己 fail-closed 早返回（render-bv03 等依赖"早返回不抛"的行为不变）。
+   */
+  function buildLocked(opts = {}) {
+    const root = resolveBuildRoot(opts) || c.repoRoot || c.clientRoot
+    if (!root || !existsSync(root)) return build(opts)
+    const lockFile = join(c.logsDir, 'build-lock-' + createHash('sha1').update(canonicalPath(root)).digest('hex').slice(0, 16))
+    return withFileTransaction(lockFile, () => build(opts))
+  }
+
+  return { config: c, build: buildLocked, startBackground, backgroundStatus, status, errorsOfLast, parseErrors, isEnvError, findMsbuild, decodeBuffer, clientProcess, clientInstances, isPidAlive, exePathOf, killClientProcess, listClientPids, lockedFilesOf, logsDir: () => c.logsDir }
 }
