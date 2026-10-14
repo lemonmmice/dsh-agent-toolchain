@@ -1,7 +1,9 @@
 // F02 回归：gzip 解压上限是**整条响应共享**一个预算，不是每个成员各一份；任何成员超限一律返回 null，
 // 绝不返回只含前几个成员的"部分正文"（下游会把部分当完整用）。复刻审查 19b-delta-probes 的两个反例。
 import assert from 'node:assert/strict'
+import zlib from 'node:zlib'
 import { gzipSync, gunzipSync } from 'node:zlib'
+import { syncBuiltinESMExports } from 'node:module'
 import { decodeContent, MAX_DECODE_BYTES } from '../lib/capture-engine.mjs'
 
 let failures = 0
@@ -56,5 +58,29 @@ const check = (name, cond, extra = '') => { if (cond) console.log('  ok   ' + na
     decoded === null ? 'got null' : 'len ' + decoded.length + ' vs ' + expected.length)
 }
 
+// ---- 7. O1：整条解码因**超总预算**失败时，不再逐成员重复解压（已知超限的数据解一遍够了，结果仍是 null）----
+{
+  const original = zlib.gunzipSync
+  const callArgs = []
+  zlib.gunzipSync = function (...args) { callArgs.push({ inputBytes: args[0].length, maxOutputLength: args[1]?.maxOutputLength }); try { return original.apply(zlib, args) } catch (e) { e.__code = e.code; throw e } }
+  syncBuiltinESMExports()
+  let decoded
+  try { decoded = decodeContent(Buffer.concat([gzipSync(Buffer.alloc(6 * 1024 * 1024, 0x41)), gzipSync(Buffer.alloc(6 * 1024 * 1024, 0x41))]), 'gzip') }
+  finally { zlib.gunzipSync = original; syncBuiltinESMExports() }
+  // 旧实现：整条试解(1) → 回退逐成员(2) ⇒ 3 次；O1 修后：整条试解抛 ERR_BUFFER_TOO_LARGE 即判不可解 ⇒ 1 次。
+  check('★ 两个 6 MiB 成员超总预算 ⇒ 仍返回 null', decoded === null, decoded === null ? '' : 'got ' + decoded.length)
+  check('★ O1：已知超限不重复解压（整条 gunzip 只调 1 次，不再逐成员）', callArgs.length === 1, callArgs.length + ' 次：' + JSON.stringify(callArgs))
+}
+
+// ---- 8. O1 回归护栏：**格式类**错误仍走成员切分回退（有效成员 + 尾部垃圾），不能被 O1 的早返回一并吞掉 ----
+{
+  const a = Buffer.from('alpha '.repeat(50))
+  const b = Buffer.from('bravo '.repeat(50))
+  const withTrailingJunk = Buffer.concat([gzipSync(a), gzipSync(b), Buffer.from([0x00, 0x01, 0x02])])
+  const decoded = decodeContent(withTrailingJunk, 'gzip')
+  // 整条 gunzip 对尾部垃圾抛的是格式类错误（非 ERR_BUFFER_TOO_LARGE）⇒ 必须回退成员切分、解出前两个成员。
+  check('格式类错误（尾部垃圾）仍走成员回退 ⇒ 解出有效成员', decoded !== null && Buffer.compare(decoded, Buffer.concat([a, b])) === 0, decoded ? 'len ' + decoded.length : 'null')
+}
+
 if (failures) { console.log('\nFAILED: ' + failures + ' 项'); process.exit(1) }
-console.log('PASS: capture decode total budget (shared budget across members, no silent partial)')
+console.log('PASS: capture decode total budget (shared budget across members, no silent partial, O1 no redundant decode)')

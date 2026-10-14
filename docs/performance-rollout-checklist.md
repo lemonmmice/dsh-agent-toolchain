@@ -37,6 +37,22 @@
 >   恢复「显式 `makeBuilder({repoRoot})` 优先于全局环境变量」的原语义。
 >   用例：`trace-cancel-cleanup`（S2/S3）、`build-root-mutex`（R4/R6）、`compile-membership-invalidate`（R1）、`capture-decode-total-budget`（R5）。
 
+> 第六轮（2026-10-14，按 6988a0f 复核意见修 perf_trace 采集生命周期的 5 个边界 C1–C5 + 1 个解压成本 O1，均复刻反例回归）：
+> - **C1**（R2 续）启动阶段清理**失败**后不得删租约/标记：`teardownPartialStart` 改为逐项**检查**停止返回值，
+>   只有 kernel 与各附加会话全部确认停、且仍持租约才释放；未确认则落一份**可恢复 running 标记**（列仍在跑的会话）+
+>   在异常上挂 `unknown/incomplete/recovery`——删除标记**不是**停止证明。
+> - **C2**（R2 续）预检会话自清理：`probeWprStop` 的 `-stop/-cancel` 在**独立有限期限信号**下 `finally` 跑完，
+>   主任务此刻取消也不会把预检 WPR 会话漏成孤儿（否则抛出后外层 `kernelStarted=false`、不发任何内核收尾）。
+> - **C3**（R3 续）直接 `action=cancel` 口径对齐：`cancelled` 必须要求 `auxiliariesStopped`（kernel + CLR/JIT/alloc 全停），
+>   否则落 `unknown/incomplete`+保留租约+恢复入口；并在 `task-service` 加防线——`ok=false && cancelled=true` 自相矛盾 ⇒ 裁 unknown。
+> - **C4**（C1 续）最终 running 标记写失败：早返回改为走**统一收尾**（内存会话账本仍在），确认全停则干净回滚（`cleanedUp`），
+>   未确认则 `unknown+incomplete+recovery`——不再留 `starting` 标记永久挡住恢复入口。
+> - **C5**（C1 续）拥有者先行校验：`teardownPartialStart` 发全局 `xperf -stop`/`wpr -cancel` **前**先取操作锁、再校验租约仍属本 attempt；
+>   被接管/并发恢复（attempt 已变）就**绝不**发全局命令、也不碰别人的租约与标记；身份读/解析失败一律按「拥有者未知」保留。
+> - **O1**（R5 续）解压成本：`tryGunzip` 整条解码抛 `ERR_BUFFER_TOO_LARGE`（已知超总预算）时直接判不可解，
+>   不再逐成员把同一份超限数据重解一遍（结果照样 null）；仅**格式类**错误才回退成员切分。
+>   用例：`trace-lifecycle-boundaries`（C1–C5，counter-example 对 6988a0f 复现 14 项红）、`capture-decode-total-budget`（O1 整条 gunzip 调用次数 3→1）。
+
 ## A 轻请求与观测
 
 - [x] build_errors worker、流式解析、身份缓存和并发 MCP 验证。

@@ -86,8 +86,15 @@ function tryGunzip(buf) {
   // R5：**首选真正的解码器一次解整条流**。gunzipSync 原生支持标准的拼接多成员流（zlib 规范），
   //   且因为是真解码器，**不会被 payload 里恰好出现的 1F 8B 08 误判成成员边界**（魔数扫描才会）。
   //   同样受 maxOutputLength 总上限约束 —— 这既修了"合法多成员被当边界丢正文"，也保住了解压炸弹防护。
-  try { return gunzipSync(buf, { maxOutputLength: MAX_DECODE_BYTES }) } catch { /* 可能是「有效成员 + 尾部垃圾/拼接残片」：退回成员切分 */ }
-  // 回退：**仅当整条解码抛错时**才按 1F 8B 08 切成员（非标准流：尾部垃圾 / 需重新对齐的拼接）。
+  try { return gunzipSync(buf, { maxOutputLength: MAX_DECODE_BYTES }) }
+  catch (e) {
+    // O1：整条解码若因**超出总预算**失败（ERR_BUFFER_TOO_LARGE），逐成员回退必然撞同一上限 ——
+    //   直接判不可解，别把已知超限的数据再逐成员解一遍（纯属浪费 CPU/主线程，结果照样是 null）。
+    //   只有**格式**类错误（尾部垃圾 / 需重新对齐的拼接）才值得按成员切分重试。
+    if (e && e.code === 'ERR_BUFFER_TOO_LARGE') return null
+    /* 其余（格式/校验错误）：退回成员切分 */
+  }
+  // 回退：**仅当整条解码抛格式类错误时**才按 1F 8B 08 切成员（非标准流：尾部垃圾 / 需重新对齐的拼接）。
   //   魔数扫描在这里是 best-effort；整条已先试过，所以成员数异常多直接判不可解、不再回头整条解。
   const starts = []
   for (let i = 0; i < buf.length - 2; i++) {
