@@ -81,6 +81,10 @@ if (process.platform !== 'win32') {
     mkdirSync(join(source, 'scripts'), { recursive: true })
     const deployScript = join(source, 'scripts', 'deploy-plugins.mjs')
     cpSync(fileURLToPath(new URL('../../../scripts/deploy-plugins.mjs', import.meta.url)), deployScript)
+    // deploy-plugins.mjs 依赖 lib/plugin-deploy-drift.mjs（比对实现只有一份，也供 toolchain_status 用）。
+    // 脚本被单独复制到临时目录跑，所以依赖必须一起复制 —— 少了它是 MODULE_NOT_FOUND，不是正常退出。
+    mkdirSync(join(source, 'lib'), { recursive: true })
+    cpSync(fileURLToPath(new URL('../../../lib/plugin-deploy-drift.mjs', import.meta.url)), join(source, 'lib', 'plugin-deploy-drift.mjs'))
     const profile = join(taskDir, 'profile with spaces')
     mkdirSync(profile)
     const deploy = () => spawnSync(process.execPath, [deployScript, '--profile', profile, '--only', 'dsh-win-terminal-inspector'], {

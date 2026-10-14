@@ -118,6 +118,10 @@ try {
   const repo=fileURLToPath(new URL('../../../',import.meta.url))
   const source=path.join(dir,'source'),profile=path.join(dir,'profile with spaces')
   fs.mkdirSync(path.join(source,'scripts'),{recursive:true});fs.mkdirSync(path.join(source,'plugins','dsh-perf','lib'),{recursive:true});fs.mkdirSync(profile)
+  // deploy-plugins.mjs 依赖 lib/plugin-deploy-drift.mjs（比对实现只有一份，也供 toolchain_status 用）。
+  // 脚本被单独复制到临时目录跑，所以依赖必须一起复制 —— 少了它是 MODULE_NOT_FOUND，不是正常退出。
+  fs.mkdirSync(path.join(source,'lib'),{recursive:true})
+  fs.copyFileSync(path.join(repo,'lib','plugin-deploy-drift.mjs'),path.join(source,'lib','plugin-deploy-drift.mjs'))
   fs.copyFileSync(path.join(repo,'scripts','deploy-plugins.mjs'),path.join(source,'scripts','deploy-plugins.mjs'))
   for(const name of ['flame.mjs','native-fold.mjs'])fs.copyFileSync(path.join(repo,'plugins','dsh-perf','lib',name),path.join(source,'plugins','dsh-perf','lib',name))
   const deploy=()=>spawnSync(process.execPath,[path.join(source,'scripts','deploy-plugins.mjs'),'--profile',profile,'--only','dsh-perf'],{encoding:'utf8',windowsHide:true,timeout:20000})

@@ -16,11 +16,12 @@
 // profile's cordis.patch.yml references). npm-installed plugin packages under
 // <profile>/node_modules are NOT touched — those are managed by `dsh plugin add`.
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, copyFileSync, rmSync, writeFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
 import { dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+// 比对实现只有**一份**：本脚本的"仓库 vs profile"与 toolchain_status 的自检项共用它。
+import { compareSyncUnit } from '../lib/plugin-deploy-drift.mjs'
 
 const root = join(fileURLToPath(import.meta.url), '..', '..')
 const argv = process.argv.slice(2)
@@ -74,8 +75,6 @@ if (targets.includes('dsh-perf')) {
   }
 }
 
-const hashOf = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
-
 function listFiles(dir) {
   const out = []
   const stack = [dir]
@@ -103,22 +102,19 @@ let copied = 0
 for (const name of targets) {
   const src = join(pluginsRoot, name)
   const dst = join(profileDir, 'plugins', name)
-  const files = listFiles(src)
-  const missing = []
-  const changed = []
-  for (const f of files) {
-    const rel = relative(src, f)
-    const df = join(dst, rel)
-    if (!existsSync(df)) missing.push(rel)
-    else if (hashOf(f) !== hashOf(df)) changed.push(rel)
-  }
-  const status = missing.length === 0 && changed.length === 0 ? 'in sync' : 'drift'
+  // 比对走**共享实现**（lib/plugin-deploy-drift.mjs）：同一件事不许有第二份 hash 逻辑 ——
+  // 那份实现同时供 `toolchain_status` 用（"我改的代码上现网了吗"要能被自检问出来）。
+  const unit = compareSyncUnit({ root, profileDir, rel: 'plugins/' + name })
+  const missing = unit.missingFiles
+  const changed = unit.changedFiles
+  const status = unit.state === 'drift' ? 'drift' : 'in sync'
   if (status === 'drift') drift++
   console.log(`${name.padEnd(28)} ${status}` + (missing.length ? ` missing=${missing.length}` : '') + (changed.length ? ` changed=${changed.length}` : ''))
   for (const m of missing.slice(0, 5)) console.log('    + ' + m)
   for (const c of changed.slice(0, 5)) console.log('    ~ ' + c)
   if (!check && status === 'drift') {
     for (const rel of [...missing, ...changed]) {
+      // rel 来自共享实现（正斜杠）；join 在 Windows 上两种都认，这里不用再转。
       const target = join(dst, rel)
       mkdirSync(dirname(target), { recursive: true })
       copyFileSync(join(src, rel), target)
@@ -147,15 +143,11 @@ console.log(check ? `\nDRY RUN: ${drift} plugin(s) drifted` : `\nDEPLOYED: ${cop
 const sharedLib = join(root, 'lib')
 if (existsSync(sharedLib)) {
   const dst = join(profileDir, 'lib')
+  // 同样走共享实现（口径与 plugins/ 那段一致）
+  const unit = compareSyncUnit({ root, profileDir, rel: 'lib' })
+  const missing = unit.missingFiles
+  const changed = unit.changedFiles
   const files = listFiles(sharedLib).filter((f) => !isTestFile(f))
-  const missing = []
-  const changed = []
-  for (const f of files) {
-    const rel = relative(sharedLib, f)
-    const df = join(dst, rel)
-    if (!existsSync(df)) missing.push(rel)
-    else if (hashOf(f) !== hashOf(df)) changed.push(rel)
-  }
   // 过去同步过、现在不该在 profile 里的测试文件：如实列出来（不是 drift，但必须可见，
   // 否则"profile 里躺着一份坏掉的测试"这件事永远没人知道）。
   const stale = []
@@ -175,9 +167,11 @@ if (existsSync(sharedLib)) {
   if (!check) {
     mkdirSync(dst, { recursive: true })
     for (const f of files) {
-      const rel = relative(sharedLib, f)
+      // ⚠ 共享实现回报的是**正斜杠**相对路径（平台无关），而 Windows 的 relative() 给反斜杠 ——
+      // 这里必须转成同一口径，否则 includes() 永远为 false，文件一个都复制不过去（实测踩过）。
+      const rel = relative(sharedLib, f).split('\\').join('/')
       const df = join(dst, rel)
-      if (!existsSync(df) || hashOf(f) !== hashOf(df)) {
+      if (changed.includes(rel) || missing.includes(rel)) {
         mkdirSync(dirname(df), { recursive: true })
         copyFileSync(f, df)
       }

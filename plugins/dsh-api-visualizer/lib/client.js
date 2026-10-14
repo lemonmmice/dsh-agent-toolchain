@@ -182,6 +182,27 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
 .apv-wf-legend{display:flex;gap:14px;align-items:center;padding:4px 0 8px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
 .apv-wf-legend i{display:inline-block;width:26px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .apv-wf-total{background:#2f6f8f}.apv-wf-wait{background:#4a6a1f}
+/* P1-5 域名/路径树：行的缩进由 inline padding-left 给（18 个域 × 深层路径段），不依赖嵌套容器 */
+.apv-tree{padding:8px 12px 14px}
+.apv-tree-head{display:flex;align-items:baseline;gap:10px;padding:2px 0 8px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.apv-tree-head b{color:var(--dsw-alias-label-primary)}
+.apv-tree-head .apv-tree-actions{margin-left:auto;display:flex;gap:6px}
+.apv-tree-node{margin-left:-2px}
+.apv-tree-branch{display:flex;align-items:center;gap:6px;padding:3px 8px;border-radius:6px;cursor:pointer;user-select:none}
+.apv-tree-branch:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.apv-tree-caret{width:12px;flex:none;color:var(--dsw-alias-label-tertiary)}
+.apv-tree-label{font-weight:600}
+.apv-tree-branch[data-kind="path"] .apv-tree-label{font-weight:400}
+.apv-tree-note{color:var(--dsw-alias-label-tertiary);font-size:12px;white-space:nowrap}
+.apv-tree-node[data-depth="0"] .apv-tree-branch{background:var(--dsw-alias-bg-layer-2)}
+.apv-tree-node[data-depth="0"] .apv-tree-branch:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.apv-tree-leaf{display:flex;align-items:center;gap:8px;padding:2px 8px;border-radius:6px;cursor:pointer;font-size:12px}
+.apv-tree-leaf:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.apv-tree-leaf.apv-selected{background:var(--dsw-static-deepseek-100)}
+body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
+.apv-tree-leaf .apv-badge{flex:none}
+.apv-tree-path{color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:12px Consolas,Menlo,monospace}
+.apv-tree-meta{margin-left:auto;flex:none;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
 .apv-src-hit{display:flex;align-items:center;gap:8px;padding:3px 8px;border-radius:6px}
 .apv-src-hit:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .apv-src-path{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:12px Consolas,Menlo,monospace;color:#8ec5ff}
@@ -721,6 +742,114 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
       return pre
     }
 
+    // ------------------------------------------------- P1-5 域名/路径树（纯函数）
+    /**
+     * 把记录列表折成 Fiddler 那种「域名 → 路径段 → 单条请求」的树。
+     *
+     * 为什么是纯函数而不是塞进渲染里：面板要能钉住它的语义（分桶、计数、错误归
+     * 属、"解析不出域名的记录"不许被静默丢掉），而 client.js 其余部分要 document/localStorage
+     * 才能跑，测不了。这里只吃 records，返回普通对象，没有 DOM 依赖。
+     *
+     * 口径（写死、可复跑）：
+     *   · 顺序沿用入参顺序 —— 面板发来的列表是「新→旧」，所以同层第一个域名就是
+     *     「最近命中的域」，`defaultOpen` 只对它（及其子树）为 true；
+     *   · count / errors 是**子树合计**（错误=HTTP ≥400）；lastTs 是子树最新一条；
+     *   · 解析不出域名或路径的记录不丢：挂到 noHost=true 的「(无法归簇)」桶里，
+     *     第一层按整串 URL 分开（`/relative/x` 与 `about:blank` 不混成一个节点），
+     *     并计入 unparsableUrls。
+     * @param {Array<object>} records
+     * @returns {{domains: Array<object>, total: number, unparsableUrls: number, newestTs: number|null, oldestTs: number|null}}
+     */
+    function buildUrlTree(records) {
+      const list = Array.isArray(records) ? records : []
+      const domains = new Map()
+      let unparsableUrls = 0
+      let newestTs = null
+      let oldestTs = null
+      for (const r of list) {
+        const ts = Number(r?.ts)
+        if (Number.isFinite(ts)) {
+          if (newestTs === null || ts > newestTs) newestTs = ts
+          if (oldestTs === null || ts < oldestTs) oldestTs = ts
+        }
+        let domain = ''
+        let segments = null
+        try {
+          const u = new URL(String(r?.url ?? ''))
+          domain = u.hostname
+          // new URL('about:blank') 之类不进主机树：它有 hostname 语义但没有接口路径
+          segments = u.pathname.split('/').filter((s) => s !== '')
+          if (domain === '' || segments.length === 0) segments = null
+        } catch {
+          segments = null
+        }
+        if (segments === null) {
+          unparsableUrls += 1
+          // 不编造域名：`about:blank` 这类有 hostname 语义却没有接口路径，硬塞进某个域
+          // 就是撒谎。它们统一挂到「(无法归簇)」，第一层按**整个 URL**分开，一个都不丢。
+          domain = '(无法归簇)'
+          segments = [String(r?.url ?? '')]
+        }
+        let node = domains.get(domain)
+        if (node === undefined) {
+          node = { domain, noHost: domain === '(无法归簇)', count: 0, errors: 0, lastTs: 0, key: domain, label: domain, depth: 0, kind: 'domain', _childIndex: new Map(), children: [] }
+          domains.set(domain, node)
+        }
+        node.count += 1
+        if (Number.isInteger(r?.status) && r.status >= 400) node.errors += 1
+        if (Number.isFinite(ts) && ts > node.lastTs) node.lastTs = ts
+        let cur = node
+        for (let i = 0; i < segments.length; i++) {
+          // 每个节点在被**走到**时就把自己的 children 从 Map 刷成数组（渲染层直接 for..of）。
+          // 这是唯一正确的位置：映射会随新兄弟节点增长，只在"第一次下降"那次刷会漏掉
+          // 之后追加的同级兄弟（实测：第二个兄弟节点根本没进数组 = 整条分支静默消失）。
+          cur.children = [...cur._childIndex.values()]
+          const bucket = cur._childIndex
+          let child = bucket.get(segments[i])
+          if (child === undefined) {
+            child = {
+              // key = 本节点的**完整路径**（父路径 + 本级段）。展开态是按 key 记的，
+              // 曾经写成 `domain + '|' + cur.key` —— cur.key 对路径节点不是父路径，
+              // 于是同域下所有路径段的 key 撞成同一串，展开一个兄弟等于动了另一个。
+              key: cur.key + '|' + segments[i],
+              label: segments[i],
+              depth: cur.depth + 1,
+              kind: 'path',
+              count: 0,
+              errors: 0,
+              lastTs: 0,
+              _childIndex: new Map(),
+              children: [],
+              records: [],
+            }
+            bucket.set(segments[i], child)
+            cur.children = [...cur._childIndex.values()]
+          }
+          child.count += 1
+          if (Number.isInteger(r?.status) && r.status >= 400) child.errors += 1
+          if (Number.isFinite(ts) && ts > child.lastTs) child.lastTs = ts
+          if (i === segments.length - 1) child.records.push(r)
+          else cur = child
+        }
+      }
+      const out = []
+      for (const node of domains.values()) {
+        node.children = [...node._childIndex.values()]
+        for (const child of node.children) child.children = [...child._childIndex.values()]
+        out.push(node)
+      }
+      // 默认只展开「最近命中的域」：排序只影响显示，不影响哪个域被展开
+      const target = out.slice().sort((a, b) => (b.lastTs - a.lastTs) || (b.count - a.count) || (a.domain < b.domain ? -1 : 1))[0]
+      if (target !== undefined) {
+        const mark = (node) => {
+          node.defaultOpen = true
+          for (const child of node.children) mark(child)
+        }
+        mark(target)
+      }
+      return { domains: out, total: list.length, unparsableUrls, newestTs, oldestTs }
+    }
+
     // ------------------------------------------------------------ sidebar entry
 
     function sidebarRoot() {
@@ -989,6 +1118,9 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
       const aggBtn = el('button', 'apv-btn', '聚合视图')
       aggBtn.title = '按 方法+路径 聚合：次数/错误率/平均/P95 耗时'
       fRow2.appendChild(aggBtn)
+      const treeBtn = el('button', 'apv-btn', '域名树')
+      treeBtn.title = 'Fiddler 式分层：域名 → 路径段 → 单条请求；点请求行看详情。覆盖范围是上面那次列表请求（当前约 300 条），不是整库'
+      fRow2.appendChild(treeBtn)
       const sessionBtn = el('button', 'apv-btn', '会话视图')
       sessionBtn.title = '按 sessionId/traceId/调用方时间窗查看请求会话'
       fRow2.appendChild(sessionBtn)
@@ -1269,6 +1401,10 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
       const baselineBodyEl = el('div')
       baselineWrap.appendChild(baselineBodyEl)
       body.appendChild(baselineWrap)
+      // ---- P1-5 domain/path tree view (Fiddler-style)
+      const treeWrap = el('div', 'apv-agg apv-tree')
+      treeWrap.hidden = true
+      body.appendChild(treeWrap)
 
       // detail drawer
       const detail = el('div', 'apv-detail')
@@ -2349,6 +2485,71 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
       ].join('')
       let renderedSig = [] // 与 tbody 中数据行一一对应的签名（供增量对齐）
 
+      // 域名树的展开态：默认「只展开最近命中的域」，用户点过的节点记进后者并覆盖默认值。
+      // 不存 prefs —— 展开态是操作出来的临时状态，跨会话残留只会让人以为树丢了。
+      const treeState = { open: new Set(), overrides: new Map() }
+      let pendingTreeRecords = [] // 树视图当前这份记录（refresh 填，renderTree 读）
+
+      /** 缩进 + 命名空间，避免把 depth 与固定尺寸绑死。 */
+      const treeIndent = (node) => `padding-left:${6 + (Number(node.depth) || 0) * 14}px`
+
+      /** 建一条请求叶子：点开的是跟列表同一套详情（不复制详情逻辑）。 */
+      const buildTreeLeaf = (record, parent) => {
+        const row = el('div', 'apv-tree-leaf')
+        row.dataset.recordId = String(record.id)
+        row.style.cssText = treeIndent({ depth: parent.depth + 1 })
+        row.appendChild(methodBadge(record.method))
+        const path = el('span', 'apv-tree-path', record.url)
+        path.title = record.url
+        row.appendChild(path)
+        const meta = el('div', 'apv-tree-meta')
+        meta.appendChild(statusBadge(record.status))
+        meta.appendChild(document.createTextNode(` ${fmtDur(record.durationMs)} · ${fmtTime(record.ts)}`))
+        row.appendChild(meta)
+        row.title = `${record.method} ${record.url}\n${fmtTime(record.ts)} · ${fmtDur(record.durationMs)} · 状态 ${record.status ?? '-'}`
+        row.addEventListener('click', () => {
+          selectedId = record.id
+          treeWrap.querySelectorAll('.apv-tree-leaf.apv-selected').forEach((n) => n.classList.remove('apv-selected'))
+          row.classList.add('apv-selected')
+          apiFetch(`/records/${encodeURIComponent(record.id)}`).then((full) => {
+            renderDetail(full)
+            detail.hidden = false
+          }).catch((error) => { console.error('[dsh-api-visualizer] detail failed:', error) })
+        })
+        return row
+      }
+
+      /** 建一个分支节点（域名/路径段），返回行元素；点击切换展开。 */
+      const buildTreeNode = (node) => {
+        const wrap = el('div', 'apv-tree-node')
+        wrap.dataset.depth = String(node.depth ?? 0)
+        const row = el('div', 'apv-tree-branch')
+        row.dataset.kind = node.kind ?? 'path'
+        row.dataset.nodeKey = node.key
+        row.dataset.label = node.label
+        row.style.cssText = treeIndent(node)
+        const open = treeState.open.has(node.key)
+        row.appendChild(el('span', 'apv-tree-caret', open ? '▾' : '▸'))
+        row.appendChild(el('span', 'apv-tree-label', node.label))
+        row.appendChild(el('span', 'apv-tree-note', `(${node.count})`))
+        if (node.errors > 0) {
+          const err = el('span', 'apv-tree-note', `✕${node.errors}`)
+          err.style.color = '#f87171'
+          row.appendChild(err)
+        }
+        if (node.kind === 'domain' && node.noHost === true) row.appendChild(el('span', 'apv-tree-note', '未识别出域名/路径'))
+        row.title = `${node.label} · ${node.count} 条请求${node.errors > 0 ? ` · ${node.errors} 个 4xx/5xx` : ''}\n点击${open ? '收起' : '展开'}`
+        row.addEventListener('click', () => {
+          treeState.overrides.set(node.key, !treeState.open.has(node.key))
+          renderTree()
+        })
+        wrap.appendChild(row)
+        if (!open) return wrap
+        for (const child of node.children ?? []) wrap.appendChild(buildTreeNode(child))
+        for (const record of node.records ?? []) wrap.appendChild(buildTreeLeaf(record, node))
+        return wrap
+      }
+
       /** 建一条记录行（含星标/点击/详情打开）。 */
       const makeRow = (r) => {
         const tr = el('tr')
@@ -2465,9 +2666,9 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
         }
       }
 
-      const VIEW_MODES = ['agg', 'session', 'timeline', 'waterfall', 'repeats', 'baseline']
-      const viewWraps = { agg: aggWrap, session: sessionWrap, timeline: timelineWrap, waterfall: waterfallWrap, repeats: repeatsWrap, baseline: baselineWrap }
-      const viewButtons = { agg: aggBtn, session: sessionBtn, timeline: timelineBtn, waterfall: waterfallBtn, repeats: repeatsBtn, baseline: baselineBtn }
+      const VIEW_MODES = ['tree', 'agg', 'session', 'timeline', 'waterfall', 'repeats', 'baseline']
+      const viewWraps = { tree: treeWrap, agg: aggWrap, session: sessionWrap, timeline: timelineWrap, waterfall: waterfallWrap, repeats: repeatsWrap, baseline: baselineWrap }
+      const viewButtons = { tree: treeBtn, agg: aggBtn, session: sessionBtn, timeline: timelineBtn, waterfall: waterfallBtn, repeats: repeatsBtn, baseline: baselineBtn }
       const activeView = () => VIEW_MODES.find((m) => state[m + 'View'] === true) ?? null
       const setView = (mode) => {
         for (const m of VIEW_MODES) state[m + 'View'] = m === mode
@@ -2635,6 +2836,100 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
           })
           repeatsBodyEl.appendChild(tr)
         }
+      }
+
+      /**
+       * 域名树视图（P1-5）。数据源是 refresh 里那次 /records（与列表同一份、同一上限）：
+       * 树上没有的东西 = 这次列表里没有它。所以表头必须把覆盖范围写在脸上，
+       * 否则会被读成「整库就这些」——那正是这个面板最忌讳的读数（"截断"冒充"没有"）。
+       */
+      const renderTree = () => {
+        // 自己清自己的容器，不靠外面先清过：展开/收起与轮询刷新都会重入这个函数，
+        // 只依赖"上一步清过"的话重入就会叠出一棵树（DOM 里多份、行数翻倍）。
+        treeWrap.textContent = ''
+        const records = pendingTreeRecords
+        if (records.length === 0) {
+          treeWrap.appendChild(el('div', 'apv-empty', '暂无数据 — 当前筛选条件下没有请求；点「开始实时捕获」后再看'))
+          return
+        }
+        const tree = buildUrlTree(records)
+        // 展开态：本次重建先按默认（最近命中的域），再用用户点过的覆盖值盖上去。
+        // 这样默认值始终跟着数据走，而用户手动的收起/展开在轮询刷新后仍然有效。
+        const open = new Set()
+        for (const domain of tree.domains) {
+          if (domain.defaultOpen !== true) continue
+          const stack = [domain]
+          while (stack.length > 0) {
+            const node = stack.pop()
+            open.add(node.key)
+            for (const child of node.children ?? []) stack.push(child)
+          }
+        }
+        for (const [key, want] of treeState.overrides) {
+          if (want) open.add(key)
+          else open.delete(key)
+        }
+        treeState.open = open
+        const expandAll = () => {
+          treeState.overrides.clear()
+          for (const domain of tree.domains) {
+            const stack = [domain]
+            while (stack.length > 0) {
+              const node = stack.pop()
+              treeState.overrides.set(node.key, true)
+              for (const child of node.children ?? []) stack.push(child)
+            }
+          }
+          renderTree()
+        }
+        const collapseAll = () => {
+          treeState.overrides.clear()
+          for (const domain of tree.domains) {
+            const stack = [domain]
+            while (stack.length > 0) {
+              const node = stack.pop()
+              treeState.overrides.set(node.key, false)
+              for (const child of node.children ?? []) stack.push(child)
+            }
+          }
+          renderTree()
+        }
+        const leaves = []
+        for (const domain of tree.domains) {
+          const stack = [domain]
+          while (stack.length > 0) {
+            const node = stack.pop()
+            for (const record of node.records ?? []) leaves.push(record)
+            for (const child of node.children ?? []) stack.push(child)
+          }
+        }
+        const hosts = tree.domains.length
+        const errors = leaves.reduce((sum, r) => sum + (Number.isInteger(r.status) && r.status >= 400 ? 1 : 0), 0)
+        const range = tree.newestTs === null || tree.oldestTs === null
+          ? '时间未知'
+          : `${fmtTime(tree.oldestTs)} – ${fmtTime(tree.newestTs)}`
+        const head = el('div', 'apv-tree-head')
+        head.appendChild(el('b', '', `域名树 · ${hosts} 个域名 / ${leaves.length} 条请求`))
+        head.appendChild(el('span', '', `覆盖 ${range}${errors > 0 ? ` · ${errors} 个 4xx/5xx` : ''}`))
+        head.appendChild(el('span', '', '点域名/路径段展开收起，点请求行看详情'))
+        if (tree.unparsableUrls > 0) {
+          const warn = el('span', '', `⚠ ${tree.unparsableUrls} 条 URL 解析不出域名/路径，已按整串挂在「(无法归簇)」下（不是丢掉）`)
+          warn.style.color = '#fbbf24'
+          head.appendChild(warn)
+        }
+        const actions = el('div', 'apv-tree-actions')
+        const expandBtn = el('button', 'apv-btn', '全部展开')
+        expandBtn.addEventListener('click', expandAll)
+        const collapseBtn = el('button', 'apv-btn', '全部收起')
+        collapseBtn.addEventListener('click', collapseAll)
+        actions.appendChild(expandBtn)
+        actions.appendChild(collapseBtn)
+        head.appendChild(actions)
+        treeWrap.appendChild(head)
+        for (const domain of tree.domains) treeWrap.appendChild(buildTreeNode(domain))
+        const note = el('div', 'apv-note', '⚠ 只覆盖上面这次列表请求拉回的记录（当前 300 条，同表格视图的上限），不是整库；要收窄时间窗请用「更多 ▾」里的时间范围或域名筛选。')
+        note.style.padding = '8px 0 0'
+        treeWrap.appendChild(note)
       }
 
       const renderBaselineSel = (items) => {
@@ -2898,6 +3193,11 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
             const wp = new URLSearchParams(params.toString())
             wp.set('limit', '500')
             viewData = await apiFetch(`/records?${wp.toString()}`).catch(() => null)
+          } else if (active === 'tree') {
+            // 树与列表同一数据源、同一上限：树上没有 = 这次列表里没有（渲染层会写明覆盖面）
+            const tp = new URLSearchParams(params.toString())
+            tp.set('limit', String(LIMIT))
+            viewData = await apiFetch(`/records?${tp.toString()}`).catch(() => null)
           } else if (active === 'repeats') {
             viewData = await apiFetch(`/stats/repeats?windowMs=10000&minCount=5&${params.toString()}`).catch(() => null)
           } else if (active === 'baseline') {
@@ -2923,6 +3223,9 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
               renderBaselineList(viewData?.items ?? [])
             } else if (active === 'agg') {
               apiFetch(`/stats/endpoints?${params.toString()}`).then(renderAgg).catch(() => {})
+            } else if (active === 'tree') {
+              pendingTreeRecords = viewData?.items ?? []
+              renderTree()
             } else {
               renderRows(list.items)
             }
@@ -3051,6 +3354,7 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
         state.regex = regexCb.checked
         refresh()
       })
+      treeBtn.addEventListener('click', () => setView(state.treeView ? 'table' : 'tree'))
       aggBtn.addEventListener('click', () => setView(state.aggView ? 'table' : 'agg'))
       delFilteredBtn.addEventListener('click', () => {
         if (!window.confirm('删除当前筛选条件命中的全部记录？此操作不可恢复。')) return
@@ -3704,6 +4008,9 @@ body[data-ds-dark-theme] .apv-mark{background:#7c5c00;color:#fff}
 
     exports.apply = apply
     exports.inject = []
+    // 只导出这一个纯函数：它的语义（分桶/计数/"解析不出域名的记录不许被丢掉"）需要被
+    // 测试直接钉住，而 client.js 的其余部分要 document/localStorage 才能跑（测试进程里进不来）。
+    exports.__buildUrlTree = buildUrlTree
     return module.exports
   },
 })
