@@ -33,6 +33,7 @@ const tests = [
   'plugins/dsh-perf/test/trace-cancel-cleanup.test.mjs',
   // 6988a0f 复核 C1–C5：启动/取消/收尾生命周期边界（teardown 失败保留、预检自清理、直接 cancel 诚实、标记写失败统一收尾、拥有者先行校验）
   'plugins/dsh-perf/test/trace-lifecycle-boundaries.test.mjs',
+  'plugins/dsh-perf/test/trace-recovery-journal.test.mjs',
   // F06 构建根解析一致 + 互斥
   'lib/build-root-mutex.test.mjs',
 ]

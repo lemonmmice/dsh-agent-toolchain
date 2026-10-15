@@ -16,7 +16,7 @@
 // profile's cordis.patch.yml references). npm-installed plugin packages under
 // <profile>/node_modules are NOT touched — those are managed by `dsh plugin add`.
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, copyFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
@@ -198,7 +198,7 @@ if (check) {
   // 只在真有文件变化时写：纯粹"跑一次没变化"不该让所有工具报"代码陈旧"。
   try {
     const stampFile = join(profileDir, '.dsh-toolchain-deploy.json')
-    const provenance = {}
+    const provenance = { sourceRoot: resolve(root) }
     if (existsSync(join(root, 'package.json'))) {
       const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
       if (pkg.name === 'dsh-agent-toolchain') {

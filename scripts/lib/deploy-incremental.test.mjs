@@ -60,6 +60,7 @@ try {
   const cleanStamp = JSON.parse(readFileSync(join(profile, '.dsh-toolchain-deploy.json'), 'utf8'))
   assert.equal(cleanStamp.version, '2.0.0')
   assert.equal(cleanStamp.sha, git('rev-parse', 'HEAD').slice(0, 12))
+  assert.equal(cleanStamp.sourceRoot, source)
   assert.equal(cleanStamp.dirty, false)
   writeFileSync(join(source, 'uncommitted.txt'), 'dirty')
   run()

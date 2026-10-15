@@ -3194,10 +3194,8 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
             wp.set('limit', '500')
             viewData = await apiFetch(`/records?${wp.toString()}`).catch(() => null)
           } else if (active === 'tree') {
-            // 树与列表同一数据源、同一上限：树上没有 = 这次列表里没有（渲染层会写明覆盖面）
-            const tp = new URLSearchParams(params.toString())
-            tp.set('limit', String(LIMIT))
-            viewData = await apiFetch(`/records?${tp.toString()}`).catch(() => null)
+            // Same filter and limit: reuse this refresh's snapshot instead of querying it twice.
+            viewData = list
           } else if (active === 'repeats') {
             viewData = await apiFetch(`/stats/repeats?windowMs=10000&minCount=5&${params.toString()}`).catch(() => null)
           } else if (active === 'baseline') {
