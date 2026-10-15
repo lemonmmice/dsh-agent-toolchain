@@ -29,7 +29,7 @@
  */
 import { envOr } from '../../../lib/env-fallback.mjs'
 import { spawn, spawnSync, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, createReadStream, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, renameSync, createReadStream, realpathSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID, createHash } from 'node:crypto'
@@ -40,6 +40,7 @@ import { analyzeThreadWaits } from './uifreeze.mjs'
 import { readClrEvents } from './clr-stream.mjs'
 import { attachProcessCancellation, checkTaskCancellation } from '../../../lib/process-cancellation.mjs'
 import { taskSignal, withTaskContext } from '../../../lib/task-context.mjs'
+import { withFileTransaction } from '../../../lib/file-transaction.mjs'
 
 // F05：采样收尾（stop/cancel）要能在**主任务已取消**后继续跑完 —— 用一个独立、有限期限的信号驱动，
 //   否则 stop/cancel 分支里的 checkTaskCancellation()/attachProcessCancellation 会把收尾命令挡掉 / 秒杀，
@@ -48,6 +49,44 @@ const TRACE_CLEANUP_DEADLINE_MS = 20 * 60 * 1000
 
 // 收尾未全部确认时统一给出的恢复入口文案（run-cancel / 直接 cancel / 启动阶段 teardown 共用，避免各写一份漂移）。
 const TRACE_RECOVERY_HINT = 'perf_trace(action="cancel") 重试收尾；仍失败则重启机器释放内核会话，再 action="status" 复核。'
+
+function readSession(path) {
+  try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
+}
+
+// Replace the journal atomically: ENOSPC must not truncate the last usable recovery record.
+function writeJournal(path, value, owns) {
+  const temporary = path + '.' + randomUUID() + '.tmp'
+  try {
+    writeFileSync(temporary, JSON.stringify(value), { encoding: 'utf8', flag: 'wx' })
+    if (!owns()) throw Object.assign(new Error('采集租约拥有者已变化，未覆盖恢复记录'), { unknown: true })
+    renameSync(temporary, path)
+  } finally { try { rmSync(temporary, { force: true }) } catch { /* retain the original journal */ } }
+}
+
+function recoverableSession(marker, lease) {
+  if (!lease?.attemptId || (marker?.attemptId && marker.attemptId !== lease.attemptId)) return null
+  if (lease.recoveryReady === true && ['wpr', 'xperf'].includes(lease.engine)) return { ...lease, state: 'running' }
+  return marker?.state === 'running' && marker.attemptId === lease.attemptId ? marker : null
+}
+
+function acquireTraceOperation(file, attemptId) {
+  const token = randomUUID()
+  withFileTransaction(file, () => {
+    const previous = readSession(file)
+    if (Number.isSafeInteger(previous?.ownerPid) && previous.ownerPid > 0) {
+      try { process.kill(previous.ownerPid, 0) }
+      catch (error) { if (error.code === 'ESRCH') rmSync(file, { force: true }) }
+    }
+    // Unknown/legacy/live owners remain busy. The transaction serializes stale-owner reclamation.
+    writeFileSync(file, JSON.stringify({ attemptId, ownerPid: process.pid, token }), { encoding: 'utf8', flag: 'wx' })
+  })
+  const owns = () => readSession(file)?.token === token
+  return { owns, release: () => {
+    try { withFileTransaction(file, () => { if (owns()) rmSync(file, { force: true }) }) }
+    catch { /* a busy or unreadable lock must not be removed without ownership */ }
+  } }
+}
 
 const PROGRAM_FILES_X86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
 const SYSTEM32 = join(process.env.SystemRoot || 'C:\\Windows', 'System32')
@@ -313,11 +352,13 @@ export function makeTrace(cfg = {}) {
    * 结果按进程缓存（探针代价只付一次）；`skipPreflight: true` 可跳过。
    */
   let wprStopProbeCache = null
-  async function probeWprStop() {
+  async function probeWprStop({ beforeStart, afterStop, owns } = {}) {
     if (wprStopProbeCache) return wprStopProbeCache
     const probeEtl = join(c.evidenceDir, '_wpr-preflight.etl')
     try { rmSync(probeEtl, { force: true }) } catch { /* 删不掉不影响结论 */ }
     const t0 = Date.now()
+    checkTaskCancellation()
+    beforeStart?.()
     const st = await runExe(c.wpr, ['-start', 'CPU', '-filemode'], { timeoutMs: 60000 })
     let stopCode = null, raw = ''
     let ok = false
@@ -334,22 +375,34 @@ export function makeTrace(cfg = {}) {
       if (typeof cleanupTimer.unref === 'function') cleanupTimer.unref()
       try {
         await withTaskContext({ signal: cleanupCtrl.signal }, async () => {
-          const sp = await runExe(c.wpr, ['-stop', probeEtl], { timeoutMs: 120000 })
-          stopCode = sp.code
-          stopped = sp.code === 0 && !sp.timedOut
-          raw = (sp.stdout + sp.stderr).trim()
-          ok = sp.code === 0 && !sp.timedOut && existsSync(probeEtl)
-          try { if (ok) rmSync(probeEtl, { force: true }) } catch { /* 探针产物，删不掉也无害 */ }
-          // 探针万一留下会话（stop 没成），收掉它 —— 否则真正的 start 会撞"已有会话"
-          if (!stopped) {
-            const cleanup = await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 })
-            cleanupOk = cleanup.code === 0 && !cleanup.timedOut
+          try {
+            if (owns && !owns()) throw new Error('预检租约拥有者已变化')
+            const sp = await runExe(c.wpr, ['-stop', probeEtl], { timeoutMs: 120000 })
+            stopCode = sp.code
+            stopped = sp.code === 0 && !sp.timedOut
+            raw = (sp.stdout + sp.stderr).trim()
+            ok = stopped && existsSync(probeEtl)
+            try { if (ok) rmSync(probeEtl, { force: true }) } catch { /* temporary probe output */ }
+          } catch (error) { raw = String(error.message || error) }
+          finally {
+            // The fallback must run even if -stop throws; each global command needs a fresh owner check.
+            if (!stopped) {
+              cleanupOk = false
+              if (!owns || owns()) {
+                try {
+                  const cleanup = await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 })
+                  cleanupOk = cleanup.code === 0 && !cleanup.timedOut
+                } catch (error) { raw += '\n' + String(error.message || error) }
+              }
+            }
           }
         })
       } finally { clearTimeout(cleanupTimer) }
     } else {
       raw = (st.stdout + st.stderr).trim()
+      cleanupOk = !st.timedOut && !taskSignal()?.aborted
     }
+    if (cleanupOk) afterStop?.()
     const result = {
       ok, startCode: st.code, stopCode, cleanupOk, busy: st.code !== 0 || st.timedOut === true, elapsedMs: Date.now() - t0,
       signature: /0x80010106|Cannot change thread mode/i.test(raw) ? 'RPC_E_CHANGED_MODE(0x80010106)' : null,
@@ -380,15 +433,14 @@ export function makeTrace(cfg = {}) {
     return { ok: Boolean(r) && r.code === 0 && !r.timedOut, exitCode: r ? r.code : null, raw }
   }
 
-  async function clrSessionStart(etlPath) {
-    const sessionName = 'dshperfclr-' + randomUUID()
+  async function clrSessionStart(etlPath, sessionName = 'dshperfclr-' + randomUUID()) {
     const args = ['start', sessionName]
     for (const p of CLR_PROVIDERS) args.push('-p', p.provider, p.keywords, p.level)
     args.push('-o', etlPath, '-ets')
     const r = await runExe(c.logman, args, { timeoutMs: 60000 })
     const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 500)
     return {
-      ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw,
+      ok: Boolean(r) && r.code === 0 && !r.timedOut, exitCode: r ? r.code : null, timedOut: r?.timedOut === true, raw,
       session: sessionName, etlPath, command: 'logman ' + args.join(' '),
     }
   }
@@ -407,13 +459,12 @@ export function makeTrace(cfg = {}) {
     return { ok: Boolean(r) && r.code === 0 && !r.timedOut, exitCode: r ? r.code : null, raw }
   }
 
-  async function jitSessionStart(etlPath) {
-    const sessionName = 'dshperfjit-' + randomUUID()
+  async function jitSessionStart(etlPath, sessionName = 'dshperfjit-' + randomUUID()) {
     const args = ['start', sessionName, '-p', 'Microsoft-Windows-DotNETRuntimeRundown', '0x118', '0x5', '-o', etlPath, '-ets']
     const r = await runExe(c.logman, args, { timeoutMs: 60000 })
     const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 500)
     return {
-      ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw,
+      ok: Boolean(r) && r.code === 0 && !r.timedOut, exitCode: r ? r.code : null, timedOut: r?.timedOut === true, raw,
       session: sessionName, etlPath, command: 'logman ' + args.join(' '),
     }
   }
@@ -438,13 +489,12 @@ export function makeTrace(cfg = {}) {
     return { ok: Boolean(r) && r.code === 0 && !r.timedOut, exitCode: r ? r.code : null, raw }
   }
 
-  async function allocSessionStart(rawEtl) {
-    const sessionName = 'dshperfalloc-' + randomUUID()
+  async function allocSessionStart(rawEtl, sessionName = 'dshperfalloc-' + randomUUID()) {
     const args = ['-start', sessionName, '-on', ALLOC_PROVIDER, '-f', rawEtl]
     const r = await runExe(c.xperf, args, { timeoutMs: 120000 })
     const raw = (((r && r.stdout) || '') + ((r && r.stderr) || '')).trim().slice(0, 500)
     return {
-      ok: Boolean(r) && r.code === 0, exitCode: r ? r.code : null, raw,
+      ok: Boolean(r) && r.code === 0 && !r.timedOut, exitCode: r ? r.code : null, timedOut: r?.timedOut === true, raw,
       session: sessionName, etlPath: rawEtl, command: 'xperf ' + args.join(' '),
     }
   }
@@ -620,8 +670,8 @@ export function makeTrace(cfg = {}) {
 
     // r48：`status` —— G1 黑盒点名"start 之后无从确认采样在不在跑"（同族的 hang_*/api_capture_* 都有 status）。
     if (action === 'status') {
-      let session = null
-      try { session = JSON.parse(readFileSync(sessionFile, 'utf8')) } catch { session = null }
+      const marker = readSession(sessionFile)
+      const session = recoverableSession(marker, readSession(c.kernelLeaseFile)) || marker
       const target = (session && session.etlPath) || etl
       let sizeBytes = null
       try { if (existsSync(target)) sizeBytes = statSync(target).size } catch { sizeBytes = null }
@@ -632,7 +682,7 @@ export function makeTrace(cfg = {}) {
       return {
         ok: true, action: 'status',
         running: session !== null,            // ⚠ 这是**我们自己记的标记**，不是查 xperf 得到的（见下）
-        runningBasis: 'start 时写的会话标记文件（<evidence>/trace-session.json），stop/cancel 时删除',
+        runningBasis: '本工具的会话标记或租约恢复记录（不是 ETW 实时查询），确认停止后删除',
         elapsedMs: session && session.startedAt ? (Date.now() - Number(session.startedAt)) : null,
         etlPath: target, sizeBytes,
         profile: (session && session.profile) || null,
@@ -651,21 +701,28 @@ export function makeTrace(cfg = {}) {
     if (action === 'stop' || action === 'cancel') {
       // ★ R1-14：**先读标记、再决定拿谁收尾**（xperf 起的采样不能拿 wpr 去停）。
       //   老标记没有 engine 字段 ⇒ 按 'wpr' 读 —— 与 R1-14 之前的行为逐字一致（零回归）。
-      let session0 = null
-      try { session0 = JSON.parse(readFileSync(sessionFile, 'utf8')) } catch { session0 = null }
-      let lease = null
-      try { lease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8')) } catch { lease = null }
-      if (!session0?.attemptId || session0.state !== 'running' || lease?.attemptId !== session0.attemptId || (args.etlPath && args.etlPath !== session0.etlPath)) return { ok: false, error: '没有匹配的本工具运行会话和内核租约，未停止任何会话', sessionFile }
+      let session0 = recoverableSession(readSession(sessionFile), readSession(c.kernelLeaseFile))
+      if (!session0 || (args.etlPath && args.etlPath !== session0.etlPath)) return { ok: false, error: '没有匹配的本工具运行会话和内核租约，未停止任何会话', sessionFile }
       etl = session0.etlPath
       const operationFile = c.kernelLeaseFile + '.stop'
-      try { writeFileSync(operationFile, session0.attemptId, { encoding: 'utf8', flag: 'wx' }) }
-      catch (error) { return { ok: false, busy: error.code === 'EEXIST', error: '停止操作锁不可用：' + error.message } }
+      let operation
+      try { operation = acquireTraceOperation(operationFile, session0.attemptId) }
+      catch (error) { return { ok: false, busy: ['EEXIST', 'FILE_TRANSACTION_BUSY'].includes(error.code), error: '停止操作锁不可用：' + error.message } }
       try {
-      const currentLease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8'))
-      const currentSession = JSON.parse(readFileSync(sessionFile, 'utf8'))
-      if (currentLease.attemptId !== session0.attemptId || currentSession.attemptId !== session0.attemptId) return { ok: false, error: '停止操作取得锁后会话已变化，未停止任何会话' }
+      const owns = () => {
+        const marker = readSession(sessionFile)
+        return readSession(c.kernelLeaseFile)?.attemptId === session0.attemptId
+          && (!marker?.attemptId || marker.attemptId === session0.attemptId)
+          && operation.owns()
+      }
+      const currentSession = recoverableSession(readSession(sessionFile), readSession(c.kernelLeaseFile))
+      if (!owns() || !currentSession) return { ok: false, unknown: true, incomplete: true, error: '停止操作取得锁后会话已变化，未停止任何会话' }
       session0 = currentSession
-      const persistStop = () => writeFileSync(sessionFile, JSON.stringify(session0), 'utf8')
+      const persistStop = () => {
+        writeJournal(c.kernelLeaseFile, { ...session0, recoveryReady: true }, owns)
+        if (!owns()) throw Object.assign(new Error('采集拥有者已变化，未覆盖会话标记'), { unknown: true })
+        writeFileSync(sessionFile, JSON.stringify(session0), 'utf8')
+      }
       const engine = (session0 && session0.engine === 'xperf') ? 'xperf' : 'wpr'
       const rawEtlPath = session0 && session0.rawPath ? String(session0.rawPath) : null
       const cancelOnly = action === 'cancel'
@@ -701,6 +758,7 @@ export function makeTrace(cfg = {}) {
       if (session0 && session0.allocWarning && !allocFields.allocWarning) allocFields.allocWarning = session0.allocWarning
       let r = null
       let mergeRun = null
+      if (!owns()) return { ok: false, unknown: true, incomplete: true, recovery: TRACE_RECOVERY_HINT, error: '采集拥有者已变化，未发送全局停止命令' }
       if (engine === 'xperf') {
         r = session0.kernelStopped ? { code: 0, stdout: '', stderr: '' } : await runExe(c.xperf, ['-stop'], { timeoutMs: 300000 })
         if (r.code === 0 && !r.timedOut) { session0.kernelStopped = true; persistStop() }
@@ -717,8 +775,7 @@ export function makeTrace(cfg = {}) {
         if (r.code === 0 && !r.timedOut) { session0.kernelStopped = true; persistStop() }
       }
       const releaseSession = () => {
-        const currentLease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8'))
-        if (currentLease.attemptId !== session0.attemptId) throw new Error('内核租约拥有者已变化')
+        if (!owns()) throw Object.assign(new Error('内核租约拥有者已变化'), { unknown: true })
         rmSync(sessionFile, { force: true })
         rmSync(c.kernelLeaseFile)
       }
@@ -769,6 +826,7 @@ export function makeTrace(cfg = {}) {
         const exitCode = r ? r.code : null
         let cleanup = null
         if (engine === 'wpr' && (r?.code !== 0 || r.timedOut)) {
+          if (!owns()) return { ok: false, unknown: true, incomplete: true, recovery: TRACE_RECOVERY_HINT, error: '采集拥有者已变化，未发送回退取消命令' }
           const cleanupResult = await runExe(c.wpr, ['-cancel'], { timeoutMs: 60000 })
           cleanup = (cleanupResult.stdout + cleanupResult.stderr).trim().slice(0, 200)
           if (cleanupResult.code === 0 && !cleanupResult.timedOut) { session0.kernelStopped = true; persistStop() }
@@ -820,7 +878,7 @@ export function makeTrace(cfg = {}) {
                 : '（' + clrEtlBytes + ' 字节）')
             : ''),
       }
-      } finally { rmSync(operationFile, { force: true }) }
+      } finally { operation.release() }
     }
 
     // start / run
@@ -838,12 +896,39 @@ export function makeTrace(cfg = {}) {
       mkdirSync(dirname(c.kernelLeaseFile), { recursive: true })
       writeFileSync(c.kernelLeaseFile, JSON.stringify(starting), { encoding: 'utf8', flag: 'wx' })
     } catch (error) { return { ok: false, busy: error.code === 'EEXIST', error: '内核采集租约不可用：' + error.message, leaseFile: c.kernelLeaseFile } }
+    // Startup and recovery share the operation lock; a recoverable intent is not permission to stop an active startup.
+    const operationFile = c.kernelLeaseFile + '.stop'
+    let operation
+    const releaseOperation = () => operation?.release()
+    try { operation = acquireTraceOperation(operationFile, attemptId) }
+    catch (error) {
+      if (readSession(c.kernelLeaseFile)?.attemptId === attemptId) rmSync(c.kernelLeaseFile, { force: true })
+      return { ok: false, busy: ['EEXIST', 'FILE_TRANSACTION_BUSY'].includes(error.code), error: '采集操作锁不可用：' + error.message }
+    }
     try { writeFileSync(sessionFile, JSON.stringify(starting), { encoding: 'utf8', flag: 'wx' }) }
     catch (error) {
-      rmSync(c.kernelLeaseFile)
+      if (readSession(c.kernelLeaseFile)?.attemptId === attemptId) rmSync(c.kernelLeaseFile, { force: true })
+      releaseOperation()
       return { ok: false, busy: error.code === 'EEXIST', error: '采集会话标记不可用：' + error.message, sessionFile }
     }
-    const abandonStart = () => { try { rmSync(sessionFile, { force: true }) } catch { /* ignore */ } try { rmSync(c.kernelLeaseFile, { force: true }) } catch { /* ignore */ } }
+    const ownsAttempt = () => {
+      const marker = readSession(sessionFile)
+      return readSession(c.kernelLeaseFile)?.attemptId === attemptId
+        && (!marker?.attemptId || marker.attemptId === attemptId)
+        && operation.owns()
+    }
+    const abandonStart = () => {
+      if (!ownsAttempt()) return false
+      rmSync(sessionFile, { force: true })
+      rmSync(c.kernelLeaseFile, { force: true })
+      return true
+    }
+    let journal = { ...starting, dir, profile: key }
+    const checkpoint = patch => {
+      const next = { ...journal, ...patch, recoveryReady: true }
+      writeJournal(c.kernelLeaseFile, next, ownsAttempt)
+      journal = next
+    }
     // R2：从这里起（租约 + 标记已写下）任何抛出（尤其主任务取消）都必须收尾 —— 否则留下孤儿 ETW 会话 + 租约 + 标记。
     //   记录本次 attempt 已成功起了哪些会话，收尾在**独立有限期限信号**下逐个停、校验拥有者后释放租约；
     //   不依赖「最终 running 标记」才知道要清什么（它在全部启动成功后才写，取消往往发生在它之前）。
@@ -858,12 +943,6 @@ export function makeTrace(cfg = {}) {
     //   ③ 收尾未全部确认时写一份**完整恢复标记**（state=running + 仍在跑的会话名/引擎），让事后 status/cancel
     //      能看见并重试；身份读/解析失败一律按「拥有者未知」保留，不进删除分支。
     const teardownPartialStart = async () => {
-      const operationFile = c.kernelLeaseFile + '.stop'
-      let holdsOperationLock = false
-      try { writeFileSync(operationFile, attemptId, { encoding: 'utf8', flag: 'wx' }); holdsOperationLock = true }
-      catch { /* 已有 stop/cancel 在操作同一会话：不与之竞争全局命令 */ }
-      let ownershipHeld = false
-      try { const lease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8')); ownershipHeld = Boolean(lease) && lease.attemptId === attemptId } catch { ownershipHeld = false }
       const detail = {}
       let kernelStopped = true   // 没起内核 ⇒ 视作"无需停止 = 已停"
       const ctrl = new AbortController()
@@ -877,7 +956,7 @@ export function makeTrace(cfg = {}) {
           if (clr && clr.ok) { try { detail.clr = await clrSessionStop(clr.session) } catch (e) { detail.clr = { ok: false, error: String(e) } } }
           // 内核会话（全局命令）：仅在**持操作锁且拥有者仍是本 attempt**时才发（C5：身份不确定就不做破坏性动作）。
           if (kernelStarted) {
-            if (!holdsOperationLock || !ownershipHeld) { kernelStopped = false; detail.kernel = { ok: false, skipped: holdsOperationLock ? 'ownership-changed' : 'stop-in-progress' }; return }
+            if (!ownsAttempt()) { kernelStopped = false; detail.kernel = { ok: false, skipped: 'ownership-or-operation-changed' }; return }
             try {
               const kr = engine === 'xperf' ? await runExe(c.xperf, ['-stop'], { timeoutMs: 120000 }) : await runExe(c.wpr, ['-cancel'], { timeoutMs: 120000 })
               kernelStopped = Boolean(kr) && kr.code === 0 && !kr.timedOut
@@ -889,35 +968,39 @@ export function makeTrace(cfg = {}) {
       const auxStopped = [detail.alloc, detail.jit, detail.clr].every((r) => !r || r.ok)
       const fullyStopped = kernelStopped && auxStopped
       let released = false
+      const ownershipHeld = ownsAttempt()
       try {
-        if (!holdsOperationLock || !ownershipHeld) {
+        if (!ownershipHeld) {
           /* 拥有者未知/已变，或没拿到操作锁：不碰租约与标记（C5）。*/
         } else if (fullyStopped) {
           // 释放前再复核一次身份（C5：资源释放前再校验 attempt）。
-          try { const lease = JSON.parse(readFileSync(c.kernelLeaseFile, 'utf8')); if (lease && lease.attemptId === attemptId) { abandonStart(); released = true } } catch { /* 身份读失败 ⇒ 不删 */ }
+          released = abandonStart()
         } else {
           // C1/C4：收尾未全部确认 —— 落一份**完整恢复标记**（state=running，只列仍在跑的会话），
           //   让事后 action="status"/"cancel" 能看见并重试（已确认停的内核/会话不再列入，避免重试徒劳报错）。
           try {
-            const remaining = { attemptId, ownerPid: process.pid, state: 'running', etlPath: etl, startedAt: starting.startedAt, dir, engine: engine || 'wpr' }
+            const remaining = { attemptId, ownerPid: process.pid, state: 'running', recoveryReady: true, etlPath: etl, startedAt: starting.startedAt, dir, engine: engine || 'wpr' }
             if (engine === 'xperf' && rawEtl) remaining.rawPath = rawEtl
             if (kernelStopped) remaining.kernelStopped = true
             if (clr && clr.ok && !(detail.clr && detail.clr.ok)) { remaining.clrSession = clr.session; remaining.clrEtl = clr.etlPath }
             if (jit && jit.ok && !(detail.jit && detail.jit.ok)) { remaining.jitSession = jit.session; remaining.jitEtl = jit.etlPath }
             if (alloc && alloc.ok && !(detail.alloc && detail.alloc.ok)) { remaining.allocSession = alloc.session; remaining.allocRaw = alloc.etlPath }
-            writeFileSync(sessionFile, JSON.stringify(remaining), 'utf8')
+            writeJournal(c.kernelLeaseFile, remaining, ownsAttempt)
+            if (ownsAttempt()) writeFileSync(sessionFile, JSON.stringify(remaining), 'utf8')
           } catch { /* 恢复标记落盘失败（如磁盘满）：保留盘上已有标记 + 租约，靠租约仍提示"可能在跑" */ }
         }
-      } finally {
-        if (holdsOperationLock) { try { rmSync(operationFile, { force: true }) } catch { /* ignore */ } }
-      }
+      } catch (error) { detail.persistence = { ok: false, error: String(error) } }
       return { fullyStopped, ownershipHeld, released, detail }
     }
     try {
-    preflight = args.skipPreflight === true ? null : await probeWprStop()
+    preflight = args.skipPreflight === true ? null : await probeWprStop({
+      beforeStart: () => { checkpoint({ engine: 'wpr', kernelStopped: false, phase: 'preflight' }); engine = 'wpr'; kernelStarted = true },
+      afterStop: () => { kernelStarted = false; checkpoint({ kernelStopped: true }) },
+      owns: ownsAttempt,
+    })
     if (preflight?.busy || preflight?.cleanupOk === false) {
-      if (preflight.cleanupOk && preflight.startCode != null) abandonStart()
-      return { ok: false, busy: true, preflight, error: 'WPR 预检未取得会话或清理未完成，未启动第二次采集' }
+      const teardown = await teardownPartialStart()
+      return { ok: false, busy: true, preflight, ...(teardown.released ? { cleanedUp: true } : { unknown: true, incomplete: true, recovery: TRACE_RECOVERY_HINT }), error: 'WPR 预检未取得会话或清理未完成，未启动第二次采集' }
     }
     engine = engineArg === 'auto'
       ? ((preflight && preflight.ok === false) ? 'xperf' : 'wpr')
@@ -951,6 +1034,9 @@ export function makeTrace(cfg = {}) {
           '② 复现后 `action="stop"` 会如实报结果（含实测退出码）。' +
           '（自检本身只花 ' + preflight.elapsedMs + 'ms；`skipPreflight: true` 可跳过）'
     }
+    checkTaskCancellation()
+    checkpoint({ engine, kernelStopped: false, phase: 'capture', ...(engine === 'xperf' ? { rawPath: rawEtl } : {}) })
+    kernelStarted = true // Record intent before the external command, including an interrupted start.
     if (engine === 'xperf') {
       // PROC_THREAD+LOADER 是"镜像事件"的来源（LOADER 原文：Kernel and user mode Image Load/Unload events），
       //   PROFILE 是采样，CSWITCH 让调用链能连起来；-stackwalk 必须显式给，否则只有采样点、没有栈。
@@ -967,7 +1053,9 @@ export function makeTrace(cfg = {}) {
       started = await runExe(c.wpr, startArgs, { timeoutMs: 180000 })
     }
     if (started.code !== 0 || started.timedOut) {
-      if (!started.timedOut) abandonStart()
+      if (started.timedOut || taskSignal()?.aborted) throw Object.assign(new Error(engine + ' 启动结果未确认'), { unknown: true })
+      kernelStarted = false
+      abandonStart()
       return { ok: false, engine, error: engine + ' -start 失败', raw: (started.stdout + started.stderr).slice(0, 500), profiles, ...(preflight ? { preflight } : {}) }
     }
     kernelStarted = true  // R2：内核会话已起 —— 若后续启动阶段抛出，teardown 要把它停掉
@@ -976,8 +1064,15 @@ export function makeTrace(cfg = {}) {
     //   只会让调用方白跑一轮复现。失败如实带 clrWarning，并明确写出「没有 GC 数据 ≠ 没有 GC 停顿」。
     if (args.clr === true) {
       const clrEtl = join(dir, 'clr-events.etl')
-      clr = await clrSessionStart(clrEtl)
+      checkTaskCancellation()
+      const name = 'dshperfclr-' + randomUUID()
+      checkpoint({ clrSession: name, clrEtl })
+      clr = { ok: true, session: name, etlPath: clrEtl }
+      const result = await clrSessionStart(clrEtl, name)
+      if (result.timedOut || (taskSignal()?.aborted && !result.ok)) throw Object.assign(new Error('CLR 启动结果未确认'), { unknown: true })
+      clr = result
       if (!clr.ok) {
+        checkpoint({ clrSession: undefined, clrEtl: undefined })
         clrWarning = '⚠ **CLR 会话没起来**（' + (clr.exitCode === null ? '未拿到退出码' : 'logman 退出码 ' + clr.exitCode) + '）：' +
           (clr.raw || '(logman 无输出)') +
           '\n⇒ 本次**没有 GC 数据** —— 那是「没采」，**不是「客户端没有 GC 停顿」**。' +
@@ -988,8 +1083,15 @@ export function makeTrace(cfg = {}) {
     // ★ 同 CLR：失败不推翻主采集；DCEnd 在 stop 才吐 ⇒ 采样窗口内低污染（见 jitSessionStart 注释）。
     if (args.jit === true) {
       const jitEtl = join(dir, 'jit-methods.etl')
-      jit = await jitSessionStart(jitEtl)
+      checkTaskCancellation()
+      const name = 'dshperfjit-' + randomUUID()
+      checkpoint({ jitSession: name, jitEtl })
+      jit = { ok: true, session: name, etlPath: jitEtl }
+      const result = await jitSessionStart(jitEtl, name)
+      if (result.timedOut || (taskSignal()?.aborted && !result.ok)) throw Object.assign(new Error('JIT 启动结果未确认'), { unknown: true })
+      jit = result
       if (!jit.ok) {
+        checkpoint({ jitSession: undefined, jitEtl: undefined })
         jitWarning = '⚠ **JIT/rundown 会话没起来**（' + (jit.exitCode === null ? '未拿到退出码' : 'logman 退出码 ' + jit.exitCode) + '）：' +
           (jit.raw || '(logman 无输出)') +
           '\n⇒ 本次**没有方法映射** —— perf_flame 里客户端自己的方法会解不出（聚成 [unknown]），' +
@@ -1000,8 +1102,15 @@ export function makeTrace(cfg = {}) {
     // ★ 同 CLR/JIT：失败不推翻主采集。它是 xperf **命名用户会话**，与内核会话并存。
     if (args.alloc === true) {
       const allocRaw = join(dir, 'alloc-events-raw.etl')
-      alloc = await allocSessionStart(allocRaw)
+      checkTaskCancellation()
+      const name = 'dshperfalloc-' + randomUUID()
+      checkpoint({ allocSession: name, allocRaw })
+      alloc = { ok: true, session: name, etlPath: allocRaw }
+      const result = await allocSessionStart(allocRaw, name)
+      if (result.timedOut || (taskSignal()?.aborted && !result.ok)) throw Object.assign(new Error('分配会话启动结果未确认'), { unknown: true })
+      alloc = result
       if (!alloc.ok) {
+        checkpoint({ allocSession: undefined, allocRaw: undefined })
         allocWarning = '⚠ **分配采样会话没起来**（xperf 退出码 ' + (alloc.exitCode === null ? '未知' : alloc.exitCode) + '）：' +
           (alloc.raw || '(xperf 无输出)') +
           '\n⇒ 本次**没有分配栈** —— perf_allocflame 无数据。那是「没采」，**不是「没有分配」**。内核采样不受影响。'
@@ -1011,7 +1120,9 @@ export function makeTrace(cfg = {}) {
     // 写**证据目录根**下的固定路径 —— 与 evidence-clean.mjs 的读者端对齐（R1-04）。
     // ★ R1-14：标记里**必须记 engine**（stop 靠它决定找谁收尾）+ xperf 的原始 etl 路径（合并要用）。
     // ★ CLR 同理：标记里记下会话名与 etl，stop 才能把它停掉（否则留下一直在写盘的孤儿会话）。
+    checkTaskCancellation()
     try {
+      checkpoint({ state: 'running', clrWarning, jitWarning, allocWarning })
       writeFileSync(sessionFile, JSON.stringify({
         attemptId, ownerPid: process.pid, state: 'running', etlPath: etl, startedAt: Date.now(), profile: key, tag: args.tag || null, dir, engine,
         ...(engine === 'xperf' ? { rawPath: rawEtl } : {}),
@@ -1042,13 +1153,13 @@ export function makeTrace(cfg = {}) {
       //   再把异常抛给任务层。收尾未全部确认时把 unknown/incomplete + 恢复入口挂到异常上（C1/C5：
       //   让任务层落成 unknown 而不是 failed，且不把"可能仍在运行"从状态证据里抹掉）。
       const teardown = await teardownPartialStart()
-      if (!teardown.fullyStopped) {
+      if (!teardown.fullyStopped || !teardown.ownershipHeld || !teardown.released) {
         error.unknown = true
         error.incomplete = true
         if (!error.recovery) error.recovery = TRACE_RECOVERY_HINT
       }
       throw error
-    }
+    } finally { releaseOperation() }
     if (action === 'start') {
       return {
         ok: true, started: true, profile: key, profiles, etlPath: etl, engine,

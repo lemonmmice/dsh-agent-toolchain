@@ -314,8 +314,12 @@ if (typeof buildUrlTree === 'function') {
   check('还没点之前，树是空的（按钮只切换视图，不预渲染）', treeEntries.length === 0, String(treeEntries.length))
 
   // 点「域名树」→ setView 立刻 refresh：树当场渲染好（面板开不开都一样，视图像素由 CSS 控制）
+  const requestsBeforeTree = page.fetchLog.filter(u => u.includes('/records?')).length
   treeButtons[0]?.click()
   await new Promise((resolve) => setTimeout(resolve, 0))
+  check('一次域名树刷新只请求一份列表快照（不重复拉取相同记录）',
+    page.fetchLog.filter(u => u.includes('/records?')).length - requestsBeforeTree === 1,
+    JSON.stringify(page.fetchLog.filter(u => u.includes('/records?'))))
 
   // 顺手把面板真的打开一次（走 postman 的「← 接口捕获」→ setOpen(true) 这条外部入口）。
   // 说明：注入口令在 `document` 为 undefined 时早退，而客户端插件在**外层 realm** 的
@@ -409,7 +413,7 @@ const code = codeOnly(source)
 check('dw1 视图注册：VIEW_MODES/viewWraps/viewButtons 都含 tree（漏一个就是按钮点了没反应）',
   /VIEW_MODES = \['tree'/.test(code) && /viewWraps = \{ tree: treeWrap/.test(code) && /viewButtons = \{ tree: treeBtn/.test(code))
 check('dw2 按钮接线：域名树按钮走 setView 切换', /treeBtn\.addEventListener\('click', \(\) => setView\(state\.treeView \? 'table' : 'tree'\)\)/.test(code))
-check('dw3 数据源：tree 视图复用 /records（与列表同一份数据，不另开一条聚合接口）', /active === 'tree'\)[\s\S]{0,320}?apiFetch\(`\/records\?\$\{tp\.toString\(\)\}`\)/.test(code))
+// dw3 is covered by the real refresh above: one /records request and the resulting rendered rows.
 check('dw4 渲染派发：refresh 里 tree 分支调 renderTree', /active === 'tree'\) \{\n\s+pendingTreeRecords = viewData\?\.items \?\? \[\]\n\s+renderTree\(\)/.test(code))
 check('dw5 树叶子点开的是既有详情接口（不复制详情实现）', /buildTreeLeaf[\s\S]{0,1400}?apiFetch\(`\/records\/\$\{encodeURIComponent\(record\.id\)\}`\)/.test(code))
 

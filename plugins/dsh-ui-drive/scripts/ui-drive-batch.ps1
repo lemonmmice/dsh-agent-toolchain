@@ -1292,7 +1292,7 @@ function Render-WindowPng([IntPtr]$h, $r, [int]$w, [int]$hh, [string]$outPath, [
   #
   # distinctColors（2026-10-14）：本地「疑似未渲染」判据。原实现靠视觉模型回答里出现
   # 「纯黑/空白」来判定没渲染完并重拍；视觉描述去掉后，改由截图侧直接给信号——
-  # 真机实测确实抓到过纯白画面（E:\dsh-agent-toolchain\ui-evidence\20260916-130157\launch-state.png，
+  # 真机实测确实抓到过纯白画面（<ui-evidence>/<run>/launch-state.png，
   # 1266x741 仅 3767B，肉眼确认整幅纯白），所以这个判据不能省。
   # 采样 24x24 网格，**一旦出现 >2 种颜色就提前退出**：真实界面头几次采样就退出（~0.1ms），
   # 只有纯色画面才会走满 576 次 GetPixel（实测 ~10ms）。调用方按 distinctColors<=2 决定是否重拍。

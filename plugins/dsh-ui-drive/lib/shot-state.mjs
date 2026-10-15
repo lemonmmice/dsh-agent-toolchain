@@ -7,7 +7,7 @@
  * 见 scripts/ui-drive-batch.ps1 的 Render-WindowPng）。
  *
  * 为什么必须补这个判据：真机抓到过整幅纯白的 launch-state.png
- * （E:\dsh-agent-toolchain\ui-evidence\20260916-130157\launch-state.png，1266x741 仅 3767B，
+ * （<ui-evidence>/<run>/launch-state.png，1266x741 仅 3767B，
  * 肉眼确认纯白）—— 窗口句柄出现 ≠ 画面已经画完。
  *
  * ⚠ 口径（不许含糊）：`distinctColors<=2` 是**启发式**，不是"空白的证明"：
