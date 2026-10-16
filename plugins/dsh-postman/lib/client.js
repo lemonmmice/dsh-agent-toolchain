@@ -62,6 +62,20 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
 .pm-status-meta{color:var(--dsw-alias-fg-muted,#9aa0aa);font-size:12px}
 .pm-status-err{color:#f87171}
 .pm-pre{margin:0;padding:10px 12px;font:12px/1.5 Consolas,Menlo,monospace;color:#9fe8a0;white-space:pre-wrap;word-break:normal;overflow-wrap:anywhere;overflow:auto;flex:1}
+.pm-tblpane{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.pm-tblpane[hidden]{display:none}
+.pm-tbl-head{padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-subtle,#23262e);font-size:12px;color:var(--dsw-alias-fg-muted,#9aa0aa);line-height:1.7}
+.pm-tbl-head .pm-t{font-weight:600;color:var(--dsw-alias-fg-base,#e6e6e6);font-size:13px}
+.pm-tbl-scroll{flex:1;min-height:0;overflow:auto}
+.pm-tbl-table{min-width:100%;border-collapse:collapse;white-space:nowrap;font-variant-numeric:tabular-nums}
+.pm-tbl-table th{position:sticky;top:0;background:var(--dsw-alias-bg-elevated,#20242c);text-align:right;padding:5px 10px;font-size:12px;color:var(--dsw-alias-fg-muted,#9aa0aa);border-bottom:1px solid var(--dsw-alias-border-subtle,#2a2e37)}
+.pm-tbl-table th[data-key]{font-weight:600;color:var(--dsw-alias-fg-base,#e6e6e6)}
+.pm-tbl-table td{padding:4px 10px;border-bottom:1px solid var(--dsw-alias-border-subtle,#23262e);font-size:12px;text-align:right}
+.pm-tbl-table th.pm-tbl-name,.pm-tbl-table td.pm-tbl-name{text-align:left}
+.pm-tbl-table tbody tr:hover{background:var(--dsw-alias-bg-hover,#20242c)}
+.pm-tbl-table td.pm-tbl-rank{color:var(--dsw-alias-fg-muted,#9aa0aa)}
+.pm-tbl-table td.pm-tbl-key{font-weight:600;color:var(--dsw-alias-fg-base,#e6e6e6)}
+.pm-tbl-tag{margin-left:6px;padding:0 5px;border-radius:4px;background:#4a3b14;color:#fbbf24;font-size:11px}
 .pm-fold{cursor:pointer;color:#fbbf24;border-bottom:1px dashed currentColor}
 .pm-fold:hover{background:#4a3b14}
 .pm-badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600}
@@ -126,7 +140,15 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
     // ---------------------------------------------------------------- helpers
 
     function injectStyle() {
-      if (typeof document === 'undefined' || document.getElementById('dsh-postman-style') !== null) return
+      if (typeof document === 'undefined') return
+      // 宿主会热重载插件 bundle（/plugins/events → modules.reload），而 <style> 是**上一次**
+      // 那份代码注入的：见到它就 return 会让热重载后的面板继续用旧 CSS（实测踩过：右栏
+      // 掉到响应体下面变成没样式的块）。所以已存在时**换内容**，不是跳过。
+      const existing = document.getElementById('dsh-postman-style')
+      if (existing !== null) {
+        existing.textContent = CSS
+        return
+      }
       const style = document.createElement('style')
       style.id = 'dsh-postman-style'
       style.textContent = CSS
@@ -735,7 +757,7 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
 
       body.appendChild(req)
 
-      // -------- response region: status line + tabs (body / headers)
+      // -------- response region: status line + tabs (body / headers / 表格视图)
       const resp = el('div', 'pm-resp')
       const statusLine = el('div', 'pm-status')
       statusLine.appendChild(el('span', 'pm-status-meta', '尚未发送请求'))
@@ -743,8 +765,13 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       const respTabs = el('div', 'pm-tabs')
       const tabRespBody = el('button', 'pm-tab', '响应体')
       const tabRespHeaders = el('button', 'pm-tab', '响应头')
+      const tabRespTable = el('button', 'pm-tab', '表格视图')
+      const tableCount = el('span', 'pm-count', '')
+      tabRespTable.appendChild(document.createTextNode(' '))
+      tabRespTable.appendChild(tableCount)
       respTabs.appendChild(tabRespBody)
       respTabs.appendChild(tabRespHeaders)
+      respTabs.appendChild(tabRespTable)
       const fmtBtn = el('button', 'pm-btn pm-fmt', '格式化')
       fmtBtn.title = '在「格式化」与「原始」之间切换响应体'
       fmtBtn.dataset.active = '' // formatted is on by default
@@ -755,6 +782,10 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       respHeadersPre.hidden = true
       resp.appendChild(respBodyPre)
       resp.appendChild(respHeadersPre)
+      // 「表格视图」tab 的内容：把响应体里的「对象数组」铺成表（口径同接口捕获的「排序视图」）
+      const tablePane = el('div', 'pm-tblpane')
+      tablePane.hidden = true
+      resp.appendChild(tablePane)
       body.appendChild(resp)
 
       // -------- websocket region: shown when the URL scheme is ws:// or wss://
@@ -891,6 +922,9 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         formatted: true,
         respRaw: '',
         respContentType: '',
+        respTruncated: false,
+        respFailed: false,
+        respTab: 'body',
         mode: 'http',
         transport: null,
         wsConnected: false,
@@ -1091,21 +1125,21 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       tabHistory.addEventListener('click', () => selectReqTab(tabHistory))
       selectReqTab(tabParams)
 
-      // ---- response tab switching
-      function selectRespTab(showHeaders) {
-        respBodyPre.hidden = showHeaders
-        respHeadersPre.hidden = !showHeaders
-        if (showHeaders) {
-          tabRespHeaders.dataset.active = ''
-          delete tabRespBody.dataset.active
-        } else {
-          tabRespBody.dataset.active = ''
-          delete tabRespHeaders.dataset.active
+      // ---- response tab switching（body / headers / table）
+      function selectRespTab(mode) {
+        state.respTab = mode
+        respBodyPre.hidden = mode !== 'body'
+        respHeadersPre.hidden = mode !== 'headers'
+        tablePane.hidden = mode !== 'table'
+        for (const [key, tab] of [['body', tabRespBody], ['headers', tabRespHeaders], ['table', tabRespTable]]) {
+          if (key === mode) tab.dataset.active = ''
+          else delete tab.dataset.active
         }
       }
-      tabRespBody.addEventListener('click', () => selectRespTab(false))
-      tabRespHeaders.addEventListener('click', () => selectRespTab(true))
-      selectRespTab(false)
+      tabRespBody.addEventListener('click', () => selectRespTab('body'))
+      tabRespHeaders.addEventListener('click', () => selectRespTab('headers'))
+      tabRespTable.addEventListener('click', () => selectRespTab('table'))
+      selectRespTab('body')
 
       // ---- format / raw toggle for the response body
       fmtBtn.addEventListener('click', () => {
@@ -1232,8 +1266,195 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         respBodyPre.appendChild(document.createTextNode('\n' + lines[lines.length - 1]))
       }
 
+      // ---- 表格视图（响应体右侧栏）
+      // 列表型 JSON 响应（如榜单接口的 data.list）只看原始 JSON 看不出顺序，这一栏用表格给出
+      // 「第几条、叫什么、值多少」。顺序恒为**接口返回顺序**：不重排（客户端榜单的既定口径就是
+      // 「排序由后端定、客户端不排序」），后端置顶的行会被标记出来，免得看起来像排错了。
+      // ⚠ 口径与 dsh-api-visualizer 的「排序视图」一致，但**是同语义的第二份实现**：宿主把每个
+      // 插件的 client bundle 按原样下发（没有跨插件的模块解析），两个插件各自独立。改这里请同步
+      // plugins/dsh-api-visualizer/lib/client.js 的 renderSortPane —— 反之亦然。
+
+      /** 接口 sortField = 收益排序周期（月，1/3/6/12），标签与客户端榜单的周期选项同口径。 */
+      const SORT_PERIOD_LABELS = { 1: '近1月', 3: '近3月', 6: '近6月', 12: '近1年' }
+
+      /** 已知收益字段的列名；未知字段直接用字段名（每列的 tooltip 里始终给出真实字段名）。 */
+      const SORT_COLUMN_LABELS = {
+        yearYieldRate: 'year(年化)',
+        totalYieldRate: 'total(累计)',
+        todayYieldRate: 'today(今日)',
+      }
+
+      /** 已知名称字段的列名（其余字段名原样显示）。 */
+      const SORT_NAME_LABELS = { name: '名称', strategyName: '策略名称', stockName: '股票名称', title: '标题', code: '代码', symbol: '代码' }
+
+      /** 只有比率语义的字段名才按小数比率渲染，避免把普通数字（数量/价格）印成百分比。 */
+      const SORT_RATE_KEY = /(rate|yield|ratio|return|percent|pct)/i
+
+      /** 表格最多渲染多少行：几千行的响应只铺前 N 行，避免把面板卡住。 */
+      const SORT_ROWS_CAP = 300
+
+      /** 接口下发的收益有两种形态：文本百分比（`+53.44%`）与小数比率（0.55743）。 */
+      function percentText(value) {
+        return typeof value === 'string' && /^[+-]?\d+(\.\d+)?%$/.test(value.trim()) ? value.trim() : null
+      }
+
+      /** 小数比率 → 百分比文本，位数与接口下发的文本口径一致（2 位）。 */
+      function ratioText(value) {
+        return `${value >= 0 ? '+' : '-'}${(Math.abs(value) * 100).toFixed(2)}%`
+      }
+
+      /** 排序入参只从 URL 里读，不做语义推断。 */
+      function sortParamsOf(url) {
+        try {
+          const params = new URL(url, location.origin).searchParams
+          const field = params.get('sortField')
+          const type = params.get('sortType')
+          return {
+            field,
+            period: SORT_PERIOD_LABELS[Number(field)] ?? null,
+            dir: type === '1' ? '正序' : type === '2' ? '倒序' : null,
+          }
+        } catch {
+          return { field: null, period: null, dir: null }
+        }
+      }
+
+      /**
+       * 在响应 JSON 里找「行集」：元素为对象的数组，优先常见列表键（data.list / rows / items …）。
+       * 有节点预算与深度上限——响应体可达 MB 级，不能全树遍历。
+       */
+      function pickListRows(root) {
+        const PREFERRED = ['list', 'rows', 'items', 'records', 'results', 'data', 'result']
+        let best = null
+        let budget = 300
+        const visit = (node, depth, key) => {
+          if (budget <= 0 || node === null || typeof node !== 'object') return
+          budget -= 1
+          if (Array.isArray(node)) {
+            const first = node[0]
+            if (node.length > 0 && first !== null && typeof first === 'object' && !Array.isArray(first)) {
+              const score = (PREFERRED.includes(String(key).toLowerCase()) ? 100000 : 0) + node.length
+              if (best === null || score > best.score) best = { rows: node, score }
+            }
+            return // 行集内部不再下钻：嵌套数组不是行集
+          }
+          if (depth >= 4) return
+          for (const k of Object.keys(node)) visit(node[k], depth + 1, k)
+        }
+        visit(root, 0, '')
+        return best === null ? null : best.rows
+      }
+
+      /** 行集 → 列模型：名称列 + 最多 4 个值列（比率数字在前，百分比文本按字段出现顺序）。 */
+      function buildTableColumns(rows) {
+        const sample = rows.slice(0, 20)
+        const first = sample[0]
+        const keys = Object.keys(first)
+        const nameKey = keys.find((k) => typeof first[k] === 'string' && /^(name|strategyName|stockName|title|label|code|symbol)$/i.test(k))
+          ?? keys.find((k) => typeof first[k] === 'string' && !SORT_RATE_KEY.test(k) && first[k].length <= 40 && !/id$/i.test(k))
+          ?? null
+        const numeric = []
+        const textual = []
+        for (const k of keys) {
+          if (k === nameKey || /id$/i.test(k) || (first[k] !== null && typeof first[k] === 'object')) continue
+          if (sample.some((row) => typeof row[k] === 'number' && Number.isFinite(row[k])) && SORT_RATE_KEY.test(k)) numeric.push(k)
+          else if (sample.some((row) => percentText(row[k]) !== null)) textual.push(k)
+        }
+        const columns = [...numeric, ...textual].slice(0, 4)
+        return columns.length === 0 ? null : { nameKey, columns }
+      }
+
+      /** 行上的置顶标记：后端把「精选 / 已订阅」排在最前，标出来才不会看着像排序坏了。 */
+      function tableRowTags(row) {
+        const tags = []
+        if (typeof row.handpick === 'string' && row.handpick !== '') tags.push(row.handpick)
+        if (row.isSubscribed === true) tags.push('已订阅')
+        return tags
+      }
+
+      function tableCellText(value) {
+        if (typeof value === 'number' && Number.isFinite(value)) return ratioText(value)
+        return percentText(value) ?? (value === null || value === undefined ? '-' : String(value))
+      }
+
+      /** tab 上的行数角标：没有表就清空（不写 0 —— 0 行与「没有这张表」不是一回事）。 */
+      function setTableCount(count) {
+        tableCount.textContent = count === null ? '' : String(count)
+      }
+
+      /**
+       * 把响应体里的「对象数组」铺成表格；铺不出来时**写明原因**（tab 是常驻的，
+       * 空着会像坏了），并且绝不把截断/解析不了的响应硬凑成半张表。
+       * @returns 是否真的画出了表（调用方靠它决定要不要把用户从空表上挪回「响应体」）
+       */
+      function renderTablePane() {
+        tablePane.textContent = ''
+        setTableCount(null)
+        const empty = (reason) => {
+          tablePane.appendChild(el('div', 'pm-empty', reason))
+          return false
+        }
+        const text = typeof state.respRaw === 'string' ? state.respRaw : ''
+        if (state.respFailed) return empty('请求失败，没有响应体可解析')
+        if (text === '') return empty('尚未发送请求')
+        // 截断的 body 无法整体解析，如实说明（与响应体的「已截断」口径一致）
+        if (state.respTruncated) return empty('响应体已截断，无法整体解析（不铺半张表）')
+        let json = null
+        try {
+          json = JSON.parse(text)
+        } catch {
+          return empty('这份响应不是 JSON，没有可铺成表格的数据')
+        }
+        const rows = pickListRows(json)
+        if (rows === null) return empty('这份响应里没有「元素为对象的数组」（例如 data.list / rows / items）')
+        const model = buildTableColumns(rows)
+        if (model === null) return empty(`认出了 ${rows.length} 行，但没有可展示的列`)
+        const params = sortParamsOf(urlInput.value.trim())
+
+        const head = el('div', 'pm-tbl-head')
+        head.appendChild(el('div', 'pm-t', `表格视图 · 共 ${rows.length} 行`))
+        const basis = ['顺序 = 接口返回顺序（未重排）']
+        if (params.field !== null) basis.push(`sortField=${params.field}${params.period === null ? '' : `(${params.period})`}`)
+        if (params.dir !== null) basis.push(`sortType=${params.dir}`)
+        head.appendChild(el('div', '', basis.join(' · ')))
+        tablePane.appendChild(head)
+
+        const scroll = el('div', 'pm-tbl-scroll')
+        const table = el('table', 'pm-tbl-table')
+        const headRow = el('tr')
+        headRow.appendChild(el('th', 'pm-tbl-rank', '顺序'))
+        const nameTh = el('th', 'pm-tbl-name', model.nameKey === null ? '名称' : SORT_NAME_LABELS[model.nameKey] ?? model.nameKey)
+        nameTh.title = model.nameKey ?? '未识别到名称字段'
+        headRow.appendChild(nameTh)
+        for (const key of model.columns) {
+          const th = el('th', '', key === 'sortYieldRate' && params.period !== null ? `sort(${params.period})` : SORT_COLUMN_LABELS[key] ?? key)
+          th.dataset.key = key
+          th.title = key
+          headRow.appendChild(th)
+        }
+        table.appendChild(headRow)
+
+        const tbody = el('tbody')
+        rows.slice(0, SORT_ROWS_CAP).forEach((row, index) => {
+          const tr = el('tr')
+          tr.appendChild(el('td', 'pm-tbl-rank', String(index + 1)))
+          const nameTd = el('td', 'pm-tbl-name', model.nameKey === null ? '-' : String(row[model.nameKey] ?? '-'))
+          for (const tag of tableRowTags(row)) nameTd.appendChild(el('span', 'pm-tbl-tag', tag))
+          tr.appendChild(nameTd)
+          for (const key of model.columns) tr.appendChild(el('td', key === model.columns[0] ? 'pm-tbl-key' : '', tableCellText(row[key])))
+          tbody.appendChild(tr)
+        })
+        table.appendChild(tbody)
+        scroll.appendChild(table)
+        tablePane.appendChild(scroll)
+        if (rows.length > SORT_ROWS_CAP) tablePane.appendChild(el('div', 'pm-tbl-head', `只渲染前 ${SORT_ROWS_CAP} 行（共 ${rows.length} 行）`))
+        setTableCount(rows.length)
+        return true
+      }
+
       function renderResponse(response) {
         statusLine.textContent = ''
+        let hasTable = false
         if (response && response.ok) {
           statusLine.appendChild(statusBadge(response.status))
           const meta = el(
@@ -1242,21 +1463,29 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
             `${response.statusText || ''} · ${fmtDur(response.durationMs)} · ${response.sizeExact === false ? '≥' : ''}${fmtSize(response.size)}${response.truncated ? ' · 已截断' : ''}`,
           )
           statusLine.appendChild(meta)
+          state.respFailed = false
           state.respRaw = response.body ?? ''
           state.respContentType = response.contentType || ''
+          state.respTruncated = response.truncated === true
           renderRespBody()
+          hasTable = renderTablePane()
           respHeadersPre.textContent = headersToText(response.headers)
         } else {
           const badge = el('span', 'pm-badge pm-s-5', '×')
           statusLine.appendChild(badge)
           statusLine.appendChild(el('span', 'pm-status-err', (response && response.error) || '请求失败'))
           if (response && Number.isFinite(response.durationMs)) statusLine.appendChild(el('span', 'pm-status-meta', fmtDur(response.durationMs)))
+          state.respFailed = true
           state.respRaw = (response && response.error) || ''
           state.respContentType = ''
+          state.respTruncated = false
           respBodyPre.textContent = state.respRaw
+          renderTablePane()
           respHeadersPre.textContent = ''
         }
-        selectRespTab(false)
+        // 保留用户选中的那个 tab（发第二次不该把人踢回「响应体」）；但他若停在「表格视图」
+        // 而这次没有表可铺，就退回「响应体」—— 空表的原因仍写在那一栏里，切回去就能看到。
+        selectRespTab(state.respTab === 'table' && !hasTable ? 'body' : state.respTab)
       }
 
       // ---- send
@@ -2109,6 +2338,9 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         setOpen(true)
       }
       window.addEventListener('dsh-postman:prefill', onPrefill)
+
+      // tab 是常驻的：初次进来就得把那一栏的空态写出来，不能开着一栏空白
+      renderTablePane()
 
       return {
         view,
