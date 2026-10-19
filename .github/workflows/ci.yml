@@ -90,6 +90,14 @@ jobs:
           npm run test:trace-native
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/run-tests.mjs dsh-perf --all
+      - name: Build and test standalone Rust MCP runtime
+        run: |
+          npm run build:runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:runtime-native
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload native modules
         uses: actions/upload-artifact@v4
         with:
@@ -99,6 +107,7 @@ jobs:
             plugins/dsh-api-visualizer/bin/
             plugins/dsh-memory/bin/
             plugins/dsh-perf/bin/
+            mcp/bin/
           if-no-files-found: error
       - name: MCP server install + smoke
         run: |

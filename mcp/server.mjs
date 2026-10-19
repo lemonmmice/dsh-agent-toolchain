@@ -60,6 +60,7 @@ import { mcpShape } from './registry-zod.mjs'
 import { makeToolProgress } from './tool-progress.mjs'
 import { runTaskTool, taskControl } from '../lib/task-tool-support.mjs'
 import { TASK_TOOLS, TASK_PARAMETERS } from '../lib/task-tools.mjs'
+import { withTaskContext } from '../lib/task-context.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -111,7 +112,9 @@ const _callCtx = new AsyncLocalStorage()
 const withCallContext = (name, handler) => (args, extra) =>
   _callCtx.run({ tool: name, agentTurn: agentTurnFromMeta(extra?._meta) }, async () => {
     try {
-      const result = await runTaskTool(name, args, handler, extra)
+      const result = await (process.env.DSH_RUNTIME_BRIDGE === '1'
+        ? withTaskContext({ signal: extra?.signal }, () => runTaskTool(name, args, handler, extra))
+        : runTaskTool(name, args, handler, extra))
       return result?.taskJob === true ? jtext(result) : result
     }
     catch (error) {

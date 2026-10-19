@@ -1,5 +1,9 @@
 # Remaining Rust migration assessment
 
+The selected orchestration migration now continues in
+[Rust MCP runtime](native-runtime.md). The measurements below remain historical
+evidence; they are not a benchmark of the new runtime.
+
 Decision: stop after the four completed components for now. The remaining
 candidates do not have enough demonstrated benefit to justify another migration.
 This assessment changes no production implementation.

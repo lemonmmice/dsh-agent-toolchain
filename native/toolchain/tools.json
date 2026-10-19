@@ -1,0 +1,3279 @@
+[
+  {
+    "name": "toolchain_job",
+    "description": "Read task status/result or request cancellation. Use the jobId returned by an original tool called with asyncJob=true. Accepted is not completed; unknown effects are never replayed. Results reference persisted artifacts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "status",
+            "result",
+            "cancel"
+          ],
+          "description": "status / result / cancel"
+        },
+        "jobId": {
+          "type": "string",
+          "description": "Task id from the accepted response"
+        }
+      },
+      "required": [
+        "action",
+        "jobId"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "jev_decide",
+    "description": "Make a **read-only, advisory** typed decision with Jev. Returns Choice/Score/Noul answers, probabilities/confidence and latency; it never executes UI, build, delete, restart or any local tool. Network use is disabled unless `allowRemoteData=true` and `TYPESAFE_API_KEY` is configured. Batch independent routing or evidence-selection questions in one request. It does not replace authorization gates, snapshot freshness, build results or evidence adjudication. Jev is primarily trained in English; calibrate Chinese, numeric/date, long-context and adversarial-content workloads locally. Timeouts fail open without retry. Input is JSON passed in `stateJson` and `questionsJson`.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "stateJson": {
+          "type": "string",
+          "description": "JSON string for the decision state. It is sent to the remote TypeSafe API; omit passwords, tokens, raw customer data and screenshots."
+        },
+        "questionsJson": {
+          "type": "string",
+          "description": "JSON string containing Choice, Score or Noul questions. Batch independent questions in one request."
+        },
+        "allowRemoteData": {
+          "default": false,
+          "description": "Explicitly allow sending state/questions to TypeSafe. Defaults to false and never calls the network without true.",
+          "type": "boolean"
+        },
+        "timeoutMs": {
+          "default": 1200,
+          "description": "Request timeout (100-5000ms), default 1200; timeout fails open without retry.",
+          "type": "number"
+        },
+        "model": {
+          "default": "jev-1.13.0",
+          "description": "Pinned Jev model id, default jev-1.13.0; pin a version when thresholds depend on behavior.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stateJson",
+        "questionsJson"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_jev",
+    "description": "Use Jev for **bounded, stepwise UI action selection** over the current UIA control list. Each turn observes the UI, sends a sanitized window/control candidate set to Jev, and accepts only a candidate id; the existing dsh-ui-drive remains the executor and still enforces allowSideEffects, snapshot freshness, approvals, estop, and app policy. Jev does not see pixels, generate arbitrary input text, or bypass authorization. Dry-run is the default: allowRemoteData=true is required to send UI state, and allowSideEffects=true is required to execute effects. Low confidence, ambiguity, **target drift**, timeout, and unknown action results stop without retrying. Every action requires exactly one match (requireUnique) and verifies that the window handle and element rectangle have not changed — several seconds pass between observing, deciding and acting, so a screen that has changed since is refused **before anything executes** (drift) instead of landing on a different control. Results also report how many controls could not be addressed at all (no name and no AutomationId).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "goal": {
+          "type": "string",
+          "description": "UI goal; Jev chooses only from the currently observed control candidates."
+        },
+        "inputValue": {
+          "description": "Optional input value; Jev selects the field but never generates the value. Keep sensitive values out of remote state.",
+          "type": "string"
+        },
+        "maxSteps": {
+          "default": 8,
+          "description": "Maximum observe/decide/action turns, default 8, maximum 20.",
+          "type": "number"
+        },
+        "maxControls": {
+          "default": 80,
+          "description": "Maximum semantic controls sent per turn, default 80, maximum 120.",
+          "type": "number"
+        },
+        "confidenceThreshold": {
+          "default": 0.8,
+          "description": "Stop below this confidence without executing an action, default 0.8.",
+          "type": "number"
+        },
+        "allowedNamesJson": {
+          "description": "Optional JSON array restricting candidates to these exact names (first menu line) or AutomationIds.",
+          "type": "string"
+        },
+        "expectSelected": {
+          "description": "Verify the terminal control using UIA IsSelected (exact Name or AutomationId); model done is not proof.",
+          "type": "string"
+        },
+        "allowRemoteData": {
+          "default": false,
+          "description": "Explicitly allow sending sanitized UI state to TypeSafe; defaults to false.",
+          "type": "boolean"
+        },
+        "allowSideEffects": {
+          "default": false,
+          "description": "Explicitly allow real UI side effects such as clicks, input, and scrolling; defaults to false.",
+          "type": "boolean"
+        },
+        "timeoutMs": {
+          "default": 5000,
+          "description": "Jev request timeout 100–5000ms, default 5000; no retries.",
+          "type": "number"
+        },
+        "model": {
+          "default": "jev-1.13.0",
+          "description": "Pinned Jev model id, default jev-1.13.0; pin a version when thresholds depend on behavior.",
+          "type": "string"
+        },
+        "approvalId": {
+          "description": "Optional application-bound UI approval id.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "Optional session owning the UI approval.",
+          "type": "string"
+        },
+        "procId": {
+          "description": "Optional target client PID.",
+          "type": "number"
+        },
+        "winHandle": {
+          "description": "Optional target top-level window handle.",
+          "type": "number"
+        },
+        "secret": {
+          "description": "Mask the supplied input value in local action evidence.",
+          "type": "boolean"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "goal"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "build_run",
+    "description": "Run a build (incremental Build or full Rebuild) and return structured errors. Use after changing code to verify it compiles. WARNING: zero errors does NOT prove that a newly added file was actually compiled (a legacy .csproj needs an explicit <Compile Include>; the build passes while the file is never compiled), and an empty project argument auto-detects a solution that may not contain your change — always check the returned target / log path. Requires DSH_BUILD_CLIENT_ROOT/DSH_BUILD_REPO_ROOT (solution dir) or the clientRoot/repoRoot argument. Both engines auto-detect the default solution when project is empty: a repo containing WholeSolution.sln keeps the legacy client defaults (WholeSolution.sln + platform x86); otherwise the .sln/.slnx is detected (repo root, then one level deep) and the platform comes from the solution (Any CPU preferred) — ambiguity is an explicit error asking for project. engine=msbuild (default) uses VS MSBuild; engine=dotnet builds with `dotnet build` (restores by default) — prefer it for modern .NET repos. (dotnet only: a repo with no solution at all falls back to the cwd default.)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "default": "Build",
+          "description": "Build (incremental, fast) or Rebuild (full)",
+          "type": "string",
+          "enum": [
+            "Build",
+            "Rebuild"
+          ]
+        },
+        "project": {
+          "description": "Optional csproj/sln path relative to the repo root; empty = auto-detected default solution (both engines; dotnet falls back to the cwd default when the repo has no solution)",
+          "type": "string"
+        },
+        "configuration": {
+          "default": "Debug",
+          "type": "string"
+        },
+        "platform": {
+          "description": "msbuild engine: default auto (legacy x86 for the WholeSolution.sln layout, otherwise detected from the solution); dotnet engine: ignored",
+          "type": "string"
+        },
+        "engine": {
+          "description": "Build engine; env DSH_BUILD_ENGINE sets the default",
+          "type": "string",
+          "enum": [
+            "msbuild",
+            "dotnet"
+          ]
+        },
+        "repoRoot": {
+          "description": "Repository root dir (env DSH_BUILD_REPO_ROOT)",
+          "type": "string"
+        },
+        "clientRoot": {
+          "description": "Solution root dir (env DSH_BUILD_CLIENT_ROOT)",
+          "type": "string"
+        },
+        "killClient": {
+          "description": "Kill the running client process before building (breaks the user UI — confirm first). WARNING: like ui_launch(force=true) this DESTROYS the only crime scene — if the client is hung or stuttering, capture evidence first (perf_dump / hang_run), otherwise the dump, thread stacks and evidence bundle are gone.",
+          "type": "boolean"
+        },
+        "runId": {
+          "description": "Optional run id: the build log and the per-run record (run-<runId>.json) are named with it — the evidence-pack spine",
+          "type": "string"
+        },
+        "background": {
+          "description": "Run in a detached worker and return an independent jobId. Poll build_status(jobId); acceptance is not build success. Default false.",
+          "type": "boolean"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_status",
+    "description": "Report ONLY the existence/geometry of the target client process and main window (running? PID? title? bounds?) — read-only. It does NOT show what is on screen and does NOT tell whether the client is hung; for content/focus use ui_state or ui_observe(action=\"state\"). Configure the client via DSH_UI_PROC_NAME / DSH_UI_WINDOW_NAME / DSH_UI_CLIENT_EXE.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "procId": {
+          "description": "Target process PID (disambiguate when several instances are running)",
+          "type": "number"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_state",
+    "description": "UI snapshot (read-only, one step to see \"what is on screen right now\"): current main window + focused element + the interactive control list (buttons/edits/tabs/checkboxes/list items with #index, aid, enabled and the real input value). Prefer this over repeated read (which returns hundreds of text lines). match filters by control name regex; max caps the list (default 40).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "match": {
+          "description": "Regex filter on control names (e.g. 登录|验证码)",
+          "type": "string"
+        },
+        "max": {
+          "description": "Max controls returned, default 40",
+          "type": "number"
+        },
+        "procId": {
+          "description": "Target process PID (disambiguate when several instances are running)",
+          "type": "number"
+        },
+        "winHandle": {
+          "description": "Target a specific top-level window by handle (from ui_windows)",
+          "type": "number"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_windows",
+    "description": "List every top-level window of the target client process (type / title / handle / position / offscreen) **plus nested window elements inside the main window** (a login pane / licence dialog / modal is usually nested and does NOT show up as a top-level window). Read-only. Check this first when driving a dynamic UI, then decide where to act.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "procId": {
+          "description": "Target process PID (disambiguate when several instances are running)",
+          "type": "number"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_drive",
+    "description": "Drive the running desktop client via Windows UIA (real-time, stateful). Actions: find (locate a control) / read (visible controls, with the real input value and a #index reusable as `index`) / windows (all top-level windows) / shot (PNG path only; read the image yourself — no vision model is called) / waitfor (block until a condition holds: state=appear|gone|enabled|disabled) / click / setvalue (ValuePattern) / key (clipboard paste for CJK) / type (SendKeys sequence: {ENTER} {TAB} {ESC} {DOWN} ^a …) / drag (mouse drag, e.g. a slider captcha). For dynamic UIs: pass waitFor={ms,interval,state,match,index} on click/setvalue/key/type/find to wait for the condition BEFORE acting (no more guessing sleeps); use index for the Nth same-named control and inAid/inName to scope the search to a container. read/state also honour inAid/inName (container scope), winTitle (cross-window) and waitFor (wait for the list to render before reading); a scoped listing is labelled narrowed+scope — an unlabelled listing covers the whole window. find / read / windows / shot / waitfor are read-only; click / setvalue / key / type / drag are real side effects and REQUIRE allowSideEffects=true.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "find",
+            "read",
+            "state",
+            "windows",
+            "shot",
+            "waitfor",
+            "click",
+            "setvalue",
+            "key",
+            "type",
+            "drag",
+            "clickat",
+            "doubleclick",
+            "pattern",
+            "scroll",
+            "selecttext",
+            "move",
+            "wheel",
+            "capture",
+            "state-live"
+          ]
+        },
+        "waitAfter": {
+          "description": "After a successful effect action, confirm a specific aid/name condition without a full UI snapshot. Defaults: state=appear, ms=1500, interval=50. Overrides observe; actionOk and confirmed report action execution and confirmation separately. Does not retry the action.",
+          "type": "object",
+          "properties": {
+            "aid": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "appear",
+                "gone",
+                "enabled",
+                "disabled"
+              ]
+            },
+            "ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30000
+            },
+            "interval": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "winHandle": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "winTitle": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "name": {
+          "description": "Control Name",
+          "type": "string"
+        },
+        "aid": {
+          "description": "AutomationId",
+          "type": "string"
+        },
+        "value": {
+          "description": "Value for setvalue/key/type (type accepts SendKeys syntax, e.g. 1234{ENTER})",
+          "type": "string"
+        },
+        "ascii": {
+          "description": "key: send ASCII directly instead of clipboard paste; type: treat {}^%~() as literal",
+          "type": "boolean"
+        },
+        "match": {
+          "description": "read: regex filter; on find/click: regex the control name matches (with index)",
+          "type": "string"
+        },
+        "index": {
+          "description": "Which match to use (0-based; reuse the #index from read)",
+          "type": "number"
+        },
+        "inAid": {
+          "description": "Scope the search/read to the subtree of this AutomationId container (read/state set narrowed+scope; a wrong container name fails loudly instead of silently reading the whole window)",
+          "type": "string"
+        },
+        "inName": {
+          "description": "Scope the search/read to the subtree of this Name container",
+          "type": "string"
+        },
+        "waitFor": {
+          "description": "Wait before acting: {ms?:5000, interval?:150, state?:\"appear\"|\"gone\"|\"enabled\"|\"disabled\", match?, index?}. Target = name/aid on the action, else name/aid inside waitFor, else match alone (tree-wide regex); all three empty is reported as missing target. read and state accept it too. COST: match-only walks the whole tree each poll (~3x the cost of aid/name; ms is not a hard bound since a poll cannot be interrupted) - give aid/name for loops or time-sensitive waits; match-only ms is capped at 15000.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        },
+        "state": {
+          "description": "waitfor: appear (default) | gone | enabled | disabled",
+          "type": "string"
+        },
+        "keys": {
+          "description": "type: key sequence (same as value, clearer intent)",
+          "type": "string"
+        },
+        "fromX": {
+          "description": "drag: start X (client-area coords)",
+          "type": "number"
+        },
+        "fromY": {
+          "description": "drag: start Y",
+          "type": "number"
+        },
+        "toX": {
+          "description": "drag: end X",
+          "type": "number"
+        },
+        "toY": {
+          "description": "drag: end Y",
+          "type": "number"
+        },
+        "steps": {
+          "description": "drag: interpolation steps (default 12)",
+          "type": "number"
+        },
+        "holdMs": {
+          "description": "drag: pause before press/release (default 120)",
+          "type": "number"
+        },
+        "label": {
+          "description": "Screenshot file label (shot mode)",
+          "type": "string"
+        },
+        "waitMs": {
+          "type": "number"
+        },
+        "allowSideEffects": {
+          "description": "REQUIRED true for click/setvalue/key/type/drag",
+          "type": "boolean"
+        },
+        "snapshotId": {
+          "description": "W1 freshness token returned by a prior read/state. When set, a side-effect action is rejected if the snapshot is stale (a newer read happened: staleSnapshot) or expired (client/serve restarted: expiredSnapshot). Omit to skip the freshness gate (legacy, zero-regression).",
+          "type": "string"
+        },
+        "targetRef": {
+          "description": "Opaque 30-second warm-process reference from find/state. Only action=pattern|doubleclick; do not combine with name/aid/match/index/inAid/inName/waitFor/requireUnique/visualFallback. Expired references fail without retry.",
+          "type": "string"
+        },
+        "requireUnique": {
+          "description": "Require exactly one name/aid/match target; cannot be combined with targetRef.",
+          "type": "boolean"
+        },
+        "approvalId": {
+          "description": "Application-bound once/session/persistent approval ID",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "Session owning the approval",
+          "type": "string"
+        },
+        "visualFallback": {
+          "description": "Explicitly allow vision coordinate fallback when UIA cannot locate a click/doubleclick target",
+          "type": "boolean"
+        },
+        "visualMinConfidence": {
+          "description": "Minimum visual confidence, default 0.78",
+          "type": "number"
+        },
+        "visualTarget": {
+          "description": "Visual target description; defaults to name/aid/match",
+          "type": "string"
+        },
+        "diff": {
+          "description": "read only: return an incremental diff {added,removed,unchanged} vs the last full read instead of just the flat list",
+          "type": "boolean"
+        },
+        "count": {
+          "description": "scroll: number of pages/lines (default 1). Also max items for some read modes.",
+          "type": "number"
+        },
+        "expectValue": {
+          "description": "type: expected value for the read-back check; selecttext: the suffix to select through",
+          "type": "string"
+        },
+        "x": {
+          "description": "move/clickat: client-area X",
+          "type": "number"
+        },
+        "y": {
+          "description": "move/clickat: client-area Y",
+          "type": "number"
+        },
+        "delta": {
+          "description": "wheel: scroll delta",
+          "type": "number"
+        },
+        "observeMax": {
+          "description": "observe=true: how many controls the post-action snapshot lists (default 15). Only affects the snapshot, not the action result.",
+          "type": "number"
+        },
+        "shotsDir": {
+          "description": "Directory to copy the screenshot into (absolute). Evidence always also lands in the evidence dir.",
+          "type": "string"
+        },
+        "captureMode": {
+          "description": "shot/capture: print window rendering by default, or screen pixels inside the target window rectangle",
+          "type": "string",
+          "enum": [
+            "print",
+            "screen"
+          ]
+        },
+        "mods": {
+          "description": "held modifier keys for drag/key, e.g. \"shift\" | \"ctrl\" | \"alt\"",
+          "type": "string"
+        },
+        "button": {
+          "description": "mouse button for coordinate actions (default left)",
+          "type": "string"
+        },
+        "double": {
+          "description": "true = double click at the coordinate instead of a single click",
+          "type": "boolean"
+        },
+        "focus": {
+          "description": "true = also set keyboard focus to the target",
+          "type": "boolean"
+        },
+        "winHandle": {
+          "description": "Target a specific top-level window by handle (from ui_windows) instead of the main window",
+          "type": "number"
+        },
+        "secret": {
+          "description": "Mask the value in output/evidence (password-like controls are masked automatically; this covers inputs that do not look like password fields)",
+          "type": "boolean"
+        },
+        "procId": {
+          "description": "Target process PID (disambiguate when several instances are running)",
+          "type": "number"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_flow",
+    "description": "Run a UI verification sequence and collect steps.json/replay.json evidence. find/read/windows/shot/wait/waitfor/expect are read-only; effect actions require allowSideEffects=true. Steps support selectors, index/container scope, waitFor conditions and coordinate endpoints. expect/waitfor contribute to passed/failed counts. Ordinary flows batch in one PowerShell process; approval-bound and visual-fallback flows reauthorize each step. Runtime depends on waits, identity checks and the target UI. Use ui_drive stepwise when later actions depend on observing earlier results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "find",
+                  "click",
+                  "setvalue",
+                  "key",
+                  "type",
+                  "drag",
+                  "clickat",
+                  "doubleclick",
+                  "move",
+                  "wheel",
+                  "pattern",
+                  "scroll",
+                  "selecttext",
+                  "read",
+                  "state",
+                  "shot",
+                  "windows",
+                  "wait",
+                  "waitfor",
+                  "expect",
+                  "expectwindow",
+                  "expecttext",
+                  "waitany"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "aid": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              },
+              "keys": {
+                "type": "string"
+              },
+              "ascii": {
+                "type": "boolean"
+              },
+              "match": {
+                "type": "string"
+              },
+              "index": {
+                "type": "number"
+              },
+              "requireUnique": {
+                "type": "boolean"
+              },
+              "targetRef": {
+                "description": "Not supported in flows; use an individual ui_drive/ui_act pattern or doubleclick action.",
+                "type": "string"
+              },
+              "inAid": {
+                "type": "string"
+              },
+              "inName": {
+                "type": "string"
+              },
+              "waitFor": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "state": {
+                "type": "string"
+              },
+              "fromX": {
+                "type": "number"
+              },
+              "fromY": {
+                "type": "number"
+              },
+              "toX": {
+                "type": "number"
+              },
+              "toY": {
+                "type": "number"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              },
+              "delta": {
+                "type": "number"
+              },
+              "double": {
+                "type": "boolean"
+              },
+              "button": {
+                "type": "string"
+              },
+              "captureMode": {
+                "description": "shot: print window rendering or screen pixels inside the target window rectangle",
+                "type": "string",
+                "enum": [
+                  "print",
+                  "screen"
+                ]
+              },
+              "procId": {
+                "description": "Override the flow target PID for this step",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "waitMs": {
+                "description": "Post-action settle time; find/read/shot/expect/windows default to 0",
+                "type": "number"
+              },
+              "label": {
+                "type": "string"
+              },
+              "expectEnabled": {
+                "description": "expect: assert enabled state",
+                "type": "boolean"
+              },
+              "expectMatch": {
+                "description": "expect: regex the control detail must match",
+                "type": "string"
+              },
+              "count": {
+                "description": "scroll: number of pages/lines (default 1)",
+                "type": "number"
+              },
+              "expectValue": {
+                "description": "type: read-back expectation; selecttext: the suffix",
+                "type": "string"
+              },
+              "expectwindow": {
+                "description": "deprecated alias — use action=expectwindow with titleRe",
+                "type": "string"
+              },
+              "titleRe": {
+                "description": "expectwindow / waitany(window): window title regex",
+                "type": "string"
+              },
+              "textRe": {
+                "description": "expecttext / waitany(text): text regex",
+                "type": "string"
+              },
+              "gone": {
+                "description": "expectwindow: true = wait until the window disappears",
+                "type": "boolean"
+              },
+              "ms": {
+                "description": "wait/waitfor: timeout ms",
+                "type": "number"
+              },
+              "interval": {
+                "description": "waitfor: poll interval ms",
+                "type": "number"
+              },
+              "conds": {
+                "description": "waitany conditions",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                }
+              },
+              "stableCount": {
+                "description": "waitany: consecutive confirmations before a hit counts",
+                "type": "number"
+              },
+              "max": {
+                "description": "read/state/tree steps: cap the number of lines/nodes returned",
+                "type": "number"
+              },
+              "maxDepth": {
+                "description": "tree steps: maximum depth",
+                "type": "number"
+              },
+              "steps": {
+                "description": "drag: interpolation steps (default 12)",
+                "type": "number"
+              },
+              "holdMs": {
+                "description": "drag: pause before press/release (default 120)",
+                "type": "number"
+              },
+              "mods": {
+                "description": "drag/key: held modifier keys, e.g. \"shift\" | \"ctrl\" | \"alt\"",
+                "type": "string"
+              },
+              "focus": {
+                "description": "also set keyboard focus to the target before acting",
+                "type": "boolean"
+              },
+              "winTitle": {
+                "description": "Target a specific top-level window by title instead of the main window",
+                "type": "string"
+              },
+              "winHandle": {
+                "description": "Target a specific top-level window by handle (from ui_windows)",
+                "type": "number"
+              },
+              "expectedRect": {
+                "description": "Visual fallback: expected window rect before coordinate click",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "number"
+                }
+              },
+              "expectedWindowHandle": {
+                "description": "Visual fallback: expected window handle before coordinate click",
+                "type": "number"
+              },
+              "stopOnFailure": {
+                "description": "Stop the batch engine immediately after this step fails",
+                "type": "boolean"
+              },
+              "approvalId": {
+                "description": "Override the flow approval for this step",
+                "type": "string"
+              },
+              "sessionId": {
+                "description": "Override the flow approval session for this step",
+                "type": "string"
+              },
+              "visualFallback": {
+                "description": "Explicitly allow vision fallback for this step",
+                "type": "boolean"
+              },
+              "visualMinConfidence": {
+                "description": "Minimum visual confidence for this step",
+                "type": "number"
+              },
+              "visualTarget": {
+                "description": "Visual target description for this step",
+                "type": "string"
+              },
+              "secret": {
+                "description": "Mask input values in output and evidence",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "description": "Step sequence"
+        },
+        "tag": {
+          "description": "Evidence dir label (default flow)",
+          "type": "string"
+        },
+        "procId": {
+          "description": "Default target PID inherited by steps",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "waitMs": {
+          "description": "Default post-action settling time; use 0 with explicit waitfor steps",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000
+        },
+        "failFast": {
+          "description": "Stop at the first failed assertion",
+          "type": "boolean"
+        },
+        "allowSideEffects": {
+          "description": "REQUIRED true when the sequence contains side-effect steps (click/setvalue/key/type/drag/pattern/scroll/selecttext/clickat/doubleclick)",
+          "type": "boolean"
+        },
+        "approvalId": {
+          "description": "Default application-bound approval ID for steps",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "Default approval session for steps",
+          "type": "string"
+        },
+        "visualFallback": {
+          "description": "Default visual fallback opt-in for steps",
+          "type": "boolean"
+        },
+        "visualMinConfidence": {
+          "description": "Default minimum visual confidence, 0.78",
+          "type": "number"
+        },
+        "visualTarget": {
+          "description": "Default visual target description for steps",
+          "type": "string"
+        },
+        "secret": {
+          "description": "Mask all input step values in output and evidence",
+          "type": "boolean"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_replay",
+    "description": "Replay a replay.json produced by ui_flow using the same action/observation protocol and evidence ledger. Side-effect steps still require allowSideEffects=true and may be bound to an approvalId.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "replayPath": {
+          "type": "string",
+          "description": "Absolute path to replay.json produced by ui_flow"
+        },
+        "allowSideEffects": {
+          "description": "REQUIRED true when replay contains side-effect steps",
+          "type": "boolean"
+        },
+        "failFast": {
+          "description": "Stop after the first failure; default true",
+          "type": "boolean"
+        },
+        "tag": {
+          "description": "Evidence label for this replay",
+          "type": "string"
+        },
+        "approvalId": {
+          "description": "Application-bound approval ID for this replay",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "Session owning the approval",
+          "type": "string"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "replayPath"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_observe",
+    "description": "Read-only UI observation (recommended entry point; no allowSideEffects needed). Actions: find / read (controls + real input values) / state (snapshot: window + focus + interactive controls) / windows / waitfor / expectwindow / expecttext / waitany / shot. The dynamic-UI loop is: ui_observe -> decide -> ui_act -> ui_observe. read/state also honour inAid/inName (container scope), winTitle (cross-window) and waitFor (e.g. wait for a list to render before reading); a scoped listing is labelled narrowed+scope — an unlabelled listing covers the whole window. waitany is how you adjudicate a login: bet on \"main window appeared\", \"error text appeared\" and \"login window still there\" at once and get back which one hit (with stableCount confirmation to avoid transient states).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "find",
+            "read",
+            "state",
+            "windows",
+            "waitfor",
+            "expectwindow",
+            "expecttext",
+            "waitany",
+            "shot",
+            "move",
+            "wheel",
+            "capture",
+            "state-live"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "aid": {
+          "type": "string"
+        },
+        "match": {
+          "type": "string"
+        },
+        "textRe": {
+          "description": "expecttext / waitany(text): text regex (e.g. ErrorInfo)",
+          "type": "string"
+        },
+        "titleRe": {
+          "description": "expectwindow / waitany(window): window title regex",
+          "type": "string"
+        },
+        "gone": {
+          "description": "expectwindow: true = wait until the window disappears",
+          "type": "boolean"
+        },
+        "ms": {
+          "description": "Timeout ms (default 5000; waitany 15000)",
+          "type": "number"
+        },
+        "interval": {
+          "type": "number"
+        },
+        "state": {
+          "description": "waitfor condition: appear|gone|enabled|disabled",
+          "type": "string"
+        },
+        "waitFor": {
+          "description": "Wait before reading/acting: {ms?, interval?, state?, match?, index?}. Target = name/aid on the action, else name/aid inside waitFor, else match alone (tree-wide regex). read, state and state-live accept it too. match-only costs ~3x (whole-tree walk per poll) and its ms is capped at 15000 - give aid/name for loops.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        },
+        "conds": {
+          "description": "waitany conditions: [{kind:\"window\"|\"text\"|\"appear\"|\"gone\"|\"enabled\"|\"disabled\", titleRe?, textRe?, name?, aid?, label?}]",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "stableCount": {
+          "description": "waitany: consecutive confirmations before a hit counts (default 2)",
+          "type": "number"
+        },
+        "diff": {
+          "description": "read only: return an incremental diff {added,removed,unchanged} against the previous full read (first read returns a diffBaseline marker; an incomplete read suppresses the diff instead of reporting a phantom one)",
+          "type": "boolean"
+        },
+        "procId": {
+          "description": "Target a specific process id (default: auto-detected)",
+          "type": "number"
+        },
+        "index": {
+          "type": "number"
+        },
+        "inAid": {
+          "description": "Scope the search/read to the subtree of this AutomationId container (read/state set narrowed+scope)",
+          "type": "string"
+        },
+        "inName": {
+          "description": "Scope the search/read to the subtree of this Name container",
+          "type": "string"
+        },
+        "winTitle": {
+          "description": "Scope the search/read to the window whose title matches",
+          "type": "string"
+        },
+        "max": {
+          "type": "number"
+        },
+        "label": {
+          "type": "string"
+        },
+        "captureMode": {
+          "description": "shot/capture: print window rendering by default, or screen pixels inside the target window rectangle",
+          "type": "string",
+          "enum": [
+            "print",
+            "screen"
+          ]
+        },
+        "winHandle": {
+          "description": "Target a specific top-level window by handle (from ui_windows) — steadier than winTitle",
+          "type": "number"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_launch",
+    "description": "Start the target desktop client (the exe named by DSH_UI_CLIENT_EXE) and wait for its main window; if it is already running the existing process is returned. A screenshot is taken by DEFAULT once the window is ready (includeScreenshot=false skips it) and its PNG path is returned — read that image yourself; this plugin calls no vision model and produces no text description. extraArgs passes extra command-line arguments (e.g. --remote-debugging-port=9222 for CEF debugging). WARNING: if the client has just hung, do NOT reach for force first - force=true kills the process and destroys the only crime scene (no dump / no thread stacks / no evidence bundle). Capture evidence FIRST (perf_dump for a snapshot, or hang_run to watch for a recurrence), then force=true to restart. force=true is the ONLY restart path: it kills the running target process first and reports exactly which PIDs were killed and how long it waited; it REFUSES when several same-named processes exist and DSH_UI_CLIENT_EXE does not disambiguate (never kills the wrong session). Use this when ui_status reports the client is not running - every other ui_* tool needs a live window.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "includeScreenshot": {
+          "description": "Capture a screenshot after readiness (ON by default); pass false to skip it. Returns a PNG path — reading the image is the caller's job.",
+          "type": "boolean"
+        },
+        "extraArgs": {
+          "description": "Extra command-line arguments, space separated",
+          "type": "string"
+        },
+        "waitMs": {
+          "description": "How long to wait for the main window (default 60000)",
+          "type": "number"
+        },
+        "force": {
+          "description": "DESTRUCTIVE: kill the running target client first, then start it (restart a hung client). Confirm with the user before using.",
+          "type": "boolean"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_tree",
+    "description": "Dump the in-process visual tree: a read-only probe is injected into the target client and reports real control types + Name + AutomationId + DataContext type. Richer than UIA, for diagnosing bindings / templates. Read-only, no popups. Prefer ui_observe for ordinary interaction - use this only when UIA detail is insufficient. When the injector is unavailable (no Snoop / DSH_SNOOP_DIR unset) it AUTOMATICALLY FALLS BACK to a UIA hierarchy tree and returns source:\"uia\" - that one has types/Name/AutomationId/enabled/offscreen/bounds/hierarchy but NO DataContext and NO real WPF type names, so do not treat it as the richest tree. Both hidden caps (maxDepth cut-off, node-count cap) and body truncation are reported explicitly (truncated/depthLimited/nodeCapHit) - a maxDepth value does NOT mean you got the whole tree.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "maxDepth": {
+          "description": "Maximum depth (default 8, capped at 20). When it cuts the tree off the result carries depthLimited=true - that is NOT a complete tree",
+          "type": "number"
+        },
+        "inAid": {
+          "description": "Scope the dump to one container (AutomationId): only its subtree is returned. The whole-window tree blows past the 14000-char body cap - narrowing first (ui_observe read/state to find a container aid, then ui_tree inAid=...) is the only way to get a COMPLETE subtree. The result reports narrowed/scope. Note: with a scope the UIA path is used (the injector cannot scope).",
+          "type": "string"
+        },
+        "inName": {
+          "description": "Scope the dump to one container by Name (same as inAid)",
+          "type": "string"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_live",
+    "description": "Watch the running client continuously: a background loop grabs \"window content\" frames without stealing the foreground or restoring a minimized window. action=start (idempotent; intervalMs default 1500) / stop / status (current snapshot, no new capture) / frame (latest frame info: path + hash + control summary; fresh=true forces a new capture; degrades to a one-shot capture when not started) / wait (block until the frame hash changes; fromHash is the baseline, timeoutMs default 30000). Read the returned path with a vision-capable model to actually see the screen. Frames whose focus is a password/captcha/token control do NOT return a path unless allowSensitive=true - pixels cannot be redacted. Only start the loop when you need to watch changes over time; for a single look use frame.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "start",
+            "stop",
+            "status",
+            "frame",
+            "wait"
+          ]
+        },
+        "intervalMs": {
+          "description": "Frame interval ms (default 1500)",
+          "type": "number"
+        },
+        "stateIntervalMs": {
+          "description": "Control-state sampling interval ms (default 3000)",
+          "type": "number"
+        },
+        "maxControls": {
+          "description": "Max controls in the state summary (default 40)",
+          "type": "number"
+        },
+        "fresh": {
+          "description": "frame: force a new capture",
+          "type": "boolean"
+        },
+        "fromHash": {
+          "description": "wait: baseline frame hash",
+          "type": "string"
+        },
+        "timeoutMs": {
+          "description": "wait: max wait ms (default 30000)",
+          "type": "number"
+        },
+        "allowSensitive": {
+          "description": "Return a frame path even when a password/captcha control has focus",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "ui_act",
+    "description": "Real UI action (side effects; allowSideEffects=true required): click / setvalue (use this for key-filtered fields such as a phone box) / key / type ({ENTER} {TAB} sequences) / drag (slider captcha) / clickat (client-area coordinates, for table rows or chart points where UIA cannot give a stable element - fragile, invalidated when the window moves) / doubleclick (element-level) / pattern (invoke a UIA pattern the element actually exposes; put the action name in value, e.g. Expand|Collapse|Increment|Decrement|Select|AddToSelection|RemoveFromSelection|ScrollIntoView|Toggle|Invoke|Focus|Close|Minimize|Maximize|Restore; unsupported patterns report an error instead of falling back to a click) / scroll (semantic ScrollPattern: direction in value, pages in count) / selecttext (TextPattern selection: text in value, prefix in match, suffix in expectValue, selectionType in state). Input is read back and verified — a value that did not land is ok:false, never a silent success. Password/captcha fields are never echoed. A name-based hard-deny list is enforced in the driver and allowSideEffects cannot unlock it: any control whose name/AutomationId matches DSH_UI_DENY_RE is refused. The list is EMPTY by default (nothing is denied unless the operator configures it), so the refusal always names the control, prints the active list, and says how to fix a false positive. observe=true attaches a UI snapshot after the action. Credentials: pass ${cred:name}; the driver expands DSH_CRED_name from its own environment, so the secret never enters the model context or the evidence files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "waitAfter": {
+          "description": "After a successful effect action, confirm a specific aid/name condition without a full UI snapshot. Defaults: state=appear, ms=1500, interval=50. Overrides observe; actionOk and confirmed report action execution and confirmation separately. Does not retry the action.",
+          "type": "object",
+          "properties": {
+            "aid": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "appear",
+                "gone",
+                "enabled",
+                "disabled"
+              ]
+            },
+            "ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30000
+            },
+            "interval": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "winHandle": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "winTitle": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "click",
+            "setvalue",
+            "key",
+            "type",
+            "drag",
+            "clickat",
+            "doubleclick",
+            "pattern",
+            "scroll",
+            "selecttext",
+            "move",
+            "wheel"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "aid": {
+          "type": "string"
+        },
+        "value": {
+          "description": "setvalue/key/type content; supports ${cred:name}",
+          "type": "string"
+        },
+        "keys": {
+          "type": "string"
+        },
+        "ascii": {
+          "type": "boolean"
+        },
+        "match": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number"
+        },
+        "inAid": {
+          "type": "string"
+        },
+        "winTitle": {
+          "type": "string"
+        },
+        "waitFor": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        },
+        "expectValue": {
+          "description": "type: expected value for the read-back check",
+          "type": "string"
+        },
+        "secret": {
+          "description": "Mask the value in output and evidence. NOTE: password/captcha controls are masked AUTOMATICALLY (reads return <secret:Nchars>) — use this flag for sensitive inputs that do not look like password fields",
+          "type": "boolean"
+        },
+        "fromX": {
+          "type": "number"
+        },
+        "fromY": {
+          "type": "number"
+        },
+        "toX": {
+          "type": "number"
+        },
+        "toY": {
+          "type": "number"
+        },
+        "observe": {
+          "type": "boolean"
+        },
+        "observeMatch": {
+          "type": "string"
+        },
+        "observeMax": {
+          "description": "observe=true: how many controls the post-action snapshot lists (default 15)",
+          "type": "number"
+        },
+        "waitMs": {
+          "type": "number"
+        },
+        "allowSideEffects": {
+          "description": "REQUIRED true",
+          "type": "boolean"
+        },
+        "snapshotId": {
+          "description": "W1 freshness token from a prior read/state. When set, the action is rejected if the snapshot is stale (staleSnapshot) or expired (expiredSnapshot). Omit to skip the freshness gate. (ui_act forwards all args to the driver, so this reaches the same write-side gate as ui_drive.)",
+          "type": "string"
+        },
+        "targetRef": {
+          "description": "Opaque 30-second warm-process reference from find/state. Only action=pattern|doubleclick; do not combine with name/aid/match/index/inAid/inName/waitFor/requireUnique/visualFallback. Expired references fail without retry.",
+          "type": "string"
+        },
+        "requireUnique": {
+          "description": "Require exactly one name/aid/match target; cannot be combined with targetRef.",
+          "type": "boolean"
+        },
+        "approvalId": {
+          "description": "Application-bound once/session/persistent approval ID",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "Session owning the approval",
+          "type": "string"
+        },
+        "visualFallback": {
+          "description": "Explicitly allow vision coordinate fallback when UIA cannot locate a click/doubleclick target",
+          "type": "boolean"
+        },
+        "visualMinConfidence": {
+          "description": "Minimum visual confidence, default 0.78",
+          "type": "number"
+        },
+        "visualTarget": {
+          "description": "Visual target description; defaults to name/aid/match",
+          "type": "string"
+        },
+        "count": {
+          "description": "scroll: number of pages/lines (default 1)",
+          "type": "number"
+        },
+        "x": {
+          "description": "clickat: client-area X",
+          "type": "number"
+        },
+        "y": {
+          "description": "clickat: client-area Y",
+          "type": "number"
+        },
+        "mods": {
+          "description": "held modifier keys for drag, e.g. \"shift\" | \"ctrl\" | \"alt\"",
+          "type": "string"
+        },
+        "winHandle": {
+          "description": "Target a specific top-level window by handle (from ui_windows) — steadier than winTitle",
+          "type": "number"
+        },
+        "inName": {
+          "description": "Scope the search to the subtree of this Name container",
+          "type": "string"
+        },
+        "procId": {
+          "description": "Target process PID (disambiguate when several instances are running)",
+          "type": "number"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_probe",
+    "description": "**UI-thread stutter DETECTOR (produces no call chain).** To answer \"**which code / which call chain** causes the stutter\", do NOT use this tool — go straight to `perf_trace` then `perf_hotstacks`. What this tool does: loops a window-message round trip against the target client main window, reports P50/P95/P99 and every event over the threshold. capture=log (default) only records; capture=shot screenshots the stall; capture=dump grabs a full dump on the first stall (hundreds of MB). MEASUREMENT SCOPE (calibrated on this machine 2026-09-11 — read before concluding): it only measures the UI-thread message pump, so (a) non-UI-thread stalls (GC / IO / worker / background threads) are structurally invisible (calibration: background thread blocked 2000ms every 3s -> 0 hits over 110-191 samples, max 8-9ms, indistinguishable from idle); (b) a block falling entirely between two samples is missed (120ms block with 100ms sampling -> 1/5 hits); (c) P50 is normally 0ms even while stalling - judge by max and hit count; (d) \"0 stutters\" only means no UI-thread block above the threshold, NOT that the client is smooth. Tuning: to catch >=500ms stalls use thresholdMs 200-300 (a 500ms block measures ~492ms, so a 500 threshold can reject it) and intervalMs 100-150. The JSON result carries measurementScope with these limits.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seconds": {
+          "default": 60,
+          "description": "Sampling duration in seconds",
+          "type": "number"
+        },
+        "thresholdMs": {
+          "default": 500,
+          "description": "Stutter threshold in ms. 500 can miss a ~500ms block (measures 492-513ms) - use 200-300 to catch those",
+          "type": "number"
+        },
+        "capture": {
+          "default": "log",
+          "type": "string",
+          "enum": [
+            "log",
+            "shot",
+            "dump"
+          ]
+        },
+        "intervalMs": {
+          "default": 300,
+          "description": "Sampling interval in ms. Hit rate collapses when the block is the same order as the interval (120ms block + 100ms sampling -> 1/5)",
+          "type": "number"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_report",
+    "description": "Read the most recent perf_probe report (P50/P95/P99 + stall events).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_dump",
+    "description": "Capture a full memory dump of the running client (procdump -ma — this SUSPENDS the process for a few seconds, so the user sees a brief freeze) and immediately analyse it: UI thread managed stack + top lock-holding threads, and returns dumpPath (absolute dump path — feed it to perf_analyze / perf_heap). It answers only \"who is on the stack RIGHT NOW\", NOT \"who keeps calling it\": for intermittent freezes / repaint storms use perf_trace then perf_hotstacks; if the client is frozen right now, capture BEFORE ui_launch(force=true) destroys the scene. Dumps are hundreds of MB and land in the perf evidence dir; ask the user before deleting. SOURCE LINES come from THIS path: dump analysis also maps frames to source (with DSH_PERF_SRC_ROOT configured it prints \"← relative/path.cs:line\") — that is where a file:line answer comes from. The ETW path (perf_hotstacks) resolves symbols to module!type.method only and does NOT map to source lines.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "analyze": {
+          "description": "Default true. Set false to return once the dump is captured, then use perf_analyze separately.",
+          "type": "boolean"
+        },
+        "note": {
+          "description": "Scenario note written alongside the evidence",
+          "type": "string"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_analyze",
+    "description": "Re-run the ClrMD analysis (UI thread stack + hot lock threads) on an existing dump file.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "dumpPath": {
+          "type": "string",
+          "description": "Absolute path to the .dmp file"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "dumpPath"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_heap",
+    "description": "**Managed** heap type census (object count / total bytes per type, Top N) — the first cut of a memory leak hunt: take two dumps and compare the same type across them. MEASUREMENT SCOPE (read before concluding): (a) MANAGED heap only — a WPF client's growth is often UNMANAGED (bitmaps, font handles, COM, native buffers) or address-space fragmentation, none of which this can see, so \"the managed heap did not grow\" does NOT prove \"no leak\"; (b) garbage not yet collected between the two samples reads as growth (let the client settle / force a GC, or widen the interval); (c) the output has types and byte counts only — NO retention paths / GC roots — so it cannot answer \"which code leaks\"; (d) when the user says \"memory\", they usually mean the working set in Task Manager, which is a different measurement — report both separately.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "dumpPath": {
+          "type": "string",
+          "description": "Absolute path to the .dmp file"
+        },
+        "topN": {
+          "description": "Top N types (default 30)",
+          "type": "number"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "dumpPath"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_gcroot",
+    "description": "**Heap GC roots / retention chains** — the half perf_heap cannot answer: \"**what keeps this object alive**\". Uses a self-built ClrMD analyzer (HeapRoots): without `type` it gives the managed-heap Top types (same as perf_heap); with `type` (a type-name substring) it additionally finds, for objects of that type, the shortest **GC root → object** retention chain (root kind + the type name at each hop) — break a holder on that chain and the object becomes collectable. This is PerfView's `!gcroot`-style capability. SCOPE (must relay): (a) MANAGED heap only — unmanaged (bitmaps/font handles/COM/native buffers) and working set are invisible; (b) SINGLE snapshot — large count/bytes is NOT a leak (a leak is the same type growing over time; take a second dump later and compare); (c) the chain is the SHORTEST one from a bounded BFS, not every referrer. Take a dump first with perf_dump (or reuse one).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "dumpPath": {
+          "type": "string",
+          "description": "Absolute path to the .dmp (from perf_dump, or an existing one)."
+        },
+        "type": {
+          "description": "Type-name SUBSTRING (e.g. WidgetType / Bitmap / EventHandler). Retention chains are computed only when given; otherwise Top types only.",
+          "type": "string"
+        },
+        "top": {
+          "description": "Top type count, default 30 (5-100).",
+          "type": "number"
+        },
+        "paths": {
+          "description": "Max retention chains to return, default 5 (1-50). Keep it modest on big heaps.",
+          "type": "number"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "dumpPath"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_trace",
+    "description": "ETW sampling profiler — **use this to get from \"the UI stutters\" to a full call chain** instead of guessing. action=start begins sampling (you reproduce the problem), action=stop produces the .etl, action=run does start→wait seconds→stop. Difference from perf_dump: a dump is ONE instant and can only say \"who was on the stack\"; this samples continuously, so it can say **who keeps calling what** — which is what intermittent stutter / repaint storms need. Captures CPU + DotNet presets together (without DotNet, managed method names will not resolve). Requires DSH to run as ADMIN (ETW kernel session). The .etl can be hundreds of MB. Then call perf_hotstacks on the .etl to get the chains.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "start | stop | run (default) | cancel | status = is a session running (running comes from our own session marker, not from querying xperf; samplerProcessFound is corroborating and null means unknown)",
+          "type": "string",
+          "enum": [
+            "start",
+            "stop",
+            "run",
+            "cancel",
+            "status"
+          ]
+        },
+        "seconds": {
+          "description": "For action=run: how long to sample (default 20)",
+          "type": "number"
+        },
+        "profile": {
+          "description": "cpu (default: CPU+DotNet, resolves managed names) | dotnet | general",
+          "type": "string",
+          "enum": [
+            "cpu",
+            "dotnet",
+            "general"
+          ]
+        },
+        "tag": {
+          "description": "Evidence-dir suffix tag, e.g. repaint-storm",
+          "type": "string"
+        },
+        "etlPath": {
+          "description": "For action=stop: which .etl to stop into (the etlPath returned by start)",
+          "type": "string"
+        },
+        "engine": {
+          "description": "Capture engine (default auto): auto = use WPR unless the pre-start self-check says WPR cannot finish a trace on this machine, in which case it switches to xperf; wpr = force WPR; xperf = force xperf. The xperf path does an extra `xperf -merge` on stop BECAUSE module attribution is only produced during that merge (an unmerged trace reports nothing but ***unknown***, not even module names).",
+          "type": "string",
+          "enum": [
+            "auto",
+            "wpr",
+            "xperf"
+          ]
+        },
+        "skipPreflight": {
+          "description": "Skip the pre-start self-check (default false). The check starts a tiny WPR session and immediately stops it to verify that WPR on this machine can finish a trace; with engine=auto its verdict ALSO routes the capture channel (broken WPR -> xperf); with an explicit engine=\"wpr\" start still runs but the result carries a warning (the etl will most likely never appear).",
+          "type": "boolean"
+        },
+        "clr": {
+          "description": "true = also start a PARALLEL CLR session (default off), capturing Microsoft-Windows-DotNETRuntime (GC 0x4001 + Loader|JIT 0x18) and ...Rundown (0x18) into clr-events.etl next to the trace. It is a SECOND, independent session on purpose: WPR cannot finish a trace on this machine, and the xperf fallback uses kernel-only flags — a measured 276 MB trace.etl had no e13c0d23 at all, so without this session GC data is never collected. Stopping the capture stops this session too (the stop path has six early returns; a missed stop would leave an orphan session writing to disk forever). If it fails to start it does NOT invalidate the main capture — you get clrWarning saying \"no GC data\" is not \"no GC pauses\". Then run perf_clrevents(clrEtlPath).",
+          "type": "boolean"
+        },
+        "jit": {
+          "description": "true = also start a PARALLEL CLR method/rundown session (default off), producing jit-methods.etl next to the trace, feeding perf_flame's address->method map so the flame graph shows the CLIENT's OWN method names (not [unknown]). It enables Microsoft-Windows-DotNETRuntimeRundown 0x118: DCEnd fires at STOP and enumerates all currently-jitted methods (including those jitted during the window) => LOW pollution during the sampling window (no StartRundown, almost no events while sampling). Stopped automatically with the capture (else an orphan session). If it fails to start it does NOT invalidate the main capture (jitWarning: 'no method map' is not 'no client code'). perf_flame auto-discovers and uses it afterwards. Include it when you want a call chain for client-side stutter/hotspots.",
+          "type": "boolean"
+        },
+        "alloc": {
+          "description": "true = also start a PARALLEL allocation-sampling session (default off), capturing GCAllocationTick (one sample per ~100KB allocated, with type + bytes) WITH call stacks into alloc-events.etl next to the trace, feeding perf_allocflame's 'who is allocating / making GC pressure' flame graph (PerfView's GC Heap Alloc Stacks). Allocation churn is a major cause of WPF stutter (alloc -> frequent GC -> UI pauses). Uses an xperf named user session (provider spec ends with the literal :'stack'). Stopped and -merged automatically. WARNING only works for a CLR whose manifest resolves — this box's .NET Framework client is fine; .NET Core/5+ falls to UnknownEvent. If it fails it does NOT invalidate the main capture (allocWarning). Best paired with jit=true so the allocation paths carry client method names.",
+          "type": "boolean"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_hotstacks",
+    "description": "Turn a .etl into a **call chain**: hottest-function ranking (who burns CPU) + butterfly view (each function's **callers <-- and --> callees**, with hit counts). focus keeps only functions whose name matches the regex (e.g. \"SciChart|KLine|<your suspect layer>\"), compressing a multi-MB report into one readable causal chain. NOTE: the **unresolved-symbol ratio is reported on the first line** — if it is high, fix symbols (DSH_PERF_SYMBOL_PATH) before drawing conclusions, otherwise \"symbols did not resolve\" gets misread as \"that code was never called\".",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "etlPath": {
+          "type": "string",
+          "description": "Absolute path to the .etl produced by perf_trace"
+        },
+        "focus": {
+          "description": "Regex: keep only matching functions (module or method fragment)",
+          "type": "string"
+        },
+        "process": {
+          "description": "Process name regex (recommended; defaults to DSH_UI_PROC_NAME)",
+          "type": "string"
+        },
+        "topN": {
+          "description": "Ranking/chain count, default 15",
+          "type": "number"
+        },
+        "minHits": {
+          "description": "Butterfly-view minimum hits, default 5",
+          "type": "number"
+        },
+        "offline": {
+          "description": "true = skip the symbol server (fast, but native frames stay unknown)",
+          "type": "boolean"
+        },
+        "timeoutMs": {
+          "description": "Report timeout in ms, default 900000",
+          "type": "number"
+        },
+        "debugSymbols": {
+          "description": "true = let xperf print symbol-lookup details (returned in xperfRaw on success and failure alike)",
+          "type": "boolean"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "etlPath"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_clrevents",
+    "description": "Summarize CLR GC counts/pauses, managed heap and contention from an ETL containing the CLR provider. Defaults to scope=machine-wide across ALL processes; these totals are not attributable to the target client. Pass pid to select one process; original and filtered event counts are returned. Missing CLR provider, no runtime events for the selected PID, decode failure, timeout or size limit mean unknown, not zero GC; an absent target returns state=not-captured-for-target. Capture with perf_trace(clr=true); kernel-only ETLs lack CLR events. Pause pairs require the same PID and CLR instance (SuspendEEStart to RestartEEStop). Machine-wide pause totals sum individual process pauses, not simultaneous machine suspension. topPauses and heapProcessId identify owners. Tracerpt absolute times may have a roughly one-minute offset; duration differences are unaffected.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reuse": {
+          "description": "Reuse XML only when its input, decoder and artifact manifest match; default false.",
+          "type": "boolean"
+        },
+        "etlPath": {
+          "type": "string",
+          "description": "Absolute .etl path. An etl from the kernel channel reports \"never captured\" because it has no CLR provider — capture with perf_trace(clr=true) to get GC data."
+        },
+        "pid": {
+          "description": "Optional single Windows PID, e.g. 32412. Omit for machine-wide totals. When supplied, only that PID is summarized; no matching CLR runtime events means not captured for this target, not zero GC.",
+          "type": "string"
+        },
+        "xmlPath": {
+          "description": "XML output location; attempts use unique paths by default. Existing XML requires reuse=true and matching fingerprints.",
+          "type": "string"
+        },
+        "maxXmlMb": {
+          "description": "Decoded-size ceiling in MB (default 2048). Decoding measured 4-6x the etl, so a few-hundred-MB system trace becomes gigabytes; above the ceiling it does NOT decode and reports the estimate plus \"unknown, not 0\" instead of silently writing a GB file.",
+          "type": "number"
+        },
+        "timeoutMs": {
+          "description": "Per-step tracerpt timeout in ms (default 900000). The summary pass measured ~14s on a 79.5 MB etl.",
+          "type": "number"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "etlPath"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_flame",
+    "description": "Turn a .etl into a **CPU flame graph** (the whole root-to-leaf CPU-time tree) — the half perf_hotstacks cannot give: hotstacks is a TEXT butterfly (caller/callee pairs), this is a clickable / zoomable / searchable graph (PerfView's signature view). It runs `xperf -a dumper` (per-sample events + one-frame-per-row Stack events joined by (timestamp,thread) into full stacks) and folds them into collapsed stacks, STREAMING + filtered to one process. Two artifacts: flame.html (SELF-CONTAINED inline SVG+JS, opens in any browser, no network) and flame.folded (drag onto https://speedscope.app, or feed flamegraph.pl). Default MODULE mode (fast): each frame collapses to its module — you instantly see how much CPU is in SciChart vs WPF vs clr vs the client; WARNING the client's OWN methods do NOT resolve (its assemblies are JIT-compiled; dbghelp cannot name a JIT address, see docs/perfview-parity.md §3) and collapse into an `[unknown]` band (that band is mostly the client's own code, NOT 'unknown overhead'; §4's address->method map will name it). symbols=true resolves native/framework frame names via the symbol server (slow). Cost: the dumper CSV is ~7x the etl (a few-hundred-MB etl -> 1-2GB CSV); this tool stream-reads it filtered to the process and deletes it afterwards by default (keepCsv to keep, csvPath to reuse).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "etlPath": {
+          "type": "string",
+          "description": "Absolute path to the .etl produced by perf_trace."
+        },
+        "process": {
+          "description": "Fold only this process (regex; defaults to DSH_UI_PROC_NAME). A flame graph MUST be per-process, otherwise all processes' stacks mix together (dumper is machine-wide).",
+          "type": "string"
+        },
+        "symbols": {
+          "description": "true = run dumper with -symbols to resolve native/framework frame names (slow, hits the symbol server); default false = module level (fast). NOTE the client's own JIT'd method names resolve in NEITHER mode (see §3/§4).",
+          "type": "boolean"
+        },
+        "csvPath": {
+          "description": "Reuse an already-generated dumper CSV (skip re-decoding; saves minutes and 1-2GB of rewrite).",
+          "type": "string"
+        },
+        "keepCsv": {
+          "description": "true = keep the GB-scale dumper CSV after folding (default deletes it; folded/html are already written).",
+          "type": "boolean"
+        },
+        "jitEtl": {
+          "description": "The etl from the CLR method/rundown session (perf_trace(jit=true)'s jit-methods.etl). AUTO-DISCOVERED next to the kernel etl by default — no need to pass it; pass to override. With it, the client's own `\"Unknown\"` JIT frames resolve to REAL managed method names (§4, join proven on this box).",
+          "type": "string"
+        },
+        "noJit": {
+          "description": "true = do NOT use a sibling jit-methods.etl even if present (module-level flame only; skips a tracerpt decode).",
+          "type": "boolean"
+        },
+        "timeoutMs": {
+          "description": "dumper decode timeout ms (default 900000). The dumper CSV is ~7x the etl; large etls are slow.",
+          "type": "number"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "etlPath"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_allocflame",
+    "description": "Turn an **allocation-sampling** etl (perf_trace(alloc=true)'s alloc-events.etl) into an **allocation flame graph** — answering \"**who allocates / makes GC pressure**\" (PerfView's GC Heap Alloc Stacks). It joins GCAllocationTick events (one per ~100KB, carrying TypeName+bytes) to call stacks by (timestamp,thread), folds them BYTE-WEIGHTED into a self-contained interactive alloc-flame.html + alloc-flame.folded, and lists the Top allocating types. Auto-reuses a sibling jit-methods.etl (if perf_trace(jit=true) captured one) to resolve client allocation paths to real method names. SCOPE: AllocationTick is SAMPLED (~1 per 100KB), weight is an approximation in bytes; allocating a lot is NOT a leak (most is collected fast) — it answers 'who churns / makes GC pressure' (a common WPF-stutter cause); for leaks use perf_gcroot. NOTE the alloc session is an xperf USER session whose event process names are mostly \"Unknown\"(PID), so it filters by resolving the target process name to PIDs live (pass pid if the process already exited).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "etlPath": {
+          "type": "string",
+          "description": "Absolute path to alloc-events.etl produced by perf_trace(alloc=true)."
+        },
+        "process": {
+          "description": "Target process name (default DSH_UI_PROC_NAME). Used to resolve PIDs live for filtering (alloc events are matched by PID).",
+          "type": "string"
+        },
+        "pid": {
+          "description": "Target PID(s) directly (comma-separated). Use when the process has EXITED and tasklist can't resolve the name.",
+          "type": "string"
+        },
+        "symbols": {
+          "description": "true = dumper with -symbols to resolve native/framework frame names (slow); default module level. Client JIT method names come from jit-methods.etl, independent of this.",
+          "type": "boolean"
+        },
+        "noJit": {
+          "description": "true = don't use a sibling jit-methods.etl even if present (client alloc paths collapse to [unknown]).",
+          "type": "boolean"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "etlPath"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_uifreeze",
+    "description": "**UI-freeze analysis** — replicates dotTrace/PerfView's \"UI Freeze\" view: how many times the UI thread froze, for how long each, and the call chain it was stuck in (e.g. a synchronous HTTP in HttpUtility.HttpGet). Backend is the REAL PerfView.exe capture (/threadTime) + an in-house TraceEvent extractor (UiFreezeStacks, built on PerfView's ThreadTimeStackComputer). Uses dotTrace's exact criterion: a UI freeze = a message-pump gap > 200 ms on the main UI thread (window messages not pumped for >200 ms, OR one message taking >200 ms) — so a thread that keeps pumping (idle-waiting for input) is NOT a freeze (crucial: raw blocked-time would count idle as freeze). Auto-detects the main UI thread (the one that pumps the most); WOW64 stacks auto-stitched; managed names come from the CLR rundown in the etl (no msdl); kernel/user32 symbols from local cache only. TWO-STEP: action=start begins capture → you reproduce the freeze (cold-click into the view/button) → action=stop as soon as it loads. Output: each freeze's duration + the managed root-cause chain. WARNING system-wide ETW (needs admin); shorter window = faster/cleaner — stop promptly.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "start = begin PerfView /threadTime capture (then reproduce the freeze); stop = stop and analyze the UI-freeze spans.",
+          "type": "string",
+          "enum": [
+            "start",
+            "stop"
+          ]
+        },
+        "process": {
+          "description": "Target process name (default DSH_UI_PROC_NAME). Scopes analysis to it and auto-resolves its pid.",
+          "type": "string"
+        },
+        "tid": {
+          "description": "Target UI-thread os id. Usually NOT needed — the thread that pumps the most is auto-picked. Pass only to override on multi-UI-thread apps.",
+          "type": "string"
+        },
+        "symbols": {
+          "description": "Symbol mode: cached (default — local cache only, no msdl; managed frames come from rundown regardless, and the user32/win32u needed to split idle-vs-freeze are cached); off (no native resolve, fastest, still gets managed HttpGet names); full (hit msdl for kernel/native — msdl is very slow on this box and may time out, use sparingly).",
+          "type": "string",
+          "enum": [
+            "cached",
+            "off",
+            "full"
+          ]
+        },
+        "top": {
+          "description": "Max number of freeze spans to list (default 15).",
+          "type": "number"
+        },
+        "keepEtl": {
+          "description": "false = delete the etl.zip evidence after analysis (default true = keep, for re-inspection / re-running with a different symbol mode).",
+          "type": "boolean"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "hang_status",
+    "description": "Hang-inspector status (read-only): whether the hang monitor is running, its pid/exit code, and the last 150 log lines. Evidence packs live in DSH_HANG_EVIDENCE_DIR (default ~/.dsh-agent-toolchain/hang-evidence); list them with hang_packs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "hang_run",
+    "description": "Start the hang MONITOR — this does NOT capture a freeze that already happened: if the client is frozen RIGHT NOW call perf_dump first (restarting destroys the scene); this tool is for intermittent freezes you still have to reproduce. It watches the target client main-window responsiveness WITHOUT clicking anything — the user reproduces the freeze and the monitor collects an evidence pack on detection (frozen screenshot, timeline, process info, net-trace tail, probe/procdump logs, full dump). Returns immediately; poll hang_status / hang_packs. Set maxSeconds>0 to auto-stop (0 = run until hang_stop or the script exits).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "maxSeconds": {
+          "description": "Auto-stop after N seconds (0 = unlimited, max 86400)",
+          "type": "number"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "hang_stop",
+    "description": "Stop the hang monitor (kills its process tree). Evidence packs already collected are kept.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "hang_packs",
+    "description": "List collected hang evidence packs, newest first: id, timestamp, file list, dump size, screenshot presence, analysis status, and the first line of summary.txt / process-info.txt. Use hang_pack for the full text evidence.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "description": "List only the newest N evidence packs (default all). Recent freezes usually need just the latest few; avoids reading file lists/summaries for every pack when many exist.",
+          "type": "number"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "hang_pack",
+    "description": "Read one evidence pack in full (read-only): every text evidence file (summary / process-info / net-trace tail / probe + procdump logs, each capped at 512KB), the file list, and the cached analysis.json. The frozen screenshot is a PNG on disk inside the pack dir (frozen-screen.png) — pass that path to an image-reading tool to look at it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Pack id from hang_packs"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "hang_analyze",
+    "description": "Analyze a pack frozen.dmp with ClrMD: managed thread stacks, suspect/UI thread and source method declarations (DSH_HANG_SRC_ROOT). Source line numbers identify declarations, not the blocking statement; one dump may not establish the wait object or root cause. Completed results are reused unless refresh=true; refresh only after source configuration or evidence changes. wait=true waits up to waitMs and may return running; wait=false returns immediately. Check hang_packs for state.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Pack id from hang_packs (must contain frozen.dmp)"
+        },
+        "wait": {
+          "description": "Wait for the analysis to finish (default true)",
+          "type": "boolean"
+        },
+        "waitMs": {
+          "description": "Max wait in ms when wait=true (default 300000)",
+          "type": "number"
+        },
+        "refresh": {
+          "description": "Re-run even if a finished analysis is cached (use after changing DSH_HANG_SRC_ROOT)",
+          "type": "boolean"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "hang_delete",
+    "description": "Delete hang evidence packs (LOCAL, irreversible — dumps are hundreds of MB). confirm=true is required. Give id to delete one pack, or all=true to clear every pack.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Pack id to delete",
+          "type": "string"
+        },
+        "all": {
+          "description": "Delete every pack in the evidence dir",
+          "type": "boolean"
+        },
+        "confirm": {
+          "type": "boolean",
+          "description": "Must be true — deletion is irreversible"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "confirm"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "http_request",
+    "description": "Send an HTTP/HTTPS request from the host and return status, headers, bounded body and duration. Non-2xx is a received response; ok:false means refusal or transport failure. Redirects are checked at every hop; inspect requestedUrl/finalUrl/redirected. UI approval, revoke and emergency-stop reset mutations are forbidden through this tool. Writes are never retried automatically. This tool guard is not an independent authorization boundary against same-account shell access.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "default": "GET",
+          "description": "HTTP method",
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "description": "Absolute http(s) URL"
+        },
+        "body": {
+          "description": "Request body (ignored for GET/HEAD)",
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "number"
+        },
+        "headers": {
+          "description": "Request headers",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "memory_index",
+    "description": "Index a local directory into the long-term memory vector store (incremental: skips unchanged files by mtime; skips bin/obj/node_modules). BOUNDED: each call stops at a time budget (budgetMs, default 60000) and reports how many files remain — call it again with the same path to continue (finished files are skipped by mtime, so nothing is redone). A file is indexed all-or-nothing: if the budget runs out mid-file the partial chunks are rolled back, so a half-indexed file can never silently disappear from search. PRIVACY: when a MiniMax API key is configured, file chunks are embedded via the REMOTE api.minimax.chat endpoint — indexed content leaves this machine. Fail-closed: files containing tokens/secrets are skipped before embedding and counted as sensitiveSkipped. Multiple roots coexist; indexing one directory never deletes another directory's chunks.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Absolute directory to index"
+        },
+        "budgetMs": {
+          "description": "Time budget for this call in ms (default 60000). When it runs out the call stops and reports the remaining files; call again to continue.",
+          "type": "number"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "memory_search",
+    "description": "Semantic search over indexed documents/code. Returns relevant snippets with source files. PRIVACY: queries are embedded via the configured backend — remote (api.minimax.chat) when a MiniMax API key is set, local bigram otherwise.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "k": {
+          "default": 5,
+          "description": "Results count, max 10",
+          "type": "number"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "memory_save",
+    "description": "Save a cross-session key-value memory (per scope, e.g. a project name). Same key+scope overwrites. Fail-closed: values containing tokens/API keys/secrets are rejected.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "scope": {
+          "default": "global",
+          "type": "string"
+        },
+        "kind": {
+          "description": "fact (default), convention or debug; debug defaults to a 14-day expiry",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why this memory is useful, at most 200 characters",
+          "type": "string"
+        },
+        "ttlDays": {
+          "description": "Expiry interval in days; zero means never expires",
+          "type": "number"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "memory_recall",
+    "description": "Read a saved key-value memory.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "scope": {
+          "default": "global",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "memory_status",
+    "description": "Memory store status: chunk count, KV entries, data dir, embedding backend.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "memory_forget",
+    "description": "Delete one KV memory entry. Use when a stored convention no longer applies, so a later session does not act on a stale decision.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Memory key to delete"
+        },
+        "scope": {
+          "description": "Scope (default global)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "build_status",
+    "description": "Status of the most recent build: target, configuration, duration, error/warning counts and the log path. Supply jobId or runId to select a specific build; omit for the latest compatibility view.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "description": "Optional run id: the build log and the per-run record (run-<runId>.json) are named with it — the evidence-pack spine",
+          "type": "string"
+        },
+        "jobId": {
+          "description": "Query a specific background job",
+          "type": "string"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "build_errors",
+    "description": "Re-parse the structured error/warning list (file / line / column / code / message) out of the last build log. Use after build_run reports errors, or to re-read them later without rebuilding. WARNING: it reads the LAST log, which is not guaranteed to be from YOUR run (a concurrent agent may have overwritten it) - an empty list is NOT proof there were no errors.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "description": "Optional run id: the build log and the per-run record (run-<runId>.json) are named with it — the evidence-pack spine",
+          "type": "string"
+        },
+        "jobId": {
+          "description": "Read errors for a specific background job",
+          "type": "string"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "build_compile_check",
+    "description": "Read-only HEURISTIC for source compile membership (evaluation=heuristic). Legacy projects require Compile Include; SDK defaults are language-specific. Comments are ignored; unevaluated conditions remain unknown. This is not MSBuild evaluation or proof of actual compiler input, so verify_report(compiled) does not certify pass from this hint. Missing or ambiguous inputs return unknown.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Source file path (absolute, or relative to repoRoot/cwd)"
+        },
+        "project": {
+          "description": "Optional: the project file (*.csproj). Omitted = search upward from the file; several candidates return an ambiguity error instead of guessing",
+          "type": "string"
+        },
+        "repoRoot": {
+          "description": "Optional boundary for the upward search (defaults to the build client/repo root)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "failure_record",
+    "description": "Record one failure / human-handoff event into the local failure corpus (JSONL, local-only, never uploaded). Call this every time a task fails, verification disagrees with a claim, a tool malfunctions, or a human had to take over. Facts, not blame.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "One-line task name"
+        },
+        "failureClass": {
+          "type": "string",
+          "enum": [
+            "verification-failure",
+            "agent-misjudge",
+            "human-handoff",
+            "tool-error",
+            "flaky",
+            "doc-gap",
+            "design-flaw"
+          ],
+          "description": "Failure class from the fixed taxonomy: verification-failure | agent-misjudge | human-handoff | tool-error | flaky | doc-gap | design-flaw"
+        },
+        "description": {
+          "type": "string",
+          "description": "What went wrong"
+        },
+        "resolution": {
+          "description": "How it was unblocked",
+          "type": "string"
+        },
+        "context": {
+          "description": "Runtime context (runtime / tool / model / repo)",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "tags": {
+          "description": "Free-form tags for later mining",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "costMs": {
+          "description": "Approximate time wasted in ms",
+          "type": "number"
+        }
+      },
+      "required": [
+        "task",
+        "failureClass",
+        "description"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "failure_query",
+    "description": "Query the local failure corpus: substring q (task/description/resolution), failureClass, tag, time range. Returns newest-first records. Records that were later shown to be recorded wrongly are EXCLUDED by default (see `retractedExcluded` in the response); pass includeRetracted=true to see them with their retraction reason. Reads ALL shards (active + rotated archives).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "q": {
+          "type": "string"
+        },
+        "failureClass": {
+          "type": "string",
+          "enum": [
+            "verification-failure",
+            "agent-misjudge",
+            "human-handoff",
+            "tool-error",
+            "flaky",
+            "doc-gap",
+            "design-flaw"
+          ]
+        },
+        "tag": {
+          "type": "string"
+        },
+        "fromTs": {
+          "description": "Earliest ts (epoch ms)",
+          "type": "number"
+        },
+        "toTs": {
+          "description": "Latest ts (epoch ms)",
+          "type": "number"
+        },
+        "limit": {
+          "description": "Max records, default 50, max 500",
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "cursor": {
+          "description": "Stable cursor pagination: pass the previous page's nextCursor to fetch the next page (preferred over offset; anchored on (ts,id), stable across rotation and new rows).",
+          "type": "string"
+        },
+        "includeRetracted": {
+          "description": "Include records that were retracted (each carries retractedReason). Default false.",
+          "type": "boolean"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "failure_stats",
+    "description": "Failure corpus stats: total/last 7-30 days/per-class counts (ACTIVE shard only — the corpus contract), plus totalAllShards / archivedRecords / filesScanned so a shrinking `total` is explainable, and `retracted` so withdrawn records are visible rather than silently dropped. `topRecurring` ranks repeated failures by fingerprint (one line x500, not 500 lines) and `recurrences` counts repeats folded by the dedupe window (not part of `total`) — check it before debugging: has this happened before?",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "toolchain_status",
+    "description": "**Run this first.** One call that answers \"can I actually get code-level evidence right now?\", and tells you what each missing precondition is and how to fix it. Checks: is the target client running (pid) / source roots (DSH_HANG_SRC_ROOT, DSH_PERF_SRC_ROOT — these decide whether you get `file:line`) / the dump trio (procdump + DumpStack + DAC — decides whether a hang yields a thread stack) / symbol path / **admin rights** (required for ETW sampling) / evidence dirs. Every value carries its **source** (process env / user registry / not configured), so \"configured but not inherited\" and \"never configured\" are two different statements; anything that cannot be checked says so instead of pretending to pass. Typical use: when hang_analyze gives you a method name but no line number, check here for a missing source root — do not guess by trial and error.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fresh": {
+          "description": "Bypass the two-second diagnostic snapshot cache. Results include observedAt, ageMs and source.",
+          "type": "boolean"
+        },
+        "deep": {
+          "description": "Include source/evidence counts. Diagnostics run in a separate worker; cached reads are fast, cold diagnostics still wait for actual checks.",
+          "type": "boolean"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "failure_retract",
+    "description": "Mark a failure-corpus record as WRONGLY recorded (append-only: the original line stays on disk for audit; query/stats then stop counting it). Use when evidence later proves a recorded failure was itself a false positive (e.g. a verification tool that misjudged a true claim). A reason is REQUIRED. Retracting a non-existent id is refused.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ts": {
+          "description": "Original record timestamp to disambiguate historical ID collisions.",
+          "type": "number"
+        },
+        "id": {
+          "type": "string",
+          "description": "The record id to retract, e.g. fc-20260911-5729"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why this record is wrong. Required — a retraction without a reason is not auditable."
+        },
+        "by": {
+          "description": "Who retracts it (free text).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "reason"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "capture_query",
+    "description": "Query the local API-capture store (the same day-shard JSONL the dsh-api-visualizer capture panel writes): method/url/status/duration plus caller attribution (which view-model/API fired each request). Use to analyze captured client traffic: slow calls, errors, one host, or requests fired by one view-model. ALWAYS read the accompanying honesty fields: `freshness` (captureRunning / newestAgeMs / engineNote) tells you whether the capture engine is live or you are looking at HISTORICAL data, and `callerAttribution` tells you whether caller data exists AT ALL - when it is unavailable the reason is stated there (today the client-side producer does not exist, so \"no caller\" must NOT be read as \"no caller happened\"). Both are also summarized in `freshnessNote` / `callerAttributionNote`.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "description": "Opaque nextCursor from the previous page, bound to the same filters; use instead of offset for stable pagination.",
+          "type": "string"
+        },
+        "fresh": {
+          "description": "Wait for a fresh host status; default returns local records with an aged status snapshot.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Max records (default 50, max 500)",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "q": {
+          "description": "Substring match against url/note",
+          "type": "string"
+        },
+        "method": {
+          "description": "HTTP method filter (GET/POST/...)",
+          "type": "string"
+        },
+        "source": {
+          "description": "Capture source: realtime / proxy / agent / etw",
+          "type": "string"
+        },
+        "status": {
+          "description": "Exact code or 2xx/3xx/4xx/5xx",
+          "type": "string"
+        },
+        "host": {
+          "description": "Comma-separated hostnames",
+          "type": "string"
+        },
+        "minDurationMs": {
+          "description": "Only records at least this slow (ms)",
+          "type": "number"
+        },
+        "minBytes": {
+          "type": "number"
+        },
+        "maxBytes": {
+          "type": "number"
+        },
+        "fromTs": {
+          "description": "Earliest record ts (epoch ms)",
+          "type": "number"
+        },
+        "toTs": {
+          "type": "number"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "traceId": {
+          "type": "string"
+        },
+        "runId": {
+          "description": "Filter by the run id carried on records (evidence-pack spine)",
+          "type": "string"
+        },
+        "errors": {
+          "description": "Only HTTP 4xx/5xx records",
+          "type": "boolean"
+        },
+        "noNoise": {
+          "description": "Hide static-resource/heartbeat noise",
+          "type": "boolean"
+        },
+        "bodyQ": {
+          "description": "Substring inside request/response bodies/headers",
+          "type": "string"
+        },
+        "caller": {
+          "description": "Caller attribution substring (viewModel / apiMethod / stack frame)",
+          "type": "string"
+        },
+        "includeBody": {
+          "description": "Include bodies (off by default). WARNING: bodies and headers routinely carry real tokens / cookies / identity data — enabling this pulls that plaintext into your context (and into anything you write afterwards).",
+          "type": "boolean"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "capture_start",
+    "description": "Start LIVE capture (the same thing the panel's \"开始实时捕获\" button does): tail the client's System.Net trace log and ingest records into the store. Use the capture_start tool (do NOT hand-roll a POST) before analysing \"traffic happening right now\" - otherwise capture_query only sees historical data. The host process owns the engine, so this goes through the loopback route (http://127.0.0.1:3080/api/dsh-api-visualizer/capture/start). The result carries `warnings` when the trace log does not exist (capture would read nothing) or when the caller-attribution side log is missing (caller will then be empty - that does NOT mean \"no caller happened\").",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "logPath": {
+          "description": "Optional: switch to this trace-log path (REJECTED while capture is running, with the next step).",
+          "type": "string"
+        },
+        "replay": {
+          "description": "true = re-read the whole log from the start (to backfill history); default false = only new lines",
+          "type": "boolean"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "capture_stop",
+    "description": "Stop LIVE capture (the panel's stop button). After this, capture_query sees historical data again - the summary says so explicitly.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "capture_status",
+    "description": "Read the live-capture engine state (read-only): running?, trace log present and how big, how many records parsed this session, and whether the caller-attribution side log exists (when it does not, caller is empty - that does NOT mean no caller happened). Ask this first when unsure whether capture can actually see anything right now. DOUBLE-WRITE SELF-CHECK: the returned `integrity` compares what the engine says it emitted against how many realtime rows the store gained - a ratio >= 1.5 means every call count you read in the panel is inflated (do NOT draw \"repeated request / timer storm\" conclusions from those numbers until it is fixed). Against an older host that cannot supply a same-interval basis, pass sampleSeconds (e.g. 90) to sample twice in the SAME window; it blocks for that long.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sampleSeconds": {
+          "description": "When > 0, sample twice this many seconds apart in the SAME window and compare the deltas (needed against an older host). Blocks for that long (max 600).",
+          "type": "number"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "capture_append",
+    "description": "Import API-call records into the local capture store and GUI. This entry marks records imported even if a caller supplies observed; imports do not constitute independent runtime verification.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "ts": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "method",
+              "url"
+            ],
+            "additionalProperties": {}
+          },
+          "description": "Records: method+url required; ts/status/durationMs/reqBody/resBody/note/caller optional. Bodies ≤ 2MB. ts = when the call happened (epoch ms) — required in practice when importing/replaying HISTORICAL traffic, otherwise it is stored as NOW and the timeline shifts."
+        },
+        "runId": {
+          "description": "Attach this run id to every appended record (evidence-pack spine)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "records"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "perf_clean",
+    "description": "Preview .dmp/.etl cleanup under the configured evidence root and one level of recognized run directories. Confirm only with confirm=true and the matching dry-run planId; changed identities require a new preview. A configured root junction is allowed; nested links and realpath escapes are refused. Active or unknown capture state preserves ETL. File and root identities are rechecked before deletion; directories are never deleted.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "planId": {
+          "description": "Plan ID from dry-run; required with confirm=true. Preview again if file identities changed.",
+          "type": "string"
+        },
+        "confirm": {
+          "description": "REQUIRED true to actually delete. Omit/false = list only (dry run). Deletion is not recoverable",
+          "type": "boolean"
+        },
+        "what": {
+          "description": "Which files: dumps = .dmp only, etls = .etl only, all = both (default)",
+          "type": "string",
+          "enum": [
+            "dumps",
+            "etls",
+            "all"
+          ]
+        },
+        "keepDays": {
+          "description": "Only delete files older than N days (default: no age filter)",
+          "type": "number"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "verify_report",
+    "description": "Adjudicate claims for one runId. build checks current source/log fingerprints; attemptId selects an immutable attempt. api accepts only same-run observed capture; imported records or unknown coverage stay unverified. file proves existence only; compiled is a heuristic and cannot certify compilation. gate/git run asynchronously with timeoutMs and cancellation. manual supplies acceptance only: a manual-only verifiedVerdict is incomplete. Returns verdict, verifiedVerdict, acceptance and report path. Exit zero proves only the selected command, not a broader business goal.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string",
+          "description": "Unique run id (e.g. task-2-toolchain-1)"
+        },
+        "task": {
+          "type": "string",
+          "description": "One-line task name"
+        },
+        "bundle": {
+          "description": "Write a bounded evidence bundle without changing the verdict if packaging fails",
+          "type": "boolean"
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "statement": {
+                "type": "string",
+                "description": "The claim being made"
+              },
+              "kind": {
+                "description": "Adjudication rule; defaults to manual. compiled = does this source file actually belong to a project compile set (legacy .csproj does NOT auto-include .cs, so a forgotten <Compile Include> builds fine while never being compiled - kind=file cannot catch that); unreadable input yields unverified, never fail",
+                "type": "string",
+                "enum": [
+                  "build",
+                  "api",
+                  "file",
+                  "git",
+                  "gate",
+                  "manual",
+                  "compiled"
+                ]
+              },
+              "runId": {
+                "description": "For kind=build/api: which run the evidence belongs to",
+                "type": "string"
+              },
+              "attemptId": {
+                "description": "For kind=build: immutable build attempt ID; runId otherwise selects its latest attempt",
+                "type": "string"
+              },
+              "path": {
+                "description": "For kind=file: path to check. For kind=compiled: source file whose compile membership is checked",
+                "type": "string"
+              },
+              "filter": {
+                "description": "For kind=api: capture-store filter (q/method/host/status/...)",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "expect": {
+                "description": "For kind=api: pass criteria (default min=1)",
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "number"
+                  },
+                  "all2xx": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "project": {
+                "description": "For kind=compiled: explicit project file (*.csproj). Omitted = search upward from the file",
+                "type": "string"
+              },
+              "repoRoot": {
+                "description": "For kind=compiled: boundary for the upward project search",
+                "type": "string"
+              },
+              "repo": {
+                "description": "For kind=git: repo dir (default cwd); for kind=compiled it is used as a base for relative paths",
+                "type": "string"
+              },
+              "check": {
+                "description": "For kind=git: 'clean' (working tree) or 'pushed' (ls-remote, authoritative)",
+                "type": "string"
+              },
+              "ref": {
+                "description": "For kind=git check=pushed: ref to compare (default HEAD)",
+                "type": "string"
+              },
+              "gitConfig": {
+                "description": "For kind=git: extra git -c flags (e.g. ['-c','http.sslBackend=openssl'])",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "cmd": {
+                "description": "For kind=gate: verification command (exit 0 = pass)",
+                "type": "string"
+              },
+              "cwd": {
+                "description": "For kind=gate: working dir",
+                "type": "string"
+              },
+              "timeoutMs": {
+                "description": "Gate/git deadline in milliseconds",
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 300000
+              },
+              "status": {
+                "description": "For kind=manual: supplied status",
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "unverified"
+                ]
+              },
+              "evidence": {
+                "description": "For kind=manual: backing evidence",
+                "type": "string"
+              }
+            },
+            "required": [
+              "statement"
+            ]
+          },
+          "description": "Claims adjudicated from evidence"
+        },
+        "context": {
+          "description": "Runtime context (repo / model / mode)",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "runId",
+        "task",
+        "claims"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  }
+]

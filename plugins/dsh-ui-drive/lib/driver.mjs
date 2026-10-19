@@ -25,6 +25,7 @@ import { isGateDenied } from './refusal.mjs'
 import { loadControlPolicy, controlPolicyStatus } from './control-policy.mjs'
 import { moduleRoots, processStartedAtMs, staleCodeInfo } from '../../../lib/code-freshness.mjs'
 import { attachProcessCancellation, checkTaskCancellation } from '../../../lib/process-cancellation.mjs'
+import { createNativeUiaSession, supportsNativeUia, runNativeUia } from './native-uia.mjs'
 
 // 解释器路径用户可配：经 env-fallback（长活宿主的进程环境里可能没有用户后来设的值）。
 const PS = envOr('DSH_UI_POWERSHELL') || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
@@ -127,6 +128,7 @@ export function makeDriver(cfg) {  const c = {
   // **副作用动作**上调用 policy.check（policy 内原按 Symbol 判只读的 readOnly() 是死契约，已随 P2 删除）。
   const policy = c.policy || createPolicy()
   const vision = c.vision || makeVision(c.visionConfig || {})
+  const nativeUia = createNativeUiaSession()
 
   // ------------------------------------------------------------ 进程级互斥
   //
@@ -920,6 +922,7 @@ export function makeDriver(cfg) {  const c = {
   function warmShutdown() {
     warm.disabled = true
     warmStop('shutdown')
+    nativeUia.close()
   }
 
   /**
@@ -932,6 +935,7 @@ export function makeDriver(cfg) {  const c = {
     // 不授权重启后的副作用动作。drive() 的瞬时失败重试也走这里——元素已被销毁/重建，旧快照本就该失效。
     currentGen++
     warmStop('manual restart')
+    nativeUia.restart()
   }
 
   /** 常驻进程状态（诊断用）。lastOkAt/stalls 是 B-2 的看门狗心跳与判僵死计数。 */
@@ -951,6 +955,7 @@ export function makeDriver(cfg) {  const c = {
       lateResponses: warm.lateResponses || 0,
       lastLateResponseAt: warm.lastLateResponseAt || null,
       disabled: warm.disabled,
+      nativeUia: nativeUia.status(),
     }
   }
 
@@ -1484,8 +1489,9 @@ export function makeDriver(cfg) {  const c = {
     // ---- 动作后快照（observe:true）：一次调用拿到「点了之后界面变成什么样」，
     //      省掉 agent 的二次 state 往返（外部复核建议的 opt-in 轻量观察）。
     const wantObserve = args.observe === true && !READ_ONLY_ACTIONS.has(action)
+    let nativeFallback = null
     const attachObserve = async (out) => {
-      out = { ...out, ...(isSideEffectKind(classifyAction(action)) ? { gateMetadata } : {}) }
+      out = { ...out, ...(nativeFallback ? { backend: 'powershell', nativeFallback } : {}), ...(isSideEffectKind(classifyAction(action)) ? { gateMetadata } : {}) }
       if (!wantObserve) return out
       let snapshot = null
       try {
@@ -1502,6 +1508,24 @@ export function makeDriver(cfg) {  const c = {
         snapshot = { error: String(e).slice(0, 160) }
       }
       return { ...out, observe: snapshot }
+    }
+
+    if (supportsNativeUia({ ...args, action })) {
+      const result = await runNativeUia({ ...args, action, procId, winHandle,
+        procName: c.procName, winTitle: winTitle || c.windowName, allowSideEffects,
+        timeoutMs: Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : c.defaultTimeoutMs }, { session: nativeUia })
+      if (action === 'doubleclick' && result.notExecuted === true && result.unknown !== true && result.errorCode === 'UIA_PROVIDER_ROOT_HIT') {
+        nativeFallback = result.errorCode
+      } else {
+        if (result.ok && !READ_ONLY_ACTIONS.has(action) && waitMs > 0) await sleep(waitMs)
+        return attachObserve(maybeDiff({ ...shapeResult(action, result, shotPlan, workspace), backend: 'rust',
+        ...(result.physicalPixels === true ? { physicalPixels: true } : {}),
+        ...(result.scannedScope ? { scannedScope: result.scannedScope } : {}),
+        ...(result.scrollBefore ? { scrollBefore: result.scrollBefore, scrollAfter: result.scrollAfter } : {}),
+        ...(result.hitTest ? { hitTest: result.hitTest } : {}),
+        ...(result.hitTestScope ? { hitTestScope: result.hitTestScope } : {}),
+        ...(result.inputEvents ? { inputEvents: result.inputEvents, focused: result.focused } : {}) }))
+      }
     }
 
     // ---- 常驻进程快路径
@@ -2422,7 +2446,7 @@ export function makeDriver(cfg) {  const c = {
     // （逐步的快照新鲜度门仍列 v2：flow 是预排序列、没有逐步 snapshotId。）
     const sideEffectSteps = steps.filter((s) => s && !['wait', 'expect'].includes(normAction(s.action)) && isSideEffectKind(classifyAction(s.action)))
     const guarded = sideEffectSteps.some(step => step.approvalId) || Boolean(policy.needsCheck?.() || policy.estopFilePath?.())
-    const sequential = guarded || steps.some(step => step.visualFallback === true || (step.procId && step.procId !== steps[0].procId))
+    const sequential = guarded || envOr('DSH_UI_BACKEND') === 'rust' || steps.some(step => step.visualFallback === true || (step.procId && step.procId !== steps[0].procId))
     let flowTarget = c.clientExe ? { exe: c.clientExe } : null
     if (!flowTarget) flowTarget = await resolveIdentity({ procId: steps[0]?.procId || 0 })
     if (guarded && sideEffectSteps.length) {
@@ -2531,7 +2555,7 @@ export function makeDriver(cfg) {  const c = {
       const action = r.batchStep.action
       let ok = res.ok === true
       const entry = { step: r.step, action, actionId: res.actionId || protocolId('act'), ok }
-      for (const field of ['policyCode', 'ruleId', 'reason', 'alternative', 'desktopState', 'unknown', 'visualFallback']) if (res[field] !== undefined) entry[field] = res[field]
+      for (const field of ['policyCode', 'ruleId', 'reason', 'alternative', 'desktopState', 'unknown', 'visualFallback', 'backend', 'scrollBefore', 'scrollAfter', 'inputEvents']) if (res[field] !== undefined) entry[field] = res[field]
       if (r.src.secret) entry.secret = true
 
       if (action === 'expect') {
