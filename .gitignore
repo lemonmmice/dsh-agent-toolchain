@@ -27,3 +27,5 @@ last.json
 /plugins/dsh-memory/bin/
 /native/trace-fold/target/
 /plugins/dsh-perf/bin/
+/native/toolchain/target/
+/mcp/bin/

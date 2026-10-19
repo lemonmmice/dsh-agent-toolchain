@@ -78,6 +78,11 @@ Nothing is written into the repo tree: a demo run keeps its screenshots, build l
 
 ### Path B — full desktop mode
 
+An optional standalone Rust MCP runtime is available through `npm run build:runtime`.
+It runs HTTP, background tasks and evidence publication without Node, and can
+retain the complete tool catalog through a lazy Node compatibility bridge.
+See [Rust runtime scope, deployment and validation](./docs/native-runtime.md).
+
 The API-capture store, the memory index, flame folding and the terminal inspector load Rust Node-API modules. Build the ones you need (Rust + Visual C++ build tools), or take a deployment that already ships them:
 
 ```bash

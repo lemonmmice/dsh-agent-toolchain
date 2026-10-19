@@ -7,6 +7,8 @@
  */
 
 /** Cap on the response body we keep/return (larger gets truncated). */
+import { nativeCall, nativeEnabled } from '../../../lib/native-runtime.mjs'
+
 export const MAX_RESP_BYTES = 2 * 1024 * 1024
 /** Default / max per-request timeout. */
 export const DEFAULT_TIMEOUT_MS = 30000
@@ -113,6 +115,11 @@ async function fetchAllowed(url, options) {
  * @param spec - { method, url, headers, body, timeoutMs, signal }
  */
 export async function sendRequest(spec) {
+  if (nativeEnabled('http')) {
+    const { signal, ...parameters } = spec
+    if (signal?.aborted) return { ok: false, cancelled: true, error: 'request cancelled', durationMs: 0 }
+    return nativeCall('dsh/http', parameters, { signal, timeoutMs: clampTimeout(spec.timeoutMs) + 5000 })
+  }
   const method = (typeof spec.method === 'string' && spec.method.trim() !== '' ? spec.method.trim() : 'GET').toUpperCase()
   const url = typeof spec.url === 'string' ? spec.url.trim() : ''
   const started = Date.now()

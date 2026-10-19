@@ -6,6 +6,9 @@
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
+    "build:runtime": "node scripts/build-runtime.mjs",
+    "test:runtime-native": "cargo test --locked --manifest-path native/toolchain/Cargo.toml --target-dir .dsh-agent-toolchain/native",
+    "test:runtime": "node mcp/native-runtime.integration.mjs",
     "build:trace-fold": "node scripts/build-trace-fold.mjs",
     "test:trace-native": "cargo test --locked --no-default-features --manifest-path native/trace-fold/Cargo.toml --target-dir .dsh-agent-toolchain/native",
     "bench:trace-fold": "node scripts/bench-trace-fold.mjs",
