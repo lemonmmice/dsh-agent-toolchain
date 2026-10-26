@@ -1,5 +1,16 @@
 # dsh-build
 
+The plugin also exposes the optional `dev_*` tools for C# navigation, local log
+queries, .NET skill retrieval and encoding-preserving file edits. These share
+their implementation and schemas with MCP. See
+[development tools](../../docs/development-tools.md) for backend installation,
+configuration and validation.
+
+The same adapter also exposes Context7 search/read, local PNG comparison and
+plugin metadata checks as `dev_docs_search`, `dev_docs_read`, `dev_vision_diff`
+and `dev_plugin_check`. These reuse separately installed backends; they do not
+replace or change the existing C# LSP integration.
+
 DSH（DeepSeek Harness）的**编译验证闭环插件**：把 MSBuild 构建做成 agent 工具，
 AI 改完代码 → 增量编译 → 结构化错误回填 → 修复 → 再编译。AI 的代码输出因此带上**硬校验**。
 

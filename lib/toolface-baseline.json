@@ -3,6 +3,16 @@
   "note": "工具**能力基线**：两面（DSH 插件面 / MCP 面）都必须至少提供这些参数。由 lib/toolface-params.test.mjs 维护；刷新须显式带 DSH_TOOLFACE_BASELINE_UPDATE=1 跑一次。删除条目 = 声明\"这个能力不要了\"，请在提交说明里写理由。",
   "generatedAt": "2026-10-14T07:27:16.754Z",
   "tools": {
+    "dev_docs_search": ["libraryName", "query"],
+    "dev_docs_read": ["language", "libraryId", "query"],
+    "dev_vision_diff": ["after", "before", "ignoreJson", "label", "threshold"],
+    "dev_plugin_check": ["spec"],
+    "dev_status": [],
+    "dev_csharp": ["character", "file", "line", "operation", "repoRoot", "timeoutMs"],
+    "dev_logs": ["file", "maxLines", "timeText", "timezone"],
+    "dev_skills": ["limit", "name", "query"],
+    "dev_read": ["encoding", "file", "limit", "offset", "repoRoot"],
+    "dev_edit": ["allowWrite", "encoding", "expectedHash", "file", "newText", "oldText", "replaceAll", "repoRoot"],
     "api_capture_append": [
       "records",
       "runId"

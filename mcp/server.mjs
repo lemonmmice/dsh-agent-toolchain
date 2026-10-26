@@ -61,8 +61,12 @@ import { makeToolProgress } from './tool-progress.mjs'
 import { runTaskTool, taskControl } from '../lib/task-tool-support.mjs'
 import { TASK_TOOLS, TASK_PARAMETERS } from '../lib/task-tools.mjs'
 import { withTaskContext } from '../lib/task-context.mjs'
+import { makeDevelopmentTools } from '../lib/development-tools.mjs'
+import { makeRecommendedTools } from '../lib/recommended-tools.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const development = makeDevelopmentTools()
+const recommended = makeRecommendedTools()
 
 const server = new McpServer({
   name: 'dsh-agent-toolchain',
@@ -1484,6 +1488,35 @@ server.tool(
     }
   }
 )
+
+server.tool('dev_status', mcpDescription('dev_status'), mcpShape('dev_status'),
+  async (args, extra) => jtext(await development.status(args, { signal: extra?.signal })))
+server.tool('dev_csharp', mcpDescription('dev_csharp'), mcpShape('dev_csharp'),
+  async (args, extra) => jtext(await development.csharp({ repoRoot: args.repoRoot, file: args.file, operation: args.operation, line: args.line, character: args.character, timeoutMs: args.timeoutMs }, { signal: extra?.signal })))
+server.tool('dev_logs', mcpDescription('dev_logs'), mcpShape('dev_logs'),
+  async (args, extra) => jtext(await development.logs({ file: args.file, timeText: args.timeText, timezone: args.timezone, maxLines: args.maxLines }, { signal: extra?.signal })))
+server.tool('dev_skills', mcpDescription('dev_skills'), mcpShape('dev_skills'),
+  async (args, extra) => jtext(await development.skills({ query: args.query, name: args.name, limit: args.limit }, { signal: extra?.signal })))
+server.tool('dev_read', mcpDescription('dev_read'), mcpShape('dev_read'),
+  async (args, extra) => jtext(await development.read({ repoRoot: args.repoRoot, file: args.file, encoding: args.encoding, offset: args.offset, limit: args.limit }, { signal: extra?.signal })))
+server.tool('dev_edit', mcpDescription('dev_edit'), mcpShape('dev_edit'),
+  async (args, extra) => jtext(await development.edit({ repoRoot: args.repoRoot, file: args.file, encoding: args.encoding, oldText: args.oldText, newText: args.newText, expectedHash: args.expectedHash, replaceAll: args.replaceAll, allowWrite: args.allowWrite }, { signal: extra?.signal })))
+
+server.tool('dev_docs_search', mcpDescription('dev_docs_search'), mcpShape('dev_docs_search'),
+  async (args, extra) => jtext(await recommended.docsSearch({ libraryName: args.libraryName, query: args.query }, { signal: extra?.signal })))
+server.tool('dev_docs_read', mcpDescription('dev_docs_read'), mcpShape('dev_docs_read'),
+  async (args, extra) => jtext(await recommended.docsRead({ libraryId: args.libraryId, query: args.query, language: args.language }, { signal: extra?.signal })))
+server.tool('dev_vision_diff', mcpDescription('dev_vision_diff'), mcpShape('dev_vision_diff'),
+  async (args, extra) => jtext(await recommended.vision({ before: args.before, after: args.after, threshold: args.threshold, ignoreJson: args.ignoreJson, label: args.label }, { signal: extra?.signal })))
+server.tool('dev_plugin_check', mcpDescription('dev_plugin_check'), mcpShape('dev_plugin_check'),
+  async (args, extra) => jtext(await recommended.precheck({ spec: args.spec }, { signal: extra?.signal })))
+
+const previousClose = server.server.onclose
+server.server.onclose = () => {
+  previousClose?.()
+  void development.close().catch(error => console.error('Development shutdown failed: ' + error.message))
+  void recommended.close().catch(error => console.error('Recommended tools shutdown failed: ' + error.message))
+}
 
 // ---------------------------------------------------------------- boot
 
