@@ -73,6 +73,17 @@ every agent, not just DeepSeek Harness.
 
 ## Tools
 
+`dev_docs_search` / `dev_docs_read`, `dev_vision_diff`, and `dev_plugin_check`
+add Context7 documentation, local PNG comparison, and non-executing plugin
+metadata checks. Full trial installation remains in the DSH precheck panel.
+
+The `dev_*` family bridges separately installed encoding, .NET skills, C# LSP
+and LogTimeline backends. Start with `dev_status`, then use `dev_csharp`,
+`dev_logs`, `dev_skills`, `dev_read` and `dev_edit`. See
+[development tools](../docs/development-tools.md) for configuration, bounded
+output, licensing and real MCP integration checks. Existing connections must
+reconnect before newly registered tools appear.
+
 | Tool | Backed by | Notes |
 | --- | --- | --- |
 | `build_run` | dsh-build/lib/builder.mjs | Incremental/Rebuild MSBuild with structured errors |

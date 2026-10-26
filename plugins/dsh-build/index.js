@@ -17,6 +17,8 @@ import { envOr } from '../../lib/env-fallback.mjs'
 // W1：工具名/描述/参数结构收进单一真源（lib/tool-registry.mjs）—— 名字仍以字面量出现在下面
 // 各 defineTool 的 name 字段（守卫要求名字是字面量），描述与参数由注册表生成，两面不再各写一份。
 import { dshParameters, dshDescription } from '../../lib/tool-registry.mjs'
+import { makeDevelopmentTools } from '../../lib/development-tools.mjs'
+import { makeRecommendedTools } from '../../lib/recommended-tools.mjs'
 
 export const name = 'dsh-build'
 
@@ -76,7 +78,72 @@ function autoRecord(failureClass, task, description, extra = {}) {
 
 const OBJECT = { type: 'object', additionalProperties: true }
 
-const tools = () => [
+const tools = (development, recommended) => [
+  defineTool({
+    name: 'dev_docs_search', description: dshDescription('dev_docs_search'), parameters: dshParameters('dev_docs_search'), timeoutMs: 90000,
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    execute: (args, exec) => recommended.docsSearch({ libraryName: args.libraryName, query: args.query }, { signal: exec?.signal }),
+  }),
+  defineTool({
+    name: 'dev_docs_read', description: dshDescription('dev_docs_read'), parameters: dshParameters('dev_docs_read'), timeoutMs: 90000,
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    execute: (args, exec) => recommended.docsRead({ libraryId: args.libraryId, query: args.query, language: args.language }, { signal: exec?.signal }),
+  }),
+  defineTool({
+    name: 'dev_vision_diff', description: dshDescription('dev_vision_diff'), parameters: dshParameters('dev_vision_diff'),
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    execute: (args, exec) => recommended.vision({ before: args.before, after: args.after, threshold: args.threshold, ignoreJson: args.ignoreJson, label: args.label }, { signal: exec?.signal }),
+  }),
+  defineTool({
+    name: 'dev_plugin_check', description: dshDescription('dev_plugin_check'), parameters: dshParameters('dev_plugin_check'),
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    execute: (args, exec) => recommended.precheck({ spec: args.spec }, { signal: exec?.signal }),
+  }),
+  defineTool({
+    name: 'dev_status', description: dshDescription('dev_status'), parameters: dshParameters('dev_status'),
+    isConcurrencySafe: () => true,
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    execute: (args, exec) => development.status(args, { signal: exec?.signal }),
+  }),
+  defineTool({
+    name: 'dev_csharp', description: dshDescription('dev_csharp'), parameters: dshParameters('dev_csharp'),
+    timeoutMs: 125000,
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    async execute(args, exec) {
+      return development.csharp({ repoRoot: args.repoRoot, file: args.file, operation: args.operation, line: args.line, character: args.character, timeoutMs: args.timeoutMs }, { signal: exec?.signal })
+    },
+  }),
+  defineTool({
+    name: 'dev_logs', description: dshDescription('dev_logs'), parameters: dshParameters('dev_logs'),
+    isConcurrencySafe: () => true,
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    async execute(args, exec) {
+      return development.logs({ file: args.file, timeText: args.timeText, timezone: args.timezone, maxLines: args.maxLines }, { signal: exec?.signal })
+    },
+  }),
+  defineTool({
+    name: 'dev_skills', description: dshDescription('dev_skills'), parameters: dshParameters('dev_skills'),
+    isConcurrencySafe: () => true,
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    async execute(args, exec) {
+      return development.skills({ query: args.query, name: args.name, limit: args.limit }, { signal: exec?.signal })
+    },
+  }),
+  defineTool({
+    name: 'dev_read', description: dshDescription('dev_read'), parameters: dshParameters('dev_read'),
+    isConcurrencySafe: () => true,
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    async execute(args, exec) {
+      return development.read({ repoRoot: args.repoRoot, file: args.file, encoding: args.encoding, offset: args.offset, limit: args.limit }, { signal: exec?.signal })
+    },
+  }),
+  defineTool({
+    name: 'dev_edit', description: dshDescription('dev_edit'), parameters: dshParameters('dev_edit'),
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    async execute(args, exec) {
+      return development.edit({ repoRoot: args.repoRoot, file: args.file, encoding: args.encoding, oldText: args.oldText, newText: args.newText, expectedHash: args.expectedHash, replaceAll: args.replaceAll, allowWrite: args.allowWrite }, { signal: exec?.signal })
+    },
+  }),
   defineTool({
     name: 'build_run',
     description: dshDescription('build_run'),
@@ -193,11 +260,15 @@ function makeRoutes() {
 export function apply(ctx) {
   ctx.effect(
     () => {
+      const development = makeDevelopmentTools()
+      const recommended = makeRecommendedTools()
       const disposers = []
-      for (const tool of tools()) disposers.push(ctx.tools.register(tool))
+      for (const tool of tools(development, recommended)) disposers.push(ctx.tools.register(tool))
       const routeDisposers = makeRoutes().map((route) => ctx.webServer.register(route))
       const disposeSection = ctx.systemPrompt.section({ name: 'plugin:dsh-build', order: SECTION_ORDER, text: GUIDANCE })
       return () => {
+        void development.close().catch(error => ctx.logger.warn(error.message))
+        void recommended.close().catch(error => ctx.logger.warn(error.message))
         for (const d of disposers) d()
         for (const d of routeDisposers) d()
         disposeSection()
