@@ -1,0 +1,44 @@
+{
+  "tasks": [
+    {
+      "id": "large-tool-output",
+      "taskType": "tool-output",
+      "family": "tool-output",
+      "prompt": "Use a bounded summary when a tool response is larger than the task budget.",
+      "outputs": ["result.json"],
+      "candidate": "truncate-and-reference"
+    },
+    {
+      "id": "repeatable-calculation",
+      "taskType": "automation",
+      "family": "scriptable-work",
+      "prompt": "Replace repeated manual arithmetic with a deterministic helper and preserve the output contract.",
+      "outputs": ["result.json"],
+      "candidate": "deterministic-helper"
+    },
+    {
+      "id": "already-good-baseline",
+      "taskType": "regression",
+      "family": "no-change",
+      "prompt": "Inspect the fixture and leave the existing correct behavior unchanged.",
+      "outputs": ["result.json"],
+      "candidate": "keep-base"
+    }
+  ],
+  "heldOut": [
+    {
+      "id": "heldout-bounded-output",
+      "taskType": "tool-output",
+      "family": "tool-output",
+      "prompt": "Produce a bounded result while retaining a reference to omitted details.",
+      "outputs": ["result.json"]
+    },
+    {
+      "id": "heldout-no-change",
+      "taskType": "regression",
+      "family": "no-change",
+      "prompt": "Do not add a rule when the baseline already satisfies the checks.",
+      "outputs": ["result.json"]
+    }
+  ]
+}

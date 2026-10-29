@@ -63,10 +63,12 @@ import { TASK_TOOLS, TASK_PARAMETERS } from '../lib/task-tools.mjs'
 import { withTaskContext } from '../lib/task-context.mjs'
 import { makeDevelopmentTools } from '../lib/development-tools.mjs'
 import { makeRecommendedTools } from '../lib/recommended-tools.mjs'
+import { makeHarnessTools } from '../lib/harness/tools.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const development = makeDevelopmentTools()
 const recommended = makeRecommendedTools()
+const harnessTools = makeHarnessTools()
 
 const server = new McpServer({
   name: 'dsh-agent-toolchain',
@@ -125,7 +127,7 @@ const withCallContext = (name, handler) => (args, extra) =>
       if (error.code === 'UI_LOCK_BUSY' || error.code === 'FILE_TRANSACTION_BUSY' || error.code === 'WORKER_BUSY' || error.code === 'TASK_BUSY') {
         return jtext({ ok: false, state: 'busy', errorCode: error.code, retryable: true, retryAfterMs: error.retryAfterMs, writesApplied: false })
       }
-      if (error.incomplete === true) return jtext({ ok: false, incomplete: true, errorCode: error.code, error: error.message })
+      if (error.incomplete === true || String(error.code || '').startsWith('HARNESS_')) return jtext({ ok: false, incomplete: error.incomplete === true, errorCode: error.code || 'ERROR', error: error.message })
       throw error
     }
   })
@@ -154,6 +156,38 @@ server.tool(
   async args => jtext(await taskControl({ action: args.action, jobId: args.jobId }))
 )
 
+server.tool(
+  'harness_trial',
+  mcpDescription('harness_trial'),
+  mcpShape('harness_trial'),
+  async (args, extra) => {
+    const action = args.action
+    const configPath = args.configPath
+    const trialId = args.trialId
+    const configFingerprint = args.configFingerprint
+    return jtext(await harnessTools.trial({ action, configPath, trialId, configFingerprint }, extra))
+  },
+)
+
+server.tool(
+  'harness_experience',
+  mcpDescription('harness_experience'),
+  mcpShape('harness_experience'),
+  async args => {
+    const action = args.action
+    const scopeJson = args.scopeJson
+    const versionsJson = args.versionsJson
+    const statesJson = args.statesJson
+    const id = args.id
+    const supportTrialIdsJson = args.supportTrialIdsJson
+    const reason = args.reason
+    const limit = args.limit
+    const exportPath = args.exportPath
+    const includeProposed = args.includeProposed
+    return jtext(await harnessTools.experience({ action, scopeJson, versionsJson, statesJson, id, supportTrialIdsJson, reason, limit, exportPath, includeProposed }))
+  },
+)
+
 // ---------------------------------------------------------------- shared
 
 const text = (s) => ({ content: [{ type: 'text', text: s }] })
@@ -166,7 +200,7 @@ const text = (s) => ({ content: [{ type: 'text', text: s }] })
  * (Reported by two independent external agents during the toolchain loop.)
  */
 const jtext = (o) => {
-  const isError = o !== null && typeof o === 'object' && (o.ok === false || o.verdict === 'fail')
+  const isError = o !== null && typeof o === 'object' && (o.ok === false || o.verdict === 'fail' || String(o.errorCode || '').startsWith('HARNESS_'))
   const r = text(JSON.stringify(o, null, 1))
   if (isError) r.isError = true
   return r

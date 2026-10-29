@@ -35,6 +35,124 @@
     }
   },
   {
+    "name": "harness_trial",
+    "description": "Run or inspect a controlled Harness² single-round trial. run accepts only an absolute JSON config path; candidates execute in isolated workspaces and a frozen verification contract decides adoption. Model self-reports are not machine evidence. status/result read persisted state. Use asyncJob and toolchain_job for long runs; unknown or cancelled effects are never replayed automatically.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "default": "run",
+          "description": "run executes a trial; status/result read persisted state.",
+          "type": "string",
+          "enum": [
+            "run",
+            "status",
+            "result"
+          ]
+        },
+        "configPath": {
+          "description": "Required for run: absolute path to the trial JSON config; config contents stay local.",
+          "type": "string"
+        },
+        "trialId": {
+          "description": "Safe trial id for status/result; run may take it from the config.",
+          "type": "string"
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "harness_experience",
+    "description": "Query, export or evidence-backed manage the Harness² experience index. Queries return validated entries by default; proposed entries require explicit includeProposed=true. Only independent supporting trials can validate an entry, and export writes only to an empty directory without auto-applying files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "default": "query",
+          "description": "query/get/export read; validate/retire record a state transition.",
+          "type": "string",
+          "enum": [
+            "query",
+            "get",
+            "validate",
+            "retire",
+            "export"
+          ]
+        },
+        "scopeJson": {
+          "description": "JSON object containing project/taskType scope.",
+          "type": "string"
+        },
+        "versionsJson": {
+          "description": "JSON object filtering executor/model/tools/evaluator versions.",
+          "type": "string"
+        },
+        "statesJson": {
+          "description": "JSON array of proposed/validated/retired states.",
+          "type": "string"
+        },
+        "includeProposed": {
+          "description": "Explicitly allow the improver to read proposed experiences; defaults to validated only.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Experience id for get/validate/retire.",
+          "type": "string"
+        },
+        "supportTrialIdsJson": {
+          "description": "JSON array of independent supporting trial ids for validate.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Reason for a state transition; do not include secrets or sensitive material.",
+          "type": "string"
+        },
+        "exportPath": {
+          "description": "Empty absolute destination directory for export.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Query limit, default 20 and maximum 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
     "name": "jev_decide",
     "description": "Make a **read-only, advisory** typed decision with Jev. Returns Choice/Score/Noul answers, probabilities/confidence and latency; it never executes UI, build, delete, restart or any local tool. Network use is disabled unless `allowRemoteData=true` and `TYPESAFE_API_KEY` is configured. Batch independent routing or evidence-selection questions in one request. It does not replace authorization gates, snapshot freshness, build results or evidence adjudication. Jev is primarily trained in English; calibrate Chinese, numeric/date, long-context and adversarial-content workloads locally. Timeouts fail open without retry. Input is JSON passed in `stateJson` and `questionsJson`.",
     "inputSchema": {
@@ -3271,6 +3389,392 @@
       "readOnlyHint": false,
       "destructiveHint": true,
       "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "dev_status",
+    "description": "Inspect optional development backends: encoding protection, .NET skills, C# LSP and log queries. Installed means package discovery only; call the relevant tool to verify operation.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "dev_csharp",
+    "description": "Query the installed C# language server for definitions, references, implementations or hover. Line and UTF-16 character are one-based. Supply the explicit workspace root. Does not edit source; the language server may create its normal project caches.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "repoRoot": {
+          "type": "string",
+          "description": "Absolute workspace root"
+        },
+        "file": {
+          "type": "string",
+          "description": "C# source inside the workspace"
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "goToDefinition",
+            "findReferences",
+            "goToImplementation",
+            "hover"
+          ],
+          "description": "LSP operation"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "One-based line"
+        },
+        "character": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "One-based UTF-16 column"
+        },
+        "timeoutMs": {
+          "default": 60000,
+          "description": "Query timeout, default 60000 ms",
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 120000
+        }
+      },
+      "required": [
+        "repoRoot",
+        "file",
+        "operation",
+        "line",
+        "character"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "dev_logs",
+    "description": "Filter a local log by a natural-language time expression using the separately installed LogTimeline CLI. Returns time range, bounded matching lines and level statistics. Read-only; returned log text enters the model context.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Absolute log file path"
+        },
+        "timeText": {
+          "type": "string",
+          "description": "Date or Chinese time expression"
+        },
+        "timezone": {
+          "description": "IANA timezone; supply explicitly when known",
+          "type": "string"
+        },
+        "maxLines": {
+          "default": 100,
+          "description": "Maximum returned lines; 0 returns statistics only",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 500
+        }
+      },
+      "required": [
+        "file",
+        "timeText"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "dev_skills",
+    "description": "Search installed Microsoft .NET skills or read one by exact name. Returns reference instructions only; does not build or upgrade projects. Check each skill against the target framework.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "description": "Name or description substring",
+          "type": "string"
+        },
+        "name": {
+          "description": "Exact skill name to read",
+          "type": "string"
+        },
+        "limit": {
+          "default": 15,
+          "description": "Maximum search results",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "dev_read",
+    "description": "Read a workspace file with encoding detection and return its encoding, BOM, line ending and SHA-256. Maximum file size is 2 MiB. Supply encoding when legacy bytes are ambiguous. Use the hash as dev_edit.expectedHash.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "repoRoot": {
+          "type": "string",
+          "description": "Absolute workspace root"
+        },
+        "file": {
+          "type": "string",
+          "description": "File inside the workspace"
+        },
+        "encoding": {
+          "description": "Explicit encoding, for example gbk",
+          "type": "string"
+        },
+        "offset": {
+          "default": 1,
+          "description": "One-based starting line",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "limit": {
+          "default": 200,
+          "description": "Maximum returned lines",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "required": [
+        "repoRoot",
+        "file"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "dev_edit",
+    "description": "Replace exact text in a previously read file while preserving encoding, BOM and line endings. Requires allowWrite=true and the expectedHash returned by dev_read. Rejects changed files, workspace escapes and ambiguous matches.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "repoRoot": {
+          "type": "string",
+          "description": "Absolute workspace root"
+        },
+        "file": {
+          "type": "string",
+          "description": "Existing file inside the workspace"
+        },
+        "encoding": {
+          "description": "Encoding used when reading",
+          "type": "string"
+        },
+        "oldText": {
+          "type": "string",
+          "description": "Nonempty exact text to replace"
+        },
+        "newText": {
+          "type": "string",
+          "description": "Replacement text; may be empty"
+        },
+        "expectedHash": {
+          "type": "string",
+          "description": "SHA-256 returned by dev_read"
+        },
+        "replaceAll": {
+          "default": false,
+          "description": "Replace all exact matches",
+          "type": "boolean"
+        },
+        "allowWrite": {
+          "default": false,
+          "description": "Explicitly authorize the file edit",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "repoRoot",
+        "file",
+        "oldText",
+        "newText",
+        "expectedHash"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "dev_docs_search",
+    "description": "Resolve a public library documentation ID through the official Context7 MCP service. The query is sent to Context7; omit proprietary code and credentials. Returned coverage may not include an old library version.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "libraryName": {
+          "type": "string",
+          "description": "Public library name"
+        },
+        "query": {
+          "type": "string",
+          "description": "One focused documentation question"
+        }
+      },
+      "required": [
+        "libraryName",
+        "query"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "dev_docs_read",
+    "description": "Query Context7 documentation using a libraryId returned by dev_docs_search. Ask one focused question and check source versions. Do not send proprietary code or credentials.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "libraryId": {
+          "type": "string",
+          "description": "Exact library ID returned by search"
+        },
+        "query": {
+          "type": "string",
+          "description": "One focused documentation question"
+        },
+        "language": {
+          "description": "Programming language, for example C#",
+          "type": "string"
+        }
+      },
+      "required": [
+        "libraryId",
+        "query"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "dev_vision_diff",
+    "description": "Compare two local PNGs and produce pixel counts, regions, an HTML comparison and a diff image. Change is not proof of a defect. Limits: 16 million pixels and 64 MiB per input. Writes new local evidence files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "before": {
+          "type": "string",
+          "description": "Absolute baseline PNG path"
+        },
+        "after": {
+          "type": "string",
+          "description": "Absolute new PNG path"
+        },
+        "threshold": {
+          "default": 0,
+          "description": "Per-channel difference threshold",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "ignoreJson": {
+          "description": "JSON array of up to 100 ignored rectangles",
+          "type": "string"
+        },
+        "label": {
+          "description": "Report label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "before",
+        "after"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "dev_plugin_check",
+    "description": "Reuse the installed precheck backend to inspect Node, DSH and peer requirements. spec is an absolute manifest/directory or npm package[@version]. Metadata only: does not install or execute scripts, and does not certify trial boot.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "spec": {
+          "type": "string",
+          "description": "Absolute manifest/directory or npm package[@version]"
+        }
+      },
+      "required": [
+        "spec"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": true
     },
     "execution": {
       "taskSupport": "forbidden"
