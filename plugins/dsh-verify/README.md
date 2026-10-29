@@ -31,6 +31,11 @@ reports bytes read, lines parsed, reused shards and cache hits. Corruption and c
 `toolchain_status` runs diagnostics in bounded workers and caches completed snapshots for two seconds;
 `fresh=true` bypasses the cache, with `observedAt`, `completedAt`, `ageMs` and `source` in each result.
 
+The plugin also exposes `harness_trial` and `harness_experience`. Trials accept a local absolute JSON
+configuration, execute the bounded Harness² orchestration through the shared core, and persist status/result
+under `DSH_HARNESS_DIR` (default `~/.dsh-agent-toolchain/harness`). Experience queries are scoped; validation
+requires independent supporting trials. These tools are hybrid-only when the Rust runtime is native-only.
+
 ## The workflow (mandatory)
 
 1. Finish the work.

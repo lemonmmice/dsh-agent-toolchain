@@ -101,7 +101,7 @@ Then `pwsh -File install.ps1` (dry run) or `pwsh -File install.ps1 -Apply` to co
 - **Jev-assisted UI decisions.** `ui_jev` sends a sanitized UIA control list to Jev, lets it choose one bounded candidate action, then reuses the same deterministic UI executor and safety gates. Jev never receives pixels, generates arbitrary input, or bypasses authorization; see [docs/jev-ui.md](./docs/jev-ui.md).
 - **Refuse to take the agent's word for it.** A closing summary becomes a claims list, and `verify_report` adjudicates each claim against machine evidence — a build record, the API capture store, a file on disk, a real command, git state — producing `pass` / `incomplete` / `fail`. Claims that the evidence contradicts are recorded in the failure corpus (class `agent-misjudge`) automatically. When the tools cannot see something, they say "unverified", not "passed".
 
-## Tools — 56, of which 23 are read-only
+## Tools — 68, of which 27 are read-only
 
 The single source of truth is [`lib/tool-registry.mjs`](./lib/tool-registry.mjs); both faces (DSH plugins and MCP) are generated from it, so they cannot drift apart. **Every tool, one line each, sorted by what you are trying to do → [docs/tools.md](./docs/tools.md).**
 
@@ -139,7 +139,7 @@ Cursor, Cline and other stdio clients take the same command. Configuration detai
 The repository root is also a plugin (`.claude-plugin/plugin.json`, listed by `.claude-plugin/marketplace.json`). One install brings three things together:
 
 - **the MCP server** — started through `mcp/launch.mjs`, which installs the MCP SDK on first start if `node_modules` is missing and reads this machine's settings from `~/.dsh-agent-toolchain/env.json` (`DSH_ENV_FILE` to move it, `none` to disable; only `DSH_*` string values, never `DSH_CRED_*`). Like the `env` block of a `claude mcp add -e …` registration, the file **overrides** inherited environment variables of the same name;
-- **six workflow skills** under `skills/` — closing verdict, UI self-check, API capture, perf triage, hang triage, build/compile-set check — loaded on demand instead of 55 tool descriptions doing all the teaching;
+- **six workflow skills** under `skills/` — closing verdict, UI self-check, API capture, perf triage, hang triage, build/compile-set check — loaded on demand instead of 68 tool descriptions doing all the teaching;
 - **three hooks** (`hooks/hooks.json`):
   - `Stop` — **closing-verdict gate**: if the turn edited files and never called `verify_report`, the agent is stopped once and asked to submit claims (`DSH_STOP_GATE=warn` only reminds, `off` disables). If it did call `verify_report` and the verdict is not `pass`, the user is shown the machine verdict directly. The bench pilot is why this exists: with guidance 6/6 runs closed through `verify_report`, without it 0/4.
   - `PostToolUse` — writing a `.cs`/`.vb`/`.fs` file that a legacy project provably does not compile gets an immediate warning (same judgement as `build_compile_check`; undecidable cases stay silent).
@@ -217,9 +217,11 @@ At a glance:
 | --- | --- |
 | [ROADMAP.md](./ROADMAP.md) | The public three-year plan and its design principles |
 | [docs/architecture.md](./docs/architecture.md) | How the pieces compose |
-| [docs/tools.md](./docs/tools.md) | All 56 tools, one line each, grouped by what you are trying to do |
+| [docs/tools.md](./docs/tools.md) | All 68 tools, one line each, grouped by what you are trying to do |
 | [docs/prior-art.md](./docs/prior-art.md) | What this project learned from (per package), and what it deliberately did not copy |
 | [docs/verify-package.md](./docs/verify-package.md) | Proposal: extracting the verification core as a standalone package — **status: not implemented** |
+| [docs/harness2-integration-design.md](./docs/harness2-integration-design.md) | Harness² source assessment and DSH integration design |
+| [docs/harness2-executor.md](./docs/harness2-executor.md) | Harness² execution adapter, evidence boundaries and evaluation limits |
 | [docs/failure-corpus.md](./docs/failure-corpus.md) | Failure taxonomy and record schema |
 | [docs/verification-report.md](./docs/verification-report.md) | Claim kinds and verdict semantics |
 | [docs/agent-toolchain-evaluation.md](./docs/agent-toolchain-evaluation.md) | Measurements of this toolchain, plus what is still weak |

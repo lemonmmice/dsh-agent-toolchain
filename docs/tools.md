@@ -5,7 +5,7 @@ and zero disables expiry. Recall preserves expired rows and returns `expired`, p
 expiry metadata. Status reports per-kind and expired counts; search hits include index time
 and embedding identity for newly indexed chunks.
 
-56 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
+68 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
 face and the MCP face cannot drift apart. `Read` = the registry marks it read-only (safe to call with
 no permission); `Write` = it can change something — a file, a process, a client window, a running
 capture — and therefore carries the gate described in
@@ -21,6 +21,28 @@ capture — and therefore carries the gate described in
 | --- | --- | --- |
 | `toolchain_status` | Read | Environment self-check: is the target client running, is a source root configured (that is what decides whether you get `file:line`), are the dump/trace tools present, are you admin. Every value is reported **with its source**, and things it cannot check are reported as unchecked. |
 | `toolchain_job` | Write | Read a long-task status/result or request cancellation by `jobId`; accepted is not completed and unknown side effects are never replayed. |
+
+## Developer utilities
+
+| Tool | | What it does |
+| --- | --- | --- |
+| `dev_docs_search` | Write | Resolves a public Context7 library documentation ID; the query may leave the machine. |
+| `dev_docs_read` | Write | Reads one focused public documentation topic by library ID; private source and credentials are excluded. |
+| `dev_vision_diff` | Write | Compares two local PNGs and writes bounded diff evidence. |
+| `dev_plugin_check` | Write | Checks installed plugin metadata without installing or executing package scripts. |
+| `dev_status` | Read | Reports optional development backend discovery. |
+| `dev_csharp` | Write | Runs the configured C# development backend when available. |
+| `dev_logs` | Read | Reads bounded local development logs. |
+| `dev_skills` | Read | Lists available development skills and their metadata. |
+| `dev_read` | Read | Reads a bounded workspace file under the configured development root. |
+| `dev_edit` | Write | Applies an explicitly authorized, hash-bound exact text edit inside a workspace. |
+
+## Harness² — controlled improvement
+
+| Tool | | What it does |
+| --- | --- | --- |
+| `harness_trial` | Write | Runs or inspects a bounded single-round Propose–Probe–Compose trial from a local JSON config; frozen machine checks decide adoption and unknown effects are never replayed. |
+| `harness_experience` | Write | Queries or exports scoped Harness² lessons and records evidence-backed validate/retire transitions; proposed entries require explicit opt-in and model confidence alone cannot promote a lesson. |
 
 ## Build
 

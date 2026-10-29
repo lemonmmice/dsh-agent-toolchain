@@ -24,7 +24,7 @@ newline-delimited JSON-RPC messages. Individual input messages are capped at
 of `ui_observe`. Its status tool reports runtime readiness; it does not certify
 ETW, dump tools or source mapping. UIA requires Windows.
 
-To retain all 56 existing tools, use the compatibility bridge:
+To retain all 68 existing tools, use the compatibility bridge:
 
 ```powershell
 & .\mcp\bin\win32-x64\dsh-toolchain.exe --legacy-server "$PWD\mcp\server.mjs"
@@ -39,7 +39,7 @@ their existing implementations. Hybrid UI observations also go through the JS
 driver so observation IDs, snapshot authority, redaction, authorization and
 action evidence remain in the same session. The driver delegates supported
 execution to Rust. This mode still needs Node and the relevant existing tools;
-56 available tools does not mean 56 tools have been reimplemented in Rust.
+68 available tools does not mean 68 tools have been reimplemented in Rust. Harness² trial and experience tools are hybrid-only: native-only returns an explicit unavailable result because the Node orchestration core and scoped experience store remain the source of truth.
 
 The embedded catalog is generated from the actual Node MCP `tools/list`,
 including its complex schemas and annotations. After changing tool interfaces:
@@ -84,6 +84,14 @@ No existing MCP registration or running host is switched by building this crate.
 - Deadlines include queueing. A queued cancellation never invokes the executor.
   Cancellation of a running effect may produce `unknown`, never an unsupported
   claim that a remote operation was undone.
+- `harness_trial` never uses the Rust task adapter: `runTaskTool`
+  (`lib/task-tool-support.mjs`) routes it to the JS task service even when
+  `DSH_RUNTIME_BACKEND=rust`. The Rust runtime models no `harness:<dir>`
+  resource and its deduplication identity omits the submitted config
+  fingerprint, so routing it there would drop per-directory serialization and
+  the "config changed after submission is refused" guard. The JS path keeps
+  both. Revisit this exclusion if the Rust adapter gains harness resources and
+  identity fields.
 - Task records live in `<DSH_TASK_DIR>/rust-v1` (default beneath the toolchain
   home). The separate directory avoids mixing old and new lock protocols.
   Task IDs and results from the old service remain owned by that service.
@@ -152,7 +160,7 @@ cargo clippy --locked --manifest-path native/toolchain/Cargo.toml --all-targets 
 The integration suite starts loopback HTTP fixtures and isolated evidence
 directories. It verifies native-only operation with an unavailable Node command,
 protocol schemas, concurrent status during blocked I/O, response caps, gzip
-header parity, cancellation, deduplication/restart and the 56-tool bridge.
+header parity, cancellation, deduplication/restart and the 68-tool bridge.
 `scripts/native-ui-check.mjs` accepts an explicit target PID and one JSON action
 for authorized live validation. `DSH_NATIVE_UI_REPORT` optionally saves the
 result; screenshots remain in the normal UI evidence directory.

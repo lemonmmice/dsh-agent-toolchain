@@ -16,7 +16,8 @@ import { dshParameters, dshDescription } from '../../lib/tool-registry.mjs'
 // 注意：这里必须是**静态** import（本插件目录内的文件永远在），不能走下面那个带守卫的动态 import
 // （那个是给 `../../lib/verify/report.mjs` —— 共享库，插件被拷出 monorepo 时可能不存在）。
 import { renderFailureQuery, renderFailureStats } from './lib/render-failure.mjs'
-import { taskControl, renderTaskJob } from '../../lib/task-tool-support.mjs'
+import { taskControl, renderTaskJob, runTaskTool } from '../../lib/task-tool-support.mjs'
+import { makeHarnessTools } from '../../lib/harness/tools.mjs'
 
 export const name = 'dsh-verify'
 
@@ -98,6 +99,8 @@ function loadStatus() {
   return statusPromise
 }
 
+const harnessTools = makeHarnessTools()
+
 const tools = () => [
   defineTool({
     name: 'verify_report',
@@ -153,6 +156,43 @@ const tools = () => [
     parameters: dshParameters('toolchain_job'),
     output: { schema: OBJECT, render: renderTaskJob },
     async execute(args) { return taskControl({ action: args.action, jobId: args.jobId }) },
+  }),
+
+  defineTool({
+    name: 'harness_trial',
+    description: dshDescription('harness_trial'),
+    parameters: dshParameters('harness_trial'),
+    output: { schema: OBJECT, render: (_a, v) => v?.taskJob ? renderTaskJob(_a, v) : [{ type: 'text', text: v?.state ? `Harness 试验 ${v.trialId || ''}：${v.state}` : JSON.stringify(v) }] },
+    async execute(args) {
+      const action = args.action
+      const configPath = args.configPath
+      const trialId = args.trialId
+      const asyncJob = args.asyncJob
+      const requestKey = args.requestKey
+      const jobTimeoutMs = args.jobTimeoutMs
+      return runTaskTool('harness_trial', { action, configPath, trialId, asyncJob, requestKey, jobTimeoutMs }, (parameters, extra) => harnessTools.trial(parameters, extra))
+    },
+  }),
+
+  defineTool({
+    name: 'harness_experience',
+    description: dshDescription('harness_experience'),
+    parameters: dshParameters('harness_experience'),
+    isConcurrencySafe: (args) => !['validate', 'retire'].includes(args?.action),
+    output: { schema: OBJECT, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v) }] },
+    async execute(args) {
+      const action = args.action
+      const scopeJson = args.scopeJson
+      const versionsJson = args.versionsJson
+      const statesJson = args.statesJson
+      const id = args.id
+      const supportTrialIdsJson = args.supportTrialIdsJson
+      const reason = args.reason
+      const limit = args.limit
+      const exportPath = args.exportPath
+      const includeProposed = args.includeProposed
+      return harnessTools.experience({ action, scopeJson, versionsJson, statesJson, id, supportTrialIdsJson, reason, limit, exportPath, includeProposed })
+    },
   }),
 
   // ------------------------------------------------------------------ 失败样本库
