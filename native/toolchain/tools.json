@@ -59,15 +59,15 @@
           "type": "string"
         },
         "asyncJob": {
-          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "description": "Return a background task handle; poll with toolchain_job.",
           "type": "boolean"
         },
         "requestKey": {
-          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "description": "Background task deduplication key; changed arguments are not reused.",
           "type": "string"
         },
         "jobTimeoutMs": {
-          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "description": "Background task deadline including queueing.",
           "type": "integer",
           "minimum": 1,
           "maximum": 86400000
