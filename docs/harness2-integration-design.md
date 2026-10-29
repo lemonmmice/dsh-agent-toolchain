@@ -144,6 +144,8 @@ proposed 可以供改进器参考，但必须连同不确定性呈现；validate
 
 优先生成按需加载的 Skill、工具指导或确定性 helper。常驻提示词只承载短且普适的内容，并记录增量成本。第一版只写试验目录内的候选 overlay，不自动修改用户全局规范、已安装 Skills 或宿主配置。
 
+这条偏好已落为可编辑面的具名预设：`editableSurface: "guidance"` 展开为 `skills/**`、`tool-guidance/**`、`guidance/**`、`AGENTS.md`、`helpers/**` 等组件路径（见 `lib/harness/core.mjs` 的 `EDITABLE_SURFACE_PRESETS`）。该面随阶段输入下发给改进器（`.harness-stage-input.json` 的 `editableSurface` 字段），并在改进器提示中声明"只改该组件面、优先小改 Skill/工具指导、常驻文本从短、绝不写交付物"。它是**可选**的：不设则维持原无限制行为；设错的预设名在试验创建前即以明确错误拒绝。越界或触碰交付物/校验目标仍由可编辑面 allowlist 与 protected-path 守卫双重拦下（候选不能靠预置产物骗过冻结裁决）。仍只写试验目录内 overlay，不动已安装 Skills 或宿主配置。
+
 ## 7. 执行、存储与宿主接入
 
 拟定落盘位置为配置的 `DSH_HARNESS_DIR`；默认跟随 toolchain home 下的 `harness/`。离线开发工件放入现有被忽略的 `.dsh-agent-toolchain/harness/`，不将真实任务材料提交到仓库。
@@ -183,7 +185,7 @@ harness/
 
 ### 已落地范围
 
-- 阶段 A：`lib/harness/core.mjs` 固定四组任务执行（base、general、domain、composed，默认每组重复 2 次），生成 contrast/evidenceDigest，冻结 claim、隔离工作区、身份指纹、composer 决策否决器、采用规则和 `unknown/incomplete` 状态；`lib/harness/core.test.mjs` 覆盖基线保留、改进采用、对照重复、k=2 selector、空契约和取消。
+- 阶段 A：`lib/harness/core.mjs` 固定四组任务执行（base、general、domain、composed，默认每组重复 2 次），生成 contrast/evidenceDigest，冻结 claim、隔离工作区、身份指纹、composer 决策否决器、采用规则和 `unknown/incomplete` 状态；可编辑面 allowlist（含 `guidance` 具名预设，随阶段输入下发改进器）与 protected-path 守卫、候选拒绝单次反馈重试、候选多样性（line-Jaccard）观测；`lib/harness/core.test.mjs` 覆盖基线保留、改进采用、对照重复、k=2 selector、空契约、取消、交付物防作弊、越界/预设面拒绝、重试与多样性塌缩。
 - 阶段 B：`lib/harness/executor.mjs` 提供有界子进程执行器和 Codex `exec --json --ephemeral --sandbox workspace-write` 适配。默认只保留脱敏摘要、产物哈希和协议用量；CLI 不存在、取消、超时和副作用未知时如实返回 unavailable/unknown。真实 Codex 烟测只证明适配器可观察到一次完成响应，不证明 Harness² 学习收益。
 - 阶段 C：`harness_trial` 与 `harness_experience` 已由共享注册表接入 DSH/MCP；长任务沿用 JS task service、requestKey 指纹、取消和 `toolchain_job`，原生运行时明确保持 hybrid-only，不把未实现的 Rust 能力列为 native-only。
 - 阶段 D：`bench/harness2/evaluate.mjs` 和 `bench/harness2/core-evaluation.test.mjs` 使用相同预算、重复执行和留出任务比较固定基线与单轮流程；缺失 cost 仍为 `null`，合成夹具通过不等于真实任务收益。
