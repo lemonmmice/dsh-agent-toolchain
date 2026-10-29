@@ -164,8 +164,7 @@ server.tool(
     const action = args.action
     const configPath = args.configPath
     const trialId = args.trialId
-    const configFingerprint = args.configFingerprint
-    return jtext(await harnessTools.trial({ action, configPath, trialId, configFingerprint }, extra))
+    return jtext(await harnessTools.trial({ action, configPath, trialId }, extra))
   },
 )
 
