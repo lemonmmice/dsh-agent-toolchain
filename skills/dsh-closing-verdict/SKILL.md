@@ -39,3 +39,15 @@ description: 收尾裁决：宣布任务完成之前，把完成声明写成 cla
 - 动手排查之前，`failure_stats` 的 `topRecurring` 与 `failure_query(q=…)` 能告诉你同一个问题以前出现过多少次、怎么解决的。
 - 系统看不见的失败（需要人接手、工具行为异常）用 `failure_record` 手工记：记事实，不记责任。
 - 记错了用 `failure_retract`（必须写理由；原文保留）。
+
+## 反复失败 → 自己发起自改进（不用等人开口）
+
+收尾读 `failure_stats` 时，若 `topRecurring` 里有一条 `occurrences ≥ 3`、且属于**行为类**失败（`agent-misjudge`、反复踩同一个坑；**排除** `tool-error` 等基建/工具抖动——那不是改 skill 能防的），就**主动发起一次 `harness_trial` 把它沉淀成可复用的 skill / 工具指引**，不要等用户要求：
+
+1. 用那条记录的 `task` / `sample` 还原一个可复现的最小案例，写成 trial 的 `task` + 冻结 `claims`——claims 必须是"这类错误已不再发生"的 `gate`，不是 `file` 存在。
+2. **按领域归档**：给 trial 配 `scope.taskType` = 问题领域，从发现路径推断——`hang_*` / `perf_uifreeze` → `thread-hang`；`perf_*` → `perf`；`capture_*` / `http_request` → `api`；`build_*` / `compiled` → `build`；`ui_*` → `ui`；没有诊断工具路径的逻辑类误判 → `logic`。沉淀出的 skill 按领域归档，下次同领域问题由 harness 按 `scope` 召回。（失败库那套固定 7 类讲的是"**怎么**失败"；`taskType` 才是"**哪个领域**"——两套轴别混。）
+3. 配 `editableSurface: "guidance"`：候选只能改 skill / 工具指引 / helper，改进器会优先小改一个 on-demand skill，且**绝不能写交付物或校验目标**（防止靠预置产物骗过裁决）。
+4. 跑完若候选在冻结裁决下胜出，它落为 `proposed`。**到此为止是自动的。**
+5. 复现不了、给不出 gate 的别硬凑——把这条反复失败和一句 trial 草案摆给用户，别假装已经沉淀。
+
+**提升这条线别自动跨**：`proposed → validated` 必须由 `harness_experience action=validate` 带 ≥2 个独立任务的机器证据，模型不能自判 validated；把 skill 真正装进宿主 / 已装 Skills 更是另一步人工决定。这正是"经验不自动变成全局规则"的安全边界。
