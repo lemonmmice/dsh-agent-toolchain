@@ -165,6 +165,23 @@ proposed 可以供改进器参考，但必须连同不确定性呈现；validate
 
 据此，learned-guardrails 覆盖**不可复现**的推理教训（harness 无能为力的那部分），harness 覆盖**可复现**子集并补无人值守闭环验证，人确认层反过来喂给机器层当先验——两层各司其职、不再冗余。
 
+### 全自动闭环与自动 apply（`lib/harness/apply.mjs`）
+
+机器验证**本身就是免人工生效的入场券**（harness² 命题）：一条教训在冻结 gate 下、≥2 个独立复现上验证通过（`validated`），即挣得无需人确认直接生效的资格。闭环全程无人：
+
+```
+检测复发(failure_stats) → 触发 trial(收尾自发起) → 复现成 gate → 提候选 → 机器验证
+→ validated(≥2 独立任务) → 自动 apply 到项目按需 skill
+```
+
+`apply.mjs` 的 `applyValidatedExperience` 在 `harness_experience action=validate` 成功后自动触发（opt-in：`applyDir` 参数或 `DSH_HARNESS_APPLY_DIR`；**默认关、零行为变化**），护栏固定：
+
+- **只机器验证层。** 非 `validated` 直接拒（`blocked: not-validated`）；人确认层教训不走这条自动路径。
+- **回归闸、fail-closed。** 写入前重跑**新教训 + 同 scope 每条已生效教训**的冻结 gate；任一回归→`blocked: regression` 不写；任一 gate **跑不了**（复现已随工作区消失）→`blocked: needs-reproduction` 不写。宁可不生效，不冒污染——这是"失败即回归"落到 apply 侧。
+- **项目级、版本化、可退役。** 产物落 `<applyDir>/<taskType>/<experienceId>/`（host 仅本项目按需加载），经 `library.exportFiles` 的脱敏复制路径；`.dsh-applied.json` 记指纹/来源 trial/时间；`retireApplied` 删文件 + 标退役，完全可回退。
+
+**复现是真天花板，不是谨慎。** 自动 apply 对**自包含 gate**（能脱离已消失工作区重跑的）端到端生效；跑不了的 fail-closed 挂起，等人复现或收尾 skill 另行捕获。loop 的覆盖面 = 失败可被自动复现成冻结 gate 的比例，而非全部失败。**不可复现的推理教训没有机器裁判，天然进不了自动 loop**——这正是 learned-guardrails 人确认层存在的理由，不是实现缺口。
+
 ## 7. 执行、存储与宿主接入
 
 拟定落盘位置为配置的 `DSH_HARNESS_DIR`；默认跟随 toolchain home 下的 `harness/`。离线开发工件放入现有被忽略的 `.dsh-agent-toolchain/harness/`，不将真实任务材料提交到仓库。
