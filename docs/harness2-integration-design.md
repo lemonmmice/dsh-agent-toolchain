@@ -177,10 +177,15 @@ proposed 可以供改进器参考，但必须连同不确定性呈现；validate
 `apply.mjs` 的 `applyValidatedExperience` 在 `harness_experience action=validate` 成功后自动触发（opt-in：`applyDir` 参数或 `DSH_HARNESS_APPLY_DIR`；**默认关、零行为变化**），护栏固定：
 
 - **只机器验证层。** 非 `validated` 直接拒（`blocked: not-validated`）；人确认层教训不走这条自动路径。
-- **回归闸、fail-closed。** 写入前重跑**新教训 + 同 scope 每条已生效教训**的冻结 gate；任一回归→`blocked: regression` 不写；任一 gate **跑不了**（复现已随工作区消失）→`blocked: needs-reproduction` 不写。宁可不生效，不冒污染——这是"失败即回归"落到 apply 侧。
+- **回归闸、fail-closed。** 写入前**重建复现工作区**（`materializeReproduction`：trial 的 `baseHarness.files` + validated 候选 overlay，overlay 覆盖写），把冻结 gate 的 cwd 指向重建目录重跑——新教训自己的 gate，加同 scope 每条已生效教训的 gate。任一兄弟 gate 被跑挂→`blocked: regression` 不写；任一 gate 跑不了→`blocked: needs-reproduction` 不写。宁可不生效，不冒污染——"失败即回归"落到 apply 侧。
 - **项目级、版本化、可退役。** 产物落 `<applyDir>/<taskType>/<experienceId>/`（host 仅本项目按需加载），经 `library.exportFiles` 的脱敏复制路径；`.dsh-applied.json` 记指纹/来源 trial/时间；`retireApplied` 删文件 + 标退役，完全可回退。
 
-**复现是真天花板，不是谨慎。** 自动 apply 对**自包含 gate**（能脱离已消失工作区重跑的）端到端生效；跑不了的 fail-closed 挂起，等人复现或收尾 skill 另行捕获。loop 的覆盖面 = 失败可被自动复现成冻结 gate 的比例，而非全部失败。**不可复现的推理教训没有机器裁判，天然进不了自动 loop**——这正是 learned-guardrails 人确认层存在的理由，不是实现缺口。
+**复现是真天花板，不是谨慎——而且天花板是精确的。** 重建工作区后，gate 分两类：
+
+- **文件可满足型**（build / lint / 静态检查——只依赖 源+overlay）：重建后**真能重跑变绿、真落 skill**。这是自动 loop 的可达集。
+- **执行依赖型**（检查 agent 任务运行时产出的产物——如"客户端不再卡顿"需真跑客户端）：source+overlay 里没有那个产物，重跑必失败→`needs-reproduction` 挂起。在 apply 时重跑整个 agent 任务（对牛股王要重新构建/运行客户端）**刻意不做**。
+
+因此 loop 的覆盖面 = 失败可被**从 源+overlay 复现成文件可满足 gate** 的比例，而非全部失败。两条边界未变且现已有测试钉死（`apply.test.mjs`：文件可满足型落地、执行依赖型挂起）：源码快照路径未持久化，故当前只重建 base+overlay 型复现；**不可复现的推理教训没有机器裁判，天然进不了自动 loop**——这正是 learned-guardrails 人确认层存在的理由，不是实现缺口。
 
 ## 7. 执行、存储与宿主接入
 
