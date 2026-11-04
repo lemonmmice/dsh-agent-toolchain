@@ -38,7 +38,7 @@ DSH 需要增加的主要是编排和候选生命周期；现有验证器、失�
 | `library.py` | 同领域历史 Harness 和经验；只读取此前任务的记录 | 使用本仓存储原语与分作用域索引；增加经验状态、版本失效和撤回 |
 | `schedule.py`、`runmark.py` | 调度、运行命名、缓存与恢复 | 复用 DSH 身份和任务服务；恢复元数据不等于重放未知副作用 |
 | `proposer.py`、`substrate/` | 启动模型/CLI，安装候选 Harness，读取回复 | 接口思想可用；具体启动器、权限参数和环境配置重新适配 |
-| `demo.py` | 用预设编辑器和真实 Python 执行演示流程 | 可参考其测试方式；预设成功不能作为模型学习收益 |
+| `demo.py` | 用预设编辑器和真实 Python 执行演示流程 | 可参考其校验方式；预设成功不能作为模型学习收益 |
 
 两处需要明确区别：上游最终选择池不包含原始执行结果，但组合阶段可以 `KEEP_BASE`。上游经验字段完整，也不代表其因果解释经过机器证明。DSH 不能直接将这两种结果提升为验证通过。
 
@@ -87,7 +87,7 @@ DSH Harness 核心
 | `improver.runStage` | 阶段、只读证据视图、候选工作区、预算、取消信号 | 候选文件差异/结构化选择/反思，附逐项证据引用与用量 |
 | `executor.runTask` | 冻结任务、输入快照、Harness 指纹、独立工作区、运行 ID、预算、取消信号 | 退出状态、产物引用、脱敏轨迹引用、实际模型身份、用量与完整性 |
 
-两个接口均可注入确定性测试替身。真实宿主接入前，必须验证会话隔离、Harness 安装及读取、取消、工作目录限制与用量报告；缺少能力时返回明确的 unavailable，不能默认为可用。
+两个接口均可注入确定性校验替身。真实宿主接入前，必须验证会话隔离、Harness 安装及读取、取消、工作目录限制与用量报告；缺少能力时返回明确的 unavailable，不能默认为可用。
 
 模型产生的解释保存为建议。验证适配器根据冻结契约调用现有 `makeVerificationReport`，然后再执行比较策略。UI、性能等尚无专用 claim 类型的场景，使用明确的 gate 或专门的观察器适配；不把自报结论转成 observed。
 
@@ -128,7 +128,7 @@ DSH Harness 核心
 
 比较器必须检查冻结的 required claims 完整性。`file` 通过只证明文件存在，`compiled` 静态提示不能证明真正编译，`manual` 不能取得自动采用资格。通过所有已定义检查也只代表覆盖范围内通过。
 
-优化可用的检查与最终留出评测分开。任务允许的测试反馈可以参与改进；隐藏测试、标准答案和留出评分只在决策冻结后用于评测，不进入改进上下文、经验内容或下一次候选生成。
+优化可用的检查与最终留出评测分开。任务允许的校验反馈可以参与改进；隐藏校验、标准答案和留出评分只在决策冻结后用于评测，不进入改进上下文、经验内容或下一次候选生成。
 
 ## 6. 经验不会自动变成全局规则
 
@@ -154,7 +154,7 @@ proposed 可以供改进器参考，但必须连同不确定性呈现；validate
 
 | 层 | 载体 | 产出条件 | 覆盖 |
 | --- | --- | --- | --- |
-| 人确认层（地板） | `personal-defaults/references/learned-guardrails.md`（用户手维护） | 用户确认或测试/日志证实根因 | 全部，含**不可机器复现**的推理类 bug |
+| 人确认层（地板） | `personal-defaults/references/learned-guardrails.md`（用户手维护） | 用户确认或校验/日志证实根因 | 全部，含**不可机器复现**的推理类 bug |
 | 机器验证层 | harness experiences（`experience.mjs`） | 冻结裁决下胜出（proposed）→ ≥2 独立机器任务（validated） | 可复现子集 |
 
 **只读桥**（`lib/harness/prior-art.mjs`）：`config.priorArtPath` 指向 learned-guardrails 时，`harness_trial` 按 `scope.taskType` 领域路由，把相关人确认教训当**只读先验**经 `stageInput.priorArt` 下发改进器——让候选在用户真知识上改，而非从零编。约束：
@@ -185,7 +185,7 @@ proposed 可以供改进器参考，但必须连同不确定性呈现；validate
 - **文件可满足型**（build / lint / 静态检查——只依赖 源+overlay）：重建后**真能重跑变绿、真落 skill**。这是自动 loop 的可达集。
 - **执行依赖型**（检查 agent 任务运行时产出的产物——如"客户端不再卡顿"需真跑客户端）：source+overlay 里没有那个产物，重跑必失败→`needs-reproduction` 挂起。在 apply 时重跑整个 agent 任务（对示例终端要重新构建/运行客户端）**刻意不做**。
 
-因此 loop 的覆盖面 = 失败可被**从 源+overlay 复现成文件可满足 gate** 的比例，而非全部失败。两条边界未变且现已有测试钉死（`apply.test.mjs`：文件可满足型落地、执行依赖型挂起）：源码快照路径未持久化，故当前只重建 base+overlay 型复现；**不可复现的推理教训没有机器裁判，天然进不了自动 loop**——这正是 learned-guardrails 人确认层存在的理由，不是实现缺口。
+因此 loop 的覆盖面 = 失败可被**从 源+overlay 复现成文件可满足 gate** 的比例，而非全部失败。两条边界未变：源码快照路径未持久化，故当前只重建 base+overlay 型复现；**不可复现的推理教训没有机器裁判，天然进不了自动 loop**——这正是 learned-guardrails 人确认层存在的理由，不是实现缺口。
 
 ## 7. 执行、存储与宿主接入
 
@@ -212,24 +212,24 @@ harness/
 
 - 一个拟新增的 `harness_trial` 入口负责受控试验，长任务返回现有 job；状态/结果/取消复用 `toolchain_job`。
 - 一个拟新增的 `harness_experience` 入口负责查询与有记录的状态转换；模型不能传入 `validated=true` 绕过证据检查。
-- 通过 `lib/tool-registry.mjs` 声明参数与副作用，再接 DSH plugin 和 MCP。遵守已有[失败工具端面差异](failure-tools-scope.md)，不顺带暴露其他写入口。
+- 通过 `lib/tool-registry.mjs` 声明参数与副作用，再接 DSH plugin 和 MCP。遵守 `lib/tool-registry.mjs` 的只读/副作用标注纪律，不顺带暴露其他写入口。
 - 原生兼容模式通过现有桥调用 JS 核心，并更新生成工具目录；native-only 的支持范围独立说明，不直接宣称支持新增能力。
 
 ## 8. 最小实现拆分与验收
 
 | 阶段 | 交付 | 完成依据 |
 | --- | --- | --- |
-| A：可测试核心 | 拟新增 `lib/harness/` 的数据契约、候选校验、单轮调度、比较与经验状态；受控执行器 | 离线测试证明状态与证据处理，不声称模型自我改进 |
+| A：可校验核心 | 拟新增 `lib/harness/` 的数据契约、候选校验、单轮调度、比较与经验状态；受控执行器 | 离线校验证明状态与证据处理，不声称模型自我改进 |
 | B：一个真实执行器 | 从现有 bench 分离适配边界，接一个能安装候选并回收证据的执行器 | 独立工作区、实际模型/工具身份、产物/用量、超时取消均有证据 |
 | C：DSH/MCP 接入 | 工具注册、plugin 外壳、后台任务、展示和经验索引 | 两端 schema/结果一致；部署后新宿主实测；native-only/兼容桥分别核验 |
 | D：收益评测 | 同预算固定 Harness 对照、单轮改进、带经验的后续任务 | 留出任务、重复运行、成功率与成本均披露；据此决定是否增加 `k` 和并行探索 |
 
 ### 已落地范围
 
-- 阶段 A：`lib/harness/core.mjs` 固定四组任务执行（base、general、domain、composed，默认每组重复 2 次），生成 contrast/evidenceDigest，冻结 claim、隔离工作区、身份指纹、composer 决策否决器、采用规则和 `unknown/incomplete` 状态；可编辑面 allowlist（含 `guidance` 具名预设，随阶段输入下发改进器）与 protected-path 守卫、候选拒绝单次反馈重试、候选多样性（line-Jaccard）观测；`lib/harness/core.test.mjs` 覆盖基线保留、改进采用、对照重复、k=2 selector、空契约、取消、交付物防作弊、越界/预设面拒绝、重试与多样性塌缩。
+- 阶段 A：`lib/harness/core.mjs` 固定四组任务执行（base、general、domain、composed，默认每组重复 2 次），生成 contrast/evidenceDigest，冻结 claim、隔离工作区、身份指纹、composer 决策否决器、采用规则和 `unknown/incomplete` 状态；可编辑面 allowlist（含 `guidance` 具名预设，随阶段输入下发改进器）与 protected-path 守卫、候选拒绝单次反馈重试、候选多样性（line-Jaccard）观测。
 - 阶段 B：`lib/harness/executor.mjs` 提供有界子进程执行器和 Codex `exec --json --ephemeral --sandbox workspace-write` 适配。默认只保留脱敏摘要、产物哈希和协议用量；CLI 不存在、取消、超时和副作用未知时如实返回 unavailable/unknown。真实 Codex 烟测只证明适配器可观察到一次完成响应，不证明 Harness² 学习收益。
 - 阶段 C：`harness_trial` 与 `harness_experience` 已由共享注册表接入 DSH/MCP；长任务沿用 JS task service、requestKey 指纹、取消和 `toolchain_job`，原生运行时明确保持 hybrid-only，不把未实现的 Rust 能力列为 native-only。
-- 阶段 D：`bench/harness2/evaluate.mjs` 和 `bench/harness2/core-evaluation.test.mjs` 使用相同预算、重复执行和留出任务比较固定基线与单轮流程；缺失 cost 仍为 `null`，合成夹具通过不等于真实任务收益。
+- 阶段 D：`bench/harness2/evaluate.mjs` 使用相同预算、重复执行和留出任务比较固定基线与单轮流程；缺失 cost 仍为 `null`，合成夹具通过不等于真实任务收益。
 
 仍未完成的是面向具体业务 Agent 的长期部署与统计评测：需要一个获授权的真实执行配置、冻结任务/隐藏评测边界和足够的重复样本，才能报告成功率、成本或泛化提升。
 
@@ -252,7 +252,7 @@ harness/
 | --- | --- |
 | 候选删除必需 claim 或修改验证脚本 | 拒绝，不能获得通过 |
 | 不同任务/源码/Harness 的旧报告 | 拒绝复用，记录身份不匹配 |
-| 空 claims、仅 manual、测试筛选命中零项 | 不获得独立验证通过 |
+| 空 claims、仅 manual、校验筛选命中零项 | 不获得独立验证通过 |
 | 候选降低质量，或只增加解释文字 | 保留通过的基础结果；无可接受基础时如实失败 |
 | 证据缺失、超预算、取消后状态不明 | incomplete/unknown，不自动重放 |
 | 多组件同时变化、单次偶然成功 | 允许 confounded，不自动形成 validated 经验 |
@@ -260,7 +260,7 @@ harness/
 | 证据正文包含指令、越界路径或 junction | 正文作为数据；越界候选拒绝，不能修改固定控制层 |
 | 同 requestKey 重复提交或参数改变 | 同参去重，变参冲突，阶段不重复执行 |
 | 不同 scope、版本失效、已退役经验 | 不静默注入当前任务 |
-| 试验样本写入失败库/记忆 | 使用独立测试存储和 producer 标记，不污染用户真库 |
+| 试验样本写入失败库/记忆 | 使用独立校验存储和 producer 标记，不污染用户真库 |
 | 隐藏评测信息出现于改进上下文 | 阻断试验并报告污染，不能算公平收益 |
 
 收益比较还需包含“固定 Harness + 同等推理/重试预算”的对照，区分额外算力和 Harness 改进的贡献。经验评测使用不同任务，并比较开启/关闭经验库；分别披露执行器、改进器、选择、反思的用量，以及所有失败和放弃的尝试。

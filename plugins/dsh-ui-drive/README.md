@@ -62,7 +62,7 @@ UIA 确认没找到目标才尝试视觉定位；不对超时或执行结果未�
 
 `ui_launch` 默认只等待进程/窗口 readiness，不等待登录，不截图或调用视觉模型。
 `runtime.pid` 与 `runtime.processStartedAt` 标识实际执行的工具进程；`codeStale=true` 表示磁盘代码比该进程新。
-MCP 连接可能持续数小时，修改源码不会使已有连接自动加载新代码。需要重新连接并核对运行进程，不能把新起 stdio 测试的结果当成已有连接已更新。
+MCP 连接可能持续数小时，修改源码不会使已有连接自动加载新代码。需要重新连接并核对运行进程，不能把新起 stdio 校验的结果当成已有连接已更新。
 
 `ui_live(action=start)` 立即返回 `live.state=starting`、`firstFrameReady=false` 和空帧；首帧在后台采集。
 用 `wait` 或 `frame` 等待首帧，以 `firstFrameReady` 区分启动受理和画面已就绪。停止/重启会丢弃上一代未完成采集的结果。
@@ -249,7 +249,6 @@ node scripts/bench-ui-drive.mjs --proc-id <PID> --proc-name <进程名> --find-a
 - `scripts/ui-drive.ps1` — UIA 单步驱动（find/click/setvalue/key/read/shot/status）
 - `scripts/ui-drive-batch.ps1` — 批量执行（`-StepsFile`）+ 常驻进程（`-Serve`）+ 快路径状态（`-Status`）
 - `scripts/ui-probe.ps1` + `probe/UiProbe.cs` — 进程内只读视觉树探针（复用 Snoop 注入器）
-- `test/flow-batch.test.mjs` — 批量引擎离线单测（护栏、降级、步骤文件规则）
 
 ## 环境变量（补充）
 
@@ -317,30 +316,10 @@ node scripts/bench-ui-drive.mjs --proc-id <PID> --proc-name <进程名> --find-a
 - **一次性回退脚本 `ui-drive.ps1` 的 `read` 同步修**：它的 `Current.ControlType.ProgrammaticName.Replace(...)`
   还是旧写法（同样能崩成 0 行），现在逐元素容错并输出协议行 `SKIPPED <n>`（+ 最多一条 `SKIPREASON <text>`），
   driver 侧解析成 `skipped`/`skippedReasons`。
-- 渲染层（`renderDrive`/`renderState`）抽到 `lib/render.mjs`：渲染文本是 agent 唯一看得见的契约，必须能离线单测
+- 渲染层（`renderDrive`/`renderState`）抽到 `lib/render.mjs`：渲染文本是 agent 唯一看得见的契约，必须能离线验证
   （`index.js` 依赖宿主 `@deepseek-ai/dsh-tools`，普通 node 进程 import 不到）。顺带修好
   `ui_observe(action=state)` 过去因 `renderDrive` 没有 `state` 分支而回落成「完成」不显示清单的问题。
 
-**单测**：`test/read-skips.test.mjs`（离线，不需要客户端/不启动 PowerShell，已进 CI 11 → 12 道闸门），
-覆盖「报数 / 零值不误报 / 未回报为 null / flow 每步透传 / 渲染可见 / 回退脚本 SKIPPED 协议行」21 项断言。
-
-**现场验证**（脚本层真路径，非单测）：`test/read-skips-live.ps1` 起一个自建 WPF 窗口，分两阶段跑
-`scripts/ui-drive-batch.ps1` 的 `read`/`state`：
-
-- **阶段 A（窗口静止）**：清单必须非空（`count>0`）——证明正常路径没被改坏、`skipped` 不是假警报；
-- **阶段 B（窗口高频变动：虚拟化列表滚动 + 尾部控件拆建）**：必须回报 `skipped>=1`，
-  并给出原因（实测最稳定的瞬态形态是「整次枚举失败：目标元素的对应 UI 不再可用」）——
-  这正是 B-1 的核心：**读不到的元素要报数**，而不是静默少几行；
-- 任何一轮 `ok!=true` 都算失败（异常必须显式暴露，不能被当成「界面为空」）。
-
-用法：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File test\read-skips-live.ps1
-# 退出码 0 = 两阶段都通过；1 = 条件未满足；2 = 环境问题（窗口起不来）
-```
-
-> 实测记录（2026-09-10 夜）：阶段 A `count=320`；阶段 B 3/8 轮 `skipped=1`（含原因），无异常轮。
 
 ### 2026-09-11 补完 B-1 的另一半：0 行必须永远有解释（空枚举）
 
@@ -358,8 +337,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File test\read-skips-live.ps1
   带 `match` 却 0 行的旧重试逻辑保留。
 - 重试后仍是 0 元素 → driver 生成 warn：
   `⚠ 本次枚举返回 0 个元素（UIA 给了空集合，通常是界面正在重绘或窗口刚切换）：这不等于「界面上没有控件」…`。
-- 现场验证脚本新增**硬判据**：任何一轮只要 `count=0`，必须满足「有 skipped / scanned=0 / offscreen>0」之一，
-  否则记为 `unexplainedRounds` 并判失败——**静默 0 行不再可能蒙混过关**。
 
 ### 2026-09-10 第四批修复：重启类调用不再挂死（B-2）
 
@@ -394,26 +371,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File test\read-skips-live.ps1
 
 **环境变量**：`DSH_UI_STALL_MS`（僵死判定阈值，默认 90000ms）。
 
-**单测**：`test/restart-watchdog.test.mjs`（离线，假 serve 进程模拟「活着但不回请求」），
-15 项断言覆盖「看门狗判僵死 + 只读重试 + 副作用不重放 + status 未知语义 + launch 硬上限」。
 
 ### 2026-09-11 跨模型独立复核修正（Codex + Claude 各出一份报告）
 
 两份独立复核报告是**本机工作文档，未随仓库分发**，且本机副本现已不在盘上（去向未查清，
 见 [docs/prior-art.md](../../docs/prior-art.md#review-records-what-exists-and-what-does-not)）。
-幸存下来、也是唯一算数的记录，是**下面这份"已确认并已修"的清单 + 对应的测试断言**：
+幸存下来、也是唯一算数的记录，是**下面这份"已确认并已修"的清单 + 对应的修复记录**：
 
 1. **`truncated` 硬编码 `false`**（两方都判「对调用方撒谎」）→ 如实透传 `res.truncated`，
-   并在截断时补 `returned=`（实际返回行数）。补了零覆盖的单测。
+   并在截断时补 `returned=`（实际返回行数）。补上了此前零覆盖的校验。
 2. **看门狗固定阈值会误杀合法长动作** → 阈值改为 `max(DSH_UI_STALL_MS, 最老请求自身超时)`；
    同时把 README/注释里「看门狗判僵死」的定位改准（主防线是请求超时 + 重试）。
 3. **`launch` 的 `Math.max(3000, waitMs)` 覆盖调用方显式值** → 改为只挡非法值（≤0/NaN），下限 500ms；
-   显式 `waitMs=1000` 现在就是 1s（有单测）。
+   显式 `waitMs=1000` 现在就是 1s（已验证）。
 4. **read 的 `$cur.*` 属性访问未全包 try/catch**（异常会整步失败而不是记 skipped）→ 逐元素函数体
    全包 try/catch，异常计入 `skipped` 并带原因；与 `state` 路径口径一致。
 5. **空枚举修复在**一次性回退路径（`DSH_UI_SERVE=0`）**缺失**（Claude 的 N3）→ `ui-drive.ps1` 的 read
    补齐「缓冲输出 + 空枚举重试 ≤3 次 + 回报 `SCANNED n`」，driver 侧解析 `SCANNED` → 回退路径
-   同样会给出空枚举 warn（补了单测）。
+   同样会给出空枚举 warn（已补齐）。
 6. **两条路径对同一坏元素口径不一**（Claude 的 N4）→ `ControlType` 为 null 的瞬时元素在两条路径
    都按「类型未知 → 白名单过滤」处理，**不计 skipped**。
 7. **重试的 `killOnTimeout` 与首次不一致** → 重试保持与首次相同的 `killOnTimeout`（避免把

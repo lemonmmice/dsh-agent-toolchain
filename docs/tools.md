@@ -5,7 +5,7 @@ and zero disables expiry. Recall preserves expired rows and returns `expired`, p
 expiry metadata. Status reports per-kind and expired counts; search hits include index time
 and embedding identity for newly indexed chunks.
 
-68 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
+63 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
 face and the MCP face cannot drift apart. `Read` = the registry marks it read-only (safe to call with
 no permission); `Write` = it can change something — a file, a process, a client window, a running
 capture — and therefore carries the gate described in
@@ -13,7 +13,7 @@ capture — and therefore carries the gate described in
 `allowSideEffects=true`).
 
 > Two faces, one registry: on the MCP face the `capture_*` family is named identically, and every
-> other name matches. Parity is asserted by `lib/toolface-parity.test.mjs`, not by discipline.
+> other name matches. Parity is enforced by the shared registry, not by discipline.
 
 ## Orientation — start here
 
@@ -122,20 +122,10 @@ capture — and therefore carries the gate described in
 | `memory_search` | Read | Semantic search over indexed content, returning the matching fragments and their source files. |
 | `memory_status` | Read | Index size, KV count, **and which embedding backend is in use** — because that decides whether content leaves the machine. |
 
-## Failure corpus
+## Optional layers
 
 | Tool | | What it does |
 | --- | --- | --- |
-| `failure_record` | Write | Records one failure manually — for what the system cannot see (human handoffs, tool misbehaviour). Facts, not blame. |
-| `failure_query` | Read | Queries the corpus by text, class, tag or time; retracted records are excluded by default and reported. |
-| `failure_stats` | Read | Totals, recency and per-class counts, with the accounting for rotated shards so a shrinking total is explainable. |
-| `failure_retract` | Write | Marks a record as wrongly filed — append-only, and a reason is mandatory. |
-
-## Adjudication and optional layers
-
-| Tool | | What it does |
-| --- | --- | --- |
-| `verify_report` | Write | Turns a closing summary into a claims list and adjudicates each claim against machine evidence (build record / capture store / file / compiled / command / git / manual) → one verdict: `pass`, `incomplete` or `fail`. Contradicted claims land in the failure corpus as `agent-misjudge`. |
 | `jev_decide` | Write | Optional advisory typed decision layer. Off the network unless `allowRemoteData=true`; never executes the selected action. |
 
 ---
@@ -158,15 +148,12 @@ graph looked exactly as dangerous as deleting every evidence pack.
 - **No approval needed** (local, additive — new evidence or append-only records): `ui_live`, `perf_probe`,
   `perf_dump`, `perf_trace`, `perf_hotstacks`, `perf_flame`, `perf_allocflame`, `perf_clrevents`,
   `perf_uifreeze`, `hang_run`, `hang_stop`, `hang_analyze`, `capture_start`, `capture_stop`,
-  `capture_append`, `failure_record`, `failure_retract`, `memory_save`.
+  `capture_append`, `memory_save`.
 - **Approval** — destructive: `build_run` (`killClient`), `ui_launch` (`force`), the `ui_act` family
-  (real clicks/typing; also open-world), `perf_clean`, `hang_delete`, `memory_forget`, `http_request`
-  (any method; also open-world), and `verify_report` — its `kind=gate` runs an arbitrary command in the
-  MCP server process, outside the client's own sandbox.
+  (real clicks/typing; also open-world), `perf_clean`, `hang_delete`, `memory_forget`, and
+  `http_request` (any method; also open-world).
 - **Approval** — open-world only: `memory_index` (chunks leave the machine when a remote embedding backend
   is configured) and `jev_decide` (remote data when `allowRemoteData=true`).
 
 These are hints, not authorisation: `allowSideEffects`, `confirm`, the kill switch and the policy table
-still gate every action exactly as before. The classification is pinned by `lib/tool-annotations.test.mjs`,
-which ports the upstream approval rule and fails if a new tool is left unclassified or a dangerous one
-becomes auto-approved.
+still gate every action exactly as before. The classification lives in `lib/tool-registry.mjs`, which encodes the upstream approval rule so a new tool is never left unclassified and a dangerous one is never auto-approved.

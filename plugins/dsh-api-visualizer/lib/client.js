@@ -4007,7 +4007,7 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
     exports.apply = apply
     exports.inject = []
     // 只导出这一个纯函数：它的语义（分桶/计数/"解析不出域名的记录不许被丢掉"）需要被
-    // 测试直接钉住，而 client.js 的其余部分要 document/localStorage 才能跑（测试进程里进不来）。
+    // 校验直接钉住，而 client.js 的其余部分要 document/localStorage 才能跑（校验进程里进不来）。
     exports.__buildUrlTree = buildUrlTree
     return module.exports
   },

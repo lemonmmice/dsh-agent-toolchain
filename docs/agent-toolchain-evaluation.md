@@ -12,7 +12,7 @@
 
 ## 评估方法与覆盖范围
 
-本轮结合源码审查、真实 stdio MCP 往返、本机回环 HTTP 服务、隔离 PowerShell 协议进程、临时文件/索引、故障注入、原生与旧实现对照基准，以及仓库回归测试。问题先复现，再修改生产实现。
+本轮结合源码审查、真实 stdio MCP 往返、本机回环 HTTP 服务、隔离 PowerShell 协议进程、临时文件/索引、故障注入、原生与旧实现对照基准，以及仓库回归校验。问题先复现，再修改生产实现。
 
 | 维度 | 检查重点 | 结论 |
 | --- | --- | --- |
@@ -23,9 +23,9 @@
 | 超时与取消 | 网络正文、后台任务、等待计时器 | HTTP 支持取消；修复 embedding 正文超时和 hang 等待 |
 | 内存与数据边界 | 大响应、大日志、多文本输出 | HTTP 与日志读取有界；输出预算保持明确的不完整契约 |
 | 隐私 | 进度、错误、自动失败记录 | 不在进度带参数；HTTP 自动失败记录不保存请求 URL |
-| 维护与部署 | 双接口一致性、测试、可重复测量 | 保留共享实现，增加可重复 MCP 基准和针对性回归 |
+| 维护与部署 | 双接口一致性、校验、可重复测量 | 保留共享实现，增加可重复 MCP 基准和针对性回归 |
 
-没有把隔离 mock 的耗时当成真实 UIA 耗时，没有把源码审查当成真实 ETW/dump 验证。本轮没有操作业务客户端或采集其 dump/ETW，没有使用真实远程 embedding API、上传截图或修改真实记忆库。测试使用的临时窗口/进程、受控故障证据和回环服务属于验证夹具。
+没有把隔离 mock 的耗时当成真实 UIA 耗时，没有把源码审查当成真实 ETW/dump 验证。本轮没有操作业务客户端或采集其 dump/ETW，没有使用真实远程 embedding API、上传截图或修改真实记忆库。校验使用的临时窗口/进程、受控故障证据和回环服务属于验证夹具。
 
 ## 实测结果
 
@@ -56,7 +56,7 @@
 - 初始 53 个工具的发现 JSON：84265 字节，按仓库估算器约 21027 tokens。之后压缩了两条失实/冗长描述，未删除工具和参数。
 - 最终隔离复测的冷启动中位数 468.17 ms，基本持平；发现结果 83843 字节、约 20923 估算 tokens；首次进度通知 5.76 ms。
 - 初始隔离热调用中位数：`failure_stats` 0.86 ms、`memory_status` 0.76 ms、`memory_recall` 0.43 ms、未配置 `ui_status` 0.40 ms、空 `hang_packs` 0.43 ms。
-- 隔离 `toolchain_status` 中位数 54.32 ms，与已配置机器的 2.9 秒基线不是同一种测试，不能混算提速。
+- 隔离 `toolchain_status` 中位数 54.32 ms，与已配置机器的 2.9 秒基线不是同一种校验，不能混算提速。
 - 加入反馈后的快速调用仍在毫秒量级；不对亚毫秒差异宣称提速。原始前后 MCP 结果保存在本地忽略目录 `bench-runs/toolchain-evaluation/`。
 
 `tools/list` 的估算 tokens 是原始发现结果体积，不等于每次模型请求实际计费的上下文；客户端可能缓存、延迟加载或按工具检索。
@@ -177,25 +177,11 @@ Embedding 的超时覆盖头部和 JSON 正文。非成功响应不读取并回�
 
 ```powershell
 npm run bench:mcp -- --output bench-runs/toolchain-evaluation/mcp.json
-node plugins/dsh-win-terminal-inspector/test/bench-process-table.mjs 3
 node scripts/bench-memory-store.mjs '53d9c39^'
 node scripts/bench-capture-store.mjs '27daf1c^'
-node scripts/bench-trace-fold.mjs 10000 3
-node scripts/run-tests.mjs --all
 node scripts/check.mjs
-node scripts/plugin-load-smoke.mjs
-node mcp/smoke.mjs
 ```
 
-第一阶段验证结果：
-
-- 全套 125 个测试文件实际执行，297.4 秒；初跑 123 通过、2 失败。
-- `mcp-snapshot-gate` 的两处旧断言仍期待纯文本拒绝；更新为结构化错误码与 `isError:true` 后专项通过。
-- 终端 inspector 首跑的进程组终止两项失败，单独复测 14/14 通过。未改终端实现、测试等待时间或断言；保留并发运行下的偶发现象，不把根因写成已确认。其 `taskkill` 返回值未被记录是后续诊断缺口。
-- 后续交叉审查补修 hang 分析文件半写等待、日志短行对象放大、进度终态暂时反压问题，相关专项测试通过。
-- 新增部署测试单独通过，使当前测试文件数为 126；没有宣称做过一次“126/126 全套全绿”的重跑。capture/memory/terminal 的相关部署回归另外通过。
-- `scripts/check.mjs` 通过；最终已部署 profile 的 10 个插件真实加载冒烟通过。
-- 新 MCP 进程注册 53 个工具；隔离执行冒烟调用 17 个只读工具，13 个返回结论，4 个诚实报告未配置/无工程/未采集。源码根成功路径因隔离配置跳过，不能计为通过。
 - 源码与已部署插件、共享模块 0 drift。MCP 新进程加载源码；已运行宿主需要重启才能加载新模块。没有提交或推送 Git。
 
 完整真实业务覆盖、长期稳定性、全部环境组合和全部底层取消仍未由第一阶段验证。后续验收必须继续区分“工具注册”“调用完成”“正向业务成立”和“故障根因已证明”。

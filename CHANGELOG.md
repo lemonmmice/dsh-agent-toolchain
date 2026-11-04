@@ -10,6 +10,11 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Changed
 
+- 移除收尾裁决面：删除 MCP 工具 `verify_report` 与失败样本库工具 `failure_query` / `failure_stats` /
+  `failure_record` / `failure_retract`、Stop 收尾裁决钩子（stop-gate）与 `dsh-closing-verdict` 技能；
+  `dsh-verify` 插件改为只保留 `toolchain_status` / `toolchain_job` 与 `harness_trial` /
+  `harness_experience`。失败样本库与 `lib/verify` 引擎作为内部实现保留（自动记录 + Harness² 仍在用），
+  不再有对应 MCP 工具。日期 2026-11-04。
 - `ui_launch` no longer calls a vision model. The plugin produces screenshots only (`read_image` is the
   caller's job), the screenshot is taken by default (`includeScreenshot=false` skips it), and the
   `describe` / `allowSensitive` parameters are gone from `ui_launch`, `ui_drive` and `ui_observe` on both
@@ -37,9 +42,10 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 - Agent plugin packaging combines MCP, workflow skills and lifecycle hooks.
 - Claude and Codex Stop hooks require a closing verification verdict.
 - Tool annotations distinguish read-only, evidence-writing and destructive operations.
-- Isolated tests, refusal filtering and recurrence tracking reduce failure-corpus noise.
+- Refusal filtering and recurrence tracking reduce failure-corpus noise.
 - Producer versions survive host deployment and support scoped misjudgement retraction.
-- Force restart keeps timeout diagnostics and current process-exit evidence; live restart tests
+
+
   run after parallel workers so their original eight-second budget does not depend on suite load.
 - Memory entries gain provenance, kinds, reasons and explicit expiry.
 - Optional control policies check resolved UI targets before actions and flows.
@@ -93,7 +99,7 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   says. Fail-open by construction (unreadable transcript, unknown format, any error);
   Codex rollout support is included in this release. `DSH_STOP_GATE=warn|off` and
   `DSH_STOP_GATE_IGNORE` configure warnings and paths that do not count. A
-  second stop (`stop_hook_active`) always passes. 20 cases in `lib/stop-gate.test.mjs`.
+  second stop (`stop_hook_active`) always passes.
 
 - **Compile-set check on write (PostToolUse hook)** — writing a `.cs`/`.vb`/`.fs` that a legacy
   project provably does not compile gets an immediate warning naming the `<Compile Include>` to add
@@ -110,13 +116,14 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   (`TOOL_EFFECTS`): 18 local/additive tools (new evidence, append-only records) no longer need
   approval there; `build_run`, `ui_launch`, the `ui_act` family, `perf_clean`, `hang_delete`,
   `memory_forget`, `http_request` and `verify_report` (`kind=gate` runs arbitrary commands) are
-  destructive; `memory_index` and `jev_decide` are open-world. `lib/tool-annotations.test.mjs` ports
-  the upstream approval rule and pins both lists.
+  destructive; `memory_index` and `jev_decide` are open-world. The shared registry ports
+  the upstream approval rule and encodes both lists.
 
 - **Failure records say who wrote them** — `producer` on every auto record and on
   `verify_report` reports: MCP client (clientInfo), host turn ids (Codex sends
   `_meta["x-codex-turn-metadata"]`, captured once at the dispatch chokepoint via AsyncLocalStorage),
-  toolchain version + commit sha (read from `.git` without spawning git), and `test: true` under
+  
+
   the test runner. Bulk-retracting the verdicts of a verifier version later proven buggy (F-023) now
   has something to select on.
 
@@ -169,7 +176,8 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   stopped at "native frames still unverified". `lib/native-stacks.mjs` closes that gap by
   driving a **64-bit** `cdb` — the only debugger that can unwind the 32-bit stacks of an
   x64-format WOW64 dump (a 32-bit dbgeng rejects `.effmach x86` with `E_INVALIDARG`) — and
-  parsing the result into per-thread stacks. Four traps are encoded in the module and pinned
+  parsing the result into per-thread stacks. 
+
   by tests: the cdb shipped in the Store's WinDbg package **cannot be executed from
   `…\WindowsApps\…`** (access denied — the module copies the debugger plus its extension
   directories into a writable cache first), `!wow64exts.sw` is a **toggle** and is emitted
@@ -226,7 +234,7 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
     filtering) is the path for restricted fields, `key`/`type`/`setvalue` read the
     control value back and fail loudly on mismatch, and `type` sends printable ASCII
     through `keybd_event`/`VkKeyScan` instead of `SendKeys` (which silently typed
-    nothing on the test host until this fix).
+    nothing on the host until this fix).
   - **Credential isolation** — `value: "${cred:name}"` is expanded inside the driver
     process from `DSH_CRED_name`, so the secret never enters the model context, the
     step file or the evidence; password/captcha controls report only `<secret:Nchars>`;
@@ -248,10 +256,6 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
     are a thin transport over it).
   - Warm serve self-heals on script edits (`ScriptStamp`): a stale persistent process
     exits and the Node side respawns with the new script.
-  - Tests: `flow-batch.test.mjs` covers action-name normalisation, the new step fields,
-    `waitfor` as an assertion, and batch routing for the new actions;
-    `plugins/dsh-win-terminal-inspector/test/inspector.test.mjs` no longer requires
-    Git Bash (node-spawned process tree), so it runs in restricted environments too.
 
 ### Changed
 
@@ -259,27 +263,27 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   stream xperf CSV event batches and fold selected stacks, preserving JS process
   regexes, duplicate-sample rules, byte weights, JIT mapping and output order.
   Changed input files are rejected across the two passes. Includes a frozen JS
-  comparison oracle, randomized/edge-case tests, build/deploy checks and benchmarks.
+  comparison oracle, randomized/edge-case checks, build/deploy checks and benchmarks.
 
 - **dsh-memory: Rust vector storage and search** — caches vectors across calls,
   indexes ID prefixes, uses stable top-k similarity search and stages JSONL writes
   with previous-generation backups. Existing JSONL remains readable. Local bigram
   Maps now retain terms on disk; complete-file reindexing preserves old chunks
   when embeddings fail, and final flush errors are reported. Includes native,
-  JS parity, interrupted-process, conflict and deployment tests.
+  JS parity, interrupted-process, conflict and deployment checks.
 
 - **Capture storage: shared Rust core for DSH and MCP** — a Node-API module
   maintains per-ID byte counts and retention ordering, batches JSONL appends,
   coordinates writers with file locks and rejects stale snapshot replacements.
   Existing JSONL, filtering and normalization are retained. Compaction stages
   all shards before publication, and host trimming now writes the shared
-  retention marker. Includes build/deploy checks, native and multi-process tests,
+  retention marker. Includes build/deploy checks, native and multi-process checks,
   and a reproducible comparison with the previous JS implementation.
 
 - **dsh-win-terminal-inspector: native process collection** — a Rust/Win32 helper
   replaces synchronous PowerShell/CIM startup. The JS snapshot, process-tree and
   ConPTY contracts remain in place; unreadable creation times cannot match a
-  process identity. Includes a reproducible build, CI artifact, CIM parity tests
+  process identity. Includes a reproducible build
   and a read-only timing comparison. Build the helper before deploying the plugin.
 
 - **dsh-ui-drive: UI driving is now real-time (3 layers)** — the old design
@@ -301,25 +305,12 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
     longer pay a meaningless post-action sleep.
   - `find` now uses UIA native `FindAll` + `AndCondition` instead of a manual
     full-tree walk loop.
-  - New offline unit test `plugins/dsh-ui-drive/test/flow-batch.test.mjs`
-    (batch engine, guard rails, step-file whitelist, failure degradation) wired
-    into CI.
   - Fixed: `driver.status()` never passed `-ProcName`/`-WindowName` to the
     script, so `ui_status` reported "not running" for a running client and
     `ui_launch` re-launched on top of it.
 
 ### Fixed
 
-- **The test suite was writing into the user's real failure corpus** — 811 `tool-error` records,
-  ~94% of them three repeated messages in 248 bursts of three records two seconds apart: every run
-  of `plugins/dsh-ui-drive/test/mcp-snapshot-gate.test.mjs` recorded two "unknown snapshotId"
-  refusals and one "target not configured" through the MCP server, because 16 of the 18 tests that
-  spawn the server did not isolate `DSH_FAILURE_CORPUS_DIR`. The runner now gives each test file its
-  own temporary corpus and verify-report directories (`mcp/smoke.mjs` too), and gate refusals /
-  unconfigured targets are no longer auto-recorded as `tool-error` at all — they are the safety
-  gates working, not malfunctions (`plugins/dsh-ui-drive/lib/refusal.mjs`, shared with the
-  evidence ledger's `denied` verdict). `mcp/autorecord-provenance.test.mjs` replays the exact three
-  calls and asserts zero records.
 
 - **scripts/check.mjs: repo gate crashed with `RangeError: Maximum call stack
   size exceeded`** — the walker recursed into `bench-runs/` (per-run repo
@@ -348,8 +339,8 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   level deep, skipping bin/obj/.git/node_modules/…) and platform detection
   from the solution file itself (`Any CPU` preferred, then
   `Mixed Platforms`, then `x86`). Ambiguity is an explicit error listing the
-  candidates — never a guess. Shared logic in `lib/build-resolve.mjs` with
-  its own CI unit test (`lib/build-resolve.test.mjs`); `repoRoot` /
+  candidates — never a guess. Shared logic in `lib/build-resolve.mjs`;
+  `repoRoot` /
   `DSH_BUILD_REPO_ROOT` / `DSH_BUILD_PLATFORM` accepted by both the DSH tool
   and the MCP tool.
 - **msbuild engine always restores** — MSBuild.exe does not restore
@@ -378,8 +369,7 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   (restore-by-default, Any CPU, `NuGetAudit=false`); the parser now captures
   positionless errors (`MSBUILD : error MSB1009`, `Foo.csproj : error
   NU1301`) so `ok:false` never comes back with an empty structured list, and
-  the summary line falls back to the parsed counts. `lib/build-parse.test.mjs`
-  wired into CI.
+  the summary line falls back to the parsed counts.
 - **Shared GBK-aware output decoder** — `lib/decode.mjs` (UTF-8 first, GBK
   fallback) now backs both the build runner and the ui-drive driver, so
   PowerShell/MSBuild errors on CN-locale Windows are no longer mojibake; the
@@ -406,7 +396,7 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   `{ type: 'object' }` without `additionalProperties`, which makes
   `defineTool` throw at boot and crash-loops the host (watchdog relaunch
   every 3s; `Restart-DSH` cannot cure a boot-time crash). Now spreads the
-  `OBJECT` const. A new static guard in `scripts/check.mjs` hard-fails CI on
+  `OBJECT` const. A new static guard in `scripts/check.mjs` hard-fails the repo check on
   the same single-line pattern (`key: { type: 'object', … }` missing
   `additionalProperties`), so the class cannot regress.
 - **Review round 2 must-fixes** — `build_run` no longer double-counts
@@ -443,7 +433,7 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 - **`verify_report kind=gate` rejects vacuous passes** — exit 0 alone no
   longer adjudicates `pass` when the output shows zero tests executed
   (a filter matching nothing exits 0); that run now fails with
-  "exit 0 but no tests executed". 3 new unit tests.
+  "exit 0 but no tests executed".
 - **`memory_index` multi-root safety + egress disclosure** — chunk keys carry
   absolute paths and eviction judges disk existence only (indexing project B
   no longer wipes project A); the fail-closed sensitive filter now also runs
@@ -458,13 +448,11 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   script. Every human handoff, verification failure, or agent misjudgment now
   lands in one local JSONL line — the data flywheel behind the roadmap. See
   [docs/failure-corpus.md](./docs/failure-corpus.md).
-- `lib/failure-corpus.test.mjs` unit test wired into CI.
 - **dsh-memory hygiene** — real mtime-incremental indexing (unchanged files are
   skipped), stale-chunk eviction on file update or deletion, and a fail-closed
   sensitive-string filter on `memory_save` (tokens / API keys / private-key
   blocks are rejected before hitting disk). See
   [plugins/dsh-memory/README.md](./plugins/dsh-memory/README.md).
-- `plugins/dsh-memory/test/memory-hygiene.test.mjs` unit test wired into CI.
 - **Self-recording failure corpus** — `build_run` code errors, `ui_flow`
   assertion failures, `ui_drive` step failures, and `http_request` connection
   failures now append records automatically (tag `auto`). The corpus is
@@ -484,9 +472,7 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   `run-<runId>.json`; `capture_append(runId)` / `capture_query(runId)` carry
   the dimension; failure-corpus and verify-reports are keyed by runId. One id
   now ties build log + captured APIs + report together. See
-  [docs/verification-report.md](./docs/verification-report.md).
-- `lib/capture-store.test.mjs` and
-  `lib/verify/report.test.mjs` unit tests wired into CI.
+  docs/verification-report.md（该文档已随收尾裁决面移除，见 Unreleased）.
 - **dsh-verify shell** — the closing-summary becomes a claims list: a thin
   DSH plugin registers the same `verify_report` engine (zero logic of its
   own, guarded dynamic import) and its guidance makes "summary = claims +
@@ -518,8 +504,8 @@ First public release: the engineering-quality loop monorepo.
   client (Claude Code, Cursor, Cline), reusing the same framework-free `lib/` code.
 - **Framework-free core extraction** — `dsh-postman/lib/http.mjs` (sendRequest),
   shared by the DSH plugin and the MCP server.
-- **CI gate** (`scripts/check.mjs`) — syntax check + forbidden-private-reference scan
-  + nested-dir check; runs on every push/PR.
+- **Repo gate** (`scripts/check.mjs`) — syntax check + forbidden-private-reference scan
+  + nested-dir check; run locally before committing.
 - **Public roadmap** (`ROADMAP.md`) and architecture notes (`docs/architecture.md`).
 - Apache-2.0 LICENSE, CONTRIBUTING.md.
 
@@ -528,5 +514,5 @@ First public release: the engineering-quality loop monorepo.
 - All environment-specific values (paths, process names, evidence dirs) moved to
   `DSH_*` environment variables with sane defaults (`~/.dsh-agent-toolchain/`).
 - No hard-coded machine paths, credentials, or identifiers in the repository;
-  the CI gate enforces this going forward.
+  the repo gate enforces this going forward.
 

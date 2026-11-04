@@ -18,19 +18,19 @@ example of the thing it advocates.
   claimed without evidence, and counter-examples that break it"). Findings are answered one at a
   time: accepted and fixed, or rebutted with evidence. The reviewer may not be agreed with — several
   rounds end with two accepted findings and two rebuttals.
-- **Every accepted finding is pinned as a test**, not as a paragraph. That is why dozens of test
+- **Every accepted finding is pinned as a guard in code**, not as a paragraph. That is why dozens of
   files name the round and the finding (`Codex r30`, `Codex r37`, `@codex r54`, `Codex 第十二轮` …):
   a review conclusion that is not executable decays immediately.
 - **Review results are adjudicated, not asserted.** The review outcome itself was run through the
-  same claims-vs-evidence machinery this repository ships: see the local `verify_report` records
-  `review-round-20260911`, `codex-review-20260911`, `w2-codex-claim-audit-20260911`.
+  same claims-vs-evidence machinery this repository ships (the `lib/verify` engine): see the local
+  verification records `review-round-20260911`, `codex-review-20260911`, `w2-codex-claim-audit-20260911`.
 - **The failure corpus records who found what.** `docs/failure-corpus.md` defines the taxonomy that
   stores these outcomes, including the one class a machine can catch on its own: `agent-misjudge`
   ("the agent claimed success, the evidence disagreed").
 
 **Where the review reports live:** the reports themselves were working documents kept **outside this
 repository** on purpose (they quote local paths and are not written for publication). The record that
-survives *in* this repository is: the findings that changed code, each pinned by a test, plus the
+survives *in* this repository is: the findings that changed code, each pinned by a guard, plus the
 outcome lists in the plugin docs. If you are looking for the raw reports, they are not here — see
 [Review records: what exists and what does not](#review-records-what-exists-and-what-does-not).
 
@@ -50,16 +50,16 @@ code-provenance audit.
 | Codex area (upstream path) | What it does upstream | What this repository took | Where it landed here |
 | --- | --- | --- | --- |
 | `core/src/tools/call_trace.rs` | a trace milestone per direct / code-mode tool call: **identifiers and names only, never arguments or output** | the same discipline, from the same motive (a trace that cannot leak a payload) | `lib/tool-trace.mjs`, wired at `mcp/server.mjs:63` |
-| `tools/src/tool_spec.rs`, `core/src/tools/handlers/*_spec.rs`, `core-plugins/src/tool_suggest_metadata.rs` | a tool described **once, as data** — spec, schema and suggestion metadata — instead of hand-wired per surface | one shared metadata registry per tool, with both surfaces generated from it so they cannot drift | `lib/tool-registry.mjs` (68 tools; parity asserted by `lib/toolface-parity.test.mjs`) |
+| `tools/src/tool_spec.rs`, `core/src/tools/handlers/*_spec.rs`, `core-plugins/src/tool_suggest_metadata.rs` | a tool described **once, as data** — spec, schema and suggestion metadata — instead of hand-wired per surface | one shared metadata registry per tool, with both surfaces generated from it so they cannot drift | `lib/tool-registry.mjs` (68 tools) |
 | `core/src/tools/code_mode/execute_spec.rs` + `wait_spec.rs` | separate "start long work" from "wait for it", so a caller holds a handle instead of blocking | the yield-or-handle execution shape for long builds | `plugins/dsh-build/lib/builder.mjs:773`, `build_run` `background` |
 | `core/src/tools/handlers/view_image_spec.rs` (+ `features/src/lib.rs`) | an image returns as an **image content block**, not as a path the model must then go and read | the same shape: append an MCP image block on top of the existing text result | `mcp/inline-image.mjs` |
 | `core/src/guardian/*` — `approval_request`, `coverage`, `decision`, `input_budget`, `request_budget`, `prompt`, `review`, `review_session*`, `reviewer_config` | the approval layer: **policy is chosen elsewhere, core enforces permissions**; every approval keeps its issuing context and its cancellation; coverage, risk level and input/request budgets bound the reviewer | the whole write-side gate design: explicit `allowSideEffects=true` for anything that clicks or types, an operational kill switch above every action, a deny-first policy table, and a freshness gate that rejects actions aimed at a stale UI | `plugins/dsh-ui-drive/lib/evidence.mjs`, the policy/estop implementation, `docs/ui-drive-safety-boundary.md` |
-| `guardian-context/*` — especially `enforcement.rs`, `budget.rs`, `composition.rs`, `transcript.rs` | fit composed evidence into the remaining request allowance; **optional evidence leaves first, required action evidence is never truncated**, every reduction reserves an omission notice and preserves source order | reduction order and the "never silently shrink required evidence" rule; truncation is announced with the original size | `lib/output-budget.mjs` and its tests |
-| `ext/guardian-v2/src/async_scorer/*` | an asynchronous second-model scorer wired into the decision path (score → approval → authorization), with its own config and classifier instructions | the idea that a review verdict is a *separate, reviewable artifact* with its own budget, not a sentence inside the main flow | `lib/verify/report.mjs` (verdict + per-claim detail + evidence), `docs/verification-report.md` |
+| `guardian-context/*` — especially `enforcement.rs`, `budget.rs`, `composition.rs`, `transcript.rs` | fit composed evidence into the remaining request allowance; **optional evidence leaves first, required action evidence is never truncated**, every reduction reserves an omission notice and preserves source order | reduction order and the "never silently shrink required evidence" rule; truncation is announced with the original size | `lib/output-budget.mjs` |
+| `ext/guardian-v2/src/async_scorer/*` | an asynchronous second-model scorer wired into the decision path (score → approval → authorization), with its own config and classifier instructions | the idea that a review verdict is a *separate, reviewable artifact* with its own budget, not a sentence inside the main flow | `lib/verify/report.mjs` (verdict + per-claim detail + evidence) |
 | `config/src/computer_use.rs`, `config/src/browser_computer_use_requirements.rs`, `app-server-protocol/src/protocol/v2/{computer_use,browser_use}_config.rs` | computer-use access control: a default allow/deny, then **per-target rules — macOS by bundle id, Windows by AUMID plus exe publisher / product / binary name** | identify the target application *before* acting, and treat version metadata as an optional second constraint rather than the primary identity (the driver's own comment records measuring an agent CLI's exe metadata and finding it empty) | `plugins/dsh-ui-drive/scripts/ui-drive-batch.ps1` process-identity checks |
-| the CUA action vocabulary (`performSecondaryAction`, `scroll(index, …)`, `selectText`) | act on the element's *exposed capability* instead of a screen coordinate | the same principle: invoke the UIA pattern an element actually exposes (`Expand` / `Collapse` / `Increment` / `Toggle` / `Select` / `ScrollIntoView` …), and refuse the action when the element does not expose it | the `pattern` action in `plugins/dsh-ui-drive`; `plugins/dsh-ui-drive/test/input-primitives.test.mjs` |
-| `core/src/mcp_tool_exposure.rs`, `core/src/session/mcp.rs`, `protocol/src/mcp.rs` | one tool set, exposed consistently to MCP clients | "one toolchain, every agent": one registry drives both surfaces, enforced by a parity test rather than by discipline | `mcp/server.mjs`, `lib/toolface-parity.test.mjs` |
-| `tui/src/history_cell/*` (`exec`, `mcp`, `mcp_result`, `patches`, `computer_activity`, `search`) | render layer shaped by the **producing event type**, one cell kind per activity kind | render-vs-producer alignment: every producer `action` must have a render branch, asserted per plugin so a new branch cannot be added without its renderer | the `render-*.test.mjs` suites under `plugins/*/test/` |
+| the CUA action vocabulary (`performSecondaryAction`, `scroll(index, …)`, `selectText`) | act on the element's *exposed capability* instead of a screen coordinate | the same principle: invoke the UIA pattern an element actually exposes (`Expand` / `Collapse` / `Increment` / `Toggle` / `Select` / `ScrollIntoView` …), and refuse the action when the element does not expose it | the `pattern` action in `plugins/dsh-ui-drive` |
+| `core/src/mcp_tool_exposure.rs`, `core/src/session/mcp.rs`, `protocol/src/mcp.rs` | one tool set, exposed consistently to MCP clients | "one toolchain, every agent": one registry drives both surfaces, enforced by one shared registry rather than by discipline | `mcp/server.mjs` |
+| `tui/src/history_cell/*` (`exec`, `mcp`, `mcp_result`, `patches`, `computer_activity`, `search`) | render layer shaped by the **producing event type**, one cell kind per activity kind | render-vs-producer alignment: every producer `action` must have a render branch, rendered per plugin so a new branch cannot be added without its renderer | the `render-*` branches under `plugins/*/lib/` |
 | `core/src/context/world_state/tools.rs`, `core/src/function_tool.rs` | the model's view of the available tools is a *context section*, not global mutable state | keep the tool surface declarative and derivable, so "what the model sees" is reproducible | `lib/tool-registry.mjs` |
 
 ### Deliberately not taken
@@ -79,10 +79,10 @@ semantics were taken, no source was copied.
 
 | Codex area (upstream path) | What it does upstream | What this repository did with it |
 | --- | --- | --- |
-| `core/src/mcp_tool_call.rs` — `requires_mcp_tool_approval`, `AppToolApproval` default `Auto` (`config/src/mcp_types.rs`) | decides whether an MCP call needs approval from its annotations; a **missing** `destructiveHint` / `openWorldHint` counts as `true` | every tool now sends explicit hints (`TOOL_EFFECTS` in `lib/tool-registry.mjs`); the rule is ported as an executable spec in `lib/tool-annotations.test.mjs` |
+| `core/src/mcp_tool_call.rs` — `requires_mcp_tool_approval`, `AppToolApproval` default `Auto` (`config/src/mcp_types.rs`) | decides whether an MCP call needs approval from its annotations; a **missing** `destructiveHint` / `openWorldHint` counts as `true` | every tool now sends explicit hints (`TOOL_EFFECTS` in `lib/tool-registry.mjs`); the rule is enforced by the shared registry |
 | `core/src/mcp_tool_call.rs` — `build_mcp_tool_call_request_meta`; `core/src/turn_metadata.rs` | every MCP call carries `_meta["x-codex-turn-metadata"]` (session / thread / turn ids) | `producer.agentTurn` on failure records and verify reports (`lib/failure-provenance.mjs`), ids only |
 | `core-plugins/src/manifest.rs`, `core-plugins/src/marketplace.rs`, `plugin/src/manifest.rs` | plugins bundle skills + MCP servers + hooks; `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` are accepted alternate locations | the repository root is a plugin in that shared layout (`.claude-plugin/`, `skills/`, `hooks/`) |
-| `hooks/schema/generated/stop.command.{input,output}.schema.json`, `config/src/hook_config.rs` | Stop hooks can return `decision: "block"` + `reason` (Claude-compatible); handlers may be `command` **or `mcp_tool`** (call a connected MCP tool with `${…}`-templated arguments) | the closing-verdict gate (`lib/stop-gate.mjs`) uses the `command` form, which both hosts run; the `mcp_tool` form is noted for the Codex path, not used yet |
+| `hooks/schema/generated/stop.command.{input,output}.schema.json`, `config/src/hook_config.rs` | Stop hooks can return `decision: "block"` + `reason` (Claude-compatible); handlers may be `command` **or `mcp_tool`** (call a connected MCP tool with `${…}`-templated arguments) | the `command`-form hook shape is used by the surviving `SessionStart` / `PostToolUse` hooks (`hooks/hooks.json`); the closing-verdict Stop gate that first motivated this borrow has since been removed |
 | `memories/README.md` | two-phase memory pipeline: per-session extraction (idle-only, leased, secret-redacted) → git-baselined consolidation; usage counts from citations drive retention | ○ read, not adopted yet — the reference design for ROADMAP item 9 |
 | `execpolicy/README.md` | `prefix_rule` with `match` / `not_match` examples validated at load time, `justification` surfaced on refusal, strictest decision wins | ○ read, not adopted yet — the reference shape for the capability policy (ROADMAP item 6) |
 | `rollout-trace/README.md` | "observe first, interpret later": raw `trace.jsonl` + `payloads/` + a deterministic offline reducer | ○ read, not adopted yet — the reference bundle layout for ROADMAP item 4 |
@@ -129,7 +129,7 @@ than ranking them.
 Honest inventory, because a citation to a file that cannot be produced is worse than no citation.
 
 - **In this repository:** the *findings* are here — as code comments naming the round
-  (`Codex r30`, `Codex r37`, `@codex r54`, `Codex 第十二轮`), as assertions pinned in tests, and as
+  (`Codex r30`, `Codex r37`, `@codex r54`, `Codex 第十二轮`), as assertions pinned in code, and as
   the numbered fix list in `plugins/dsh-ui-drive/README.md`.
 - **Not in this repository, by design:** the raw review reports. They were written as local working
   documents.
@@ -250,7 +250,7 @@ Legend: **✔ borrowed** (see the table above) · **◐ partly** · **○ read, 
 | `core/src/turn_metadata.rs` | Per-turn metadata. | ○ |
 | `core/assets/guardian/policy.md`, `policy_template.md`, `node_repl_policy.md` | The Guardian policy documents shipped as assets — including the rule to treat truncation markers as omitted data. | ◐ policy as a reviewable file |
 | `features/src/lib.rs` | "Centralized feature flags and metadata." | ◐ |
-| `tui/src/history_cell/{mod,base,exec,mcp,mcp_result,patches,computer_activity,search}.rs` | The transcript cell model: "A `HistoryCell` is the unit of display in the conversation UI"; `mcp_result.rs` keeps "width-independent display content retained after an MCP call completes", validating multi-megabyte bodies. | ✔ render layer shaped by producer type — the `render-*.test.mjs` suites here |
+| `tui/src/history_cell/{mod,base,exec,mcp,mcp_result,patches,computer_activity,search}.rs` | The transcript cell model: "A `HistoryCell` is the unit of display in the conversation UI"; `mcp_result.rs` keeps "width-independent display content retained after an MCP call completes", validating multi-megabyte bodies. | ✔ render layer shaped by producer type — the `render-*` branches here |
 
 ### What the subset deliberately leaves out
 

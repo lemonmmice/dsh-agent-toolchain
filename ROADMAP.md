@@ -17,17 +17,17 @@
 
 ## Done (2026-09)
 
-- 8-plugin toolchain monorepo — sanitized, public, Apache-2.0, CI green
+- 8-plugin toolchain monorepo — sanitized, public, Apache-2.0, repo checks green
 - MCP server — the same tools for any MCP client (Claude Code / Cursor / Cline)
 - dsh-router-benchmark public — 21 tasks × 3 modes (routed 100% / pro 90% / flash 86%)
 - Release discipline — CHANGELOG, v0.1.0 tag + GitHub Release, compatibility matrix
-- Failure corpus v0 — lib + MCP record/query/stats, fixed taxonomy, seed script; data collection started
+- Failure corpus v0 — lib engine, fixed taxonomy, seed script; data collection started (the corpus is an internal store — records come from the auto-record path, no agent-callable tool)
 - dsh-memory hygiene — mtime-incremental indexing, stale-chunk eviction, fail-closed sensitive-string filter
 - Self-recording failure corpus — build/ui/http failure paths auto-record; manual recording reserved for human-handoff
 - Capture moat exposed — MCP capture_query/capture_append (caller attribution) for any MCP client
 - Evidence-adjudicated verification report — claims checked against build records / capture store / files (machine verdicts, not self-rating); contradicted claims auto-record agent-misjudge
 - runId spine — build logs + per-run records named by runId; capture records carry runId; verify/corpus keyed by runId
-- dsh-verify shell — the DSH closing-adjudication surface: closing summary becomes a claims list, same engine as MCP
+- verify engine (`lib/verify`) — claims adjudicated against evidence, shared by both faces (later kept as an internal engine: the auto-record path and Harness² use it, no agent-callable verify tool)
 - msbuild engine generalization — legacy WholeSolution.sln+x86 layout auto-preserved, stock repos get .sln/.slnx + platform auto-detection (Any CPU preferred), ambiguity = explicit error; msbuild always restores; SDK-resolution chains (MSB4236/MSB4276/NETSDK1004) classified as environment, not code
 
 ## Now — next 1–2 weeks
@@ -51,7 +51,7 @@
 ## Year 1 — the verifiable closed loop
 
 4. **Unified verification run (full pipeline)** — the v0 report container
-   (lib/verify + verify_report, MCP + DSH shells shipped) graduates into
+   (the `lib/verify` engine, now internal) graduates into
    automatic assembly: `runId` ties together diff, build log, UI screenshots,
    API records, perf data → `verification-report.json/html`.
 5. **Scenarios as code** — YAML scenario: launch → navigate → act → assert

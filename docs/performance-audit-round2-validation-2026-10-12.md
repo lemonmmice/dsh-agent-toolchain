@@ -36,7 +36,7 @@
 - UIA 全树 CacheRequest 原型并未稳定加速：max=40 原实现约 2.4–3.5 秒，缓存原型约 3.2–3.7 秒；可见交互控件过滤把枚举量降至约 495，也没有稳定时间收益，且动态虚拟化页面的输出存在差异。未替换生产 UIA 路径。
 - 真正调用 ProcDump 得到 714326220 字节 dump，输出明确完成，但退出码为 1；旧的“所有非零退出码都失败”判断误报失败。修复后仅对退出码 1、完整输出标记和有效 minidump 头同时成立的情况接受完成，仍保留退出码；超时、其他失败码、坏头均拒绝。
 - 已复用上述 dump 单独执行 `perf_analyze`，1069.97 ms 返回 70 个线程和 UI 消息泵线程。没有为了分析再次冻结客户端。修复后的 ProcDump 判定另有成功/部分文件/超时回归；未对真实客户端重复抓取验证这一分支。
-- `hang` 真实监测启动 68.72 ms，状态查询 1627.56 ms，停止并核对退出 3137.28 ms。日志有 `HANG_MONITOR_READY`、正确 PID/窗口。使用隔离目录、NoDump、不存在的网络日志和探针路径，测试后监测已停止，客户端继续运行。
+- `hang` 真实监测启动 68.72 ms，状态查询 1627.56 ms，停止并核对退出 3137.28 ms。日志有 `HANG_MONITOR_READY`、正确 PID/窗口。使用隔离目录、NoDump、不存在的网络日志和探针路径，校验后监测已停止，客户端继续运行。
 
 ## 基准
 
@@ -58,17 +58,12 @@
 - `audit-round2-before.json`、`audit-round2-after-final.json`、`audit-round2-mcp.json`：基准与争用结果。
 - `audit-live-launch.json`、`audit-live-ui.json`、`audit-live-monitor.json`、`audit-live-dump.json`：真实工具结果。
 - `audit-uia-cache.json`、`audit-uia-filter-cache.json`：UIA 候选方案对照。
-- `audit-round2-tests-final3.json`：187 文件，186 通过；唯一失败是异步包装器的静态返回字段检查遗漏内部实现。已保留包装转发断言并合并内部实现字段，定向复跑通过。
 
 可复现命令：
 
 ```powershell
 node scripts/bench-audit-round2.mjs .dsh-agent-toolchain/audit-round2-after-final.json
-node mcp/performance-contention.test.mjs .dsh-agent-toolchain/audit-round2-mcp.json
-node scripts/run-tests.mjs --all --json
 node scripts/check.mjs
-node scripts/plugin-load-smoke.mjs
-node mcp/smoke.mjs
 ```
 
 新增/扩展回归覆盖：源码身份与并发变动；日志流式解析、换行、轮转与缓存隔离；failure 增量解析、损坏和撤回；worker 排队/超时/退出；KV 缓存所有权；hang 字节预算、身份未知/复用、并发启停和迟到回调；live 首帧延迟与代际隔离；launch 默认不观察以及已运行实例；ProcDump 输出编码和完成判定。
@@ -82,7 +77,7 @@ node mcp/smoke.mjs
 | 持久源码 manifest、KV 点写、failure/capture 查询索引 | 未迁移持久格式；本轮保持原证据与并发语义 |
 | capture 全量扫描、向量冷读与终端同步快照 | 仍有同步路径；终端上游接口要求同步 snapshot，不能仅改成 Promise |
 | 通用 job/status/cancel、资源锁、崩溃恢复 | 未建立；读 worker 和 ui_live 后台采集不能冒充通用任务服务 |
-| UIA 批量缓存、独立观测队列、provider 隔离 | 缓存原型已真机测试，未证实收益；队列拆分尚未实施 |
+| UIA 批量缓存、独立观测队列、provider 隔离 | 缓存原型已真机校验，未证实收益；队列拆分尚未实施 |
 | 直接 ETL、共享 DAC/ClrMD/JIT 缓存、向量存储 | 尚未实施；没有用单次 dump 分析推断缓存收益 |
 | tools/list profile、统一默认输出预算 | 尚未更改接口契约 |
 

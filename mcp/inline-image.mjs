@@ -60,7 +60,7 @@ const noteBlock = (msg) => ({ type: 'text', text: '[inline-image] ' + msg })
 
 /**
  * 读一张图 → { content: MCP image block } 或 { skip: 说明 }。读不了/过大都不抛。
- * 单独导出便于单测直接验证编码与封顶，不必经过完整 mcp 结果封装。
+ * 单独导出便于离线验证直接验证编码与封顶，不必经过完整 mcp 结果封装。
  */
 export function readImageContent(absPath, maxBytes) {
   try {

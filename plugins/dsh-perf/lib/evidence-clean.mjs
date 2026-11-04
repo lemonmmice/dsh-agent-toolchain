@@ -78,7 +78,7 @@ export function cleanEvidence(args = {}) {
   //   它甚至还给了"可能已经清过了"这句把人带偏的解释 —— 一个用来腾空间的工具，
   //   在盘上有 6.7 GB 可清时说自己没东西可清。
   //
-  // ⚠ 但**下潜必须收窄**（同一个测试套当场抓到我第一版写太宽）：
+  // ⚠ 但**下潜必须收窄**（同一个校验流程当场抓到我第一版写太宽）：
   //   第一版"任意子目录都下潜一层"，于是把工具指向 `%TEMP%` 这种父目录时，
   //   它会钻进别人的子目录去删 `.dmp/.etl` —— 这正是本文件第 3 条设计原则要防的"动到别处"。
   //   现在只下潜**我们自己建的运行目录**（命名是这两族：`trace-<stamp>` 与 `<YYYYMMDD-HHMMSS>`），
@@ -109,7 +109,7 @@ export function cleanEvidence(args = {}) {
       if (sampling !== 'inactive' && isEtl) { skipped.push({ path: p, reason: sampling === 'active' ? '采样进行中（会话标记在盘上）：不删 etl' : '采样状态未知（会话标记不可读）：不删 etl' }); continue }
       // ⚠ 这里**只能放 JSON 能表达的值** —— 第一版我塞了个 Symbol 做"来自哪一层"的标记，
       //   结果它被带到工具返回值里，宿主按 `output.schema` 校验时直接判「不是 lossless JSON 对象」，
-      //   整个 `perf_clean` 在 DSH 面不可用（`lib/toolface-params.test.mjs` 当场抓到）。
+      //   整个 `perf_clean` 在 DSH 面不可用（离线验证 当场抓到）。
       candidates.push({ path: p, bytes: st.size, ageDays: Number(ageDays.toFixed(2)) })
       identities.set(p, [st.dev, st.ino, st.size, st.mtimeMs, st.ctimeMs].join(':'))
     }
@@ -154,7 +154,7 @@ export function renderClean(v) {
     : '【已删除】' + v.deleted.length + ' 个文件，释放 ' + v.freedBytes + ' 字节'
   // ⚠ 打印**完整路径**（不是 basename）—— 这是删文件的清单，agent 必须看得见"到底删哪个"。
   //   第一版只印 basename：目录一深，同名文件（多个 run 目录下的 trace.etl）就分不清了，
-  //   而且 `lib/toolface-params.test.mjs` 的载荷探针（取记录里最长的字符串字段，即绝对路径）
+  //   而且 离线验证的载荷探针（取记录里最长的字符串字段，即绝对路径）
   //   当场判定"记录数组一个字都没渲染出来"（F-059 同族）—— 那正是它存在的意义。
   const lines = (v.candidates || []).slice(0, 20).map((c) => '  ' + c.path + '  ' + c.bytes + ' 字节（' + c.ageDays + ' 天前）')
   const more = (v.candidates || []).length > 20 ? '  …共 ' + v.candidates.length + ' 个' : ''

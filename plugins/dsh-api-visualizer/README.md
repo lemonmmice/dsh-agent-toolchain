@@ -34,7 +34,7 @@ dsh-api-visualizer/
 
 ```powershell
 npm run build:capture-store
-npm run test:capture-native
+
 node scripts/deploy-plugins.mjs --only dsh-api-visualizer --profile <profile目录>
 ```
 

@@ -15,7 +15,7 @@ import { homedir } from 'node:os'
 import { makePerf } from './lib/perf.mjs'
 import { makeTrace } from './lib/trace.mjs'
 import { cleanEvidence, renderClean } from './lib/evidence-clean.mjs'
-// 渲染层单独成模块：它是 agent 唯一看得见的契约，必须能离线单测（见 lib/render.mjs 顶部说明）。
+// 渲染层单独成模块：它是 agent 唯一看得见的契约，必须能离线离线验证（见 lib/render.mjs 顶部说明）。
 import { renderProbe, renderReport, renderTrace, renderHotstacks, renderClrEvents, renderFlame, renderAllocFlame, renderUiFreeze, renderGcRoot, renderAnalysis } from './lib/render.mjs'
 import { envOr } from '../../lib/env-fallback.mjs'
 // W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name）。
@@ -177,7 +177,7 @@ const tools = () => [
     // 两步 tracerpt（摘要闸门 + 解码）+ 可能几百 MB 的 etl ⇒ 给足时间，与 perf_hotstacks 同档。
     timeoutMs: 30 * 60 * 1000,
     // ★ 逐参接线，**不整包转发 args**：本仓的棘轮闸门把"整包转发（免检）"的工具数**钉死在 28**
-    //   （lib/toolface-params.test.mjs）—— 新工具必须让每个参数在调用点被**按名读到**，
+    //   （参数闸）—— 新工具必须让每个参数在调用点被**按名读到**，
     //   否则"声明了却没接上"这类缺陷（F-051/F-055 那一族）会安静地混进来。
     async execute(args) {
       return await trc().clrEvents({
@@ -249,7 +249,7 @@ const tools = () => [
   }),
 ]
 
-// 渲染函数已抽到 ./lib/render.mjs（可离线单测；F-001 的回归测试钉在那里）。
+// 渲染函数已抽到 ./lib/render.mjs（可离线验证；F-001 的回归校验钉在那里）。
 
 // ---------------------------------------------------------------- Web 路由（仅回环）
 

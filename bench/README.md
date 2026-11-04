@@ -5,7 +5,7 @@ A harness for measuring an external agent CLI on real coding tasks, in two modes
 | mode | agent toolset |
 |---|---|
 | `baseline` | the CLI's built-in tools only (read / edit / shell) |
-| `toolchain` | built-in tools **plus** the dsh-agent-toolchain MCP server (`mcp/server.mjs`): build loop, capture store, memory, failure corpus, `verify_report` |
+| `toolchain` | built-in tools **plus** the dsh-agent-toolchain MCP server (`mcp/server.mjs`): build loop, UI driving, capture store, memory |
 
 The headline metric is **cost per verified task**: a task counts as *verified* when
 the agent's patch, applied to a clean checkout together with a hidden verification
@@ -148,7 +148,7 @@ successful runs may be shown separately, labelled as such.
   irrelevant to the task at hand; discovering which tools help is part of the
   measured behavior.
 - The toolchain arm receives the toolchain usage guidance a real install would
-  inject (build-loop hard rules, `verify_report` closing check); the baseline
+  inject (build-loop hard rules, UI/capture verification); the baseline
   arm receives none. Guidance without the tools would be an unfair baseline,
   tools without guidance an unfaithful toolchain.
 - Costs are as reported by the agent CLI; they do not include the MCP server

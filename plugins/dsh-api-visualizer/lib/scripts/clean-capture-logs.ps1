@@ -17,7 +17,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 if ($TraceLog -eq '') { $TraceLog = Join-Path $env:TEMP 'uiprobe-net-trace.log' }
 Remove-Item -LiteralPath $TraceLog -Force
 
-# 2) runtime/test logs under the capture store directory
+# 2) runtime logs under the capture store directory
 if ($LogDir -ne '') {
   Get-ChildItem -LiteralPath $LogDir -Filter '*.log' -File |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }

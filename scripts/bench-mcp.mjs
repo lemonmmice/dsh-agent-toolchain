@@ -42,7 +42,7 @@ try {
     report.discovery = { tools: listed.tools.length, bytes: Buffer.byteLength(serialized), estimatedTokens: estimateTokens(serialized) }
     if (iteration < 2) await client.close()
   }
-  for (const name of ['toolchain_status', 'build_status', 'failure_stats', 'memory_status', 'memory_recall', 'ui_status', 'hang_packs']) {
+  for (const name of ['toolchain_status', 'build_status', 'memory_status', 'memory_recall', 'ui_status', 'hang_packs']) {
     const samples = []
     let result
     for (let iteration = 0; iteration < 5; iteration++) {
@@ -52,23 +52,8 @@ try {
     }
     report.tools[name] = { ms: stats(samples), bytes: Buffer.byteLength(JSON.stringify(result)), isError: result.isError === true }
   }
-  writeFileSync(join(scratch, 'slow-gate.mjs'), 'setTimeout(() => console.log("fixture completed"), 1500)')
-  report.gateConcurrency = {}
-  for (const concurrency of [1, 4, 8]) {
-    const gate = client.callTool({ name: 'verify_report', arguments: { runId: 'bench-gate-' + concurrency, task: 'controlled gate', claims: [{ kind: 'gate', statement: 'fixture completes', cmd: 'node slow-gate.mjs', cwd: scratch }] } })
-    await new Promise(resolve => setTimeout(resolve, 150))
-    const samples = []
-    for (let batch = 0; batch < 16; batch++) {
-      await Promise.all(Array.from({ length: concurrency }, async () => {
-        const started = performance.now()
-        const status = await client.callTool({ name: 'build_status', arguments: { runId: 'missing-fixture' } })
-        if (status.isError) throw new Error('benchmark status failed')
-        samples.push(performance.now() - started)
-      }))
-    }
-    const gateResult = await gate
-    report.gateConcurrency[concurrency] = { buildStatusMs: stats(samples), gateIsError: gateResult.isError === true }
-  }
+  // gateConcurrency 基准曾用 verify_report(kind=gate) 起一个 1.5s 的受控命令、同时压 build_status；
+  // verify_report 下线后该基准一并移除（没有其它工具提供等价的"受控长命令"入口）。
   fixture = createServer((request, response) => {
     const timer = setTimeout(() => response.end('{"fixture":true}'), 2300)
     response.on('close', () => clearTimeout(timer))

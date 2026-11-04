@@ -10,7 +10,7 @@
  * 为什么把逻辑放这里而不是塞进工具里：
  *   路由与工具**必须**给出同一句话（本仓第 38 类：同一逻辑两份实现必然漂移）。
  *   这里只依赖传入的 `capture` 引擎对象（依赖注入）⇒ 普通 node 进程里**import 得进来**，
- *   可以用假引擎把每条分支都测到（第 26 类：危险路径零测试的原因常常是"模块根本进不来"）。
+ *   可以用假引擎把每条分支都测到（第 26 类：危险路径零校验的原因常常是"模块根本进不来"）。
  */
 
 /**
@@ -41,7 +41,7 @@ export function doubleWriteVerdict({ emitted, realtimeSinceStart } = {}) {
   if (e === 0) {
     return { ok: null, ratio: null, emitted: e, realtimeSinceStart: n, note: '这个窗口里引擎一条都没解析出来（emitted=0）—— **无法判定**，换个更长的窗口（客户端可能在这段时间没发请求）。' }
   }
-  // 门槛说明（被自己的测试逼出来的）：这个客户端的请求率是 **~4 条/分钟**，
+  // 门槛说明（被自己的校验逼出来的）：这个客户端的请求率是 **~4 条/分钟**，
   // 所以"采 90 秒"往往只采到 ~6 条。若门槛设 20，这个检测器在真实场景里**永远不下结论**（等于没用）。
   // 但比值型判据在**单边**上是安全的：库的条目只可能来自写入者，**不可能合理地多于**引擎自己 emit 的数
   // （≥1.5 倍基本只有一个解释：同一条被写了两次）。所以：只要 emitted ≥ 10 就敢下结论，
@@ -111,7 +111,7 @@ export function logGrowthWarning(st) {
   const p = typeof st.logPath === 'string' ? st.logPath : ''
   if (p === '') return null                       // 连路径都没有 ⇒ 这条提醒没有依据，宁可不报
   // ⚠ `Number(null) === 0`、`Number(undefined) === NaN` —— 直接 Number() 会把"**缺字段**"变成"**0 MB**"。
-  //   本模块上面 `doubleWriteVerdict` 已经为同一个坑写过注释，我这里**又踩了一次**（测试当场抓住）。
+  //   本模块上面 `doubleWriteVerdict` 已经为同一个坑写过注释，我这里**又踩了一次**（校验当场抓住）。
   const raw = st.logSize
   const sizeMB = raw === null || raw === undefined ? null
     : (Number.isFinite(Number(raw)) ? Math.round(Number(raw) / 1048576) : null)

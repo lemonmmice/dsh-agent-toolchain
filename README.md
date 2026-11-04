@@ -2,20 +2,19 @@
 
 **The engineering runtime that makes coding agents *verifiably accountable* for their own changes.**
 
-[![CI](https://github.com/lemonmmice/dsh-agent-toolchain/actions/workflows/ci.yml/badge.svg)](https://github.com/lemonmmice/dsh-agent-toolchain/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Release](https://img.shields.io/github/v/release/lemonmmice/dsh-agent-toolchain)](https://github.com/lemonmmice/dsh-agent-toolchain/releases)
 [![Node](https://img.shields.io/badge/node-20%2B-brightgreen.svg)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/MCP-stdio-8A2BE2.svg)](./mcp/README.md)
 
-A suite of plugins and an MCP server that let a coding agent do more than write code — it can *see* the running desktop application, *drive* it, *measure* it, *capture* what it sends over the network, and *verify* the change it just made. Each plugin is a small, composable building block; together they close the loop between "the agent wrote a change" and "the change actually works" — and produce the evidence to prove it.
+A suite of plugins and an MCP server that let a coding agent do more than write code — it can *see* the running desktop application, *drive* it, *measure* it, and *capture* what it sends over the network, to check the change it just made. Each plugin is a small, composable building block; together they close the loop between "the agent wrote a change" and "the change actually works" — and produce the evidence to prove it.
 
 ![The driven sample window, after the agent typed into it and clicked Greet](./docs/media/demo-after-greet.png)
 
-One command runs the whole loop against a throwaway WPF window that ships in this repo — build it, drive it, read the result back out, then have `verify_report` adjudicate what the run claimed:
+One command runs the whole loop against a throwaway WPF window that ships in this repo — build it, launch it, drive it, and read the result back out:
 
 ```bash
-npm run demo          # build → launch → drive → read → verdict
+npm run demo          # build → launch → drive → read
 npm run demo:perf     # + catch a deliberately blocked UI thread
 ```
 
@@ -34,11 +33,8 @@ Real output (`npm run demo`, paths shortened):
   ok   click Greet                                        (ui_drive, 314 ms)
   ok   read the result back out of the UI                 (ui_observe, 79 ms)
   ok   capture a screenshot as evidence                   (ui_observe, 35 ms)
-5. adjudicate: claims vs evidence
-  ok   verify_report returns a verdict                    (verify_report, 57 ms)
 
-verdict: pass
-steps: 9/9 ok
+steps: 8/8 ok
 ```
 
 `npm run demo:perf` additionally reports `stutterCount=1, maxMs=1474` — the sample app blocks its UI thread for exactly 1500 ms on purpose, and the perf probe has to catch it.
@@ -60,21 +56,20 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
                                       → capture APIs (dsh-api-visualizer, dsh-postman)
                                       → inspect perf (dsh-perf) / hang (dsh-hang-inspector)
                                       → remember lessons (dsh-memory)
-  claim "done" → verify_report: claims vs evidence → one verdict
-  fail / handoff → failure_record → failure corpus (the data flywheel)
+  failures record themselves → failure corpus (the data flywheel, internal)
 ```
 
 ## Quick start
 
 ### Path A — the demo path (no Rust, about five minutes)
 
-Exactly the tools `npm run demo` exercises — `build_run`, the `ui_*` family, `verify_report`, `perf_probe`, `http_request` — need **neither Rust nor MSVC**. Verified on a checkout whose `plugins/*/bin/` directories are empty.
+Exactly the tools `npm run demo` exercises — `build_run`, the `ui_*` family, `perf_probe`, `http_request` — need **neither Rust nor MSVC**. Verified on a checkout whose `plugins/*/bin/` directories are empty.
 
 1. Node.js 20+ and a .NET SDK (the sample targets `net10.0-windows`).
 2. `npm install --prefix mcp` — the MCP server is the only thing with a dependency.
 3. `npm run demo`.
 
-Nothing is written into the repo tree: a demo run keeps its screenshots, build log, verify report and any failure records under `.dsh-agent-toolchain/demo/` (gitignored).
+Nothing is written into the repo tree: a demo run keeps its screenshots, build log and any failure records under `.dsh-agent-toolchain/demo/` (gitignored).
 
 ### Path B — full desktop mode
 
@@ -99,9 +94,9 @@ Then `pwsh -File install.ps1` (dry run) or `pwsh -File install.ps1 -Apply` to co
 - **Tell the difference between "0 errors" and "the file was compiled".** Legacy `.csproj` projects do not include new `.cs` files automatically, so a build can report success while your file was never compiled. `build_compile_check` answers that question specifically, with three states — in the compilation set, provably not, or *cannot be read* (never silently "not").
 - **Operate and observe the real application.** `ui_observe` / `ui_drive` / `ui_flow` find controls by name or AutomationId, click, type, wait for conditions, read values back, and capture window-scoped screenshots. Read-only actions never need permission; anything that clicks or types must pass `allowSideEffects=true`, and an optional snapshot-freshness gate rejects actions aimed at a stale UI.
 - **Jev-assisted UI decisions.** `ui_jev` sends a sanitized UIA control list to Jev, lets it choose one bounded candidate action, then reuses the same deterministic UI executor and safety gates. Jev never receives pixels, generates arbitrary input, or bypasses authorization; see [docs/jev-ui.md](./docs/jev-ui.md).
-- **Refuse to take the agent's word for it.** A closing summary becomes a claims list, and `verify_report` adjudicates each claim against machine evidence — a build record, the API capture store, a file on disk, a real command, git state — producing `pass` / `incomplete` / `fail`. Claims that the evidence contradicts are recorded in the failure corpus (class `agent-misjudge`) automatically. When the tools cannot see something, they say "unverified", not "passed".
+- **Say "unverified" instead of "passed".** When a tool cannot see something, it reports it as unchecked rather than inventing a green result — an empty enumeration is "not read", not "nothing there", and a build reporting 0 errors is not the same claim as "your file was compiled".
 
-## Tools — 68, of which 27 are read-only
+## Tools — 63, of which 25 are read-only
 
 The single source of truth is [`lib/tool-registry.mjs`](./lib/tool-registry.mjs); both faces (DSH plugins and MCP) are generated from it, so they cannot drift apart. **Every tool, one line each, sorted by what you are trying to do → [docs/tools.md](./docs/tools.md).**
 
@@ -109,7 +104,7 @@ The single source of truth is [`lib/tool-registry.mjs`](./lib/tool-registry.mjs)
 | --- | --- |
 | [dsh-build](./plugins/dsh-build/README.md) | Run MSBuild / `dotnet build` as a tool: incremental build, structured error list (file/line/col/code), error re-parse, compile-membership check. Build defaults auto-resolve by repo layout (legacy client layouts keep their defaults byte-for-byte; stock repos get `.sln`/`.slnx` + platform auto-detection). |
 | [dsh-ui-drive](./plugins/dsh-ui-drive/README.md) | Drive a running Windows desktop client via UIA: find/click/type/read/screenshot, visual-tree dumps, multi-step flows with assertions, screenshot + vision description. |
-| [dsh-verify](./plugins/dsh-verify/README.md) | The closing-adjudication surface: claims vs evidence verdicts, plus the failure corpus tools. Thin shell over `lib/verify` — the same engine behind the MCP `verify_report`. |
+| [dsh-verify](./plugins/dsh-verify/README.md) | Toolchain-status and Harness² surface: `toolchain_status` / `toolchain_job` environment self-check and job control, plus `harness_trial` / `harness_experience`. (Name kept for id stability; it no longer does verification.) |
 | [dsh-api-visualizer](./plugins/dsh-api-visualizer/README.md) | Capture the client's HTTP traffic: live panel, JSONL store, caller attribution, auto-responder rules, baseline/contract regression, optional Fiddler-style local proxy. |
 | [dsh-postman](./plugins/dsh-postman/README.md) | Postman-style HTTP client inside the harness: compose/send requests from the host (no browser CORS), history store, WebSocket client, `http_request` agent tool. |
 | [dsh-perf](./plugins/dsh-perf/README.md) | UI stutter measurement (window-message latency, P50/P95/P99, stutter events), full-dump capture + ClrMD analysis, managed-heap stats, GC-root retention paths, ETW trace / hotstacks / flame and allocation folding, UI-freeze (wall-clock) analysis. |
@@ -123,7 +118,7 @@ The single source of truth is [`lib/tool-registry.mjs`](./lib/tool-registry.mjs)
 - **One toolchain, every agent**: the same tools power the DeepSeek Harness plugins **and** any MCP client — see [mcp/](./mcp/README.md). Claude Code, Cursor, Cline and Codex can drive the client, run builds, capture APIs and search memory with the exact same `lib/` code.
 - **Safety-first UI automation**: `click`/`setvalue`/`key` require an explicit `allowSideEffects=true`; read-only operations are always safe. An operational kill switch and an optional deny-first policy sit above every action, and recovery is deliberately not an agent tool.
 - **Honest measurement**: perf numbers come from real window-message round trips and each report prints what the method *cannot* see; cost tables say "unknown" instead of inventing numbers; an empty enumeration is reported as "not read", never as "nothing there".
-- **The failure corpus is the moat**: failure paths record themselves — build errors, `ui_flow` assertion failures, `ui_drive`/`http` failures, and `verify_report` claim-vs-evidence mismatches all append automatically under a fixed 7-class taxonomy. See [docs/failure-corpus.md](./docs/failure-corpus.md).
+- **The failure corpus is the moat**: failure paths record themselves — build errors, `ui_flow` assertion failures, and `ui_drive`/`http` failures all append automatically under a fixed 7-class taxonomy. The corpus is an internal store (no agent-callable tool); the runtime writes it and the Harness² feature reads it. See [docs/failure-corpus.md](./docs/failure-corpus.md).
 - **Loopback-only control APIs**, and every environment-specific value (client exe, window title, evidence dirs, tool paths, source roots) is an environment variable with a sane default: no hard-coded machines, no embedded credentials.
 
 ## Works with any MCP client
@@ -139,9 +134,8 @@ Cursor, Cline and other stdio clients take the same command. Configuration detai
 The repository root is also a plugin (`.claude-plugin/plugin.json`, listed by `.claude-plugin/marketplace.json`). One install brings three things together:
 
 - **the MCP server** — started through `mcp/launch.mjs`, which installs the MCP SDK on first start if `node_modules` is missing and reads this machine's settings from `~/.dsh-agent-toolchain/env.json` (`DSH_ENV_FILE` to move it, `none` to disable; only `DSH_*` string values, never `DSH_CRED_*`). Like the `env` block of a `claude mcp add -e …` registration, the file **overrides** inherited environment variables of the same name;
-- **six workflow skills** under `skills/` — closing verdict, UI self-check, API capture, perf triage, hang triage, build/compile-set check — loaded on demand instead of 68 tool descriptions doing all the teaching;
-- **three hooks** (`hooks/hooks.json`):
-  - `Stop` — **closing-verdict gate**: if the turn edited files and never called `verify_report`, the agent is stopped once and asked to submit claims (`DSH_STOP_GATE=warn` only reminds, `off` disables). If it did call `verify_report` and the verdict is not `pass`, the user is shown the machine verdict directly. The bench pilot is why this exists: with guidance 6/6 runs closed through `verify_report`, without it 0/4.
+- **five workflow skills** under `skills/` — UI self-check, API capture, perf triage, hang triage, build/compile-set check — loaded on demand instead of 63 tool descriptions doing all the teaching;
+- **two hooks** (`hooks/hooks.json`):
   - `PostToolUse` — writing a `.cs`/`.vb`/`.fs` file that a legacy project provably does not compile gets an immediate warning (same judgement as `build_compile_check`; undecidable cases stay silent).
   - `SessionStart` — in a .NET repo, a few lines on what is connected and **which process the UI/perf tools will act on**, with a warning when that target's source root is not the repo you are in.
 
@@ -150,13 +144,9 @@ claude plugin marketplace add lemonmmice/dsh-agent-toolchain
 claude plugin install dsh-agent-toolchain@dsh-agent-toolchain
 ```
 
-For local development, load the checkout in place instead of a cached copy (Claude Code auto-loads plugins under `~/.claude/skills/<name>/`), so edits take effect in the next session — Windows: `mklink /J %USERPROFILE%\.claude\skills\dsh-agent-toolchain <repo>`. Plugin-provided tools are namespaced, e.g. `mcp__plugin_dsh-agent-toolchain_dsh__verify_report`; remove a separate `claude mcp add` registration of the same server to avoid two copies of every tool.
+For local development, load the checkout in place instead of a cached copy (Claude Code auto-loads plugins under `~/.claude/skills/<name>/`), so edits take effect in the next session — Windows: `mklink /J %USERPROFILE%\.claude\skills\dsh-agent-toolchain <repo>`. Plugin-provided tools are namespaced, e.g. `mcp__plugin_dsh-agent-toolchain_dsh__build_run`; remove a separate `claude mcp add` registration of the same server to avoid two copies of every tool.
 
-Codex reads `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` as alternate manifest locations (upstream `codex-rs/core-plugins`), so the same layout is meant to load there too — **not yet verified end to end**. The Stop gate supports Claude transcripts and Codex rollout JSONL, including literal patches and `verify_report` calls nested in code-mode `exec`. It selects the supplied turn ID, falling back to the last user message only when no turn IDs exist. Shell edits and dynamically constructed patch strings are not detected. Unknown formats fail open.
-
-Codex Stop output uses `decision: block` with a nonempty `reason`, or `systemMessage` for warnings.
-The contract was checked in `codex-rs/hooks/src/schema.rs` and `codex-rs/hooks/src/events/stop.rs`
-at upstream commit `e45069d770c6d0b8984c58a6e7cbaf221ad37599`.
+Codex reads `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` as alternate manifest locations (upstream `codex-rs/core-plugins`), so the same layout is meant to load there too — **not yet verified end to end**.
 
 ## Install (details)
 
@@ -196,7 +186,7 @@ The evidence spine (`verify` / failure corpus / capture / memory / http), the `d
 This repository is meant to be a working example of its own argument, so the process is part of the artifact rather than a footnote:
 
 - **One implementer, two independent reviewers — from a different vendor.** Work is implemented here, then handed read-only to **Codex** and **Claude** separately, each asked to *falsify* rather than agree ("the valuable output is what I claimed without evidence, plus counter-examples that break it"). Rounds routinely end with some findings accepted and fixed, and others rebutted with evidence — the reviewers are not agreed with for the sake of agreement.
-- **An accepted finding becomes a test, not a paragraph.** That is why dozens of test files name the round that produced them (`Codex r30`, `Codex r37`, `@codex r54`, `Codex 第十二轮`): a review conclusion that is not executable decays immediately.
+- **An accepted finding becomes a guard in code, not a paragraph.** That is why dozens of comments name the round that produced them (`Codex r30`, `Codex r37`, `@codex r54`, `Codex 第十二轮`): a review conclusion that is not executable decays immediately.
 - **The review outcome is itself adjudicated.** The 2026-09-11 cross-model review round was closed with the same claims-vs-evidence machinery this repository ships.
 - **The failure corpus stores who found what** — including `agent-misjudge`, the one class a machine can catch unaided ([docs/failure-corpus.md](./docs/failure-corpus.md)).
 
@@ -217,20 +207,19 @@ At a glance:
 | --- | --- |
 | [ROADMAP.md](./ROADMAP.md) | The public three-year plan and its design principles |
 | [docs/architecture.md](./docs/architecture.md) | How the pieces compose |
-| [docs/tools.md](./docs/tools.md) | All 68 tools, one line each, grouped by what you are trying to do |
+| [docs/tools.md](./docs/tools.md) | All 63 tools, one line each, grouped by what you are trying to do |
 | [docs/prior-art.md](./docs/prior-art.md) | What this project learned from (per package), and what it deliberately did not copy |
 | [docs/verify-package.md](./docs/verify-package.md) | Proposal: extracting the verification core as a standalone package — **status: not implemented** |
 | [docs/harness2-integration-design.md](./docs/harness2-integration-design.md) | Harness² source assessment and DSH integration design |
 | [docs/harness2-executor.md](./docs/harness2-executor.md) | Harness² execution adapter, evidence boundaries and evaluation limits |
 | [docs/failure-corpus.md](./docs/failure-corpus.md) | Failure taxonomy and record schema |
-| [docs/verification-report.md](./docs/verification-report.md) | Claim kinds and verdict semantics |
 | [docs/agent-toolchain-evaluation.md](./docs/agent-toolchain-evaluation.md) | Measurements of this toolchain, plus what is still weak |
 | [docs/ui-drive-safety-boundary.md](./docs/ui-drive-safety-boundary.md) | What UI automation is allowed to do |
 | [CHANGELOG.md](./CHANGELOG.md) | SemVer history (Keep a Changelog) |
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). `npm run check` is the repo gate (syntax, forbidden references, schema DSL, PowerShell encoding); `npm run verify` runs the whole suite. `npm test` runs the **light tier** by default — the 14 real-process files that carry a `// @heavy-test` marker are skipped (≈40s vs ≈5min), and every run prints exactly which ones were skipped; `npm test -- --all`, `npm run verify` and CI always run the full set.
+See [CONTRIBUTING.md](./CONTRIBUTING.md). `npm run check` is the repo gate (syntax, forbidden references, schema DSL, PowerShell encoding).
 
 ## License
 

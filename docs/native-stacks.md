@@ -17,7 +17,7 @@ node lib/native-stacks.mjs <dump> --out <日志文件>
 # 只看几条线程（十进制 tid，逗号分隔）
 node lib/native-stacks.mjs <dump> --threads 12345,67890 --frames 32
 
-# 离线复跑：不跑 cdb，只解析已有日志（可单测、可复查）
+# 离线复跑：不跑 cdb，只解析已有日志（可复查）
 node lib/native-stacks.mjs --from-log <日志文件>
 
 # 机器可读
@@ -37,7 +37,7 @@ node lib/native-stacks.mjs <dump> --no-symbols --out <日志>
 - 32 位调试器上，`.effmach x86` / `SetEffectiveProcessorType` 返回 `E_INVALIDARG` —— **改不了**；
 - 64 位 `cdb` 加载同一份 dump，`!wow64exts.sw` 一句就能切到 32 位视图，`~*k` 出来的就是 32 位栈。
 
-## 四个坑（模块里已经焊死，测试逐条钉住）
+## 四个坑（模块里已经焊死，校验逐条钉住）
 
 | 坑 | 症状 | 处理 |
 | --- | --- | --- |
@@ -168,7 +168,7 @@ cdb     : <cacheDir>\Microsoft.WinDbg_...\amd64\cdb.exe  ← 商店版 WinDbg �
 
 ⇒ 真实场景里解析占 cdb 墙钟的 **0.6%（vs 无符号档）～ 0.00026%（vs 有符号档）**，
 占 CLI 自身 84 ms 的约 **2%**。Rust 化最多把 1.8 ms 压到 0.1 ms 量级（**省 1.7 ms**），
-代价是一块新的 Node-API 原生模块（构建脚本 + CI + 跨平台产物 + 部署守卫）——
+代价是一块新的 Node-API 原生模块（构建脚本 + 跨平台产物 + 部署守卫）——
 按本仓 `rust-rewrite-scope.md` 的同一口径：**投入产出不成立**。
 
 **时间真正花在哪**：① cdb（调试器引擎本身，已经是原生 C++ 在干活）；② **从符号服务器下 pdb**（网络）。

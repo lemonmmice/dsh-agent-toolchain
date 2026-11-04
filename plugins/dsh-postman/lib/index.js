@@ -101,7 +101,7 @@ function clearHistory() {
   return { cleared: all.length }
 }
 
-/** Store API, exported for tests / external callers. */
+/** Store API, exported for external callers. */
 export { storeDir, storeFile, readAll, appendHistory, clearHistory }
 
 /** Build a history record from a request spec + its response. */
@@ -120,7 +120,7 @@ function recordFor(spec, response) {
 }
 
 /** Light list projection (no bodies/headers) for the history table. */
-// toListItem 已移到 lib/view.mjs（有损投影必须能离线单测，PM-03 教训）
+// toListItem 已移到 lib/view.mjs（有损投影必须能离线离线验证，PM-03 教训）
 
 /** Loopback literal check plus browser same-origin markers (mirrors dsh-ssh's fence). */
 function isLoopbackRequest(request) {

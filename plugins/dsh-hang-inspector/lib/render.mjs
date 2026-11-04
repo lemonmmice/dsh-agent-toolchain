@@ -35,7 +35,7 @@ export function renderStatus(v) {
   // ⚠ 字段名必须与 `runStatus()` 的**真实产出**对齐（Claude 第十二轮审计发现，2026-09-11）：
   //   runStatus 给的是 `status`（字符串 'running'|'exited'|'idle'）+ `pid`，**没有 `running` 布尔** ——
   //   旧渲染读 `v.running` 于是**监测明明在跑也永远显示「未运行」**。
-  //   根因是渲染层的单测喂了手写的假形状，与生产层互相自洽 → 单测全绿、真机脱节（F-001/F-021 同型）。
+  //   根因是渲染层的离线验证喂了手写的假形状，与生产层互相自洽 → 离线验证全绿、真机脱节（F-001/F-021 同型）。
   const isRunning = v.status === 'running' || v.running === true
   const statusText = v.status ? String(v.status) : (isRunning ? 'running' : 'unknown')
   lines.push('监测进程：' + (isRunning ? '运行中' + (v.pid ? '（pid ' + v.pid + '）' : '') : '未运行') +

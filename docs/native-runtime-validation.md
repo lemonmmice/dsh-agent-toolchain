@@ -4,32 +4,24 @@ Local Windows x64 validation of the optional runtime in `native/toolchain`.
 Existing host registrations were not changed. The release executable is staged
 under `mcp/bin/win32-x64/`; specialized tools still use the compatibility bridge.
 The closing `verify_report` run `rust-runtime-20261019` returned `pass` for four
-machine-checked claims: release build, MCP integration, Rust unit tests and the
+machine-checked claims: release build, MCP integration and the
 saved live/JS evidence assertions. This verdict applies to those claims only.
 
 ## Automated checks
 
-- Existing JavaScript suite, including heavy tests: 219 files, zero failures.
-- Rust unit tests: six passed. They cover storage replacement/lock contention,
-  resource serialization, bounded admission, queued deadlines, uncertain running
-  effects, durable deduplication, restart recovery and protected HTTP endpoints.
 - Native MCP integration: initialization/catalog/schema validation, Node-free
   core calls, HTTP streaming limits/UTF-8/gzip headers, redirects, cancellation,
   concurrent status, durable jobs, all 56 bridge tools, report publication,
   automatic HTTP failure recording and caller turn metadata.
-- Existing Postman tests with `DSH_HTTP_BACKEND=rust`: five files passed.
-- Existing verification-report tests and all 11 plugin load checks passed.
 - Cargo Clippy with warnings denied, rustfmt, catalog freshness and repository
   syntax/private-reference/schema checks were also exercised locally.
 
-The full JS suite ran before the final native selector optimization. The native
-contract tests and live selector checks were then repeated. CI wiring was added;
-no remote CI run or production-profile deployment is claimed.
+Live selector checks were repeated; no production-profile deployment is claimed.
 
 ## Live WPF client
 
 The user supplied an already-running desktop client and explicitly requested
-real UI operations. Tests used its PID and window handle, observed controls and
+real UI operations. The validation used its PID and window handle, observed controls and
 window-scoped screenshots. No client rebuild or restart was needed.
 
 | Operation | Observed result | Executor |

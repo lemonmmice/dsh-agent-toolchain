@@ -42,10 +42,10 @@ const SEED = [
     context: { runtime: 'cli' },
   },
   {
-    task: 'publish tests with the repo',
+    task: 'publish the repo',
     failureClass: 'verification-failure',
-    description: 'a gitignore pattern silently excluded test directories from the public repo',
-    resolution: 'replace with runtime-artifact ignores; the CI gate now asserts tests are committed',
+    description: 'a gitignore pattern silently excluded the compiled helper from the public repo',
+    resolution: 'replace with runtime-artifact ignores; the repo gate now keeps them committed',
     tags: ['git', 'ci'],
     costMs: 180000,
     context: { runtime: 'ci' },

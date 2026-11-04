@@ -183,12 +183,11 @@ SampledProfile, 29608, copilot-language-server.exe (32528), 2004, 0x00007ff62954
 
 ## 5. 现在的状态
 
-- **已交付**：`perf_clrevents`（DSH + MCP 两面）+ `perf_trace(clr=true)`；解析器与渲染层单测；
-  三态渲染的判据钉在 `plugins/dsh-perf/test/clrevents-render.test.mjs`。
+- **已交付**：`perf_clrevents`（DSH + MCP 两面）+ `perf_trace(clr=true)`；解析器与渲染层。
 - **已交付（2026-09-17，§1 那条「分配调用栈」）**：`perf_trace(alloc=true)` + `perf_allocflame`（DSH + MCP 两面）——
   `GCAllocationTick`(GC keyword 0x1, Verbose, 每~100KB 一次) 配 xperf 用户会话的字面量 `:'stack'` 附调用栈，
   按 (ts,tid) join、**按字节加权**折叠（`lib/flame.mjs` 的 `foldAllocCsv`），产分配火焰图 + Top 分配类型。
-  复用 §4 JIT 映射解客户端分配路径。渲染 `renderAllocFlame`，单测 `test/allocflame.test.mjs`（TypeName 引号提取）。
+  复用 §4 JIT 映射解客户端分配路径。渲染 `renderAllocFlame`（TypeName 引号提取）。
   · ⚠ 实测踩坑：分配是 xperf **用户会话**，事件进程名是 `"Unknown"(PID)` ⇒ 折叠按 **PID** 过滤（live 查 tasklist / 传 pid），不能按名。
   · ⚠ 实测踩坑：`:'stack'` 的单引号是**字面量**（spawn 不过 shell 才能原样传）；且只对 manifest 能解的 CLR 有效
     （.NET Framework 客户端 ✓；.NET Core/5+ 落成 UnknownEvent/Crimson —— 我们的目标客户端是前者）。
@@ -196,7 +195,7 @@ SampledProfile, 29608, copilot-language-server.exe (32528), 2004, 0x00007ff62954
   自建 ClrMD 分析器 `HeapRoots.exe`（源码 `plugins/dsh-perf/tools/heaproots/`，net10.0 + ClrMD 4.0.732401，
   发布为 win-x86 与 DumpStack 同目录，perf.mjs 从 DumpStack 路径**自动派生**、零新增配置）。托管堆 Top 类型 +
   对指定类型对象的 **GC root → 对象 保留链**（自实现有界 BFS：只用 EnumerateRoots + EnumerateReferences）。
-  ground-truth 真机验过（static List 诱饵，x86/x64 dump 都读得了）；渲染层单测 `test/gcroot-render.test.mjs`。
+  ground-truth 真机验过（static List 诱饵，x86/x64 dump 都读得了）。
   口径（钉在 renderGcRoot）：**仅托管堆 + 单次快照**，大 ≠ 泄漏、非托管/工作集看不到。
 - **已交付（2026-09-17，§1 那条「交互式 GUI/火焰图」）**：`perf_flame`（DSH + MCP 两面）——
   `xperf -a dumper` 逐样本 + `Stack` 事件按 `(ts,tid)` join 出完整栈，**流式折叠 + 按进程过滤**（正合 §4.3
@@ -208,7 +207,7 @@ SampledProfile, 29608, copilot-language-server.exe (32528), 2004, 0x00007ff62954
 - **已交付（2026-09-17，§4 地址→方法 join，火焰图侧）**：`perf_trace(jit=true)` 采 rundown 方法表
   （`jit-methods.etl`，`Microsoft-Windows-DotNETRuntimeRundown 0x118`，stop 时 DCEnd 吐、低污染见 §4.4）+
   `perf_flame` **自动发现并 join**：`lib/jitmap.mjs`（tracerpt 解码 → 按 pid 分桶的「地址区间→方法名」表 + 二分），
-  折叠端按帧所属线程的 pid 查表把 `"Unknown"!0xADDR` 解成真名。单测 `test/jitmap.test.mjs`（对真 fixture）。
+  折叠端按帧所属线程的 pid 查表把 `"Unknown"!0xADDR` 解成真名。
   实测：真工具路径 `perf_trace(jit=true)`→`perf_flame` 端到端，客户端 JIT 帧解名成功、污染 0.00%。
   · ⚠ **只接进了 `perf_flame`**（folded/html）。`perf_hotstacks`（xperf 自出的 HTML 蝶形报告）**还没接**同一映射
     ——那条路的符号解析在 xperf 进程内、要接得改喂 xperf 自定义符号或改走我们自建的解析，属下一步。

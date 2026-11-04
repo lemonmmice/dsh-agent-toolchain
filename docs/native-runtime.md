@@ -150,8 +150,6 @@ Local results and the live UI acceptance boundaries are recorded in
 [native-runtime-validation.md](native-runtime-validation.md).
 
 ```powershell
-npm run test:runtime-native
-npm run test:runtime
 node scripts/export-native-tools.mjs --check
 cargo fmt --manifest-path native/toolchain/Cargo.toml --check
 cargo clippy --locked --manifest-path native/toolchain/Cargo.toml --all-targets -- -D warnings

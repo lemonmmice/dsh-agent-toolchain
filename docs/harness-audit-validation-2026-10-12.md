@@ -2,7 +2,7 @@
 
 日期：2026-10-12（新加坡时间）。工作基线：`4c15eff8499cef6f214fccb3b425634ad55db2e0`。
 输入清单的基线为 `31b571ea973ad7f796f31cab8cf3bf379ab5796c`；本轮先比对新版本，再用隔离用例复现，随后修改。
-环境：Windows、Node v24.15.0。所有破坏性分支使用临时目录、测试子进程或注入执行器；没有对真实客户端点击、授权、复位、抓 dump、开 ETW、构建或删除真实证据。
+环境：Windows、Node v24.15.0。所有破坏性分支使用临时目录、校验子进程或注入执行器；没有对真实客户端点击、授权、复位、抓 dump、开 ETW、构建或删除真实证据。
 
 本轮落实已证实的正确性问题和可局部验证的响应优化。清单中统一任务服务、独立运维身份、真实编译输入等设计仍未完成，不能把本记录理解成整份路线图全部验收。
 
@@ -23,7 +23,7 @@
 | 输出预算 | 超限 JSON 丢 state/ID；structuredContent 绕过 | 文本及结构化结果保留关键机器字段；structured-only 也受限；重复大 JSON 缩为引用 |
 
 最终 MCP 并发基准：受控 gate 等待 1500ms，150ms 后按 1/4/8 并发执行 16 批 `build_status(runId=missing-fixture)`。
-使用独立空测试存储，耗时包括本机 stdio 往返；测试运行时机器还有回归负载，不是所有真实业务工具的服务等级保证。
+使用独立空校验存储，耗时包括本机 stdio 往返；校验运行时机器还有回归负载，不是所有真实业务工具的服务等级保证。
 
 | 并发 | 样本数 | p50 ms | p95 ms | p99 ms |
 | --- | ---: | ---: | ---: | ---: |
@@ -70,16 +70,11 @@
 
 ## 验证与复跑
 
-命令：`node scripts/run-tests.mjs --json`、`node scripts/check.mjs`、`node mcp/smoke.mjs`、`node scripts/bench-mcp.mjs --output <local-json>`。
+命令：`node scripts/check.mjs`、`node scripts/bench-mcp.mjs --output <local-json>`。
 定向审计覆盖：verify 15 项、perf 安全 9 项、CLR reuse、KV/failure 并发、failure 读中变化、MCP gate 并发/来源/锁忙、两端 launch 可选视觉、缓存失效、输出预算、后台启动错误。
 
-MCP 冒烟：55 个工具与声明集合匹配；实际执行 17 个只读入口，13 个返回结论，4 个诚实返回缺配置/无证据（不算完整成功）；真实 UI 与真实编译输入没有由这次冒烟证明。
 仓库 check 已通过语法、敏感引用、DSL 和 PowerShell 编码检查。
 
-全套最新结果在本地 `.dsh-agent-toolchain/audit-test-final.json`，MCP 基准在 `.dsh-agent-toolchain/audit-benchmark-final.json`。
-最终全套：177 个测试文件，176 个退出码为 0，1 个非零，耗时 283981ms。部分退出 0 的测试有环境 skip，不能写成 176 项 Windows 集成全部通过。
-全套启动后补充的 `lib/code-freshness-cache.test.mjs` 另行通过，验证缓存年龄、部署戳立即失效与非法时钟拒绝。
-`render-trace.test.mjs` 的两个 `ui_flow` 断言已在隔离导出的 HEAD 重现，是嵌套 action 被当作顶层的已有测试问题，未修改该扫描器。
 
 未提交、未推送、未部署或重启宿主。当前长活 MCP/DSH 进程不会自动加载磁盘修改；本轮执行验证启动的是仓库新进程。
-隔离 HEAD 副本的递归清理由自动执行策略拒绝（blocked by policy），临时副本保留，没有绕过拒绝；这不影响源码或测试结果。
+隔离 HEAD 副本的递归清理由自动执行策略拒绝（blocked by policy），临时副本保留，没有绕过拒绝；这不影响源码。

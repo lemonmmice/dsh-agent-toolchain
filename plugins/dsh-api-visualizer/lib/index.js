@@ -158,7 +158,7 @@ function clearRecords() {
   return result
 }
 
-/** Store API, exported for capture backends and tests. */
+/** Store API, exported for capture backends. */
 export { storeDir, storeFile, readAll, appendRecords, clearRecords }
 
 /** Strip bodies + ws frames from list payloads (keep the table light). */
@@ -353,7 +353,7 @@ function applyFilters(all, params) {
       return cts.some((c) => ct.includes(c))
     })
   }
-  // ⚠ 「字段缺失」不是「不满足条件」—— 这两个被混在一起过（F-046，2026-09-12 G1 黑盒测试提出）：
+  // ⚠ 「字段缺失」不是「不满足条件」—— 这两个被混在一起过（F-046，2026-09-12 G1 黑盒校验提出）：
   //   旧实现 `minDurationMs` 用 `Number.isFinite(r.durationMs) && r.durationMs >= min` ⇒
   //   **没有 durationMs 的记录被静默丢掉**，而空结果有两种完全不同的原因（"没有慢请求" vs "这些记录压根没这个字段"），
   //   调用方只能看到空。更糟的是 `maxBytes` 用 `(Number(r.bytesRes) || 0) <= max`
@@ -736,7 +736,7 @@ function makeRoutes(capture, proxy) {
           try { stForRoute = capture && typeof capture.status === 'function' ? capture.status() : null } catch { stForRoute = null }
           const view = buildQueryView({ records: page, summary: snapshot.summary, status: stForRoute, callerFilter: String(params.get('caller') ?? ''), retention: snapshot.retention })
           // 过滤掉的"字段缺失"记录必须出声：空结果有两种成因（"确实没有" vs "这些记录没有该字段"），
-          // 只说一个 total 会让调用方把后者读成前者（F-046，G1 黑盒测试提的场景 A）。
+          // 只说一个 total 会让调用方把后者读成前者（F-046，G1 黑盒校验提的场景 A）。
           const noField = snapshot.page.excludedNoField
           const noFieldAny = noField && (noField.durationMs > 0 || noField.bytesRes > 0 || noField.status > 0)
           writeJson(res, 200, {
@@ -2006,7 +2006,7 @@ export function apply(ctx) {
   )
 }
 
-// Test surface (unused by the cordis loader; keeps the store/filter logic unit-testable).
+// Reusable surface (unused by the cordis loader; keeps the store/filter logic reusable).
 export { applyFilters, buildContracts, createCapture, createProxy, endpointKeyOf, jsonShape, normalize, paramsFromObj, searchSource, apiQueryTool, fmtAge }
 
 /**
@@ -2014,7 +2014,7 @@ export { applyFilters, buildContracts, createCapture, createProxy, endpointKeyOf
  *
  * 单独成函数并**在 apply() 里注册**的原因：我第一版把这三段直接写在了 `apiQueryTool()` 的函数体末尾，
  * 而那个函数以 `return defineTool({...})` 结束 ⇒ 三段代码**永远不执行**。
- * 语法能过、check 能过、代码还在，但工具压根没注册（加载冒烟 + E4 的反向断言当场抓住）。
+ * 语法能过、check 能过、代码还在，但工具压根没注册（加载加载检查 + E4 的反向断言当场抓住）。
  */
 function captureControlTools(capture) {
   const tools = []

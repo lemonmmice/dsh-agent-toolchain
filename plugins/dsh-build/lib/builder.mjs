@@ -1,6 +1,6 @@
 /**
  * dsh-build builder — MSBuild 进程封装 + 错误结构化解析。
- * 不依赖 DSH API，可独立单测。
+ * 不依赖 DSH API，可独立离线验证。
  */
 import { envOr } from '../../../lib/env-fallback.mjs'
 import { spawn, execFileSync } from 'node:child_process'
@@ -32,7 +32,7 @@ function writeRecord(path, record) {
 /**
  * R4：构建互斥锁的**机器共享锁根**——与输出日志目录脱钩。
  * 默认 `~/.dsh-agent-toolchain/build-locks`，所有 builder/宿主（无论各自 logsDir）对同一仓库都落到这里，
- * 同根构建才真正互斥。`DSH_BUILD_LOCK_DIR` 仅供测试隔离，不应按宿主分别配不同值（那等于各自为政、退回并发）。
+ * 同根构建才真正互斥。`DSH_BUILD_LOCK_DIR` 仅供校验隔离，不应按宿主分别配不同值（那等于各自为政、退回并发）。
  */
 function buildLockRoot() {
   return envOr('DSH_BUILD_LOCK_DIR') || join(homedir(), '.dsh-agent-toolchain', 'build-locks')
@@ -93,7 +93,7 @@ function failResult(error, extra = {}) {
  * 由「pid 归属明细」推导强杀终态（**纯函数**，F-038）。
  *
  * 抽出来的理由（就是 F-037 的教训）：这段判决此前埋在 `killClientProcess()` 里，
- * 而那个函数的输入要靠**真实进程**才能构造 ⇒ 竞态窗口**没法单测** ⇒ 缺陷活到 r34 被独立复核查出。
+ * 而那个函数的输入要靠**真实进程**才能构造 ⇒ 竞态窗口**没法离线验证** ⇒ 缺陷活到 r34 被独立复核查出。
  * 现在它是纯函数：给一组明细就能精确模拟「判活与判占用之间进程刚好退出」那个窗口。
  *
  * 判决规则（关键：**判决只从这份明细推导**，因此判决与证据永远不可能互相矛盾）：
@@ -212,7 +212,7 @@ export function makeBuilder(cfg) {
   /**
    * 这个 pid 现在**是不是我们的目标进程**（防 pid 复用）。
    *
-   * F-028（2026-09-12，r29 真机整套并发跑时抓到）：`kill-client.test.mjs` 偶发报
+   * F-028（2026-09-12，r29 真机整套并发跑时抓到）：离线验证 偶发报
    * `{"killed":false, "scope":"single-instance", "pids":[30960], …}` —— **而紧随其后的断言
    * "进程确实没了（按 PID 判定）"却是通过的**（按**进程名**枚举已经找不到它了）。
    * 两个判据同时成立只有一种解释：**pid 被复用了** —— 我们那个 `ping` 已经死了，但那个**号**
@@ -258,7 +258,7 @@ export function makeBuilder(cfg) {
    * 同名进程的**实例明细**（PID + 可执行文件全路径），用于「按目标实例定位」。
    *
    * 为什么不能只看镜像名：`tasklist /FI IMAGENAME eq X.exe` 会把**所有**同名实例找出来 ——
-   * 别的会话、别的用户、甚至测试宿主的同名进程都在里面。B-3 的复核（Codex，2026-09-11）
+   * 别的会话、别的用户、甚至校验宿主的同名进程都在里面。B-3 的复核（Codex，2026-09-11）
    * 把「按镜像名杀全部同名实例」判为 blocker（触犯「不误杀非目标进程」红线），这条实现就是修它。
    * 走一次 PowerShell/WMI 才拿得到 ExecutablePath，所以只在**真要动手/有歧义**时才调用。
    */
@@ -922,7 +922,7 @@ export function makeBuilder(cfg) {
   /**
    * 从**最近一次**构建日志重新解析错误/警告。
    *
-   * BV-05/BV-04 连带暴露的一处（2026-09-11，被 `lib/mcp-newtools.test.mjs` 抓到）：
+   * BV-05/BV-04 连带暴露的一处（2026-09-11，被 离线验证 抓到）：
    * 早返回的 `last.json` 里 `logPath` 是 **null**（那次构建压根没跑），而这里直接
    * `readFileSync(s.logPath, …)` → `TypeError: path must be of type string...` →
    * 宿主把 build_errors 变成裸异常。**偏偏是在最需要日志的那一刻**（构建被挡下），

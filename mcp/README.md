@@ -37,7 +37,7 @@ JSON text is reduced to a reference. Tiny budgets disclose minimum metadata
 overhead. Images and resources remain outside this text budget; narrow large
 queries at their source whenever possible.
 
-`node mcp/probe.mjs --seq '[["memory_status",{}],["failure_stats",{}]]'`
+`node mcp/probe.mjs --seq '[["memory_status",{}],["toolchain_status",{}]]'`
 executes calls in order in one session, shows progress on stderr, and stops with
 exit code 1 on a failed call. It does not print request arguments.
 
@@ -54,9 +54,9 @@ The MCP transport and the evidence spine are cross-platform, but the tool set is
 
 | Tools | Scope |
 | --- | --- |
-| `failure_*`, `http_request`, memory KV save/recall/forget | cross-platform (Node stdlib / HTTP only) |
+| `http_request`, memory KV save/recall/forget | cross-platform (Node stdlib / HTTP only) |
 | `memory_index`, `memory_search`, `memory_status` | require the memory-store Node-API module built for the current platform/architecture; Windows x64 validated |
-| `capture_*`, API evidence in `verify_report` | require the capture-store Node-API module built for the current platform/architecture; Windows x64 validated, Linux/macOS builds supported by the build script but not yet validated |
+| `capture_*` (and the internal evidence/verify engine's API checks) | require the capture-store Node-API module built for the current platform/architecture; Windows x64 validated, Linux/macOS builds supported by the build script but not yet validated |
 | `build_run` | cross-platform with `engine=dotnet` (SDK-style repos); the default `engine=msbuild` is Windows/VS only |
 | `ui_status` / `ui_windows` / `ui_state` / `ui_drive` / `ui_flow` / `ui_replay` | **Windows only** — they drive a Windows desktop client via PowerShell + UIA |
 | `perf_probe` / `perf_report` | **Windows only** — window-message latency sampling of the same client |
@@ -91,9 +91,7 @@ reconnect before newly registered tools appear.
 | `perf_probe` / `perf_report` | dsh-perf/lib/perf.mjs | Window-message latency sampling: P50/P95/P99 + stall events |
 | `http_request` | dsh-postman/lib/http.mjs | Host-side HTTP (no CORS), non-2xx is a normal result |
 | `memory_index` / `memory_search` / `memory_save` / `memory_recall` / `memory_status` | dsh-memory/lib/memory.mjs | Vector search + cross-session KV |
-| `failure_record` / `failure_query` / `failure_stats` | lib/failure-corpus.mjs | Local-only JSONL failure corpus: record handoffs/failures, query, stats |
 | `capture_query` / `capture_append` | lib/capture-store.mjs | Query/append the API-capture store — caller attribution (ViewModel→API→call-chain) + runId spine |
-| `verify_report` | lib/verify/report.mjs | Claims adjudicated from evidence (build/api/file checks, manual opt-out) → verdict; contradictions auto-record as agent-misjudge |
 | `jev_decide` | lib/jev-client.mjs | Optional remote typed decisions; advisory only, explicit remote-data opt-in |
 
 ## Configure (Claude Code)
@@ -127,12 +125,11 @@ Same `DSH_*` variables as the plugins:
 | `DSH_BUILD_MSBUILD` | build_run | explicit MSBuild path (auto-detect otherwise) |
 | `DSH_MEMORY_DIR` | memory tools | data dir (default `~/.dsh/memory`) |
 | `MINIMAX_CN_API_KEY` | memory_search | MiniMax embeddings (falls back to local bigram search) |
-| `DSH_FAILURE_CORPUS_DIR` | failure tools | corpus dir (default `~/.dsh-agent-toolchain/failure-corpus`) |
+| `DSH_FAILURE_CORPUS_DIR` | internal failure corpus | corpus dir (default `~/.dsh-agent-toolchain/failure-corpus`) |
 | `DSH_API_CAPTURE_STORE` | capture tools | capture store dir (default `~/.dsh/api-capture`, shared with the panel) |
-| `DSH_VERIFY_DIR` | verify_report | report dir (default `~/.dsh-agent-toolchain/verify-reports`) |
-| `DSH_FAILURE_DEDUPE_HOURS` | failure corpus | window in which a repeated auto-recorded failure is counted as a recurrence instead of a new record (default `24`, `0` = off) |
+| `DSH_VERIFY_DIR` | internal verify engine | report dir (default `~/.dsh-agent-toolchain/verify-reports`) |
+| `DSH_FAILURE_DEDUPE_HOURS` | internal failure corpus | window in which a repeated auto-recorded failure is counted as a recurrence instead of a new record (default `24`, `0` = off) |
 | `DSH_ENV_FILE` | `mcp/launch.mjs`, plugin hooks | machine settings file (default `~/.dsh-agent-toolchain/env.json`) |
-| `DSH_STOP_GATE` / `DSH_STOP_GATE_IGNORE` | plugin Stop hook | `block` (default) / `warn` / `off`; regex of paths that do not count as edits |
 | `TYPESAFE_API_KEY` | jev_decide | TypeSafe API key; used only when `allowRemoteData=true` |
 
 ## Run standalone

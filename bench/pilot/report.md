@@ -279,7 +279,7 @@ and found 4 should-fix items, all author-reproduced and fixed this session:
   `start` invocations now quote the target.
 
 Notes N1–N6 accepted and recorded in the review file (parity is a discipline
-not a runtime invariant; CI test hard-codes the Git-Bash path; http_request
+not a runtime invariant; repo check hard-codes the Git-Bash path; http_request
 SSRF-by-design; external repo claims not live-verified). The review round
 cost ≈ $5.10. A parallel third-party (Codex) review was started but deferred
 by the author's user ("bring it along in a later optimization pass").

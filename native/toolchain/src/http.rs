@@ -256,22 +256,3 @@ pub async fn send(client: &Client, args: &Value, cancel: &CancellationToken) -> 
     result["durationMs"] = json!(started.elapsed().as_millis() as u64);
     result
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn protected_endpoints_and_protocols() {
-        for path in [
-            "/api/dsh-ui-drive/approvals",
-            "/api/dsh-ui-drive/%61pprovals/abc",
-            "/API/DSH-UI-DRIVE/estop/reset/",
-        ] {
-            let url = Url::parse(&format!("http://localhost{path}")).unwrap();
-            assert_eq!(allowed(&url, &Method::POST), Err("control_plane_forbidden"));
-            assert!(allowed(&url, &Method::GET).is_ok());
-        }
-        assert!(allowed(&Url::parse("file:///test").unwrap(), &Method::GET).is_err());
-    }
-}

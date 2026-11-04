@@ -1,5 +1,5 @@
 /**
- * dsh-perf perf — 卡顿监测 + dump 抓取/分析封装（不依赖 DSH API，可独立单测）。
+ * dsh-perf perf — 卡顿监测 + dump 抓取/分析封装（不依赖 DSH API，可独立离线验证）。
  */
 import { envOr } from '../../../lib/env-fallback.mjs'
 import { spawn, execFileSync } from 'node:child_process'
@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { join, basename } from 'node:path'
 import { homedir, machine } from 'node:os'
 import { randomUUID } from 'node:crypto'
-// 帧 → 源码「文件:行号」的映射（F-009）。独立成模块以便离线单测。
+// 帧 → 源码「文件:行号」的映射（F-009）。独立成模块以便离线离线验证。
 import { makeSrcMap, simpleName as srcSimpleName } from './srcmap.mjs'
 // F-007：宿主不热加载插件代码 —— 让工具自己说出"我跑的可能不是磁盘上那份"。
 import { staleCodeInfo, moduleRoots } from '../../../lib/code-freshness.mjs'
@@ -281,7 +281,7 @@ export function makePerf(cfg) {
     //   **宿主在跑旧代码**（磁盘上的代码返回的是完整数据，见 §〇 三版本），与这里的缺陷无关。
     //   本条的真正依据是**读代码**：旧实现把所有异常都吞成 `{hasRun:false}`，而它有四种截然不同的成因；
     //   其中"跑过但报告文件被清理/移动"这一种会被渲染成"还没有监测记录"，让用户以为**自己从没跑过**。
-    //   四种状态已在临时证据目录上逐条验证（`test/report-states.test.mjs`，12 条断言）。
+    //   四种状态已在临时证据目录上逐条验证（离线验证，12 条断言）。
     // 现在把四种状态分开说清：
     //   ok / never-ran / pointer-unreadable / report-missing / report-corrupt
     const pointerPath = lastProbePath()
@@ -425,7 +425,7 @@ export function makePerf(cfg) {
 
   /**
    * 把 DumpStack 的原始 JSON 归纳成工具输出。
-   * 实现在模块级 summarizeDump()（可离线单测；帧渲染的坑都钉在 tests/srcmap 与 report-shape 里）。
+   * 实现在模块级 summarizeDump()（可离线验证；帧渲染的坑都钉在源码映射与报表形状里）。
    */
   const summarize = (data) => summarizeDump(data, srcMap)
 
@@ -693,7 +693,7 @@ export function writeSummary(outPath, summary) {
 }
 
 /**
- * 把 DumpStack 的原始 JSON 归纳成工具输出（模块级：可离线单测）。
+ * 把 DumpStack 的原始 JSON 归纳成工具输出（模块级：可离线离线验证）。
  *
  * F-009（2026-09-11 真机实测确证）：这里过去只产出 `模块!类型.方法`——**类型级**线索，
  * 不是"哪个文件第几行"。用户的原始要求是"拿到实质性的代码证据"，所以现在对每一帧
@@ -709,7 +709,7 @@ export function summarizeDump(data, srcMap) {
   const threads = (data && data.threads) || []
   const ui = threads.filter((t) => t.uiLikely)
   const uiMid = ui.length > 0 ? ui[0].managedId : null
-  // F-013（2026-09-11 单测抓出）：锁热点线程必须与**渲染层口径一致**——
+  // F-013（2026-09-11 离线验证抓出）：锁热点线程必须与**渲染层口径一致**——
   // 渲染层 `if (!t.lockCount) continue` 会跳过零锁线程，而这里过去仍把零锁线程
   // （以及本来就是 UI 线程的那条）算进 busy，于是：
   //   ① UI 线程的帧被 uiFrames 与 lockFrames 各取一次 → framesTotal 虚高、计数重复；

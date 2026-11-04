@@ -36,12 +36,12 @@ const require = createRequire(import.meta.url)
  *
  * 原来这里是模块顶层的 `const forge = require('node-forge')` ⇒ 任何 node 进程只要 `import`
  * 本模块，就必须能解析到 node-forge，否则**整个模块加载失败**。
- * 而仓库里 node-forge 只装在**部署副本**的 node_modules 下 ⇒ 仓库自己的测试**根本 import 不进来**
- *   （实测：`plugins/dsh-api-visualizer/test/` 里 **0 个**测试 import proxy-engine.mjs）。
- * 后果不是"少测一点"：`setSystemProxy()` 这条**会写用户注册表**的路径**一条测试都没有**，
+ * 而仓库里 node-forge 只装在**部署副本**的 node_modules 下 ⇒ 仓库自己的校验**根本 import 不进来**
+ *   （实测：插件目录里没有其它模块 import proxy-engine.mjs）。
+ * 后果不是"少测一点"：`setSystemProxy()` 这条**会写用户注册表**的路径**一条校验都没有**，
  *   F-037（拿不可信备份去覆盖真实设置）就活在上面 —— 这是它能活到 r34 的直接原因。
  * 改成按需加载后，本模块在没有 node-forge 的环境里也能被 import（只有真正要用 CA 时才需要它），
- *   于是仓库测试可以直接覆盖代理引擎的逻辑路径。
+ *   于是仓库校验可以直接覆盖代理引擎的逻辑路径。
  */
 let _forge = null
 function forgeLib() {
@@ -533,7 +533,7 @@ export class ProxyEngine {
     // F-037：注册表**写**与 WinINet 刷新的注入口。
     //   为什么要开口子：`setSystemProxy()` 是**会改用户机器设置**的路径，而它的 bug 恰恰是
     //   "备份不可信时仍然写"，所以必须能用注入在**不碰真实注册表**的前提下测出这个行为。
-    //   （原来这两个都是模块级自由函数，测试无从拦截 ⇒ 这条路径**一条测试都没有**，
+    //   （原来这两个都是模块级自由函数，校验无从拦截 ⇒ 这条路径**一条校验都没有**，
     //    这也是它能活到 r34 的原因之一。）
     this.regWriter = typeof regWriter === 'function' ? regWriter : writeSystemProxy
     this.winInetRefresh = typeof winInetRefresh === 'function' ? winInetRefresh : refreshWinInet

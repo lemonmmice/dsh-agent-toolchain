@@ -89,14 +89,6 @@ function listFiles(dir) {
   return out
 }
 
-/**
- * `lib/` 里只有**运行期模块**需要进 profile；`*.test.mjs` 是仓库侧的测试，同步过去只会出问题：
- * Codex 第八轮实测报了一个 `mcp/server.mjs` 的 ENOENT —— 它跑的是 profile 里的那份测试副本，
- * 而 `mcp/` **不在**同步集里（宿主不需要它），于是 `profile/lib/mcp-newtools.test.mjs`
- * 引用 `profile/mcp/server.mjs` 必然失败。测试文件进 profile 没有任何运行价值，只制造假故障。
- */
-const isTestFile = (p) => /\.test\.mjs$/i.test(p) || p.includes('\\test\\') || p.includes('/test/')
-
 let drift = 0
 let copied = 0
 for (const name of targets) {
@@ -133,7 +125,7 @@ console.log(check ? `\nDRY RUN: ${drift} plugin(s) drifted` : `\nDEPLOYED: ${cop
 // 是**从 profile 根的 `lib/` 解析**的，而 `--check` 只看 plugins/，
 // 于是脚本会报 **"0 plugin(s) drifted"——一份假的安全感**。
 // 实测：仓库 `lib/verify/report.mjs` 288 行（09-09）vs profile 270 行（09-08），
-// 差异里正包括两条"防绿卫兵"（`expect.min<1`、空测试 gate 模式），
+// 差异里正包括两条"防绿卫兵"（`expect.min<1`、空校验 gate 模式），
 // 而 `verify_report` 是整套工具链的**诚实兜底**——它自己被部署漏掉了。
 // 更讽刺的是 MCP 面（`mcp/server.mjs`）import 的是**仓库那份**，于是同一个断言
 // 在 DSH 面与 MCP 面会给出**相反**的结论。
@@ -147,23 +139,12 @@ if (existsSync(sharedLib)) {
   const unit = compareSyncUnit({ root, profileDir, rel: 'lib' })
   const missing = unit.missingFiles
   const changed = unit.changedFiles
-  const files = listFiles(sharedLib).filter((f) => !isTestFile(f))
-  // 过去同步过、现在不该在 profile 里的测试文件：如实列出来（不是 drift，但必须可见，
-  // 否则"profile 里躺着一份坏掉的测试"这件事永远没人知道）。
-  const stale = []
-  for (const f of listFiles(sharedLib).filter(isTestFile)) {
-    const rel = relative(sharedLib, f)
-    if (existsSync(join(dst, rel))) stale.push(rel)
-  }
+  const files = listFiles(sharedLib)
   const status = missing.length === 0 && changed.length === 0 ? 'in sync' : 'drift'
   if (status === 'drift') drift++
   console.log(`${'lib (shared)'.padEnd(28)} ${status}` + (missing.length ? ` missing=${missing.length}` : '') + (changed.length ? ` changed=${changed.length}` : ''))
   for (const m of missing.slice(0, 8)) console.log('    + ' + m)
   for (const c of changed.slice(0, 8)) console.log('    ~ ' + c)
-  if (stale.length) {
-    console.log(`    ! profile 里残留 ${stale.length} 个测试文件（不该同步过去：它们引用未部署的 mcp/，跑起来必然 ENOENT）`)
-    for (const s of stale.slice(0, 8)) console.log('      - ' + s)
-  }
   if (!check) {
     mkdirSync(dst, { recursive: true })
     for (const f of files) {

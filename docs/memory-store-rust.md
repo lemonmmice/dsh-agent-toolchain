@@ -74,11 +74,6 @@ npm run bench:memory-store -- 6887521
 
 ## Verification and deployment
 
-- Full repository regression: 106 JS test files, zero failures (221.2 seconds).
-  The final typed-array transfer, deployment and complete-file boundary additions
-  are also covered by the focused memory suite.
-- Five Rust tests cover stable top-k, UTF-16 sparse terms, prefix replacement,
-  backups/staging failure and stale-writer rejection.
 - JS integration compares random dense and sparse results to the old similarity
   function, including ties, zero vectors, unequal dimensions, legacy duplicate
   IDs, unusual k values, Unicode and external edits/corruption.
@@ -94,7 +89,7 @@ Build with Rust and platform linker tools. Ship
 `plugins/dsh-memory/bin/<platform>-<Node architecture>/memory-store.node` with the
 plugin, then restart DSH/MCP. `DSH_MEMORY_STORE_NATIVE` can override that path.
 Windows x64 is tested; Linux GNU/macOS targets are offered by the build script
-but not validated. Remote CI has not been run and no live profile was deployed.
+but not validated. No live profile was deployed.
 
 New writers coordinate through a persistent `<namespace>.jsonl.lock` file with
 bounded lock waits. Stale pending batches fail rather than overwrite another

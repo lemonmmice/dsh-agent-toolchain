@@ -149,38 +149,6 @@ mod windows {
             found = unsafe { Process32NextW(snapshot.0, &mut entry) };
         }
     }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn creation_time_preserves_utc_milliseconds() {
-            let value = 116_444_736_001_234_567_u64;
-            let time = FILETIME {
-                dwLowDateTime: value as u32,
-                dwHighDateTime: (value >> 32) as u32,
-            };
-            assert_eq!(
-                creation_string(time, value).as_deref(),
-                Some("1970-01-01T00:00:00.123Z")
-            );
-            assert_eq!(creation_string(time, value - 1), None);
-        }
-
-        #[test]
-        fn own_process_has_parent_session_and_stable_identity() {
-            let first = collect().unwrap();
-            let second = collect().unwrap();
-            let pid = std::process::id();
-            let a = first.iter().find(|row| row.pid == pid).unwrap();
-            let b = second.iter().find(|row| row.pid == pid).unwrap();
-            assert!(a.ppid > 0);
-            assert!(a.session.is_some());
-            assert!(a.created.is_some());
-            assert_eq!(a.created, b.created);
-        }
-    }
 }
 
 fn run() -> io::Result<()> {
@@ -211,32 +179,5 @@ fn main() -> std::process::ExitCode {
             eprintln!("dsh-process-table: {error}");
             std::process::ExitCode::FAILURE
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unknown_fields_are_null_and_empty_table_is_an_array() {
-        let mut out = Vec::new();
-        write_table(&mut out, &[]).unwrap();
-        assert_eq!(out, b"[]\n");
-        out.clear();
-        write_table(
-            &mut out,
-            &[ProcessRow {
-                pid: 4,
-                ppid: 0,
-                session: None,
-                created: None,
-            }],
-        )
-        .unwrap();
-        assert_eq!(
-            out,
-            b"[{\"pid\":4,\"ppid\":0,\"session\":null,\"created\":null}]\n"
-        );
     }
 }

@@ -114,9 +114,15 @@ $UIA = [System.Windows.Automation.AutomationElement]
 function Get-ClientPid {
   if ($script:ConfiguredProcId -gt 0) { return $script:ConfiguredProcId }
   if (-not $ProcName) { throw '未指定目标进程（-ProcName 或 -ProcId 至少一个）' }
-  $p = Get-Process -Name $ProcName -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($p) { return $p.Id }
-  throw ($ProcName + ' 进程未运行')
+  $all = @(Get-Process -Name $ProcName -ErrorAction SilentlyContinue)
+  if ($all.Count -eq 0) { throw ($ProcName + ' 进程未运行') }
+  # 同名多进程（残留僵进程 / 旧会话未退 / exe 符号链接真身与配置路径不一致）时，
+  # 旧写法 Select -First 1 会按 PID 升序命中最早那个——常是没有主窗口的僵进程，
+  # 于是 Get-MainWindow 的 UIA 枚举拿到空/陈旧 $main，clickat 随即 window_identity_mismatch。
+  # 改为优先选「有可见主窗口」的那个（真正显示 UI 的客户端）；都没有主窗口才回退 First。
+  $withWin = @($all | Where-Object { $_.MainWindowHandle.ToInt64() -ne 0 })
+  if ($withWin.Count -gt 0) { return ($withWin | Select-Object -First 1).Id }
+  return ($all | Select-Object -First 1).Id
 }
 
 function Get-MainWindow([int]$procId) {
@@ -2644,10 +2650,16 @@ if ($Serve) {
             $livePid = Get-ClientPid
             if ($livePid -ne $procId) { $procId = $livePid; $main = $null }
             if ($main) {
-              # 失效的 UIA 元素访问 .Current 不一定抛异常（可能返回缓存值），
-              # 必须比对 ProcessId：与当前客户端 PID 不一致就是死元素，重解析。
+              # 失效的 UIA 元素访问 .Current 不一定抛异常（可能返回缓存值），必须显式校验两件事：
+              #   1) ProcessId 与当前客户端 PID 不一致 → 客户端重启后的死元素；
+              #   2) 同进程内窗口被重建（登录窗关闭、主窗打开：PID 不变、死元素仍缓存旧 ProcessId，①漏过）时，
+              #      NativeWindowHandle 已指向被销毁的 HWND → 按"句柄 owner 必须仍是本进程"兜底重解析。
+              #      否则 clickat 的 ResolveWindow 在 GetWindowThreadProcessId 返回 0 时会抛 window_identity_mismatch。
               try {
-                if ([int]$main.Current.ProcessId -ne $procId) { $main = $null }
+                $mainHandle = [IntPtr][long]$main.Current.NativeWindowHandle
+                $handleOwner = 0
+                [UiDriveBatchWin32]::GetWindowThreadProcessId($mainHandle, [ref]$handleOwner) | Out-Null
+                if ([int]$main.Current.ProcessId -ne $procId -or $mainHandle -eq [IntPtr]::Zero -or $handleOwner -ne $procId) { $main = $null }
               } catch { $main = $null }
             }
             if (-not $main) {

@@ -21,7 +21,7 @@
  * ── 地址是**进程私有**的：不同进程各有地址空间，JIT 地址会重叠。所以映射表**必须按 pid 分桶**，
  *    查的时候用采样帧所属线程的 pid 去查自己那张表，绝不跨进程混用。
  *
- * 解析是纯函数（对 test/fixtures/jit-rundown.xml 单测）；解码 etl→xml 的编排在 trace.mjs（复用 tracerpt）。
+ * 解析是纯函数（对夹具 `jit-rundown.xml` 离线验证）；解码 etl→xml 的编排在 trace.mjs（复用 tracerpt）。
  */
 
 /** XML 实体还原（方法名里常见 &lt;&gt;c__DisplayClass、&amp;）。 */
@@ -53,7 +53,7 @@ export function parseMethodEntry(block) {
 }
 
 /**
- * 纯解析：tracerpt XML 文本 → Map<pid(string), 方法数组>（未排序）。供 fixture 单测。
+ * 纯解析：tracerpt XML 文本 → Map<pid(string), 方法数组>（未排序）。供 fixture 离线验证。
  * 每个 <Event> 里 <Execution ProcessID> 在前、方法 payload 在后，按事件块切开逐块取。
  */
 export function parseJitMethodsText(xmlText) {

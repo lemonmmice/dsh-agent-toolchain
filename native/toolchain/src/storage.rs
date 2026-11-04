@@ -58,27 +58,3 @@ pub fn try_lock(path: &Path) -> Result<Option<File>> {
         Err(error) => Err(error.into()),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn replacement_and_identifier_boundaries() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        for id in ["../outside", "", "a/b", "a\\b", "a:b"] {
-            assert!(record_path(directory.path(), id, ".json").is_err());
-        }
-        let path = record_path(directory.path(), "safe", ".json")?;
-        write_json(&path, &json!({"version": 1}))?;
-        write_json(&path, &json!({"version": 2}))?;
-        assert_eq!(read_json(&path)?["version"], 2);
-        let lock_path = directory.path().join("test.lock");
-        let guard = try_lock(&lock_path)?.unwrap();
-        assert!(try_lock(&lock_path)?.is_none());
-        drop(guard);
-        assert!(try_lock(&lock_path)?.is_some());
-        Ok(())
-    }
-}

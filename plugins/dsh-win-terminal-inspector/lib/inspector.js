@@ -129,7 +129,7 @@ export function buildProcessTree(entries, rootPid) {
 /**
  * ProcessInspector implementation for Windows terminals.
  *
- * Options (all optional, for tests and tuning):
+ * Options (all optional, for tuning):
  * - exec(): run one process-table query, return stdout string
  * - executable: override the native helper path (default: plugin-local bin)
  * - ttlMs: process-table cache lifetime
@@ -200,7 +200,7 @@ export class WindowsProcessInspector {
    * 由于本插件在 live profile 里覆盖了上游的原生实现（`runtime.terminalInspector`），
    * **每一次终端 spawn 都会直接 TypeError**。
    *
-   * 一直没被发现的原因：单测只测了旧接口（`processTree`），端到端 smoke 没在装好的那个 alpha 版本上跑过。
+   * 一直没被发现的原因：离线验证只测了旧接口（`processTree`），端到端加载检查没在装好的那个 alpha 版本上跑过。
    *
    * 契约要求"一次轮询里多个问题共用同一次读表"（注释原文：read at most once… later questions never re-read it），
    * 所以这里把表读一次、按 pid 建索引，三个问题都从这份观察里回答。
