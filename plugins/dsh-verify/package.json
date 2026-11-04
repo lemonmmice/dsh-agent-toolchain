@@ -1,6 +1,6 @@
 {
   "name": "dsh-verify",
-  "description": "DSH 收尾裁决面插件：任务收尾 claims 清单交给机器裁决（build/api/file/manual），被证据反驳的 claim 自动记入失败样本库",
+  "description": "DSH 工具链环境自检 + Harness² 试验面插件：toolchain_status / toolchain_job 环境自检与异步作业，harness_trial / harness_experience 试验与经验库（名称沿用历史 dsh-verify）",
   "version": "0.2.0",
   "type": "module",
   "main": "index.js",

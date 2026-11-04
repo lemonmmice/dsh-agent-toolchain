@@ -16,7 +16,7 @@
  * hang thread's stack to source files under SRC_ROOT and write analysis.json.
  *
  * This file is transport only — every capability lives in lib/hang.mjs, which
- * the MCP server (mcp/server.mjs hang_* tools) and the unit tests share.
+ * the MCP server (mcp/server.mjs hang_* tools) and the consumers share.
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -26,7 +26,7 @@ const defineTool = definition => sdkDefineTool(wrapTaskDefinition(definition))
 import { makeHangInspector } from './hang.mjs'
 // W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name）。
 import { dshParameters, dshDescription } from '../../../lib/tool-registry.mjs'
-// 渲染层单独成模块：它是 agent 唯一看得见的契约，必须能离线单测（见 lib/render.mjs 顶部说明）。
+// 渲染层单独成模块：它是 agent 唯一看得见的契约，必须能离线离线验证（见 lib/render.mjs 顶部说明）。
 import { renderStatus, renderRun, renderStop, renderPacks, renderPack, renderAnalyze, renderDelete } from './render.mjs'
 
 export const name = 'hang-inspector'

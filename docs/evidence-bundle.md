@@ -1,7 +1,10 @@
 # Verification evidence bundles
 
-`verify_report({ runId, task, claims, context: { repoRoot }, bundle: true })` also writes
-`<DSH_VERIFY_DIR>/<runId>.bundle/` and returns `bundlePath`.
+The verification engine (`lib/verify/bundle.mjs`) can also emit a traceable evidence bundle for a
+run: given `{ runId, task, claims, context: { repoRoot } }` with bundling enabled, it writes
+`<DSH_VERIFY_DIR>/<runId>.bundle/` and returns `bundlePath`. This is an internal engine capability —
+the auto-record path and the Harness² feature consume it; there is no agent-callable tool that
+produces a bundle.
 
 - `manifest.json`: `dsh-evidence-bundle/1`, task/verdict/time/producer/report, optional HEAD,
   artifact paths, kinds, SHA-256 hashes, byte sizes and original sources, plus omissions.

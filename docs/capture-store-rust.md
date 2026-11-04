@@ -56,11 +56,6 @@ npm run bench:capture-store -- 6887521
 
 ## Verification
 
-- Full repository JavaScript regression: **105 test files passed, 0 failed**
-  (217.4 seconds). Retention-limit boundary cases were additionally checked in a
-  focused storage rerun.
-- Four Rust tests cover traversal rejection, replacement accounting, oversized
-  newest-record retention, stale replacements, and multi-shard staging failure.
 - Storage integration checks compare the native planner with the existing JS
   reference and cover Unicode, malformed/hand-edited legacy JSONL, duplicate IDs,
   in-place file edits, missing final newlines, three independent writers and
@@ -74,7 +69,7 @@ npm run bench:capture-store -- 6887521
 - A temporary deployment missing its native module fails before any copy. A
   complete deployment can append/query from a profile path containing spaces.
 - Rustfmt, Clippy and repository syntax/private-reference checks are included in
-  local validation. Remote CI and non-Windows builds have not been run.
+  local validation. Non-Windows builds have not been run.
 
 ## Build, deployment and boundaries
 

@@ -297,7 +297,7 @@ export function makeTrace(cfg = {}) {
   /** 跑一个可执行文件并收全输出；超时杀进程树。 */
   function runExe(exe, args, opts = {}) {
     checkTaskCancellation()
-    // 测试接缝（理由同 env-fallback 的 env/exec 注入）：采集前自检的行为必须能被**离线**验住 ——
+    // 校验接缝（理由同 env-fallback 的 env/exec 注入）：采集前自检的行为必须能被**离线**验住 ——
     // 否则"这台机器的 WPR 能不能收尾"只能靠真机碰运气，而它恰恰是"白跑一轮复现"的分水岭。
     if (typeof c.runExe === 'function') return c.runExe(exe, args, opts)
     const { timeoutMs = 600000, env } = opts
@@ -1273,7 +1273,7 @@ export function makeTrace(cfg = {}) {
     if (!c.symbolPath) return null
     if (String(envOr('DSH_PERF_SYMBOL_PATH') || '') === String(c.symbolPath)) return 'DSH_PERF_SYMBOL_PATH'
     if (String(process.env._NT_SYMBOL_PATH || '') === String(c.symbolPath)) return '_NT_SYMBOL_PATH'
-    return 'argument' // makeTrace 的注入（测试/探针脚本）
+    return 'argument' // makeTrace 的注入（校验/探针脚本）
   }
 
   /** 符号路径：显式配置 > 机器已有的 _NT_SYMBOL_PATH > 默认微软公网符号（带**共享**本地缓存）。 */
@@ -1869,7 +1869,7 @@ export function parseStackReport(html) {
   //
   // 修（2026-09-11，Claude r12 提的方向 + 我用真报告实测确认）：原口径只有
   // `hotFunctions + butterfly 的 root 名`，**不含蝴蝶视图里的调用者/被调用者**——
-  // 而那份列表正是输出里最显眼的部分。真机（374KB 真 xperf 报告，test/fixtures/stack-report-managed.html）实测：
+  // 而那份列表正是输出里最显眼的部分。真机（374KB 真 xperf 报告，夹具 `stack-report-managed.html`）实测：
   //   上报 0.2%（1472 项），而实际显示出来的名字有 1578 个、其中 6 个未解析（0.4%）；
   //   链里明明白白写着 `***unknown***!***unknown***`，却一个都没进分母。
   // 未解析帧恰恰**偏爱深层**（冷门模块没有 pdb 的概率最高），所以这个低估在符号没配好的报告里会成大问题：
@@ -1959,7 +1959,7 @@ export function isUnknownBucket(name) {
 /**
  * 模块名的比较键：xperf 的**模块表**写 `mscorlib.dll`，而**帧**写 `mscorlib!方法` ——
  * 不去掉扩展名就永远匹配不上，于是"有命中却解不出名字的模块"会**全部**漏报。
- * （这类"同一实体两种写法"是静默失配的高发区，单列一个函数出来就是为了能被测试钉住。）
+ * （这类"同一实体两种写法"是静默失配的高发区，单列一个函数出来就是为了能被校验钉住。）
  */
 export function moduleKey(name) {
   return String(name == null ? '' : name).trim().toLowerCase()

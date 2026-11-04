@@ -4,7 +4,6 @@
  * One hang-diagnosis workflow, three consumers:
  *   - the 「卡死分析」 web panel (plugins/dsh-hang-inspector/lib/index.js routes)
  *   - the MCP server (mcp/server.mjs hang_* tools)
- *   - unit tests (test/hang.test.mjs, temp evidence dir + injected runner)
  *
  * The core is deliberately transport-free: every method returns plain JSON and
  * never touches req/res. Evidence packs live under `packs` (default
@@ -441,7 +440,7 @@ export function findDac(dir) {
  * @param {string} [config.runDir]    run state/log dir (default DSH_HANG_RUN_DIR)
  * @param {string} [config.pwsh]      powershell path (default DSH_HANG_PWSH)
  * @param {(exe: string, args: string[], timeoutMs: number) => Promise<{code:number,stdout:string,stderr:string}>} [config.capture]
- *        process runner (tests inject a fake so analysis is exercised without a real dump)
+ *        process runner (a fake can be injected so analysis is exercised without a real dump)
  */
 export function makeHangInspector(config = {}) {
   const env = process.env
@@ -1139,7 +1138,7 @@ export function makeHangInspector(config = {}) {
     analyze,
     removePack,
     removeAllPacks,
-    // exported for tests / reuse
+    // exported for reuse
     buildAnalysis,
     locateSource,
   }

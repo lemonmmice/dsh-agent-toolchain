@@ -7,24 +7,22 @@ shared interfaces, with Rust components for selected native operations.
 
 ## Plugin anatomy
 
-Every plugin follows the same four-part shape:
+Every plugin follows the same three-part shape:
 
 ```
 plugins/<name>/
 ├── index.js          # host entry: exports { name, inject, apply(ctx) + tool defs }
 ├── lib/              # framework-free core (no @deepseek-ai/dsh-tools import)
-├── scripts/          # Windows PowerShell helpers (UIA drive, MSBuild, procdump...)
-└── test/             # offline self-tests / smoke scripts
+└── scripts/          # Windows PowerShell helpers (UIA drive, MSBuild, procdump...)
 ```
 
 - **`index.js`** registers agent tools via `defineTool`, announces itself to the
   model via the `systemPrompt` injection (GUIDANCE), and mounts loopback-only
   Web routes (`/api/dsh-<plugin>/*`) for the GUI panel.
-- **`lib/*.mjs`** contain framework-free logic (driver, parser, store) that can be unit
-  tested without DSH — this is the testable seam.
+- **`lib/*.mjs`** contain framework-free logic (driver, parser, store) that runs
+  without DSH — the seam that keeps plugins thin.
 - **`scripts/*.ps1`** do the actual Windows work (UIA via PowerShell,
   MSBuild via process spawn, procdump/DumpStack via file paths).
-- **`test/`** offline scripts with hard-coded-free env configuration.
 - **`native/`** holds Rust components. The process-table helper is an executable;
   capture storage is an in-process Node-API module behind `lib/capture-storage.mjs`.
   DSH and MCP share the capture storage/index implementation. Generated binaries
@@ -61,7 +59,7 @@ Evidence/tool dirs default under `~/.dsh-agent-toolchain/`.
 - The systemPrompt GUIDANCE layer adds soft constraints (confirm before
   save/delete/export; never trade).
 
-## CI gate
+## Repo gate
 
 `scripts/check.mjs` blocks on three things: JS syntax errors, forbidden
 environment-specific references (company identifiers, internal paths, personal

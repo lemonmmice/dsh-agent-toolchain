@@ -57,12 +57,6 @@ npm run bench:trace-fold -- 30000 5
 
 ## Verification
 
-- Full repository regression: **107 JS test files passed, zero failures**
-  (214.1 seconds). A focused perf rerun covers the final malformed-address and
-  worker-timer assertions.
-- Five Rust tests cover JS numeric parsing, arbitrary-width JIT addresses,
-  half-open intervals, first-cluster/byte-weight behavior, CRLF split at the
-  stream buffer boundary and changed-file rejection.
 - JS differential tests compare every output field and Map order for CPU and
   allocation traces: randomized events, duplicate samples, unmatched waiting
   stacks, global/sticky/lookbehind regexes, PID filtering, overlapping input
@@ -75,8 +69,7 @@ npm run bench:trace-fold -- 30000 5
 - Rustfmt, Clippy and repository sanity checks are run locally. Windows DLL
   dependency inspection lists only system DLLs, without a separate VC runtime.
 
-The reference parser is test-only and is not a production fallback. Missing
-native binaries report the build command. Remote CI and non-Windows builds have
+Missing native binaries report the build command. Non-Windows builds have
 not been run; no real ETW capture, live profile deployment or host restart was
 performed for this migration.
 

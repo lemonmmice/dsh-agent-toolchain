@@ -2,7 +2,7 @@
  * dsh-ui-drive 渲染层 — 工具输出的「agent 可见文本」。
  *
  * 为什么单独成模块：渲染文本是**契约的一部分**（agent 只看得见这里打出来的东西），
- * 必须能离线单测；而 index.js 依赖宿主的 `@deepseek-ai/dsh-tools`，普通 node 进程
+ * 必须能离线离线验证；而 index.js 依赖宿主的 `@deepseek-ai/dsh-tools`，普通 node 进程
  * 里 import 不到，渲染逻辑留在 index.js 里就等于不可测。
  */
 

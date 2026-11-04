@@ -33,7 +33,7 @@ import { cleanEvidence } from '../plugins/dsh-perf/lib/evidence-clean.mjs'
 import { makeHangInspector } from '../plugins/dsh-hang-inspector/lib/hang.mjs'
 import { sendRequest } from '../plugins/dsh-postman/lib/http.mjs'
 import { DshMemory } from '../plugins/dsh-memory/lib/memory.mjs'
-import { makeFailureCorpus, FAILURE_CLASSES } from '../lib/failure-corpus.mjs'
+import { makeFailureCorpus } from '../lib/failure-corpus.mjs'
 import { buildProducer, agentTurnFromMeta } from '../lib/failure-provenance.mjs'
 import { isExpectedRefusal } from '../plugins/dsh-ui-drive/lib/refusal.mjs'
 // 捕获控制面的"人话总结"：**与 DSH 工具 / 面板路由共用同一份实现**（本仓第 38 类：同一逻辑许两份必然漂移）。
@@ -47,7 +47,6 @@ import { createCaptureStatusCache } from './capture-status-cache.mjs'
 import { appendRecords, readAll } from '../lib/capture-store.mjs'
 import { queryCaptureAsync } from '../lib/capture-query-service.mjs'
 import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote } from '../plugins/dsh-api-visualizer/lib/query-view.mjs'
-import { makeVerificationReport } from '../lib/verify/report.mjs'
 import { attachInlineImage } from './inline-image.mjs'
 import { makeToolTrace, wrapToolArgs } from '../lib/tool-trace.mjs'
 import { makeOutputBudget, outputMaxTokens } from '../lib/output-budget.mjs'
@@ -138,7 +137,7 @@ function producerNow(runtime = 'mcp') {
   return buildProducer({ runtime, client, agentTurn: _callCtx.getStore()?.agentTurn ?? null })
 }
 // 工具 profile（见 lib/tool-profiles.mjs）：设 DSH_TOOL_PROFILE 时只注册选中域 + core，精简 tools/list 的 token；
-// 默认（未设）全开 —— 不支持动态发现的客户端零影响，mcp/smoke 的 DECLARED 比对也仍成立（它不设该环境变量）。
+// 默认（未设）全开 —— 不支持动态发现的客户端零影响。
 const _toolProfile = parseProfile(envOr('DSH_TOOL_PROFILE'))
 server.tool = (...args) => {
   const toolName = typeof args[0] === 'string' ? args[0] : null
@@ -373,7 +372,7 @@ function autoRecord(failureClass, tool, message, extra = {}) {
       tags: ['auto', tool],
       context: { runtime: 'mcp', tool, ...(extra.context ?? {}) },
       // 来源 + 去重（2026-10）：同一种失败在窗口内只记一条全量记录，其余折叠成 recurrence 计数；
-      // producer 让"这是测试/哪个客户端/哪一版工具链写的"在记录本身里就能查到。
+      // producer 让"这是校验/哪个客户端/哪一版工具链写的"在记录本身里就能查到。
       producer: producerNow('mcp'),
       dedupe: true,
     })
@@ -674,7 +673,7 @@ server.tool(
       // 2026-09-11（Claude 第十轮真机发现）：驱动的 cleanSteps **认** max/maxDepth，但这份步骤 schema 没声明
       // → zod 在到达驱动前就把它们剥掉，于是 `steps:[{action:'state',max:5}]` 真机返回 count=40（max 被静默丢弃）。
       // 又一次"驱动修了、schema 没暴露"。凡是 cleanSteps 会转发的字段，这里都必须有声明的归宿
-      // （守卫见 plugins/dsh-ui-drive/test/param-forwarding-completeness.test.mjs 的 flow-schema 检查）。
+      // （flow-schema 守卫守在调用点）。
       max: z.number().optional().describe('read/state/tree steps: cap the number of lines/nodes returned'),
       maxDepth: z.number().optional().describe('tree steps: maximum depth'),
       // 同一类漏网（守卫 param-forwarding-completeness 抓出来的第二批）：drag 的插值参数、窗口定位、修饰键
@@ -814,7 +813,7 @@ server.tool(
 
 // ---------------------------------------------------------------- ui_launch / ui_tree / ui_live
 // These three were reachable from the DSH plugin surface but missing entirely from MCP, so an
-// MCP client could not start the client under test, could not dump its visual tree, and could not
+// MCP client could not start the target client, could not dump its visual tree, and could not
 // watch it live. An independent audit confirmed none of them needs a host-only service: the
 // driver exposes launch/tree, and makeLive is plain Node (it shells out through the same driver).
 
@@ -1283,44 +1282,7 @@ server.tool(
   }
 )
 
-// ---------------------------------------------------------------- failure corpus
-
-server.tool(
-  'failure_record',
-  mcpDescription('failure_record'),
-  {
-    task: z.string().describe('One-line task name'),
-    failureClass: z.enum(FAILURE_CLASSES).describe('Failure class from the fixed taxonomy: ' + FAILURE_CLASSES.join(' | ')),
-    description: z.string().describe('What went wrong'),
-    resolution: z.string().optional().describe('How it was unblocked'),
-    context: z.record(z.string(), z.string()).optional().describe('Runtime context (runtime / tool / model / repo)'),
-    tags: z.array(z.string()).optional().describe('Free-form tags for later mining'),
-    costMs: z.number().optional().describe('Approximate time wasted in ms'),
-  },
-  async (args) => {
-    try {
-      return jtext(fc().record(args))
-    } catch (e) {
-      return failure('failure_record rejected: ' + e.message, 'failure_record_rejected')
-    }
-  }
-)
-
-server.tool(
-  'failure_query',
-  mcpDescription('failure_query'),
-  mcpShape('failure_query'),
-  async (args) => jtext(await fc().queryAsync(args))
-)
-
-server.tool(
-  'failure_stats',
-  mcpDescription('failure_stats'),
-  mcpShape('failure_stats'),
-  async () => jtext(await fc().statsAsync())
-)
-
-// E3 / F-042（2026-09-12 r36）：**"统一 health 工具"是一个 P0 能力缺口**，不是"测试没找到"。
+// E3 / F-042（2026-09-12 r36）：**"统一 health 工具"是一个 P0 能力缺口**，不是"校验没找到"。
 //   两个互相隔离的黑盒 agent 独立要过同一个东西：工具描述里散落着 DSH_HANG_SRC_ROOT /
 //   DSH_PERF_SYMBOL_PATH / DSH_UI_CLIENT_EXE / "需管理员"等硬前提，**却没有任何工具能查其当前值**。
 //   后果很具体：源码根没配 ⇒ 只能给方法名、给不出 文件:行号 —— 而用户最想要的就是那一行。
@@ -1329,13 +1291,6 @@ server.tool(
   mcpDescription('toolchain_status'),
   mcpShape('toolchain_status'),
   async (args) => jtext(await toolchainStatusAsync({ deep: args?.deep === true, fresh: args?.fresh === true }))
-)
-
-server.tool(
-  'failure_retract',
-  mcpDescription('failure_retract'),
-  mcpShape('failure_retract'),
-  async (args) => jtext(fc().retract(args))
 )
 
 // ---------------------------------------------------------------- api capture
@@ -1478,48 +1433,6 @@ server.tool(
   mcpDescription('perf_clean'),
   mcpShape('perf_clean'),
   async (args) => jtext(cleanEvidence({ dir: prf().evidenceDir(), confirm: args.confirm === true, planId: args.planId, what: args.what, keepDays: args.keepDays }))
-)
-
-// ---------------------------------------------------------------- verification report
-
-server.tool(
-  'verify_report',
-  mcpDescription('verify_report'),
-  {
-    runId: z.string().describe('Unique run id (e.g. task-2-toolchain-1)'),
-    task: z.string().describe('One-line task name'),
-    bundle: z.boolean().optional().describe('Write a bounded evidence bundle without changing the verdict if packaging fails'),
-    claims: z.array(z.object({
-      statement: z.string().describe('The claim being made'),
-      kind: z.enum(['build', 'api', 'file', 'git', 'gate', 'manual', 'compiled']).optional().describe('Adjudication rule; defaults to manual. compiled = does this source file actually belong to a project compile set (legacy .csproj does NOT auto-include .cs, so a forgotten <Compile Include> builds fine while never being compiled - kind=file cannot catch that); unreadable input yields unverified, never fail'),
-      runId: z.string().optional().describe('For kind=build/api: which run the evidence belongs to'),
-      attemptId: z.string().optional().describe('For kind=build: immutable build attempt ID; runId otherwise selects its latest attempt'),
-      path: z.string().optional().describe('For kind=file: path to check. For kind=compiled: source file whose compile membership is checked'),
-      filter: z.record(z.string(), z.any()).optional().describe('For kind=api: capture-store filter (q/method/host/status/...)'),
-      expect: z.object({ min: z.number().optional(), all2xx: z.boolean().optional() }).optional().describe('For kind=api: pass criteria (default min=1)'),
-      project: z.string().optional().describe('For kind=compiled: explicit project file (*.csproj). Omitted = search upward from the file'),
-    repoRoot: z.string().optional().describe('For kind=compiled: boundary for the upward project search'),
-    repo: z.string().optional().describe('For kind=git: repo dir (default cwd); for kind=compiled it is used as a base for relative paths'),
-      check: z.string().optional().describe("For kind=git: 'clean' (working tree) or 'pushed' (ls-remote, authoritative)"),
-      ref: z.string().optional().describe("For kind=git check=pushed: ref to compare (default HEAD)"),
-      gitConfig: z.array(z.string()).optional().describe("For kind=git: extra git -c flags (e.g. ['-c','http.sslBackend=openssl'])"),
-      cmd: z.string().optional().describe('For kind=gate: verification command (exit 0 = pass)'),
-      cwd: z.string().optional().describe('For kind=gate: working dir'),
-      timeoutMs: z.number().int().positive().max(300000).optional().describe('Gate/git deadline in milliseconds'),
-      status: z.enum(['pass', 'fail', 'unverified']).optional().describe('For kind=manual: supplied status'),
-      evidence: z.string().optional().describe('For kind=manual: backing evidence'),
-    })).describe('Claims adjudicated from evidence'),
-    context: z.record(z.string(), z.string()).optional().describe('Runtime context (repo / model / mode)'),
-  },
-  async (args, extra) => {
-    try {
-      // producer：报告与它自动记下的 agent-misjudge 都标上"哪个客户端、哪个宿主回合、哪一版裁决器"，
-      // 裁决器以后被证明有缺陷时可以按版本批量撤回它的结论（F-023 那类）。
-      return jtext(await makeVerificationReport({ ...args, signal: extra?.signal, producer: producerNow('mcp') }))
-    } catch (e) {
-      return failure('verify_report rejected: ' + e.message, 'verify_report_rejected')
-    }
-  }
 )
 
 server.tool('dev_status', mcpDescription('dev_status'), mcpShape('dev_status'),

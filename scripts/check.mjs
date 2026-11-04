@@ -157,7 +157,7 @@ try {
 //
 //    The rule set lives in scripts/lib/schema-dsl.mjs (a whitelist, so the next
 //    unknown keyword is caught without anyone remembering to add it here), and
-//    the pinned cases live in scripts/lib/schema-dsl.test.mjs. The previous
+//    the rule set pins the known-bad cases. The previous
 //    version of this section was a single-line regex that only asked whether an
 //    object param mentioned additionalProperties — it could not see a wrong
 //    keyword at all, and did not cover multi-line literals by its own admission.

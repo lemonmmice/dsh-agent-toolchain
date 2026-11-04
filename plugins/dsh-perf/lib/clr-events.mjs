@@ -10,7 +10,7 @@
  * 再把 clr.etl 交给 tracerpt 解码（本模块吃解码后的 XML 文本）。provider 独占 → etl 小 → XML 可控
  * （tracerpt XML 相对 etl ~6× 膨胀，别对全量系统 trace 全事件 dump）。
  *
- * 设计：纯解析、无 I/O、可对 fixture 单测（perf-evidence/clr-events-spike-20260916/gc-fixture.xml 是**真**采样）。
+ * 设计：纯解析、无 I/O、可对 fixture 离线验证（perf-evidence/clr-events-spike-20260916/gc-fixture.xml 是**真**采样）。
  * 事件规范键 = RenderingInfo 的 `Task/Opcode`（如 GC/SuspendEEStart、GC/RestartEEStop、GC/Start、GC/HeapStats）——
  * SuspendEE→RestartEE 是 GCNoUserData 无独立 payload，只能靠 opcode；GC/Start 等另带 payload data。
  */

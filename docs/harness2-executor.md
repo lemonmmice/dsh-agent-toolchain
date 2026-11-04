@@ -8,14 +8,4 @@
 
 命令子进程使用 DSH 的按 PID 树取消通路。执行器不会使用按进程名杀进程、跳过权限参数或共享工作目录。`trajectory` 只保留经过长度限制和敏感模式遮罩的摘要，完整 stdout/stderr 不作为长期轨迹保存。输出产物仅从任务声明的相对路径读取并计算 SHA-256；越界路径被忽略。
 
-执行器本身不判断任务是否通过。调用方必须用冻结的 claims 调用 `verify_report`，再把验证报告交给 Harness² 核心的比较器。缺少模型 token/cost 时保存为 `null`，不是零。
-
-离线验证：
-
-```text
-node lib/harness/executor.test.mjs
-node bench/harness2/evaluate.test.mjs
-```
-
-这些测试证明执行边界、取消语义、结构化阶段输出和 equal-budget/held-out 报表逻辑；它们不证明当前机器已配置真实 Codex 会话，也不证明 Harness² 带来收益。
-
+执行器本身不判断任务是否通过。调用方必须用冻结的 claims 走 `lib/verify/report.mjs` 的 `makeVerificationReport` 引擎，再把验证报告交给 Harness² 核心的比较器。缺少模型 token/cost 时保存为 `null`，不是零。

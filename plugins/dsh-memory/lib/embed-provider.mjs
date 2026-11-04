@@ -59,7 +59,7 @@ export class EmbedProvider {
     //   ⇒ 远程调用必须有**上界**；超时要给**可执行的下一步**，而不是让调用方干等。
     //   ⚠ 用 `AbortController` + **ref 的 `setTimeout`**，而不是 `AbortSignal.timeout()`：
     //     后者内部的定时器是 **unref** 的，在"没有别的活动"的进程里**可能根本不触发**
-    //     （本仓实测：单测里它就没触发，进程带着未 settle 的 await 退出）。
+    //     （本仓实测：离线验证里它就没触发，进程带着未 settle 的 await 退出）。
     //     保活与否不该决定"超时生不生效"。
     const timeoutMs = Math.min(Math.max(1000, Number(process.env.DSH_MEMORY_EMBED_TIMEOUT_MS) || 20000), Math.max(1, deadline - Date.now()));
     const ctrl = new AbortController();

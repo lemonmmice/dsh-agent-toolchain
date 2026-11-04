@@ -129,7 +129,7 @@ export function callerAttributionNote(callerAttribution) {
 /**
  * "拿不到"归一成 `null`。
  *
- * ⚠ 这里踩过一次坑（写完 renderQuery 的第一版就被自己的单测抓住了）：
+ * ⚠ 这里踩过一次坑（写完 renderQuery 的第一版就被自己的离线验证抓住了）：
  *   `Number(null)` **等于 0**、`Number(undefined)` 是 NaN —— 所以
  *     `if (!Number.isFinite(Number(ms))) return '-'`
  *   对 `null` **判不出来**，会一路走到 `0 < 1000` ⇒ 渲染出 **`0ms`**：

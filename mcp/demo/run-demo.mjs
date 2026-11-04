@@ -213,28 +213,6 @@ try {
   }
 
   log('')
-  log(withPerf ? '6. adjudicate: claims vs evidence' : '5. adjudicate: claims vs evidence')
-  const claims = [
-    { statement: 'the sample app builds with 0 errors', kind: 'build', runId },
-    {
-      // Self-assessed on purpose: the UI read-back is the one claim no other
-      // machine here can check, so it must say outright whether it held.
-      statement: 'the driven UI shows "Hello, toolchain"',
-      kind: 'manual',
-      status: readBackOk ? 'pass' : 'fail',
-      evidence: read.raw.replace(/\s+/g, ' ').slice(0, 300),
-    },
-  ]
-  if (shotPath) claims.push({ statement: 'a screenshot was captured', kind: 'file', path: shotPath })
-  const verdict = await step(
-    'verify_report returns a verdict',
-    'verify_report',
-    { runId, task: 'demo: build → drive → read → adjudicate', claims },
-    (p) => p !== null && typeof p.verdict === 'string',
-  )
-  const verdictValue = verdict.parsed ? verdict.parsed.verdict : 'unknown'
-  log('')
-  log('verdict: ' + verdictValue + (verdict.parsed && verdict.parsed.reportPath ? '  (' + verdict.parsed.reportPath + ')' : ''))
 
   const failed = results.filter((r) => !r.ok)
   log('')

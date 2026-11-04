@@ -108,8 +108,6 @@ the new wrapper. MCP connections already running older code need reconnecting;
 
 ## Verification
 
-- `node lib/development-tools.test.mjs` checks missing dependencies, write
-  authorization, stale hashes, workspace boundaries and cancellation offline.
 - With `DSH_DEV_PROFILE_DIR` pointing at installed, compatible backends, run
   `node mcp/development.integration.mjs` on Windows with .NET Framework 4.5.2
   reference assemblies. It starts the actual MCP server, checks discovery and

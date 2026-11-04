@@ -6,7 +6,7 @@ Thanks for your interest in improving the agent-visible quality loop!
 
 - **Report a bug** — open an issue with a minimal repro (plugin, harness version, OS, env vars set).
 - **Propose a feature** — describe the agent workflow gap it closes and which plugin fits.
-- **Send a pull request** — for code, docs, or tests. See the checklist below.
+- **Send a pull request** — for code or docs. See the checklist below.
 
 ## Development setup
 
@@ -17,25 +17,12 @@ node --check plugins/<plugin>/lib/*.mjs   # syntax gate (no build step required)
 ```
 Plugins are ESM Node.js with zero runtime deps except where noted in each `package.json`.
 The Windows terminal inspector also requires its Rust helper: run
-`npm run build:terminal-inspector` before testing or deploying that plugin.
-Build prerequisites are the Rust MSVC toolchain and Visual C++ build tools;
-`npm run test:terminal-native` runs the Rust tests.
+`npm run build:terminal-inspector` before deploying that plugin.
+Build prerequisites are the Rust MSVC toolchain and Visual C++ build tools.
 Capture storage uses a Rust Node-API module: `npm run build:capture-store`
-builds it for the current platform/Node architecture, and
-`npm run test:capture-native` tests the storage core without loading Node.
-Memory vectors use a separate Node-API module: `npm run build:memory-store` and
-`npm run test:memory-native`. Run `node scripts/run-tests.mjs dsh-memory` for
-the JS adapter, indexing and persistence regressions.
-CPU/allocation CSV folding uses `npm run build:trace-fold` and
-`npm run test:trace-native`. Its JS differential tests run with
-`node scripts/run-tests.mjs dsh-perf --all` against a frozen pre-migration oracle.
-
-Test tiers: `npm test` runs the light tier by default and skips every file whose
-header carries a `// @heavy-test` marker (14 real-process files; ≈40s instead of
-≈5min). The skip list is printed on every run and included in `--json`, so a green
-light-tier run is never a claim about the full suite. Use `npm test -- --all`,
-`npm run verify`, or CI when you need the heavy tier; add the marker only to files
-that genuinely need real processes, never to make a red test disappear.
+builds it for the current platform/Node architecture.
+Memory vectors use a separate Node-API module: `npm run build:memory-store`.
+CPU/allocation CSV folding uses `npm run build:trace-fold`.
 
 ## Pull request checklist
 
@@ -48,8 +35,7 @@ that genuinely need real processes, never to make a red test disappear.
      fingerprints and lengths, not the private terms; scanning is case-insensitive and includes
      substrings in identifiers, paths and Unicode words.
 3. **Syntax-check** — `node --check` every `.js`/`.mjs` you touch.
-4. **Add or update a test** — each plugin has a `test/` dir with offline self-tests where feasible.
-5. **Update the plugin README** — env vars table, tool description, behavioral change notes.
+4. **Update the plugin README** — env vars table, tool description, behavioral change notes.
 
 ## Code style
 
@@ -57,7 +43,7 @@ that genuinely need real processes, never to make a red test disappear.
 - `lib/*.mjs` modules must not import `@deepseek-ai/dsh-tools` — keep them testable standalone;
   the plugin wrapper (`index.js`) owns tool definitions and DSH integration.
 - Windows PowerShell scripts: UTF-8 **with BOM** (PowerShell 5.1 requirement) when touching
-  `.ps1` files that embed non-ASCII; check with `node test/fix-bom.mjs <file>` in dsh-ui-drive.
+  `.ps1` files that embed non-ASCII.
 
 ## Commit messages
 

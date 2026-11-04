@@ -553,7 +553,7 @@ const tools = () => [
 
 // renderDrive / renderState / sanitizeLive / framePathText / launchText / renderLive
 // 已移到 lib/render.mjs：渲染与脱敏文本是 agent 唯一看得见、也是唯一能保护像素的契约，
-// 必须能离线单测（index.js 依赖宿主 @deepseek-ai/dsh-tools，普通 node 进程 import 不到）。
+// 必须能离线离线验证（index.js 依赖宿主 @deepseek-ai/dsh-tools，普通 node 进程 import 不到）。
 
 // ---------------------------------------------------------------- Web 路由（仅回环，面板雏形）
 

@@ -1,7 +1,7 @@
 /**
  * dsh-ui-drive driver — Windows PowerShell(UIA) 进程封装层。
  * 把 ui-drive.ps1 / ui-drive-batch.ps1 / ui-probe.ps1 的进程调用、超时、输出解析
- * 收敛到这里，供 host 插件工具直接消费；不依赖 DSH API，可独立单测。
+ * 收敛到这里，供 host 插件工具直接消费；不依赖 DSH API，可独立离线验证。
  *
  * 性能模型（2026-09 优化）：
  *  - 单步 ui_drive 走 ui-drive.ps1（一次进程 = 一个动作）；
@@ -45,10 +45,10 @@ const TRANSCRIPT_READ_LINES = 50
 export const DEFAULT_WAIT_MS = 250
 
 /**
- * `ui_launch(force=true)` 在杀进程之后的**重启判决**（F-039，**纯函数**，便于单测）。
+ * `ui_launch(force=true)` 在杀进程之后的**重启判决**（F-039，**纯函数**，便于离线验证）。
  *
  * 抽出来的理由与 F-038 同源：这段判决原本埋在 `launch()` 里、要靠真起/真杀进程才能触发，
- * 于是"杀进程核对窗口刚好差一点"这种时序窗口**没法单测**，只能靠全量并发跑碰运气。
+ * 于是"杀进程核对窗口刚好差一点"这种时序窗口**没法离线验证**，只能靠全量并发跑碰运气。
  *
  * 三种情况：
  *   · `killed === true`                     ⇒ 正常重启（`lateExit:false`）
@@ -506,7 +506,7 @@ export function makeDriver(cfg) {  const c = {
       if (!forceKill.killed) {
         // ★ F-039（2026-09-12 r35，从一次**真机失败**里查出来的）：
         //   不要**立刻**放弃。`killClientInstances` 只是说"在它的时间窗口内没观察到退出"，
-        //   那不等于"现在还活着"。实测（launch-force 在**全量测试并发跑**时）：
+        //   那不等于"现在还活着"。实测（launch-force 在**全量校验并发跑**时）：
         //     它报 `killed:false, remaining:[6856], waitedMs:21145`，
         //     而**紧接着的下一行断言就证明该进程已经没了** —— 进程是在核对窗口**之后**才消失的。
         //   旧行为：直接 return `alreadyRunning:true`（而且 `pid` 指向一个**已经死掉**的进程）且**不重启** ——
@@ -918,7 +918,7 @@ export function makeDriver(cfg) {  const c = {
     })
   }
 
-  /** 关闭常驻进程（插件卸载 / 测试收尾）。 */
+  /** 关闭常驻进程（插件卸载 / 校验收尾）。 */
   function warmShutdown() {
     warm.disabled = true
     warmStop('shutdown')
@@ -1043,7 +1043,7 @@ export function makeDriver(cfg) {  const c = {
   }
 
   /**
-   * 写侧新鲜度校验（W1 缝契约的一半，W2 复用）。纯函数：权威状态从 ctx 显式传入，便于单测/复用。
+   * 写侧新鲜度校验（W1 缝契约的一半，W2 复用）。纯函数：权威状态从 ctx 显式传入，便于离线验证/复用。
    * @param {{snapshotId?:string}} args   动作参数（只看 snapshotId）
    * @param {{currentGen:number, latest:(object|null), targetWindow?:string}} ctx  权威状态 + 本次目标窗口
    * @returns {{allow:boolean, code:string, reason?:string}}
@@ -1462,7 +1462,7 @@ export function makeDriver(cfg) {  const c = {
     // ---- 配置类错误**前置判定**（在**安全门之后**）：没配目标进程就立即回，
     // 绝不进"起脚本 → 等超时 → 再重试"那条路（实测纯配置错误要 90s+，只读动作重试后 180s 无返回）。
     // ⚠ 顺序很重要：**安全门必须排在最前面** —— allowSideEffects / 快照新鲜度 / 急停这些拒绝对
-    //   必须在任何其它判断之前生效（mcp-snapshot-gate 测试就是为这条顺序立的哨兵）。
+    //   必须在任何其它判断之前生效（mcp-snapshot-gate 校验就是为这条顺序立的哨兵）。
     if (!hasTarget(procId)) return unconfiguredResult(action)
     procId = gate.identity?.pid || procId
     winHandle = gate.identity?.handle || winHandle
@@ -1596,7 +1596,7 @@ export function makeDriver(cfg) {  const c = {
     const needsBatch =
       loadControlPolicy().state !== 'unconfigured' || BATCH_ONLY_ACTIONS.has(action) || wantObserve || secret || requireUnique === true || /\$\{cred:/.test(String(value) + String(keys)) ||
       // expectedRect/expectedWindowHandle 只由**批量引擎**认（一次性脚本不认识）——
-      // 漏进一次性路径就是"收下参数、行为没变"的静默丢参（本仓为这类漏传专门设了测试）。
+      // 漏进一次性路径就是"收下参数、行为没变"的静默丢参（本仓为这类漏传专门设了校验）。
       args.expectedRect != null || args.expectedWindowHandle != null ||
       index !== undefined || inAid !== '' || inName !== '' || waitFor !== null || keys !== '' || winHandle != null || winTitle !== ''
     if (needsBatch) {
@@ -1734,7 +1734,7 @@ export function makeDriver(cfg) {  const c = {
    * UD-04：读取范围（inAid/inName 限定）必须一路透传到 agent 能看见的地方。
    *
    * 为什么抽成一个函数：read/state 的**产出点有三个**（shapeResult 的 read、shapeResult 的
-   * state、ui_flow 的 transcript），UD-04 的第一版只补了前两个 —— 单测立刻抓到
+   * state、ui_flow 的 transcript），UD-04 的第一版只补了前两个 —— 离线验证立刻抓到
    * 「flow transcript 带 narrowed/scope」红了一条。这类"同一漏洞修一半"本轮已出现四次
    * （F-021 / AV-03 / UD-02 / UD-04），所以凡是需要在多处同时出现的字段，一律走同一个函数。
    *
@@ -2002,7 +2002,7 @@ export function makeDriver(cfg) {  const c = {
     mkdirSync(dir, { recursive: true })
     const stepsFile = join(dir, 'batch-steps.json')
     const outFile = join(dir, 'batch-result.json')
-    // **跑之前先清掉结果文件**（2026-09-11，被 ui_tree 降级路径的单测抓出来）：
+    // **跑之前先清掉结果文件**（2026-09-11，被 ui_tree 降级路径的离线验证抓出来）：
     // 目录名是**秒级**时间戳（`tsDir()`）→ 同一秒内两次批量调用会落到同一个目录，
     // 而下面"文件存在就解析"的读法是**有就算**：这一轮的脚本如果失败/没输出，
     // 读到的是**上一轮的结果** —— 一次失败被伪装成成功，且内容是陈旧的。
@@ -2023,7 +2023,7 @@ export function makeDriver(cfg) {  const c = {
       if (s.expectMatch !== undefined) o.expectMatch = s.expectMatch
       if (s.index !== undefined && s.index !== null) o.index = s.index
       // requireUnique 同样必须转发：执行器（Resolve-Target）会读它，flow 路径漏传就是
-      // "收下参数、行为没变" —— param-forwarding-completeness 那条测试正是为这类漏传设的。
+      // "收下参数、行为没变" —— param-forwarding-completeness 那条校验正是为这类漏传设的。
       if (s.requireUnique !== undefined) o.requireUnique = s.requireUnique
       if (s.inAid !== undefined && s.inAid !== '') o.inAid = s.inAid
       if (s.inName !== undefined && s.inName !== '') o.inName = s.inName
@@ -2803,7 +2803,7 @@ export function makeDriver(cfg) {  const c = {
      */
     estopStatus: () => {
       // ⚠ 路径必须取自**策略自己**（policy.estopFilePath()），不能重新读环境变量：
-      //   注入的 policy（测试/多策略）与状态输出各说各话，就是又一次"两个面不一致"。
+      //   注入的 policy（校验/多策略）与状态输出各说各话，就是又一次"两个面不一致"。
       const sentinel = policy.estopFilePath()
       const policyFile = policy.policyFilePath()
       return {
@@ -2860,7 +2860,7 @@ export function makeDriver(cfg) {  const c = {
     //   而**会把像素交给视觉模型**的 describe 通道没有）。**实现见上面的 secretFocusNow 成员** ——
     //   这里不要再写 `secretFocusNow,` 这种简写：那会变成"引用一个不存在的绑定"，
     //   整个 makeDriver() 直接抛 `secretFocusNow is not defined`（我第一版就这么写的，
-    //   被 param-forwarding-e2e / mcp-toolface-consistency 两个测试当场抓住）。
+    //   被端到端校验当场抓住）。
     warmStatus,
     // W1 缝契约（冻结）：写侧单点的两个纯函数 + snapshotId 编解码 + 权威状态诊断。W2 复用这些挂 deny/急停。
     classifyAction,

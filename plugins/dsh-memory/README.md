@@ -47,8 +47,6 @@ Visual C++ build tools):
 
 ```powershell
 npm run build:memory-store
-npm run test:memory-native
-node scripts/run-tests.mjs dsh-memory
 ```
 
 Deploy the whole plugin including `bin/<platform>-<Node architecture>/memory-store.node`.
