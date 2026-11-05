@@ -25,6 +25,7 @@ MCP 与 DSH 使用同一后端；不会点击、注入或重新采集目标程�
 默认优先使用该目录，可用 `DSH_PERF_UIFREEZE` 显式指定支持 `/cpu` 的新版分析器。
 DSH profile 用 `node scripts/deploy-plugins.mjs --only dsh-perf` 部署，然后重启宿主；
 直接运行本仓库 MCP 的客户端只需重新连接。旧进程不会自动获得新增工具。
+使用Rust工具宿主或Rust任务后端时，还需执行 `npm run build:runtime` 更新工具清单并重启对应宿主。
 
 典型参数：
 
@@ -52,7 +53,6 @@ DSH profile 用 `node scripts/deploy-plugins.mjs --only dsh-perf` 部署，然�
   不覆盖输入或复用未经确认的旧ETLX。无原生符号下载，托管名依赖采集中的CLR rundown。
   输入采集必须已结束；分析期间文件身份、大小或修改时间变化会拒绝采用结果。
 - `asyncJob=true` 可交给任务队列，随后用 `toolchain_job` 查询；超时/失败不采用部分报告。
-- `npm run check:perf-analysis` 验证过滤、递归/重叠计数、空样本、输出边界和错误路径。
 
 
 ### 分析与清理边界
