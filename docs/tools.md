@@ -91,6 +91,7 @@ capture — and therefore carries the gate described in
 | `perf_allocflame` | Write | Allocation flame graph: who is creating GC pressure. |
 | `perf_clrevents` | Write | GC counts/pauses, managed heap and lock contention summarised from a CLR-enabled trace. |
 | `perf_uifreeze` | Write | UI-freeze view (how many freezes, how long each, which managed call chain) in the style of dotTrace/PerfView. |
+| `perf_breakdown` | Write | Offline CPU samples by explicit PID/TID, time window and literal method groups; bounded summary plus timeline report. Inclusive groups overlap; counts and sample spans are not execution durations. Writes isolated analysis artifacts, never operates the target UI. |
 | `perf_clean` | Write | Deletes large evidence (`.dmp`/`.etl`) after listing what would go; `confirm=true` required. |
 | `hang_run` | Write | Starts hang **monitoring** (it never clicks). When the hang happens it collects an evidence pack automatically. |
 | `hang_status` | Read | Is monitoring running — pid, exit code, log tail. |

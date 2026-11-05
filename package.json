@@ -8,6 +8,8 @@
   "scripts": {
     "build:runtime": "node scripts/build-runtime.mjs",
     "build:trace-fold": "node scripts/build-trace-fold.mjs",
+    "build:perf-analysis": "node scripts/build-perf-analysis.mjs",
+    "check:perf-analysis": "node scripts/check-perf-breakdown.mjs",
     "build:memory-store": "node scripts/build-memory-store.mjs",
     "bench:memory-store": "node scripts/bench-memory-store.mjs",
     "build:capture-store": "node scripts/build-capture-store.mjs",

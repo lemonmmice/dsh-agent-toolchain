@@ -1064,6 +1064,13 @@ server.tool(
 // UI 冻结分析（复刻 dotTrace/PerfView UI Freeze）：真 PerfView 采集(/threadTime) + UiFreezeStacks 提取
 // （dotTrace「消息泵间隙>200ms」判据）。两段式 start/stop；UI 线程自动认（取泵消息最多的线程）。
 server.tool(
+  'perf_breakdown',
+  mcpDescription('perf_breakdown'),
+  mcpShape('perf_breakdown'),
+  async (args) => jtext(await prf().cpuBreakdown(args))
+)
+
+server.tool(
   'perf_uifreeze',
   mcpDescription('perf_uifreeze'),
   mcpShape('perf_uifreeze'),
