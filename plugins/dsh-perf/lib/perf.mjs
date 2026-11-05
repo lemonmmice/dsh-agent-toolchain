@@ -16,6 +16,7 @@ import { dirname as dirNameOf } from 'node:path'
 import { fileURLToPath as fileUrlToPath } from 'node:url'
 import { decodeBuffer } from '../../../lib/decode.mjs'
 import { attachProcessCancellation, checkTaskCancellation } from '../../../lib/process-cancellation.mjs'
+import { analyzeCpuBreakdown } from './cpu-breakdown.mjs'
 
 const PLUGIN_DIR = dirNameOf(dirNameOf(fileUrlToPath(import.meta.url)))
 
@@ -655,7 +656,13 @@ export function makePerf(cfg) {
     }
   }
 
-  return { config: c, probe, report, dump, analyzeDump, heapStats, gcRoots, uiFreeze, locateType, listEvidence, evidenceDir: () => c.evidenceDir, srcMap }
+  function cpuBreakdown(args) {
+    const bundled = join(PLUGIN_DIR, 'bin', 'uifreeze', 'UiFreezeStacks.exe')
+    const executable = cfg?.uiFreezeStacks || envOr('DSH_PERF_UIFREEZE') || (existsSync(bundled) ? bundled : c.uiFreezeStacks)
+    return analyzeCpuBreakdown(args, { executable, evidenceDir: c.evidenceDir }, runExe)
+  }
+
+  return { config: c, probe, report, dump, analyzeDump, heapStats, gcRoots, uiFreeze, cpuBreakdown, locateType, listEvidence, evidenceDir: () => c.evidenceDir, srcMap }
 }
 
 /**

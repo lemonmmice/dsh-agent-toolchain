@@ -296,6 +296,19 @@
       "requestKey",
       "symbols"
     ],
+    "perf_breakdown": [
+      "asyncJob",
+      "binMs",
+      "endMs",
+      "etlPath",
+      "groupsJson",
+      "jobTimeoutMs",
+      "pid",
+      "requestKey",
+      "startMs",
+      "tid",
+      "top"
+    ],
     "perf_uifreeze": [
       "action",
       "asyncJob",

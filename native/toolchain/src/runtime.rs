@@ -252,6 +252,7 @@ impl Runtime {
                 "perf_flame",
                 "perf_allocflame",
                 "perf_clrevents",
+                "perf_breakdown",
                 "hang_analyze",
             ]
             .contains(&name);

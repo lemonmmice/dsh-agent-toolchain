@@ -13,6 +13,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { makePerf } from './lib/perf.mjs'
+import { renderCpuBreakdown } from './lib/cpu-breakdown.mjs'
 import { makeTrace } from './lib/trace.mjs'
 import { cleanEvidence, renderClean } from './lib/evidence-clean.mjs'
 // 渲染层单独成模块：它是 agent 唯一看得见的契约，必须能离线离线验证（见 lib/render.mjs 顶部说明）。
@@ -226,6 +227,16 @@ const tools = () => [
         symbols: args.symbols,
         noJit: args.noJit,
       })
+    },
+  }),
+  defineTool({
+    name: 'perf_breakdown',
+    description: dshDescription('perf_breakdown'),
+    parameters: dshParameters('perf_breakdown'),
+    output: { schema: OBJECT, render: (_args, value) => [{ type: 'text', text: renderCpuBreakdown(value) }] },
+    timeoutMs: 310000,
+    async execute(args) {
+      return await prf().cpuBreakdown(args)
     },
   }),
   defineTool({

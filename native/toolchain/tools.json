@@ -2196,6 +2196,84 @@
     }
   },
   {
+    "name": "perf_breakdown",
+    "description": "Offline CPU sample breakdown of an existing ETLX/ETL/ETL.ZIP. Require an explicit PID; optionally select TID and a relative-millisecond window. Reports inclusive group counts, percentages, first/last sample timestamps, hot frames, and a bounded timeline. groupsJson accepts custom literal method/module substrings; default groups cover WPF, SVG, GIF, charts and JIT. No live process actions or UI-thread guessing. Overlapping inclusive groups must not be added; counts are NOT milliseconds and sample spans are NOT execution durations or screen-first-frame latency. Missing stacks/symbols and empty samples are explicit. Returns a compact summary plus a full report path. ETLX is read directly; ETL conversion and ZIP extraction use an isolated evidence directory. No native symbol downloads. Build the helper with npm run build:perf-analysis and reconnect upgraded hosts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "etlPath": {
+          "type": "string",
+          "description": "Absolute path to a completed ETLX/ETL/ETL.ZIP. Existing ETLX is fastest."
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647,
+          "description": "Target PID in the trace, never inferred from a live process."
+        },
+        "tid": {
+          "description": "OS thread ID in the trace. Omit to include all threads of the PID.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "startMs": {
+          "description": "Inclusive start in milliseconds relative to trace start; default 0.",
+          "type": "number",
+          "minimum": 0
+        },
+        "endMs": {
+          "description": "Exclusive window end, greater than startMs; omit for trace end.",
+          "type": "number",
+          "minimum": 0
+        },
+        "groupsJson": {
+          "description": "JSON array of {name,patterns:[literal substring]}, up to 32 groups and 16 patterns each. Case-insensitive OR matching; [] disables groups.",
+          "type": "string"
+        },
+        "top": {
+          "description": "Hot frame/thread limit, default 15, maximum 50.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "binMs": {
+          "description": "Timeline bin width in milliseconds, default 100; enlarged for long windows to at most 1000 bins.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000
+        },
+        "asyncJob": {
+          "description": "Accept a background task and return queued. Use toolchain_job for status/result/cancel. Default keeps the normal response.",
+          "type": "boolean"
+        },
+        "requestKey": {
+          "description": "Optional deduplication key for asyncJob. The same key and arguments reuse the original task, including an unknown outcome.",
+          "type": "string"
+        },
+        "jobTimeoutMs": {
+          "description": "Whole task deadline including queueing, default 300000ms. Effects are never replayed after a timeout; completion can be unknown.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      },
+      "required": [
+        "etlPath",
+        "pid"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
     "name": "perf_uifreeze",
     "description": "**UI-freeze analysis** — replicates dotTrace/PerfView's \"UI Freeze\" view: how many times the UI thread froze, for how long each, and the call chain it was stuck in (e.g. a synchronous HTTP in HttpUtility.HttpGet). Backend is the REAL PerfView.exe capture (/threadTime) + an in-house TraceEvent extractor (UiFreezeStacks, built on PerfView's ThreadTimeStackComputer). Uses dotTrace's exact criterion: a UI freeze = a message-pump gap > 200 ms on the main UI thread (window messages not pumped for >200 ms, OR one message taking >200 ms) — so a thread that keeps pumping (idle-waiting for input) is NOT a freeze (crucial: raw blocked-time would count idle as freeze). Auto-detects the main UI thread (the one that pumps the most); WOW64 stacks auto-stitched; managed names come from the CLR rundown in the etl (no msdl); kernel/user32 symbols from local cache only. TWO-STEP: action=start begins capture → you reproduce the freeze (cold-click into the view/button) → action=stop as soon as it loads. Output: each freeze's duration + the managed root-cause chain. WARNING system-wide ETW (needs admin); shorter window = faster/cleaner — stop promptly.",
     "inputSchema": {

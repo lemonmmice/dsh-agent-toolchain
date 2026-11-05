@@ -99,6 +99,7 @@ internal static class UiFreezeStacks
 
     static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "/cpu") return CpuBreakdown.Run(args.Skip(1).ToArray());
         if (args.Length == 0 || args[0].StartsWith("/"))
         {
             Console.Error.WriteLine("usage: UiFreezeStacks <trace.etl|.etl.zip> [/process:substr] [/pid:N] [/tid:N] [/top:N] [/minMs:N] [/warm:N] [/nosym] [/clientBin:dir] [/json:out.json]");
