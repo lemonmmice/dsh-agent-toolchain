@@ -42,6 +42,17 @@ test hook and is guarded + reversible).
 MCP tools map onto the same `lib/` modules as the DSH plugins; behavior and
 safety guardrails (e.g. `allowSideEffects` for UI side effects) are identical.
 
+## main (unreleased, 2026-11)
+
+Not re-verified as a whole since 0.2.0. What changed against the rows above:
+
+- 64 tools are registered (`lib/tool-registry.mjs`); 0.2.0 had 55.
+- The Stop-hook parts of the rows above (Codex rollout parser and Stop schema) no longer
+  apply: the closing-verdict Stop hook was removed on 2026-11-04. `hooks/stop-gate.mjs`
+  stays only as a no-op, so a host that cached the old reference does not fail.
+- The optional Rust MCP runtime (`npm run build:runtime`) is new since 0.2.0; its validation
+  record is [native-runtime-validation.md](./native-runtime-validation.md).
+
 ## Versioning policy
 
 - Monorepo tags follow SemVer (`vX.Y.Z`); all plugins ship at the tag version.

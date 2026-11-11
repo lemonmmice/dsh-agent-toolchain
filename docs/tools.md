@@ -1,11 +1,6 @@
 # Every tool, at a glance
 
-Memory saves accept optional `kind`, `reason` and `ttlDays`; debug memories default to 14 days,
-and zero disables expiry. Recall preserves expired rows and returns `expired`, provenance and
-expiry metadata. Status reports per-kind and expired counts; search hits include index time
-and embedding identity for newly indexed chunks.
-
-63 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
+64 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
 face and the MCP face cannot drift apart. `Read` = the registry marks it read-only (safe to call with
 no permission); `Write` = it can change something — a file, a process, a client window, a running
 capture — and therefore carries the gate described in
@@ -123,6 +118,11 @@ capture — and therefore carries the gate described in
 | `memory_search` | Read | Semantic search over indexed content, returning the matching fragments and their source files. |
 | `memory_status` | Read | Index size, KV count, **and which embedding backend is in use** — because that decides whether content leaves the machine. |
 
+Memory saves accept optional `kind`, `reason` and `ttlDays`; debug memories default to 14 days,
+and zero disables expiry. Recall preserves expired rows and returns `expired`, provenance and
+expiry metadata. Status reports per-kind and expired counts; search hits include index time
+and embedding identity for newly indexed chunks.
+
 ## Optional layers
 
 | Tool | | What it does |
@@ -134,7 +134,8 @@ capture — and therefore carries the gate described in
 **Reading the `Write` column correctly:** it is the registry's own classification, not a severity
 scale. `perf_hotstacks` and `hang_analyze` are marked `Write` because they *produce files* (a report,
 a cached analysis), not because they touch your client. The tools that actually change the world are
-the `ui_act`-family and `perf_clean` / `hang_delete` — and those are the ones with an explicit gate.
+the `ui_act`-family, `perf_clean` / `hang_delete` and `dev_edit` — and those are the ones with an
+explicit gate (`allowSideEffects`, `confirm`, `allowWrite` plus the hash of the file that was read).
 
 ## Approval hints (MCP annotations)
 
@@ -148,13 +149,16 @@ graph looked exactly as dangerous as deleting every evidence pack.
 
 - **No approval needed** (local, additive — new evidence or append-only records): `ui_live`, `perf_probe`,
   `perf_dump`, `perf_trace`, `perf_hotstacks`, `perf_flame`, `perf_allocflame`, `perf_clrevents`,
-  `perf_uifreeze`, `hang_run`, `hang_stop`, `hang_analyze`, `capture_start`, `capture_stop`,
-  `capture_append`, `memory_save`.
+  `perf_uifreeze`, `perf_breakdown`, `hang_run`, `hang_stop`, `hang_analyze`, `capture_start`,
+  `capture_stop`, `capture_append`, `memory_save`, `dev_csharp`, `dev_vision_diff`.
 - **Approval** — destructive: `build_run` (`killClient`), `ui_launch` (`force`), the `ui_act` family
-  (real clicks/typing; also open-world), `perf_clean`, `hang_delete`, `memory_forget`, and
+  (`ui_act`, `ui_drive`, `ui_flow`, `ui_replay`, `ui_jev`: real clicks/typing; also open-world),
+  `perf_clean`, `hang_delete`, `memory_forget`, `dev_edit`, `toolchain_job` (cancellation),
+  `harness_experience` (validate/retire), `harness_trial` (runs an executor; also open-world), and
   `http_request` (any method; also open-world).
 - **Approval** — open-world only: `memory_index` (chunks leave the machine when a remote embedding backend
-  is configured) and `jev_decide` (remote data when `allowRemoteData=true`).
+  is configured), `jev_decide` (remote data when `allowRemoteData=true`), and `dev_docs_search` /
+  `dev_docs_read` / `dev_plugin_check` (the query or package lookup leaves the machine).
 
 These are hints, not authorisation: `allowSideEffects`, `confirm`, the kill switch and the policy table
 still gate every action exactly as before. The classification lives in `lib/tool-registry.mjs`, which encodes the upstream approval rule so a new tool is never left unclassified and a dangerous one is never auto-approved.

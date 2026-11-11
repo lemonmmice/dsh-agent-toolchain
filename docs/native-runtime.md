@@ -39,7 +39,7 @@ their existing implementations. Hybrid UI observations also go through the JS
 driver so observation IDs, snapshot authority, redaction, authorization and
 action evidence remain in the same session. The driver delegates supported
 execution to Rust. This mode still needs Node and the relevant existing tools;
-68 available tools does not mean 68 tools have been reimplemented in Rust. Harness² trial and experience tools are hybrid-only: native-only returns an explicit unavailable result because the Node orchestration core and scoped experience store remain the source of truth.
+having the full tool catalog available does not mean every tool has been reimplemented in Rust. Harness² trial and experience tools are hybrid-only: native-only returns an explicit unavailable result because the Node orchestration core and scoped experience store remain the source of truth.
 
 The embedded catalog is generated from the actual Node MCP `tools/list`,
 including its complex schemas and annotations. After changing tool interfaces:

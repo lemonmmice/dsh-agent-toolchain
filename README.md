@@ -57,6 +57,7 @@ Traditional agents verify by reading code. This toolchain lets them verify by *o
                                       → inspect perf (dsh-perf) / hang (dsh-hang-inspector)
                                       → remember lessons (dsh-memory)
   failures record themselves → failure corpus (the data flywheel, internal)
+  a lesson worth keeping → harness_trial (Harness²) → validated project skill (optional)
 ```
 
 ## Quick start
@@ -96,18 +97,18 @@ Then `pwsh -File install.ps1` (dry run) or `pwsh -File install.ps1 -Apply` to co
 - **Jev-assisted UI decisions.** `ui_jev` sends a sanitized UIA control list to Jev, lets it choose one bounded candidate action, then reuses the same deterministic UI executor and safety gates. Jev never receives pixels, generates arbitrary input, or bypasses authorization; see [docs/jev-ui.md](./docs/jev-ui.md).
 - **Say "unverified" instead of "passed".** When a tool cannot see something, it reports it as unchecked rather than inventing a green result — an empty enumeration is "not read", not "nothing there", and a build reporting 0 errors is not the same claim as "your file was compiled".
 
-## Tools — 63, of which 25 are read-only
+## Tools — 64, of which 25 are read-only
 
 The single source of truth is [`lib/tool-registry.mjs`](./lib/tool-registry.mjs); both faces (DSH plugins and MCP) are generated from it, so they cannot drift apart. **Every tool, one line each, sorted by what you are trying to do → [docs/tools.md](./docs/tools.md).**
 
 | Plugin | What it does for the agent |
 | --- | --- |
-| [dsh-build](./plugins/dsh-build/README.md) | Run MSBuild / `dotnet build` as a tool: incremental build, structured error list (file/line/col/code), error re-parse, compile-membership check. Build defaults auto-resolve by repo layout (legacy client layouts keep their defaults byte-for-byte; stock repos get `.sln`/`.slnx` + platform auto-detection). |
-| [dsh-ui-drive](./plugins/dsh-ui-drive/README.md) | Drive a running Windows desktop client via UIA: find/click/type/read/screenshot, visual-tree dumps, multi-step flows with assertions, screenshot + vision description. |
+| [dsh-build](./plugins/dsh-build/README.md) | Run MSBuild / `dotnet build` as a tool: incremental build, structured error list (file/line/col/code), error re-parse, compile-membership check. Build defaults auto-resolve by repo layout (legacy client layouts keep their defaults byte-for-byte; stock repos get `.sln`/`.slnx` + platform auto-detection). Also hosts the optional `dev_*` tools: C# language-server queries, local log search, .NET skills, encoding-preserving file read/edit, public docs lookup and PNG diff. |
+| [dsh-ui-drive](./plugins/dsh-ui-drive/README.md) | Drive a running Windows desktop client via UIA: find/click/type/read/screenshot, visual-tree dumps, multi-step flows with assertions and replay. Screenshots come back as files for the calling model to read; a vision model is used only by the opt-in click fallback. |
 | [dsh-verify](./plugins/dsh-verify/README.md) | Toolchain-status and Harness² surface: `toolchain_status` / `toolchain_job` environment self-check and job control, plus `harness_trial` / `harness_experience`. (Name kept for id stability; it no longer does verification.) |
 | [dsh-api-visualizer](./plugins/dsh-api-visualizer/README.md) | Capture the client's HTTP traffic: live panel, JSONL store, caller attribution, auto-responder rules, baseline/contract regression, optional Fiddler-style local proxy. |
 | [dsh-postman](./plugins/dsh-postman/README.md) | Postman-style HTTP client inside the harness: compose/send requests from the host (no browser CORS), history store, WebSocket client, `http_request` agent tool. |
-| [dsh-perf](./plugins/dsh-perf/README.md) | UI stutter measurement (window-message latency, P50/P95/P99, stutter events), full-dump capture + ClrMD analysis, managed-heap stats, GC-root retention paths, ETW trace / hotstacks / flame and allocation folding, UI-freeze (wall-clock) analysis. |
+| [dsh-perf](./plugins/dsh-perf/README.md) | UI stutter measurement (window-message latency, P50/P95/P99, stutter events), full-dump capture + ClrMD analysis, managed-heap stats, GC-root retention paths, ETW trace / hotstacks / flame and allocation folding, UI-freeze (wall-clock) analysis, offline CPU-sample breakdown by thread, time window and method group. |
 | [dsh-hang-inspector](./plugins/dsh-hang-inspector/README.md) | Hang diagnosis: monitor main-window responsiveness, auto-collect evidence packs (frozen screenshot, timeline, process info, net-trace tail, dump), analyze the managed thread stack and map the hang to project source. |
 | [dsh-memory](./plugins/dsh-memory/README.md) | Long-term memory for the harness: semantic search over indexed workspace docs, cross-session key-value conventions, mtime-incremental indexing, stale-chunk eviction, token/secret filter on save. |
 | [dsh-win-terminal-inspector](./plugins/dsh-win-terminal-inspector/README.md) | Windows terminal (ConPTY) inspection for persistent shells. |
@@ -134,7 +135,7 @@ Cursor, Cline and other stdio clients take the same command. Configuration detai
 The repository root is also a plugin (`.claude-plugin/plugin.json`, listed by `.claude-plugin/marketplace.json`). One install brings three things together:
 
 - **the MCP server** — started through `mcp/launch.mjs`, which installs the MCP SDK on first start if `node_modules` is missing and reads this machine's settings from `~/.dsh-agent-toolchain/env.json` (`DSH_ENV_FILE` to move it, `none` to disable; only `DSH_*` string values, never `DSH_CRED_*`). Like the `env` block of a `claude mcp add -e …` registration, the file **overrides** inherited environment variables of the same name;
-- **five workflow skills** under `skills/` — UI self-check, API capture, perf triage, hang triage, build/compile-set check — loaded on demand instead of 63 tool descriptions doing all the teaching;
+- **five workflow skills** under `skills/` — UI self-check, API capture, perf triage, hang triage, build/compile-set check — loaded on demand instead of 64 tool descriptions doing all the teaching;
 - **two hooks** (`hooks/hooks.json`):
   - `PostToolUse` — writing a `.cs`/`.vb`/`.fs` file that a legacy project provably does not compile gets an immediate warning (same judgement as `build_compile_check`; undecidable cases stay silent).
   - `SessionStart` — in a .NET repo, a few lines on what is connected and **which process the UI/perf tools will act on**, with a warning when that target's source root is not the repo you are in.
@@ -160,17 +161,15 @@ Each plugin is a drop-in host plugin. Copy the plugin directory into your DSH pr
 
 `scripts/deploy-plugins.mjs` (wrapped by `install.ps1`) is the supported way to do that copy; `--check` reports drift without writing.
 
-**Shared `lib/`:** `dsh-build`, `dsh-ui-drive` and `dsh-verify` import the repo-root `lib/` modules (`decode`, `build-resolve`, `failure-corpus`, `capture-store`, `verify/report`). Their relative imports resolve against the **profile root**, so copy the files you need into the profile as `<profile>/lib/…` (mirroring the monorepo `lib/` tree):
+**Shared `lib/`:** every plugin imports modules from the repo-root `lib/` (all of them `tool-registry.mjs`; `dsh-verify` also loads the Harness² core from `lib/harness/`). Their relative imports resolve against the **profile root**, so the profile needs a copy of the monorepo `lib/` tree. `scripts/deploy-plugins.mjs` copies the whole tree and reports its drift separately from the plugins:
 
 ```
 <profile>/
   plugins/dsh-build/...     # each plugin dir copied as-is
-  lib/
-    decode.mjs
-    build-resolve.mjs
-    failure-corpus.mjs
-    capture-store.mjs
-    verify/report.mjs
+  lib/                      # the repo's lib/ tree, copied as a whole
+    tool-registry.mjs
+    harness/...
+    verify/...
 ```
 
 Missing shared modules make the plugin crash at load (static imports); the `failure-corpus`/`verify` dynamic imports degrade to no-ops instead.
@@ -207,11 +206,14 @@ At a glance:
 | --- | --- |
 | [ROADMAP.md](./ROADMAP.md) | The public three-year plan and its design principles |
 | [docs/architecture.md](./docs/architecture.md) | How the pieces compose |
-| [docs/tools.md](./docs/tools.md) | All 63 tools, one line each, grouped by what you are trying to do |
+| [docs/tools.md](./docs/tools.md) | All 64 tools, one line each, grouped by what you are trying to do |
 | [docs/prior-art.md](./docs/prior-art.md) | What this project learned from (per package), and what it deliberately did not copy |
 | [docs/verify-package.md](./docs/verify-package.md) | Proposal: extracting the verification core as a standalone package — **status: not implemented** |
 | [docs/harness2-integration-design.md](./docs/harness2-integration-design.md) | Harness² source assessment and DSH integration design |
 | [docs/harness2-executor.md](./docs/harness2-executor.md) | Harness² execution adapter, evidence boundaries and evaluation limits |
+| [bench/README.md](./bench/README.md) | The evaluation bench: SWE-bench-style tasks with hidden verification. Results, including the ones later retracted, are in [bench/pilot/report.md](./bench/pilot/report.md) |
+| [docs/perfview-parity.md](./docs/perfview-parity.md) | The perf plugin measured against PerfView, gaps included |
+| [docs/native-runtime.md](./docs/native-runtime.md) | The optional Rust MCP runtime: scope, deployment and validation |
 | [docs/failure-corpus.md](./docs/failure-corpus.md) | Failure taxonomy and record schema |
 | [docs/agent-toolchain-evaluation.md](./docs/agent-toolchain-evaluation.md) | Measurements of this toolchain, plus what is still weak |
 | [docs/ui-drive-safety-boundary.md](./docs/ui-drive-safety-boundary.md) | What UI automation is allowed to do |

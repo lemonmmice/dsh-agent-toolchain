@@ -11,7 +11,7 @@
     {
       "name": "dsh-agent-toolchain",
       "source": "./",
-      "description": "MCP tools (build, UI automation, API capture, perf/hang evidence, failure corpus, verify_report) plus workflow skills and a closing-verdict Stop hook.",
+      "description": "MCP tools (build, UI automation, API capture, perf/hang evidence, memory, Harness² trials) plus workflow skills and a compile-set check hook.",
       "version": "0.2.0",
       "category": "development",
       "homepage": "https://github.com/lemonmmice/dsh-agent-toolchain",

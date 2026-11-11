@@ -8,13 +8,39 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Harness² single-round improvement loop** — `harness_trial` runs a bounded Propose–Probe–Compose
+  trial after Google Research's Harness² (arXiv:2610.14224): candidates run in isolated workspaces
+  and a frozen verification contract decides adoption. Candidates cannot overwrite declared
+  deliverables or verifier targets, can be limited to an editable surface (the `guidance` preset
+  covers skills and tool guidance), and get one retry with the rejection reason; the result records
+  how similar the candidates were (line-level Jaccard, observation only). `harness_experience` keeps
+  scoped lessons (`proposed` → `validated` → `retired`). A validated lesson is written as a project
+  skill only after its frozen checks, and those of every lesson already applied in the same scope,
+  pass again in a rebuilt workspace (fail-closed); checks that need the agent task's own runtime
+  output are parked as `needs-reproduction`. Not yet evaluated on real tasks.
+- **`dev_*` developer tools** (hosted by `dsh-build`) — `dev_csharp` (installed C# language server:
+  definitions, references, implementations, hover), `dev_logs` (bounded local log search),
+  `dev_skills` (installed .NET skills), `dev_read` / `dev_edit` (encoding-preserving read and
+  hash-bound exact edit), `dev_docs_search` / `dev_docs_read` (public documentation via Context7),
+  `dev_vision_diff` (PNG diff), `dev_plugin_check` (plugin metadata) and `dev_status`.
+- **Background tasks** — long-running tools accept `asyncJob` and return a `jobId`; `toolchain_job`
+  reads status/result or requests cancellation. Unknown outcomes are never replayed.
+- **`perf_breakdown`** — offline CPU-sample breakdown of an ETLX/ETL/ETL.ZIP by explicit PID/TID,
+  time window and literal method groups, with a bounded summary and timeline.
+- **Optional Rust MCP runtime** (`npm run build:runtime`) — HTTP, background tasks and evidence
+  publication without Node, with a lazy Node bridge for the rest of the catalog; the UIA worker
+  reuses its COM session and control cache.
+- **ui-drive** — warm status queries through the resident process; `waitAfter` confirms one
+  post-condition after an action without a full snapshot; `targetRef` gives 30-second control
+  references; `captureMode` (`print` | `screen`); coordinate steps in `ui_flow`.
+- **Panels** — api-visualizer domain tree view and a plugin-deployment drift self-check; postman
+  table view for list-shaped responses.
+- `DSH_TOOL_PROFILE` narrows `tools/list` to selected domains (default: everything).
+
 ### Changed
 
-- 移除收尾裁决面：删除 MCP 工具 `verify_report` 与失败样本库工具 `failure_query` / `failure_stats` /
-  `failure_record` / `failure_retract`、Stop 收尾裁决钩子（stop-gate）与 `dsh-closing-verdict` 技能；
-  `dsh-verify` 插件改为只保留 `toolchain_status` / `toolchain_job` 与 `harness_trial` /
-  `harness_experience`。失败样本库与 `lib/verify` 引擎作为内部实现保留（自动记录 + Harness² 仍在用），
-  不再有对应 MCP 工具。日期 2026-11-04。
 - `ui_launch` no longer calls a vision model. The plugin produces screenshots only (`read_image` is the
   caller's job), the screenshot is taken by default (`includeScreenshot=false` skips it), and the
   `describe` / `allowSensitive` parameters are gone from `ui_launch`, `ui_drive` and `ui_observe` on both
@@ -29,8 +55,23 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   treated as *probably not rendered yet* and re-shot — this replaces the vision-model black-screen check
   that was removed with the description path.
 
+### Removed
+
+- The agent-callable closing verdict (2026-11-04): MCP tools `verify_report`, `failure_query`,
+  `failure_stats`, `failure_record` and `failure_retract`, the Stop closing-verdict hook and the
+  `dsh-closing-verdict` skill. `hooks/stop-gate.mjs` stays as a no-op so hosts with a cached
+  reference do not fail. `dsh-verify` now hosts `toolchain_status`, `toolchain_job`,
+  `harness_trial` and `harness_experience`. The failure corpus and the `lib/verify` engine remain
+  as internal pieces: failures are still recorded automatically, and Harness² uses the engine.
+- The test suite (`*.test.mjs`), smoke scripts and the CI workflow, together with the `test` /
+  `smoke` / `verify` npm scripts (2026-11-04). `npm run check` remains the repo gate.
+
 ### Fixed
 
+- `clickat` no longer fails with `window_identity_mismatch` after a login window is replaced by the
+  main window in the same process.
+- Trace capture teardown keeps its lease and running marker until every session is confirmed
+  stopped, so an interrupted capture stays recoverable instead of leaving orphan ETW sessions.
 - Remove application-specific names from public fixtures and examples. The repository reference
   scan now matches case-insensitive substrings and stores private terms as SHA-256 fingerprints,
   including the scanner itself in checks without printing the matched private text.
@@ -44,9 +85,7 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 - Tool annotations distinguish read-only, evidence-writing and destructive operations.
 - Refusal filtering and recurrence tracking reduce failure-corpus noise.
 - Producer versions survive host deployment and support scoped misjudgement retraction.
-
-
-  run after parallel workers so their original eight-second budget does not depend on suite load.
+- Force restart keeps timeout diagnostics and current process-exit evidence.
 - Memory entries gain provenance, kinds, reasons and explicit expiry.
 - Optional control policies check resolved UI targets before actions and flows.
 - Verification bundles retain bounded source evidence and hashes without changing verdicts.
@@ -122,10 +161,8 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 - **Failure records say who wrote them** — `producer` on every auto record and on
   `verify_report` reports: MCP client (clientInfo), host turn ids (Codex sends
   `_meta["x-codex-turn-metadata"]`, captured once at the dispatch chokepoint via AsyncLocalStorage),
-  
-
-  the test runner. Bulk-retracting the verdicts of a verifier version later proven buggy (F-023) now
-  has something to select on.
+  and toolchain version + commit sha (read from `.git` without spawning git). Bulk-retracting the
+  verdicts of a verifier version later proven buggy (F-023) now has something to select on.
 
 - **Fingerprints and recurrence counting in the failure corpus** — see Fixed below for why;
   `failure_stats.topRecurring` ranks repeated failures, `failure_query` rows carry
@@ -176,9 +213,8 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   stopped at "native frames still unverified". `lib/native-stacks.mjs` closes that gap by
   driving a **64-bit** `cdb` — the only debugger that can unwind the 32-bit stacks of an
   x64-format WOW64 dump (a 32-bit dbgeng rejects `.effmach x86` with `E_INVALIDARG`) — and
-  parsing the result into per-thread stacks. 
-
-  by tests: the cdb shipped in the Store's WinDbg package **cannot be executed from
+  parsing the result into per-thread stacks. Four traps are encoded in the module: the cdb
+  shipped in the Store's WinDbg package **cannot be executed from
   `…\WindowsApps\…`** (access denied — the module copies the debugger plus its extension
   directories into a writable cache first), `!wow64exts.sw` is a **toggle** and is emitted
   exactly once per run, thread selection must be written `~~[0n<decimal>]s` because WinDbg

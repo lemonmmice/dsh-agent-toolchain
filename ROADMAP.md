@@ -9,8 +9,11 @@
 
 1. **Control plane, not the 9th plugin.** New capability ships as shared
    `lib/` code with thin DSH + MCP shells — never as another siloed plugin.
-2. **Evidence over claims.** Every "done" ships with a verification report:
-   diff + build log + UI screenshots + API records + perf data, one runId.
+2. **Evidence over claims.** A "done" should be checkable against machine
+   evidence — build records, UI screenshots, API records, perf data — tied
+   together by one runId. (The agent-callable closing verdict that enforced
+   this was removed on 2026-11-04; the evidence tools and the internal engine
+   remain.)
 3. **The failure corpus is the moat.** Features are driven by recorded failure
    frequency, not by imagination. Everyone can copy tools; nobody can copy
    your accumulated failure data.
@@ -30,23 +33,45 @@
 - verify engine (`lib/verify`) — claims adjudicated against evidence, shared by both faces (later kept as an internal engine: the auto-record path and Harness² use it, no agent-callable verify tool)
 - msbuild engine generalization — legacy WholeSolution.sln+x86 layout auto-preserved, stock repos get .sln/.slnx + platform auto-detection (Any CPU preferred), ambiguity = explicit error; msbuild always restores; SDK-resolution chains (MSB4236/MSB4276/NETSDK1004) classified as environment, not code
 
-## Now — next 1–2 weeks
+## Done (2026-10 – 2026-11)
 
-1. **Tier 1-② benchmark pilot** — in progress: harness landed
-   (`bench/harness/bench.mjs`, baseline vs toolchain MCP on a real T2 bugfix
-   from a public MIT WPF repo; task identity local-only, public repo ships
-   methodology + anonymized numbers). Next: pilot runs, report, then scale to
-   5 tasks.
-2. **Teaching artifacts** — demo GIF/asciinema, the "20-line first DSH plugin"
+- 0.2.0 (2026-10-09) — the repo root installs as an agent plugin (MCP server +
+  workflow skills + hooks); MCP approval annotations from the shared registry;
+  memory provenance, kinds and expiry; optional control-level UI deny policies
+- Background tasks — `asyncJob` + `toolchain_job`; per-domain tool profiles
+- Optional Rust MCP runtime with UIA worker reuse (2026-10-19)
+- `dev_*` developer tools — C# language server, logs, .NET skills,
+  encoding-preserving read/edit, docs lookup, PNG diff
+- Harness² — single-round propose → probe → compose under a frozen check, a
+  scoped experience store, and validated lessons applied as project skills
+  behind a fail-closed regression gate
+- Benchmark pilot run end to end — hidden verification, a five-task home-turf
+  suite and a Codex cross-model wave ([bench/pilot/report.md](./bench/pilot/report.md))
+- `perf_breakdown` — offline CPU-sample breakdown by thread, time window and
+  method group
+- Removed (2026-11-04): the agent-callable closing verdict (`verify_report`,
+  the `failure_*` tools, the Stop hook and the closing-verdict skill) and the
+  test/CI scaffolding. The verify engine and the failure corpus stay as
+  internal pieces.
+
+## Now
+
+1. **Benchmark** — the pilot ran end to end; results, including the ones later
+   retracted, are in [bench/pilot/report.md](./bench/pilot/report.md). It is
+   still a pilot: one machine, five tasks, few runs per arm.
+2. **Harness² on real tasks** — the loop is implemented (`harness_trial` /
+   `harness_experience`) but has not been evaluated on real tasks yet;
+   `bench/harness2/` holds the equal-budget comparison helper.
+3. **Teaching artifacts** — demo GIF/asciinema, the "20-line first DSH plugin"
    tutorial, blog series.
 
 ## Deliberate non-goals (decision log)
 
-- **perf / hang-inspector are NOT in the MCP server yet.** Reason: dump attach
-  needs a permission model and heavy payloads (hundreds of MB per dump);
-  expose them after the capability policy lands (Year-1 #6). api-visualizer
-  IS exposed — lightweight store reads, highest leverage first. This is a
-  choice, not an omission.
+- **perf / hang-inspector on the MCP face — reversed.** They were first held
+  back because dump attach needs a permission model and a dump runs to
+  hundreds of MB. They are exposed now: approval annotations mark which calls
+  write or delete evidence, deletions need `confirm=true`, and dumps stay on
+  disk with only their paths returned.
 
 ## Year 1 — the verifiable closed loop
 
@@ -59,17 +84,22 @@
    kept. Builds on ui_flow's existing steps.json format.
 6. **Capability policy** — declared permissions (read-only / write files /
    spawn processes / click / install CA / change proxy / network), audit log,
-   token redaction, retention limits, proxy failure recovery.
+   token redaction, retention limits, proxy failure recovery. Partly in place:
+   MCP approval annotations, optional control-level UI deny policies, the kill
+   switch.
 
 ## Year 2 — evaluation and the data flywheel
 
 7. **Benchmark rigor** — N-run variance + confidence intervals, real-patch
    tasks + hidden tests, failure taxonomy, **cost-per-verified-task as the
-   headline metric**, cross-version trends.
+   headline metric**, cross-version trends. The pilot already uses hidden tests
+   and repeated runs (n=3).
 8. **Adaptive routing** — model selection driven by task features + failure
    history (beyond today's static tier table).
 9. **Memory upgrade** — provenance/version/expiry for chunks; separate
    *fact* vs *project convention* vs *one-off debug conclusion*; recall reasons.
+   Done in 0.2.0: provenance, kinds (`fact` / `convention` / `debug`), reasons
+   and expiry.
 
 ## Year 3 — open platform
 

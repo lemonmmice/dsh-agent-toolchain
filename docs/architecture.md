@@ -32,17 +32,26 @@ plugins/<name>/
   Trace folding uses native asynchronous tasks for bounded event scanning and
   stack aggregation; process regular expressions and final report shaping stay
   in JS. The same open file is checked for changes across the two trace passes.
+- **`lib/`** at the repo root is shared by every plugin and by the MCP server.
+  `tool-registry.mjs` defines each tool once and generates both faces, including
+  the MCP approval annotations; `task-service.mjs` / `task-tools.mjs` run long
+  tools in the background behind a `jobId`; `output-budget.mjs` bounds MCP
+  output; `harness/` is the Harness² core. `verify/` and `failure-corpus.mjs`
+  are the internal verification engine and failure store — since 2026-11-04
+  neither has an agent-callable tool.
 
 ## How the pieces compose (the loop)
 
 | Stage | Plugin | Agent capability added |
 | --- | --- | --- |
+| 0. Check the setup | dsh-verify | `toolchain_status`: what is configured, from which source, and what cannot be checked |
 | 1. Code changed | dsh-build | compile-proof the patch (`build_run` → structured errors → fix → rebuild) |
-| 2. Run it | dsh-ui-drive | `ui_launch` + screenshot-with-vision: know the app got to the expected page |
+| 2. Run it | dsh-ui-drive | `ui_launch` + a window screenshot the calling model reads: know the app got to the expected page |
 | 3. Verify behavior | dsh-api-visualizer | see the HTTP traffic the page fired, attribute to ViewModel/API, replay/contract-diff |
 | 4. Debug ad-hoc | dsh-postman | `http_request` server-side (no CORS) for endpoint questions |
 | 5. Observe quality | dsh-perf / dsh-hang-inspector | stutter stats (P50/P95/P99), dump analysis, hang thread → source mapping |
 | 6. Don't regress | dsh-memory | vector search + cross-session conventions |
+| 7. Keep a lesson (optional) | dsh-verify (Harness²) | `harness_trial` / `harness_experience`: propose → probe → compose under a frozen check; a validated lesson is applied as a project skill |
 
 ## Environment contract
 
@@ -56,11 +65,20 @@ Evidence/tool dirs default under `~/.dsh-agent-toolchain/`.
 - Side-effect agent tools (`click`/`setvalue`/`key` in ui-drive, build
   `killClient`, capture stop/rotate) require explicit opt-in parameters;
   read-only paths are always available.
+- Every tool carries MCP approval annotations generated from the registry
+  (read-only, destructive, open-world). UI actions are also checked against
+  snapshot freshness, an optional deny policy and a global kill switch, and an
+  action whose outcome is unknown is never retried — see
+  [ui-drive-safety-boundary.md](./ui-drive-safety-boundary.md).
 - The systemPrompt GUIDANCE layer adds soft constraints (confirm before
   save/delete/export; never trade).
 
 ## Repo gate
 
-`scripts/check.mjs` blocks on three things: JS syntax errors, forbidden
-environment-specific references (company identifiers, internal paths, personal
-scopes), and nested `.git`/`node_modules` that would break the repo as a unit.
+`scripts/check.mjs` (`npm run check`) blocks on six things: JS syntax errors,
+forbidden environment-specific references (company identifiers, internal paths,
+personal scopes), nested `.git`/`node_modules` that would break the repo as a
+unit, tracked files under the local-only benchmark paths, tool schemas that
+`defineTool` would reject at plugin load, and `.ps1` files without a UTF-8 BOM.
+The unit-test suite and CI workflow were removed on 2026-11-04, so this gate is
+currently the only automated check.

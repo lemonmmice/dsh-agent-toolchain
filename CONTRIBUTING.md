@@ -14,6 +14,7 @@ Thanks for your interest in improving the agent-visible quality loop!
 git clone https://github.com/lemonmmice/dsh-agent-toolchain.git
 cd dsh-agent-toolchain
 node --check plugins/<plugin>/lib/*.mjs   # syntax gate (no build step required)
+npm run check                             # the repo gate
 ```
 Plugins are ESM Node.js with zero runtime deps except where noted in each `package.json`.
 The Windows terminal inspector also requires its Rust helper: run
@@ -34,7 +35,8 @@ CPU/allocation CSV folding uses `npm run build:trace-fold`.
    - private-reference rules in `scripts/lib/private-references.mjs` retain lowercase SHA-256
      fingerprints and lengths, not the private terms; scanning is case-insensitive and includes
      substrings in identifiers, paths and Unicode words.
-3. **Syntax-check** — `node --check` every `.js`/`.mjs` you touch.
+3. **Run the repo gate** — `npm run check` (syntax, forbidden references, tool schemas, PowerShell BOM).
+   There is no unit-test suite at the moment, so say in the PR how you verified a behavioral change.
 4. **Update the plugin README** — env vars table, tool description, behavioral change notes.
 
 ## Code style
@@ -47,7 +49,9 @@ CPU/allocation CSV folding uses `npm run build:trace-fold`.
 
 ## Commit messages
 
-Concise, imperative, plugin-prefixed: `dsh-ui-drive: fix exit-code regression on click guard`.
+Conventional-commit style with the plugin or area as scope, e.g.
+`fix(ui-drive): re-resolve the main window after a login window is replaced`.
+History on `main` is linear: rebase onto `main`; merges are fast-forward only.
 
 ## License
 

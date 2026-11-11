@@ -763,7 +763,7 @@ export function makeBuilder(cfg) {
       writeRecord(join(c.logsDir, 'run-' + runId + '.json'), { at: new Date().toISOString(), ...result })
       writeRecord(join(c.logsDir, 'attempt-' + attemptId + '.json'), { at: new Date().toISOString(), ...result })
     } catch (e) {
-      result.evidenceWriteError = 'per-run 构建记录写入失败（verify_report 将找不到本次证据）：' + (e && e.message ? e.message : String(e))
+      result.evidenceWriteError = 'per-run 构建记录写入失败（之后按 runId 将查不到本次构建证据）：' + (e && e.message ? e.message : String(e))
     }
     return result
   }
@@ -843,7 +843,7 @@ export function makeBuilder(cfg) {
       // 给出与 failResult 同形的"安全空壳"：任何读 errors.length 的渲染器都不会因缺字段而崩。
       errors: [], warnings: [], envErrors: [], errorCount: 0, warningCount: 0, envErrorCount: 0, truncated: false,
       hint: '后台构建已提交，尚未确认开始。用 build_status({jobId}) 轮询：state=starting→running→done/failed/crashed；'
-        + 'done 后结果照常写进 last.json 与 run-' + runId + '.json（verify_report(kind=build) 可直接用这个 runId）。',
+        + 'done 后结果照常写进 last.json 与 run-' + runId + '.json（之后也可用 build_status({runId}) 按这个 runId 查）。',
     }
   }
 
