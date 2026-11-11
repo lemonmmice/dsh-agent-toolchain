@@ -46,7 +46,7 @@ chunks and is never embedded. Final publication errors propagate to the caller.
 
 ## Performance
 
-Baseline Git revision `6887521`, synthetic 3000-row index, 1024-dimensional dense
+Baseline Git revision `faf21a9`, synthetic 3000-row index, 1024-dimensional dense
 vectors, nine repeated searches for five hits. Timings include disk checking and
 result transfer but exclude remote embedding. Cold means an empty application
 cache, not a cold OS disk cache. The benchmark checks that top IDs agree; returned
@@ -69,7 +69,7 @@ Reproduce:
 
 ```powershell
 npm run build:memory-store
-npm run bench:memory-store -- 6887521
+npm run bench:memory-store -- faf21a9
 ```
 
 ## Verification and deployment

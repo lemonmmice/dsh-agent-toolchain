@@ -364,7 +364,7 @@ export function makeTrace(cfg = {}) {
     let ok = false
     let stopped = false
     let cleanupOk = true
-    // ★ C2（6988a0f 复核）：`-start` 一旦成功，这条预检 WPR 会话就是**真实的内核会话** —— 它的
+    // ★ C2（e193cfb 复核）：`-start` 一旦成功，这条预检 WPR 会话就是**真实的内核会话** —— 它的
     //   -stop/-cancel 必须跑完，哪怕主任务此刻正好被取消。所以收尾走**独立、有限期限**的信号
     //   （不是主任务信号）：否则 runExe 开头的 checkTaskCancellation() 会把 -stop/-cancel 挡掉、
     //   让预检会话泄漏成一直写盘的孤儿，而且抛出的异常会一路冒泡、让外层 teardown 误判「没起过内核」
@@ -789,7 +789,7 @@ export function makeTrace(cfg = {}) {
         if (s && String(s.etlPath || '').toLowerCase() === String(etl).toLowerCase()) rmSync(legacy, { force: true })
       } catch { /* 没有孤儿标记 / 不属于本次：都不动 */ }
       if (cancelOnly) {
-        // ★ C3（6988a0f 复核）：`cancelled` 必须与 `ok` 同口径 —— 只有内核 -cancel 成功**且**所有已登记的
+        // ★ C3（e193cfb 复核）：`cancelled` 必须与 `ok` 同口径 —— 只有内核 -cancel 成功**且**所有已登记的
         //   附加会话（CLR/JIT/分配）都确认停止，才算真取消。只要有一项没确认，就**绝不**把「请求了取消」
         //   谎报成「已取消」：落 unknown + incomplete + 保留租约（releaseSession 已因 auxiliariesStopped=false
         //   而未执行）+ 恢复入口，让任务层裁为 unknown/incomplete，而不是 cancelled/complete。
@@ -935,7 +935,7 @@ export function makeTrace(cfg = {}) {
     let kernelStarted = false
     let preflight = null, preflightWarning = null, engine, rawEtl, started
     let clr = null, clrWarning = null, jit = null, jitWarning = null, alloc = null, allocWarning = null
-    // ★ C1/C5（6988a0f 复核）：启动阶段失败/取消的收尾，三条纪律：
+    // ★ C1/C5（e193cfb 复核）：启动阶段失败/取消的收尾，三条纪律：
     //   ① 全局内核 stop/cancel 作用在「当前内核会话」上、**不按 attempt 隔离** —— 发命令**前**先取操作锁、
     //      再校验租约仍属本 attempt；拥有者已变（被接管/并发恢复）就**绝不**发全局命令、也不碰任何文件（C5）。
     //   ② 逐项收尾要**检查返回值**：命名的附加会话按名停（本 attempt 独有，安全），内核按引擎停；
@@ -1136,7 +1136,7 @@ export function makeTrace(cfg = {}) {
         ...(allocWarning ? { allocWarning } : {}),
       }), 'utf8')
     } catch (error) {
-      // ★ C4（6988a0f 复核）：最终 running 标记落盘失败（如磁盘满）—— 采集已起来但无法持久化追踪它。
+      // ★ C4（e193cfb 复核）：最终 running 标记落盘失败（如磁盘满）—— 采集已起来但无法持久化追踪它。
       //   不再直接早返回（那样会跳过收尾、把已起的内核/附加会话漏成孤儿，还留个 starting 标记永久挡住恢复）：
       //   改走统一收尾（内存里的会话账本仍在，teardown 据此停）。全部确认停 ⇒ 干净回滚；没确认 ⇒ unknown+恢复入口。
       const teardown = await teardownPartialStart()

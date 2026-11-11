@@ -7,7 +7,7 @@
 > 另一进程）无法验证收益 —— 按分级交付做了纯逻辑骨架 + 诚实边界，**绝不假称真机验证通过**。
 > 详见 docs/performance-audit-round3-validation-2026-10-13.md。
 
-> 第四轮（2026-10-14，按 e0a0cd5→19b9734 复核意见修 6 组正确性缺陷，均带回归用例）：
+> 第四轮（2026-10-14，按 de01039→d2196ba 复核意见修 6 组正确性缺陷，均带回归用例）：
 > - **F01** 编译集缓存失效：`collectItemSources` 改为按「已解析源 ∪ 探测点」的身份签名（dev/ino/size/mtime/ctime，
 >   不存在记 `absent`），新建 `Directory.Build.props/.targets` 或原本解析不到的 import 目标出现即失效重算；缓存对象冻结后返回。
 >   （原先只重查已解析源，会把"未编译"误判成"已编译"。）
@@ -19,7 +19,7 @@
 > - **F05** 采样取消收尾：`perf_trace` run 的等待响应 AbortSignal；收尾用独立有限期限信号运行，取消后仍发停止/取消命令并释放租约。
 > - **F06** 构建互斥：资源锁键与 builder 共用 `lib/build-root.mjs` 的根解析；builder 自带按根的文件锁，同步/后台/异步共用一把。
 
-> 第五轮（2026-10-14，按 474134c 复核意见收口 R1–R6 的边界遗漏/回归，均补反例）：
+> 第五轮（2026-10-14，按 f17f497 复核意见收口 R1–R6 的边界遗漏/回归，均补反例）：
 > - **R1**（F01 续）编译缓存：`collectItemSources` 把 import 的**所有**候选路径（含未命中的）登记为探测点，
 >   不再只在 `!hit` 时登记——否则「备用候选命中后、更高优先候选出现」签名不变、缓存沿用备用结论。
 > - **R2**（F05 续）采集启动取消：从租约/标记写下起整段 start 包 try/catch，抛出（主任务取消）时在独立信号下
@@ -34,7 +34,7 @@
 >   恢复「显式 `makeBuilder({repoRoot})` 优先于全局环境变量」的原语义。
 >   用例：`trace-cancel-cleanup`（S2/S3）、`build-root-mutex`（R4/R6）、`compile-membership-invalidate`（R1）、`capture-decode-total-budget`（R5）。
 
-> 第六轮（2026-10-14，按 6988a0f 复核意见修 perf_trace 采集生命周期的 5 个边界 C1–C5 + 1 个解压成本 O1，均复刻反例回归）：
+> 第六轮（2026-10-14，按 e193cfb 复核意见修 perf_trace 采集生命周期的 5 个边界 C1–C5 + 1 个解压成本 O1，均复刻反例回归）：
 > - **C1**（R2 续）启动阶段清理**失败**后不得删租约/标记：`teardownPartialStart` 改为逐项**检查**停止返回值，
 >   只有 kernel 与各附加会话全部确认停、且仍持租约才释放；未确认则落一份**可恢复 running 标记**（列仍在跑的会话）+
 >   在异常上挂 `unknown/incomplete/recovery`——删除标记**不是**停止证明。
@@ -48,7 +48,7 @@
 >   被接管/并发恢复（attempt 已变）就**绝不**发全局命令、也不碰别人的租约与标记；身份读/解析失败一律按「拥有者未知」保留。
 > - **O1**（R5 续）解压成本：`tryGunzip` 整条解码抛 `ERR_BUFFER_TOO_LARGE`（已知超总预算）时直接判不可解，
 >   不再逐成员把同一份超限数据重解一遍（结果照样 null）；仅**格式类**错误才回退成员切分。
->   用例：`trace-lifecycle-boundaries`（C1–C5，counter-example 对 6988a0f 复现 14 项红）、`capture-decode-total-budget`（O1 整条 gunzip 调用次数 3→1）。
+>   用例：`trace-lifecycle-boundaries`（C1–C5，counter-example 对 e193cfb 复现 14 项红）、`capture-decode-total-budget`（O1 整条 gunzip 调用次数 3→1）。
 
 ## A 轻请求与观测
 

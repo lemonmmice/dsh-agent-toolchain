@@ -37,7 +37,7 @@ Windows x64, Node.js 24.15.0, Rust 1.98.1. Synthetic 45 MiB CSV, 30000 CPU sampl
 and allocation ticks, 24 frames per sample, 24000 target samples. Includes
 non-target processes and unrelated CSwitch stacks. Five runs per implementation,
 alternating baseline/native order, symbols mode. Every timed result is deeply
-compared to the frozen JS implementation from Git `6887521`.
+compared to the frozen JS implementation from Git `faf21a9`.
 
 | Operation | Previous JS median | Rust-backed median | Ratio |
 | --- | ---: | ---: | ---: |

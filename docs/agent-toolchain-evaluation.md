@@ -177,8 +177,8 @@ Embedding 的超时覆盖头部和 JSON 正文。非成功响应不读取并回�
 
 ```powershell
 npm run bench:mcp -- --output bench-runs/toolchain-evaluation/mcp.json
-node scripts/bench-memory-store.mjs '53d9c39^'
-node scripts/bench-capture-store.mjs '27daf1c^'
+node scripts/bench-memory-store.mjs '4d6eea2^'
+node scripts/bench-capture-store.mjs 'f9455f6^'
 node scripts/check.mjs
 ```
 

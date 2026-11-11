@@ -1,7 +1,7 @@
 # 第二轮性能清单验证与优化
 
-输入：`dsh-agent-toolchain-e0a0cd5-performance-audit-2026-10-12.md`。
-工作基线：`7ae1ec4`；清单基线：`e0a0cd5`。Windows、Node v24.15.0。
+输入：`dsh-agent-toolchain-de01039-performance-audit-2026-10-12.md`。
+工作基线：`57b63d8`；清单基线：`de01039`。Windows、Node v24.15.0。
 本轮包括隔离夹具、stdio MCP 和已登录 PC 客户端的真实验证。没有修改 PC 客户端业务代码，没有交易、保存业务数据、提交或推送。
 
 ## ui_launch 实际等待原因

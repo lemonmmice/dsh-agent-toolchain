@@ -1,6 +1,6 @@
 # 第三轮性能清单验证与优化（2026-10-13）
 
-输入：2026-10-12 两份审计清单（harness-audit、e0a0cd5-performance-audit）+ 上一会话列出的"剩余 7 组"。
+输入：2026-10-12 两份审计清单（harness-audit、de01039-performance-audit）+ 上一会话列出的"剩余 7 组"。
 基线：工作区 `feat/plugin-gate-annotations`（上一轮 ~60% 成果，未提交）。
 平台：Windows、Node v24.15.0。
 

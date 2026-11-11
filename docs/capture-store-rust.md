@@ -29,7 +29,7 @@ compaction error so a background failure remains visible.
 ## Local performance
 
 Windows x64, Node.js 24.15.0, 10000 synthetic records with 4096-character bodies,
-40.32 MiB store, nine append/query samples. Baseline: Git revision `6887521`.
+40.32 MiB store, nine append/query samples. Baseline: Git revision `faf21a9`.
 Both runs use isolated temporary stores. First-query timings mean an empty
 application cache; they do not represent a cold OS disk cache.
 
@@ -51,7 +51,7 @@ Reproduce from the repository root:
 
 ```powershell
 npm run build:capture-store
-npm run bench:capture-store -- 6887521
+npm run bench:capture-store -- faf21a9
 ```
 
 ## Verification
