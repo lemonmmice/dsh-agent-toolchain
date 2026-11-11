@@ -568,7 +568,7 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       return {
         log: {
           version: '1.2',
-          creator: { name: 'dsh-api-visualizer', version: '0.2.0' },
+          creator: { name: 'dsh-api-visualizer', version: '0.3.0' },
           entries: records.map((r) => ({
             startedDateTime: Number.isFinite(r.ts) ? new Date(r.ts).toISOString() : new Date().toISOString(),
             time: r.durationMs ?? 0,

@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-toolchain",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Evidence tools for coding agents working on Windows desktop (WPF) clients: build + compile-set checks, UI automation, API capture, perf/hang evidence, and an optional Harness² improvement loop. Ships the MCP server (64 tools), five workflow skills, and two hooks (compile-set check for new source files, session context).",
   "author": {
     "name": "lemonmmice",

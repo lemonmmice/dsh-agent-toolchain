@@ -42,7 +42,7 @@ test hook and is guarded + reversible).
 MCP tools map onto the same `lib/` modules as the DSH plugins; behavior and
 safety guardrails (e.g. `allowSideEffects` for UI side effects) are identical.
 
-## main (unreleased, 2026-11)
+## 0.3.0 (2026-11-11)
 
 Not re-verified as a whole since 0.2.0. What changed against the rows above:
 
@@ -56,6 +56,7 @@ Not re-verified as a whole since 0.2.0. What changed against the rows above:
 ## Versioning policy
 
 - Monorepo tags follow SemVer (`vX.Y.Z`); all plugins ship at the tag version.
-- `CHANGELOG.md` records every release; breaking changes bump major.
+- `CHANGELOG.md` records every release; breaking changes bump major (before 1.0.0, the minor
+  version).
 - A harness/plugin pair not listed here is *unverified*, not *broken* — if you
   run it successfully, a PR adding the row is welcome (see CONTRIBUTING.md).

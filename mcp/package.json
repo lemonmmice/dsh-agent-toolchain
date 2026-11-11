@@ -1,7 +1,7 @@
 {
   "name": "@dsh-agent-toolchain/mcp",
   "description": "MCP server exposing the dsh-agent-toolchain engineering tools (build / UI automation / API capture / perf and hang evidence / memory / Harness² trials) to any MCP client — Claude Code, Cursor, Cline, Codex, or any agent with MCP support.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "main": "server.mjs",
   "bin": {

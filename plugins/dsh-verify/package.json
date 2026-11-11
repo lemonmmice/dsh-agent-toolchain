@@ -1,7 +1,7 @@
 {
   "name": "dsh-verify",
   "description": "DSH 工具链环境自检 + Harness² 试验面插件：toolchain_status / toolchain_job 环境自检与异步作业，harness_trial / harness_experience 试验与经验库（名称沿用历史 dsh-verify）",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "main": "index.js",
   "license": "Apache-2.0"

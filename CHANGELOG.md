@@ -8,6 +8,12 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-11-11
+
+Breaking for MCP clients: `verify_report` and the four `failure_*` tools are gone, and the Stop
+hook no longer runs (see Removed). Repository history was rewritten on 2026-11-11 to remove private
+references, so commit hashes from before that date no longer match.
+
 ### Added
 
 - **Harness² single-round improvement loop** — `harness_trial` runs a bounded Propose–Probe–Compose
