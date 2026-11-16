@@ -2555,6 +2555,10 @@
         "timeoutMs": {
           "type": "number"
         },
+        "environment": {
+          "description": "Which environment fills {{variables}} in the url/headers/body: omitted = the environment currently active in the API-debug panel; an environment name or id; none = no environment (globals and dynamic variables like {{$guid}} only). Unknown variables are sent as-is and listed in variables.unresolved.",
+          "type": "string"
+        },
         "headers": {
           "description": "Request headers",
           "type": "object",
@@ -2568,6 +2572,221 @@
       },
       "required": [
         "url"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "http_collection",
+    "description": "Collections, environments and the collection runner of the API-debug panel (shares the host-side workspace.json with the panel). action=list shows collections, folders, requests and environments; get returns one saved request (template, assertions, extractions); run executes a whole collection, one folder or one request in order (iterations, CSV/JSON data rows, stopOnFailure) and reports per-request assertion pass/fail plus extracted variables (full report saved under runs/); save stores a request into a collection (creates the collection/folder if missing, same-name request is overwritten) with optional asserts/extract; env reads an environment, writes when variables is given (environment=globals targets global variables, activate=true makes it the active environment). HTTP(S) only. Only outcome=pass means everything passed; unchecked means no assertions ran. Assertions: {source: status|json|header|body|duration, path, op, value}; extract: {var, source: json|header|body|status, path, scope: environment|collection|globals|runtime}.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "get",
+            "run",
+            "save",
+            "env"
+          ],
+          "description": "list | get | run | save | env"
+        },
+        "collection": {
+          "description": "Collection name or id (required for get/run/save; list filters to it; save creates it when missing)",
+          "type": "string"
+        },
+        "folder": {
+          "description": "run: only this folder (name, path a/b, or id); save: target folder path (created when missing)",
+          "type": "string"
+        },
+        "request": {
+          "description": "get: the saved request to read; run: run just this request (name, path, or id)",
+          "type": "string"
+        },
+        "environment": {
+          "description": "run/env: environment name or id; omitted = the active environment; run: none = no environment; env: globals = global variables (env creates the environment when writing to a missing one)",
+          "type": "string"
+        },
+        "iterations": {
+          "description": "run: number of iterations (default 1, or the number of data rows)",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "data": {
+          "description": "run: data rows as CSV text (header row first) or a JSON array of objects; iteration i uses row i, column names become {{variables}}",
+          "type": "string"
+        },
+        "delayMs": {
+          "description": "run: delay between requests in ms (default 0)",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000
+        },
+        "stopOnFailure": {
+          "description": "run: stop at the first failed assertion or transport error (default false)",
+          "type": "boolean"
+        },
+        "timeoutMs": {
+          "description": "run: per-request timeout in ms (default 30000)",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120000
+        },
+        "persistVariables": {
+          "description": "run: write extracted variables back to the workspace (default true; false keeps them for this run only)",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "save: request name (overwrites a same-name request in that folder)",
+          "type": "string"
+        },
+        "method": {
+          "description": "save: HTTP method (default GET)",
+          "type": "string"
+        },
+        "url": {
+          "description": "save: URL, may contain {{variables}}",
+          "type": "string"
+        },
+        "body": {
+          "description": "save: request body, may contain {{variables}}",
+          "type": "string"
+        },
+        "activate": {
+          "description": "env: make this the active environment",
+          "type": "boolean"
+        },
+        "headers": {
+          "description": "save: request headers",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "asserts": {
+          "description": "save: assertions for this request (omit to keep the existing ones)",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": [
+                  "status",
+                  "json",
+                  "header",
+                  "body",
+                  "duration"
+                ]
+              },
+              "path": {
+                "description": "json: path such as data.list[0].code or data.list.length (empty = whole body); header: header name",
+                "type": "string"
+              },
+              "op": {
+                "type": "string",
+                "enum": [
+                  "eq",
+                  "ne",
+                  "gt",
+                  "gte",
+                  "lt",
+                  "lte",
+                  "contains",
+                  "notContains",
+                  "regex",
+                  "exists",
+                  "notExists",
+                  "empty",
+                  "notEmpty",
+                  "type",
+                  "in"
+                ]
+              },
+              "value": {
+                "description": "Expected value (not needed for exists/notExists/empty/notEmpty); in = comma list; type = string|number|boolean|object|array|null",
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "source",
+              "op"
+            ]
+          }
+        },
+        "extract": {
+          "description": "save: variable extractions for this request (omit to keep the existing ones)",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "var": {
+                "type": "string",
+                "description": "Variable to write"
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "json",
+                  "header",
+                  "body",
+                  "status"
+                ]
+              },
+              "path": {
+                "description": "json path, header name, or regex (group 1) for body",
+                "type": "string"
+              },
+              "scope": {
+                "description": "environment (default; globals when no environment is active) | collection | globals | runtime (this run only)",
+                "type": "string",
+                "enum": [
+                  "environment",
+                  "collection",
+                  "globals",
+                  "runtime"
+                ]
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "var",
+              "source"
+            ]
+          }
+        },
+        "variables": {
+          "description": "env: variables to write {name: value} (merged into the environment)",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "action"
       ],
       "$schema": "http://json-schema.org/draft-07/schema#"
     },

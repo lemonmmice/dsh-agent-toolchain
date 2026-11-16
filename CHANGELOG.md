@@ -29,6 +29,26 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 - **Per-client capture stores** — with a `capture-clients.json` in the capture root, records are kept
   per desktop client and the active store follows the client the user starts (or one locked in the
   panel); rules, certificates, interception state and filters stay shared.
+- **`dsh-postman` workspace on the host** — collections (with nested folders), several named
+  environments, an active environment and global variables now live in `<store>/workspace.json`
+  instead of browser `localStorage`, so the panel, `http_request` and the new `http_collection` tool
+  share them. Writes take a cross-process lock and replace the file atomically, keeping the previous
+  version as `workspace.json.bak`; a damaged file is never silently treated as empty. Data from the
+  old browser storage is moved over once, on first open.
+- **Variables** — `{{name}}` resolves with the precedence run-only extracted values > data row >
+  environment > collection > globals, supports nesting and dynamic values (`{{$guid}}`,
+  `{{$timestamp}}`, `{{$timestampMs}}`, `{{$isoTimestamp}}`, `{{$randomInt}}`); unknown names are
+  sent unchanged and reported. `http_request` resolves them from the active environment (or
+  `environment`).
+- **Assertions and extraction** — each saved request can carry declarative assertions (status code,
+  JSON path, header, body text, duration) and extraction rules (JSON path, header, body regex, status
+  → variable, written to the environment, collection, globals or only the current run), so a login
+  token can feed the requests after it. No user scripts run on the host.
+- **Collection runner** — runs a collection, folder or single request in order with iterations,
+  CSV / JSON data rows, a delay, stop-on-failure and cancellation; reports per-request assertion
+  results and saves the report under `<store>/runs/`. HTTP(S) only; WebSocket / TCP / gRPC items are
+  reported as skipped. Available in the panel and as `http_collection` (`list` / `get` / `run` /
+  `save` / `env`) on both the DSH and MCP surfaces.
 
 ## [0.3.0] — 2026-11-11
 

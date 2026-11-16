@@ -32,6 +32,9 @@ import { makeTrace } from '../plugins/dsh-perf/lib/trace.mjs'
 import { cleanEvidence } from '../plugins/dsh-perf/lib/evidence-clean.mjs'
 import { makeHangInspector } from '../plugins/dsh-hang-inspector/lib/hang.mjs'
 import { sendRequest } from '../plugins/dsh-postman/lib/http.mjs'
+// 接口调试面板的集合 / 环境 / 运行器：**与 DSH 面共用同一份实现**（collection-tool.mjs），两面行为不漂移。
+import { collectionTool, prepareAdhocRequest } from '../plugins/dsh-postman/lib/collection-tool.mjs'
+import { ASSERT_OPS, ASSERT_SOURCES, EXTRACT_SCOPES, EXTRACT_SOURCES, WorkspaceError } from '../plugins/dsh-postman/lib/workspace.mjs'
 import { DshMemory } from '../plugins/dsh-memory/lib/memory.mjs'
 import { makeFailureCorpus } from '../lib/failure-corpus.mjs'
 import { buildProducer, agentTurnFromMeta } from '../lib/failure-provenance.mjs'
@@ -1172,17 +1175,48 @@ server.tool(
   mcpDescription('http_request'),
   { ...mcpShape('http_request'), headers: z.record(z.string(), z.string()).optional().describe('Request headers') },
   async (args, extra) => {
+    // {{变量}}：URL/头/体里有占位符时才读工作区（当前环境或 args.environment + 全局变量）
+    let prep
+    try {
+      prep = prepareAdhocRequest(args)
+    } catch (error) {
+      if (error instanceof WorkspaceError) return jtext({ ok: false, errorCode: error.code, error: error.message })
+      throw error
+    }
     const r = await sendRequest({
-      method: args.method,
-      url: args.url,
-      headers: args.headers,
-      body: args.body,
+      ...prep.spec,
       timeoutMs: args.timeoutMs,
       signal: extra?.signal,
     })
     if (r.ok === false && r.cancelled !== true) autoRecord('tool-error', 'http_request', `request could not be made: ${String(r.error ?? '').slice(0, 200)}`)
-    return jtext(r)
+    return jtext(prep.variables ? { ...r, variables: prep.variables } : r)
   }
+)
+
+server.tool(
+  'http_collection',
+  // 简单参数走注册表；headers / asserts / extract / variables（复杂结构）内联（hybrid，同 http_request 的 headers）。
+  mcpDescription('http_collection'),
+  {
+    ...mcpShape('http_collection'),
+    headers: z.record(z.string(), z.string()).optional().describe('save: request headers'),
+    asserts: z.array(z.object({
+      source: z.enum(ASSERT_SOURCES),
+      path: z.string().optional().describe('json: path such as data.list[0].code or data.list.length (empty = whole body); header: header name'),
+      op: z.enum(ASSERT_OPS),
+      value: z.string().optional().describe('Expected value (not needed for exists/notExists/empty/notEmpty); in = comma list; type = string|number|boolean|object|array|null'),
+      enabled: z.boolean().optional(),
+    })).optional().describe('save: assertions for this request (omit to keep the existing ones)'),
+    extract: z.array(z.object({
+      var: z.string().describe('Variable to write'),
+      source: z.enum(EXTRACT_SOURCES),
+      path: z.string().optional().describe('json path, header name, or regex (group 1) for body'),
+      scope: z.enum(EXTRACT_SCOPES).optional().describe('environment (default; globals when no environment is active) | collection | globals | runtime (this run only)'),
+      enabled: z.boolean().optional(),
+    })).optional().describe('save: variable extractions for this request (omit to keep the existing ones)'),
+    variables: z.record(z.string(), z.string()).optional().describe('env: variables to write {name: value} (merged into the environment)'),
+  },
+  async (args, extra) => jtext(await collectionTool(args, { signal: extra?.signal })),
 )
 
 // ---------------------------------------------------------------- memory

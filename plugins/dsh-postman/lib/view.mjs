@@ -33,7 +33,53 @@ export function renderHttp(_args, value) {
     tail = '\n（跳转信息未回报：无法判断这次响应是不是跳转后的结果）'
   }
   if (value.truncated === true) tail += '\n⚠ ' + (value.truncationNote || '响应体已截断。')
-  return [{ type: 'text', text: head + tail }]
+  return [{ type: 'text', text: head + tail + renderHttpVariables(value) }]
+}
+
+/** http_request 带了 {{变量}} 时补一行：用了哪个环境、哪些变量没找到。 */
+export function renderHttpVariables(value) {
+  const v = value && value.variables
+  if (!v || typeof v !== 'object') return ''
+  const env = v.environment ? `环境「${v.environment}」` : '无环境'
+  const miss = Array.isArray(v.unresolved) && v.unresolved.length > 0 ? `；⚠ 没找到：${v.unresolved.join(', ')}（按原样发出）` : ''
+  return `\n变量：${env}，替换了 ${Array.isArray(v.applied) ? v.applied.length : 0} 个${miss}`
+}
+
+const OUTCOME_LABEL = { pass: '全部通过', fail: '有失败', incomplete: '没跑完', unchecked: '没有断言' }
+
+/** http_collection 的默认视图。 */
+export function renderCollectionTool(args, value) {
+  if (!value || value.ok !== true) {
+    return [{ type: 'text', text: `http_collection 失败：${(value && value.error) || 'unknown error'}` }]
+  }
+  const action = args && args.action
+  if (action === 'run') {
+    const s = value.summary || {}
+    const head = `运行「${value.target?.name ?? ''}」${value.environment ? `（环境 ${value.environment.name}）` : '（无环境）'}：` +
+      `${OUTCOME_LABEL[value.outcome] ?? value.outcome} · 通过 ${s.passed} / 失败 ${s.failed} / 出错 ${s.errored} / 未设断言 ${s.unchecked}` +
+      (s.skipped ? ` / 跳过 ${s.skipped}` : '') + (s.notRun ? ` / 未执行 ${s.notRun}` : '') + ` · ${Math.round(value.durationMs ?? 0)}ms`
+    const bad = (value.results || []).filter((r) => r.verdict === 'fail' || r.verdict === 'error').slice(0, 5).map((r) =>
+      `  ✗ 第 ${r.iteration} 轮「${r.name}」` + (r.error ? `：${r.error}` : `：${(r.failedAsserts || []).map((a) => `${a.desc}（实际 ${a.actual}${a.error ? '，' + a.error : ''}）`).join('；')}`))
+    const notes = (value.notes || []).map((n) => '  · ' + n)
+    return [{ type: 'text', text: [head, ...bad, ...notes].join('\n') }]
+  }
+  if (action === 'list') {
+    const n = (value.collections || []).reduce((sum, c) => sum + c.requests.length, 0)
+    return [{ type: 'text', text: `集合 ${(value.collections || []).length} 个 · 请求 ${n} 个 · 当前环境 ${value.activeEnvironment ? value.activeEnvironment.name : '无'}` }]
+  }
+  if (action === 'get') {
+    const i = value.item || {}
+    return [{ type: 'text', text: `${i.path}：${i.request?.method ?? ''} ${i.request?.url ?? ''} · 断言 ${(i.asserts || []).length} 条 · 提取 ${(i.extract || []).length} 条` }]
+  }
+  if (action === 'save') {
+    return [{ type: 'text', text: `${value.action === 'created' ? '已新建' : '已更新'}「${value.item?.path ?? ''}」（集合 ${value.collection?.name ?? ''}${value.collection?.created ? '，新建的集合' : ''}）` }]
+  }
+  if (action === 'env') {
+    const count = Object.keys(value.variables || {}).length
+    const who = value.scope === 'globals' ? '全局变量' : value.environment ? `环境「${value.environment.name}」` : '（没有选中的环境）'
+    return [{ type: 'text', text: `${who}：${count} 个变量` + (Array.isArray(value.changed) && value.changed.length > 0 ? ` · 写入 ${value.changed.join(', ')}` : '') }]
+  }
+  return [{ type: 'text', text: 'ok' }]
 }
 
 /**

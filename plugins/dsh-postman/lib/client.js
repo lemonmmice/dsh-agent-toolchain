@@ -135,6 +135,47 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
 .pm-col-name{flex:1 1 auto;font-weight:600}
 .pm-req-row{padding-left:30px}
 .pm-req-name{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pm-cur{font-size:12px;color:var(--dsw-alias-fg-muted,#9aa0aa);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+.pm-envsel{max-width:180px;font-weight:400}
+.pm-sec-title{font-weight:600;margin:10px 0 6px}
+.pm-sec-title:first-child{margin-top:2px}
+.pm-crow{display:flex;gap:6px;margin-bottom:6px;align-items:center}
+.pm-crow select,.pm-crow input[type=text],.pm-crow input:not([type]){background:var(--dsw-alias-bg-elevated,#20242c);border:1px solid var(--dsw-alias-border-subtle,#2a2e37);color:inherit;border-radius:6px;padding:4px 6px;font:inherit;min-width:0}
+.pm-crow .pm-cpath{flex:1 1 32%}
+.pm-crow .pm-cval{flex:1 1 28%}
+.pm-crow .pm-cvar{flex:0 1 20%}
+.pm-crow input[hidden]{display:none}
+.pm-addbtn{padding:2px 10px;font-size:12px}
+.pm-chk-pane{flex:1;overflow:auto;padding:6px 0}
+.pm-chk-pane[hidden]{display:none}
+.pm-cres{display:flex;gap:8px;padding:4px 12px;align-items:baseline;font-size:12px;border-bottom:1px solid var(--dsw-alias-border-subtle,#23262e)}
+.pm-cres .pm-cres-desc{flex:0 1 auto;font-family:Consolas,Menlo,monospace}
+.pm-cres .pm-cres-act{flex:1 1 auto;color:var(--dsw-alias-fg-muted,#9aa0aa);overflow-wrap:anywhere}
+.pm-ok{color:#4ade80}.pm-bad{color:#f87171}.pm-warn{color:#fbbf24}
+.pm-tab.pm-ok,.pm-tab.pm-ok .pm-count{color:#4ade80}.pm-tab.pm-bad,.pm-tab.pm-bad .pm-count{color:#f87171}
+.pm-tree-act{display:none;gap:2px;flex:none}
+.pm-col-row:hover .pm-tree-act,.pm-req-row:hover .pm-tree-act{display:flex}
+.pm-tree-btn{background:none;border:1px solid transparent;color:var(--dsw-alias-fg-muted,#9aa0aa);cursor:pointer;font:inherit;font-size:12px;padding:0 6px;border-radius:4px;white-space:nowrap}
+.pm-tree-btn:hover{border-color:var(--dsw-alias-border-subtle,#2a2e37);color:var(--dsw-alias-fg-base,#e6e6e6)}
+.pm-req-row[data-current]{background:var(--dsw-alias-bg-hover,#262b35);box-shadow:inset 2px 0 0 #60a5fa}
+.pm-col-row.pm-folder .pm-col-name{font-weight:400}
+.pm-store-note{color:var(--dsw-alias-fg-muted,#9aa0aa);font-size:11px;padding:6px 12px;overflow-wrap:anywhere}
+.pm-run-box{width:min(900px,94%);max-height:88%}
+.pm-run-opts{display:flex;flex-wrap:wrap;gap:12px;padding:10px 14px 4px;align-items:center}
+.pm-run-opts label{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--dsw-alias-fg-muted,#9aa0aa)}
+.pm-run-opts input[type=number]{width:72px;background:var(--dsw-alias-bg-base,#171a21);border:1px solid var(--dsw-alias-border-subtle,#2a2e37);color:inherit;border-radius:6px;padding:3px 6px;font:inherit}
+.pm-run-data{min-height:56px;max-height:140px;margin:6px 14px}
+.pm-run-summary{padding:6px 14px;font-size:13px;border-top:1px solid var(--dsw-alias-border-subtle,#2a2e37)}
+.pm-run-list{flex:1;overflow:auto;min-height:80px}
+.pm-run-row{display:flex;gap:8px;padding:4px 14px;align-items:center;cursor:pointer;font-size:12px;border-bottom:1px solid var(--dsw-alias-border-subtle,#23262e)}
+.pm-run-row:hover{background:var(--dsw-alias-bg-hover,#262b35)}
+.pm-run-row .pm-run-name{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pm-run-row .pm-run-meta{flex:none;color:var(--dsw-alias-fg-muted,#9aa0aa)}
+.pm-run-detail{padding:4px 14px 8px 44px;font:12px/1.5 Consolas,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dsw-alias-fg-muted,#c4c9d2);border-bottom:1px solid var(--dsw-alias-border-subtle,#23262e)}
+.pm-run-detail[hidden]{display:none}
+.pm-env-bar{display:flex;gap:8px;padding:10px 14px 0;align-items:center;flex-wrap:wrap}
+.pm-env-bar input{background:var(--dsw-alias-bg-base,#171a21);border:1px solid var(--dsw-alias-border-subtle,#2a2e37);color:inherit;border-radius:6px;padding:4px 8px;font:inherit}
+.pm-env-hint{padding:6px 14px 0;margin:0}
 `
 
     // ---------------------------------------------------------------- helpers
@@ -330,24 +371,37 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
 
     // ---------------------------------------------- workflow helpers (pure)
 
-    /** Substitute {{var}} using an env map; leaves unknown vars untouched. */
+    /**
+     * Substitute {{var}} using a flat map; leaves unknown vars untouched.
+     * 只给 WebSocket / TCP / gRPC 模式用（HTTP 发送、复制 cURL、集合运行都在宿主侧解析，见 lib/variables.mjs）；
+     * 变量名口径与宿主一致：不含空白和花括号。动态变量（{{$guid}} 等）这里不认。
+     */
     function substVars(str, env) {
       if (typeof str !== 'string' || str.indexOf('{{') === -1) return str
-      return str.replace(/\{\{\s*([\w.$-]+)\s*\}\}/g, (m, k) => (env && Object.prototype.hasOwnProperty.call(env, k) ? env[k] : m))
+      return str.replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, (m, k) => (env && Object.prototype.hasOwnProperty.call(env, k) ? env[k] : m))
     }
 
-    /** Parse a KEY=VALUE-per-line env block into a map (ignores blanks / # comments). */
-    function parseEnvText(text) {
-      const env = {}
-      for (const line of String(text ?? '').split('\n')) {
-        const t = line.trim()
-        if (t === '' || t.startsWith('#')) continue
-        const i = t.indexOf('=')
-        if (i <= 0) continue
-        env[t.slice(0, i).trim()] = t.slice(i + 1).trim()
-      }
-      return env
+    /** 变量列表 → 编辑文本（KEY=VALUE；停用的写成 # KEY=VALUE）。解析在宿主（variablesText 字段）。 */
+    function variablesToText(list) {
+      return (list || []).map((v) => (v.enabled === false ? '# ' : '') + v.key + '=' + (v.value ?? '')).join('\n')
     }
+
+    // 断言 / 提取的选项（与宿主 lib/workspace.mjs 的 OPS_BY_SOURCE 等同口径；宿主保存时还会再校验一遍）
+    const ASSERT_SOURCE_OPTS = [['status', '状态码'], ['json', 'JSON 路径'], ['header', '响应头'], ['body', '响应体'], ['duration', '耗时(ms)']]
+    const OP_LABELS = {
+      eq: '等于', ne: '不等于', gt: '大于', gte: '大于等于', lt: '小于', lte: '小于等于', contains: '包含', notContains: '不包含',
+      regex: '匹配正则', exists: '存在', notExists: '不存在', empty: '为空', notEmpty: '非空', type: '类型是', in: '属于(逗号分隔)',
+    }
+    const OPS_BY_SOURCE = {
+      status: ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'regex'],
+      duration: ['lt', 'lte', 'gt', 'gte'],
+      header: ['exists', 'notExists', 'eq', 'ne', 'contains', 'notContains', 'regex'],
+      body: ['contains', 'notContains', 'regex', 'eq', 'ne', 'empty', 'notEmpty'],
+      json: ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains', 'notContains', 'regex', 'exists', 'notExists', 'empty', 'notEmpty', 'type', 'in'],
+    }
+    const VALUELESS_OPS = ['exists', 'notExists', 'empty', 'notEmpty']
+    const EXTRACT_SOURCE_OPTS = [['json', 'JSON 路径'], ['header', '响应头'], ['body', '响应体正则'], ['status', '状态码']]
+    const EXTRACT_SCOPE_OPTS = [['environment', '写到当前环境'], ['collection', '写到集合变量'], ['globals', '写到全局变量'], ['runtime', '只在本次运行']]
 
     /** base64 for Basic auth (latin1-safe fallback for non-ascii). */
     function b64(s) {
@@ -604,6 +658,11 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       toolbar.appendChild(urlInput)
       const sendBtn = el('button', 'pm-btn pm-send', '发送')
       toolbar.appendChild(sendBtn)
+      const saveTopBtn = el('button', 'pm-btn', '保存')
+      saveTopBtn.title = '保存到集合（Ctrl+S）：编辑的是已保存的请求时直接覆盖它，否则另存为新请求'
+      toolbar.appendChild(saveTopBtn)
+      const curLabel = el('span', 'pm-cur', '')
+      toolbar.appendChild(curLabel)
       const closeBtn = el('button', 'pm-btn pm-close', '×')
       closeBtn.title = '关闭 (Esc)'
       toolbar.appendChild(closeBtn)
@@ -624,18 +683,27 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       tabHeaders.appendChild(headersCount)
       const tabBody = el('button', 'pm-tab', '请求体')
       const tabAuth = el('button', 'pm-tab', '鉴权')
+      const tabChecks = el('button', 'pm-tab', '断言')
+      const checksCount = el('span', 'pm-count', '')
+      tabChecks.appendChild(document.createTextNode(' '))
+      tabChecks.appendChild(checksCount)
+      tabChecks.title = '声明式断言（状态码 / JSON 路径 / 响应头 / 响应体 / 耗时）与变量提取（从响应取值写回环境）'
       const tabCol = el('button', 'pm-tab', '集合')
       const tabHistory = el('button', 'pm-tab', '历史')
       reqTabs.appendChild(tabParams)
       reqTabs.appendChild(tabHeaders)
       reqTabs.appendChild(tabBody)
       reqTabs.appendChild(tabAuth)
+      reqTabs.appendChild(tabChecks)
       reqTabs.appendChild(tabCol)
       reqTabs.appendChild(tabHistory)
-      const envBtn = el('button', 'pm-btn pm-fmt', '环境变量')
-      envBtn.title = '管理 {{变量}}（发送时替换 URL / 请求头 / body）'
+      const envSel = el('select', 'pm-method pm-envsel pm-fmt')
+      envSel.title = '当前环境：发送时用它的变量替换 {{变量}}'
+      const envBtn = el('button', 'pm-btn', '环境…')
+      envBtn.title = '管理环境与全局变量'
       const curlInBtn = el('button', 'pm-btn', '导入 cURL')
       const curlOutBtn = el('button', 'pm-btn', '复制 cURL')
+      reqTabs.appendChild(envSel)
       reqTabs.appendChild(envBtn)
       reqTabs.appendChild(curlInBtn)
       reqTabs.appendChild(curlOutBtn)
@@ -730,16 +798,45 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       authPane.appendChild(authBasic)
       req.appendChild(authPane)
 
+      // checks pane: 断言 + 变量提取（随请求一起保存；发送 / 集合运行时在宿主求值）
+      const checksPane = el('div', 'pm-pane')
+      checksPane.hidden = true
+      checksPane.appendChild(el('div', 'pm-sec-title', '断言'))
+      checksPane.appendChild(el('p', 'pm-hint', '发送后逐条判定，结果在下方「断言结果」。JSON 路径写法：data.list[0].code、data.list.length；期望值里可以写 {{变量}}。'))
+      const assertList = el('div')
+      checksPane.appendChild(assertList)
+      const addAssertBtn = el('button', 'pm-btn pm-addbtn', '＋ 添加断言')
+      checksPane.appendChild(addAssertBtn)
+      checksPane.appendChild(el('div', 'pm-sec-title', '提取变量'))
+      checksPane.appendChild(el('p', 'pm-hint', '从响应里取值写进变量，后面的请求用 {{变量名}} 引用（例如登录拿 token）。响应体正则取第 1 个分组。'))
+      const extractList = el('div')
+      checksPane.appendChild(extractList)
+      const addExtractBtn = el('button', 'pm-btn pm-addbtn', '＋ 添加提取')
+      checksPane.appendChild(addExtractBtn)
+      req.appendChild(checksPane)
+
       // collections pane
       const colPane = el('div', 'pm-pane')
       colPane.hidden = true
       const colBar = el('div', 'pm-bodybar')
       const saveReqBtn = el('button', 'pm-btn pm-send', '保存当前请求')
       colBar.appendChild(saveReqBtn)
-      colBar.appendChild(el('span', 'pm-hint', '点集合名展开/收起，点请求名载入编辑器'))
+      const newColBtn = el('button', 'pm-btn', '新建集合')
+      colBar.appendChild(newColBtn)
+      const importColBtn = el('button', 'pm-btn', '导入集合')
+      importColBtn.title = '导入本插件导出的 .dsh-collection.json'
+      colBar.appendChild(importColBtn)
+      const importColFile = el('input')
+      importColFile.type = 'file'
+      importColFile.accept = '.json,application/json'
+      importColFile.hidden = true
+      colBar.appendChild(importColFile)
+      colBar.appendChild(el('span', 'pm-hint', '点名称展开/收起，点请求载入编辑器；悬停一行出现「运行 / 文件夹 / 变量 / 导出」'))
       colPane.appendChild(colBar)
       const colTree = el('div', 'pm-coltree')
       colPane.appendChild(colTree)
+      const storeNote = el('div', 'pm-store-note', '')
+      colPane.appendChild(storeNote)
       req.appendChild(colPane)
 
       // history pane
@@ -769,9 +866,14 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       const tableCount = el('span', 'pm-count', '')
       tabRespTable.appendChild(document.createTextNode(' '))
       tabRespTable.appendChild(tableCount)
+      const tabRespChecks = el('button', 'pm-tab', '断言结果')
+      const respChecksCount = el('span', 'pm-count', '')
+      tabRespChecks.appendChild(document.createTextNode(' '))
+      tabRespChecks.appendChild(respChecksCount)
       respTabs.appendChild(tabRespBody)
       respTabs.appendChild(tabRespHeaders)
       respTabs.appendChild(tabRespTable)
+      respTabs.appendChild(tabRespChecks)
       const fmtBtn = el('button', 'pm-btn pm-fmt', '格式化')
       fmtBtn.title = '在「格式化」与「原始」之间切换响应体'
       fmtBtn.dataset.active = '' // formatted is on by default
@@ -786,6 +888,9 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       const tablePane = el('div', 'pm-tblpane')
       tablePane.hidden = true
       resp.appendChild(tablePane)
+      const respChecksPane = el('div', 'pm-chk-pane')
+      respChecksPane.hidden = true
+      resp.appendChild(respChecksPane)
       body.appendChild(resp)
 
       // -------- websocket region: shown when the URL scheme is ws:// or wss://
@@ -905,6 +1010,11 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       saveNewColIn.spellcheck = false
       saveNewColRow.appendChild(saveNewColIn)
       saveForm.appendChild(saveNewColRow)
+      const saveFolderRow = el('div', 'pm-hrow')
+      saveFolderRow.appendChild(el('span', 'pm-save-lbl', '文件夹'))
+      const saveFolderSel = el('select', 'pm-method')
+      saveFolderRow.appendChild(saveFolderSel)
+      saveForm.appendChild(saveFolderRow)
       saveBox.appendChild(saveForm)
       const saveBar = el('div', 'pm-modal-bar')
       const saveCancel = el('button', 'pm-btn', '取消')
@@ -914,6 +1024,102 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       saveBox.appendChild(saveBar)
       saveDlg.appendChild(saveBox)
       view.appendChild(saveDlg)
+
+      // -------- environments dialog（环境 + 全局变量）
+      const envDlg = el('div', 'pm-modal')
+      envDlg.hidden = true
+      const envBox = el('div', 'pm-modal-box')
+      envBox.appendChild(el('div', 'pm-modal-title', '环境与变量'))
+      const envBar = el('div', 'pm-env-bar')
+      const envEditSel = el('select', 'pm-method')
+      envBar.appendChild(envEditSel)
+      const envNameIn = el('input', '')
+      envNameIn.placeholder = '环境名'
+      envNameIn.spellcheck = false
+      envBar.appendChild(envNameIn)
+      const envNewBtn = el('button', 'pm-btn', '新建环境')
+      const envDelBtn = el('button', 'pm-btn pm-btn-danger', '删除')
+      const envUseBtn = el('button', 'pm-btn', '设为当前')
+      envBar.appendChild(envNewBtn)
+      envBar.appendChild(envDelBtn)
+      envBar.appendChild(envUseBtn)
+      envBox.appendChild(envBar)
+      envBox.appendChild(el('p', 'pm-hint pm-env-hint', '每行 KEY=VALUE，# KEY=VALUE 表示停用。发送时 {{KEY}} 按「数据行 > 当前环境 > 集合变量 > 全局变量」取值；还可以用 {{$guid}} {{$timestamp}} {{$timestampMs}} {{$isoTimestamp}} {{$randomInt}}。'))
+      const envTa = el('textarea', 'pm-modal-ta')
+      envTa.spellcheck = false
+      envTa.placeholder = 'base=https://api.example.com\ntoken=abc123'
+      envBox.appendChild(envTa)
+      const envMsg = el('div', 'pm-store-note', '')
+      envBox.appendChild(envMsg)
+      const envFoot = el('div', 'pm-modal-bar')
+      const envCloseBtn = el('button', 'pm-btn', '关闭')
+      const envSaveBtn = el('button', 'pm-btn pm-send', '保存')
+      envFoot.appendChild(envCloseBtn)
+      envFoot.appendChild(envSaveBtn)
+      envBox.appendChild(envFoot)
+      envDlg.appendChild(envBox)
+      view.appendChild(envDlg)
+
+      // -------- collection runner dialog
+      const runDlg = el('div', 'pm-modal')
+      runDlg.hidden = true
+      const runBox = el('div', 'pm-modal-box pm-run-box')
+      const runTitle = el('div', 'pm-modal-title', '运行')
+      runBox.appendChild(runTitle)
+      const runOpts = el('div', 'pm-run-opts')
+      const runEnvLbl = el('label', '', '环境')
+      const runEnvSel = el('select', 'pm-method')
+      runEnvLbl.appendChild(runEnvSel)
+      runOpts.appendChild(runEnvLbl)
+      const runIterLbl = el('label', '', '迭代')
+      const runIterIn = el('input', '')
+      runIterIn.type = 'number'
+      runIterIn.min = '1'
+      runIterIn.max = '100'
+      runIterIn.placeholder = '1'
+      runIterLbl.appendChild(runIterIn)
+      runOpts.appendChild(runIterLbl)
+      const runDelayLbl = el('label', '', '间隔(ms)')
+      const runDelayIn = el('input', '')
+      runDelayIn.type = 'number'
+      runDelayIn.min = '0'
+      runDelayIn.max = '60000'
+      runDelayIn.placeholder = '0'
+      runDelayLbl.appendChild(runDelayIn)
+      runOpts.appendChild(runDelayLbl)
+      const runStopLbl = el('label', '')
+      const runStopCb = el('input', '')
+      runStopCb.type = 'checkbox'
+      runStopLbl.appendChild(runStopCb)
+      runStopLbl.appendChild(document.createTextNode('失败即停'))
+      runOpts.appendChild(runStopLbl)
+      const runPersistLbl = el('label', '')
+      const runPersistCb = el('input', '')
+      runPersistCb.type = 'checkbox'
+      runPersistCb.checked = true
+      runPersistLbl.appendChild(runPersistCb)
+      runPersistLbl.appendChild(document.createTextNode('提取的变量写回环境'))
+      runOpts.appendChild(runPersistLbl)
+      runBox.appendChild(runOpts)
+      const runData = el('textarea', 'pm-textarea pm-run-data')
+      runData.spellcheck = false
+      runData.placeholder = '可选：数据驱动。CSV（首行表头）或 JSON 对象数组；第 i 轮用第 i 行，列名就是 {{变量}} 名。不填迭代次数时 = 数据行数'
+      runBox.appendChild(runData)
+      const runSummary = el('div', 'pm-run-summary', '')
+      runBox.appendChild(runSummary)
+      const runList = el('div', 'pm-run-list')
+      runBox.appendChild(runList)
+      const runFoot = el('div', 'pm-modal-bar')
+      const runCloseBtn = el('button', 'pm-btn', '关闭')
+      const runStopBtn = el('button', 'pm-btn pm-btn-danger', '停止')
+      runStopBtn.hidden = true
+      const runStartBtn = el('button', 'pm-btn pm-send', '开始运行')
+      runFoot.appendChild(runCloseBtn)
+      runFoot.appendChild(runStopBtn)
+      runFoot.appendChild(runStartBtn)
+      runBox.appendChild(runFoot)
+      runDlg.appendChild(runBox)
+      view.appendChild(runDlg)
 
       // -------------------------------------------------------------- state
       const state = {
@@ -929,11 +1135,21 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         transport: null,
         wsConnected: false,
         auth: { type: 'none', token: '', user: '', pass: '' },
+        // WebSocket / TCP / gRPC 模式用的扁平变量表（全局 < 集合 < 当前环境），由工作区算出来
         env: {},
-        envText: '',
-        collections: [],
+        // 宿主侧工作区（GET /workspace）：集合 / 环境 / 全局变量
+        workspace: null,
+        storePath: '',
+        workspaceError: '',
+        // 一次性提示（例如旧数据搬家的结果），一直显示在集合页底部
+        notice: '',
+        // 编辑器里的请求来自哪个已保存的请求：{ collectionId, itemId } | null
+        current: null,
+        // 集合树里展开着的集合 / 文件夹 id
+        openIds: new Set(),
         bodyMode: 'raw',
         grpcCalling: false,
+        run: null,
       }
 
       // ---- headers editor: always keep one trailing empty row
@@ -1104,6 +1320,7 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         { tab: tabHeaders, pane: headersPane },
         { tab: tabBody, pane: bodyPane },
         { tab: tabAuth, pane: authPane },
+        { tab: tabChecks, pane: checksPane },
         { tab: tabCol, pane: colPane },
         { tab: tabHistory, pane: historyPane },
       ]
@@ -1121,6 +1338,7 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       tabHeaders.addEventListener('click', () => selectReqTab(tabHeaders))
       tabBody.addEventListener('click', () => selectReqTab(tabBody))
       tabAuth.addEventListener('click', () => selectReqTab(tabAuth))
+      tabChecks.addEventListener('click', () => selectReqTab(tabChecks))
       tabCol.addEventListener('click', () => selectReqTab(tabCol))
       tabHistory.addEventListener('click', () => selectReqTab(tabHistory))
       selectReqTab(tabParams)
@@ -1131,7 +1349,10 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         respBodyPre.hidden = mode !== 'body'
         respHeadersPre.hidden = mode !== 'headers'
         tablePane.hidden = mode !== 'table'
-        for (const [key, tab] of [['body', tabRespBody], ['headers', tabRespHeaders], ['table', tabRespTable]]) {
+        respChecksPane.hidden = mode !== 'checks'
+        // 格式化开关只对响应体有意义
+        fmtBtn.style.visibility = mode === 'body' ? '' : 'hidden'
+        for (const [key, tab] of [['body', tabRespBody], ['headers', tabRespHeaders], ['table', tabRespTable], ['checks', tabRespChecks]]) {
           if (key === mode) tab.dataset.active = ''
           else delete tab.dataset.active
         }
@@ -1139,6 +1360,7 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       tabRespBody.addEventListener('click', () => selectRespTab('body'))
       tabRespHeaders.addEventListener('click', () => selectRespTab('headers'))
       tabRespTable.addEventListener('click', () => selectRespTab('table'))
+      tabRespChecks.addEventListener('click', () => selectRespTab('checks'))
       selectRespTab('body')
 
       // ---- format / raw toggle for the response body
@@ -1502,15 +1724,33 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         statusLine.textContent = ''
         statusLine.appendChild(el('span', 'pm-status-meta', '请求中…'))
         try {
-          const payload = { ...buildRequest(), timeoutMs: 30000 }
+          // 模板原样发给宿主：{{变量}}、鉴权头、GraphQL 组装、断言、提取都在宿主侧做（与集合运行器同一份实现）
+          const payload = {
+            resolve: true,
+            template: currentComposer(),
+            collectionId: state.current ? state.current.collectionId : undefined,
+            asserts: collectAsserts(),
+            extract: collectExtract(),
+            timeoutMs: 30000,
+          }
           const result = await apiFetch('/send', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(payload),
           })
           renderResponse(result.response)
+          renderChecks(result)
+          if (Array.isArray(result.unresolved) && result.unresolved.length > 0) {
+            const warn = el('span', 'pm-warn', `⚠ 没找到变量：${result.unresolved.join(', ')}（按原样发出）`)
+            warn.title = '检查当前环境 / 集合变量 / 全局变量里有没有这些名字'
+            statusLine.appendChild(warn)
+          }
+          if (result.environment) statusLine.appendChild(el('span', 'pm-status-meta', `环境：${result.environment.name}`))
+          if (Array.isArray(result.notes)) for (const n of result.notes) statusLine.appendChild(el('span', 'pm-warn', n))
+          if (result.workspaceChanged) loadWorkspace()
         } catch (error) {
           renderResponse({ ok: false, error: error instanceof Error ? error.message : String(error) })
+          renderChecks(null)
         } finally {
           state.sending = false
           sendBtn.disabled = false
@@ -1922,11 +2162,21 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       async function loadRecord(id) {
         try {
           const rec = await apiFetch(`/history/${encodeURIComponent(id)}`)
+          applyMode(detectMode(rec.request?.url ?? ''))
           methodSel.value = METHODS.includes(rec.request?.method) ? rec.request.method : 'GET'
           setUrl(rec.request?.url ?? '')
           setHeaders(rec.request?.headers ?? {})
+          // 历史里存的是真正发出去的请求（变量已替换、鉴权已拼进请求头）：按原始 Raw 请求回填
+          state.bodyMode = 'raw'
+          bodyModeSel.value = 'raw'
+          updateBodyMode()
           bodyText.value = rec.request?.body ?? ''
+          state.auth = { type: 'none', token: '', user: '', pass: '' }
+          authSel.value = 'none'
+          updateAuthUI()
+          detachComposer()
           renderResponse(rec.response)
+          renderChecks(undefined)
           selectReqTab(tabHeaders)
         } catch (error) {
           console.error('[dsh-postman] load record failed:', error)
@@ -1989,40 +2239,26 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         else fallback()
       }
 
-      // ---- request assembly: auth header + {{env}} substitution
+      // ---- live (WS / TCP / gRPC) modes: {{env}} substitution on headers（HTTP 发送在宿主侧解析）
       function substHeaders(headers) {
         const out = {}
         for (const [k, v] of Object.entries(headers)) out[substVars(k, state.env)] = substVars(v, state.env)
         return out
       }
-      function buildRequest() {
-        const headers = collectHeaders().headers
-        const authVal = authHeaderValue(state.auth)
-        if (authVal !== '' && !Object.keys(headers).some((k) => k.toLowerCase() === 'authorization')) headers['Authorization'] = authVal
-        let method = methodSel.value
-        let body
-        if (state.bodyMode === 'graphql') {
-          let variables = {}
-          const vt = gqlVars.value.trim()
-          if (vt !== '') {
-            try {
-              variables = JSON.parse(substVars(vt, state.env))
-            } catch {
-              variables = {}
-            }
-          }
-          body = JSON.stringify({ query: substVars(gqlQuery.value, state.env), variables })
-          method = 'POST'
-          if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) headers['Content-Type'] = 'application/json'
-        } else {
-          body = substVars(bodyText.value, state.env)
+
+      const enc = encodeURIComponent
+      const errText = (error) => (error instanceof Error ? error.message : String(error))
+      function optionList(sel, pairs) {
+        sel.textContent = ''
+        for (const [value, label] of pairs) {
+          const o = el('option', '', label)
+          o.value = value
+          sel.appendChild(o)
         }
-        return {
-          method,
-          url: substVars(urlInput.value.trim(), state.env),
-          headers: substHeaders(headers),
-          body,
-        }
+      }
+      function short(text, max = 160) {
+        const s = String(text ?? '')
+        return s.length > max ? s.slice(0, max) + '…' : s
       }
 
       // ---- auth UI
@@ -2045,42 +2281,142 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       })
       updateAuthUI()
 
-      // ---- environment variables (localStorage)
-      const ENV_KEY = 'dsh-postman-env'
-      function updateEnvBtn() {
-        const n = Object.keys(state.env).length
-        envBtn.textContent = n > 0 ? `环境变量 (${n})` : '环境变量'
+      // ---- workspace（宿主侧 workspace.json：集合 / 文件夹 / 请求 / 环境 / 全局变量；agent 的 http_collection 读写同一份）
+      function activeEnv() {
+        const ws = state.workspace
+        return ws ? ws.environments.find((e) => e.id === ws.activeEnvironmentId) || null : null
       }
-      function loadEnv() {
-        try {
-          const raw = window.localStorage.getItem(ENV_KEY)
-          if (raw !== null) {
-            state.envText = raw
-            state.env = parseEnvText(raw)
+      function currentCollection() {
+        const ws = state.workspace
+        if (!ws || !state.current) return null
+        return ws.collections.find((c) => c.id === state.current.collectionId) || null
+      }
+      /** 在集合里找条目：{ item, path(上级文件夹名), parentId }。 */
+      function findEntry(col, itemId) {
+        const walk = (items, path, parentId) => {
+          for (const it of items) {
+            if (it.id === itemId) return { item: it, path, parentId }
+            if (it.type === 'folder') {
+              const hit = walk(it.items, [...path, it.name], it.id)
+              if (hit) return hit
+            }
           }
-        } catch {
-          /* ignore */
+          return null
         }
-        updateEnvBtn()
+        return col ? walk(col.items, [], null) : null
       }
-      function saveEnv(text) {
-        state.envText = text
-        state.env = parseEnvText(text)
+      function countRequests(items) {
+        let n = 0
+        for (const it of items) n += it.type === 'folder' ? countRequests(it.items) : 1
+        return n
+      }
+      /** WS / gRPC 用的扁平变量表：全局 < 集合（编辑器里的请求所在的集合）< 当前环境。 */
+      function recomputeEnv() {
+        const map = {}
+        const put = (list) => {
+          for (const v of list || []) if (v.enabled !== false) map[v.key] = v.value ?? ''
+        }
+        if (state.workspace) {
+          put(state.workspace.globals)
+          const col = currentCollection()
+          if (col) put(col.variables)
+          const env = activeEnv()
+          if (env) put(env.variables)
+        }
+        state.env = map
+      }
+      function renderEnvSel() {
+        const ws = state.workspace
+        optionList(envSel, [['', '无环境'], ...(ws ? ws.environments.map((e) => [e.id, e.name]) : [])])
+        envSel.value = ws && ws.activeEnvironmentId ? ws.activeEnvironmentId : ''
+        const env = activeEnv()
+        envSel.title = env ? `当前环境「${env.name}」：${env.variables.filter((v) => v.enabled !== false).length} 个变量` : '没有选环境：只用全局变量 / 集合变量'
+      }
+      function updateCurLabel() {
+        const col = currentCollection()
+        const entry = col ? findEntry(col, state.current.itemId) : null
+        if (!entry) {
+          state.current = null
+          curLabel.textContent = ''
+          curLabel.title = ''
+          return
+        }
+        const text = [col.name, ...entry.path, entry.item.name].join(' / ')
+        curLabel.textContent = '· ' + text
+        curLabel.title = '正在编辑已保存的请求：' + text + '（点「保存」会覆盖它）'
+      }
+      function applyWorkspace(r) {
+        if (!r || !r.workspace) return
+        state.workspace = r.workspace
+        if (r.storePath) state.storePath = r.storePath
+        state.workspaceError = r.warning || ''
+        updateCurLabel()
+        recomputeEnv()
+        renderEnvSel()
+        renderCollections()
+        storeNote.textContent = (state.notice ? state.notice + '　' : '') + (state.workspaceError ? '⚠ ' + state.workspaceError + '　' : '') + (state.storePath ? '集合与环境保存在宿主侧：' + state.storePath : '')
+      }
+      async function loadWorkspace() {
         try {
-          window.localStorage.setItem(ENV_KEY, text)
-        } catch {
-          /* ignore */
+          applyWorkspace(await apiFetch('/workspace'))
+        } catch (error) {
+          state.workspaceError = errText(error)
+          storeNote.textContent = '⚠ 读取集合 / 环境失败：' + state.workspaceError
+          if (state.workspace === null) renderCollections()
         }
-        updateEnvBtn()
       }
-      loadEnv()
-      envBtn.addEventListener('click', () => {
-        openModal(
-          '环境变量（每行 KEY=VALUE，# 为注释；发送时把 {{KEY}} 替换到 URL / 请求头 / body / WS 消息）',
-          state.envText,
-          'TOKEN=abc123\nBASE=https://api.example.com',
-          saveEnv,
-        )
+      /** 改工作区：成功后整份刷新；失败弹窗说明原因并返回 null。 */
+      async function wsMutate(path, method, payload) {
+        try {
+          const r = await apiFetch(path, {
+            method,
+            headers: { 'content-type': 'application/json' },
+            body: payload === undefined ? undefined : JSON.stringify(payload),
+          })
+          applyWorkspace(r)
+          return r
+        } catch (error) {
+          window.alert(errText(error))
+          return null
+        }
+      }
+      /**
+       * 旧版面板把集合 / 环境存在 localStorage：首次打开新版时搬进宿主（浏览器里的原数据留着不删）。
+       * localStorage 按源隔离（localhost 与 127.0.0.1 各一份），所以「搬过没有」按源记在本地；
+       * 宿主按内容指纹去重，同一份数据不会搬两遍。
+       */
+      const LEGACY_DONE_KEY = 'dsh-postman-legacy-migrated'
+      async function migrateLegacy() {
+        if (!state.workspace) return
+        let collections = []
+        let envText = ''
+        try {
+          if (window.localStorage.getItem(LEGACY_DONE_KEY)) return
+          const raw = window.localStorage.getItem('dsh-postman-collections')
+          const parsed = raw ? JSON.parse(raw) : null
+          if (parsed && Array.isArray(parsed.collections)) collections = parsed.collections
+          envText = window.localStorage.getItem('dsh-postman-env') || ''
+        } catch {
+          return
+        }
+        if (collections.length === 0 && envText.trim() === '') return
+        const r = await wsMutate('/workspace/legacy-import', 'POST', { collections, envText })
+        if (r) {
+          try {
+            window.localStorage.setItem(LEGACY_DONE_KEY, String(Date.now()))
+          } catch {
+            /* ignore */
+          }
+        }
+        if (r && r.result && !r.result.skipped) {
+          for (const c of state.workspace.collections) state.openIds.add(c.id)
+          renderCollections()
+          state.notice = `已把浏览器里旧的 ${r.result.collections} 个集合、${r.result.requests} 个请求${r.result.environment ? '和环境变量（「默认环境」）' : ''}搬进宿主侧存储（浏览器里的原数据没删）。`
+          applyWorkspace({ workspace: state.workspace, storePath: state.storePath })
+        }
+      }
+      envSel.addEventListener('change', () => {
+        wsMutate('/environments/active', 'POST', { id: envSel.value || null })
       })
 
       // ---- curl import / export
@@ -2104,35 +2440,178 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
           },
         )
       })
-      curlOutBtn.addEventListener('click', () => {
-        copyToClipboard(toCurl(buildRequest()), curlOutBtn)
+      curlOutBtn.addEventListener('click', async () => {
+        // 变量 / 鉴权 / GraphQL 的组装在宿主侧（与发送同一份实现），复制出来的就是真正会发出去的那条
+        try {
+          const r = await apiFetch('/resolve', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ template: currentComposer(), collectionId: state.current ? state.current.collectionId : undefined }),
+          })
+          copyToClipboard(toCurl(r.request), curlOutBtn)
+          if (Array.isArray(r.unresolved) && r.unresolved.length > 0) window.alert(`已复制；注意这些变量没找到，按原样保留：${r.unresolved.join(', ')}`)
+        } catch (error) {
+          window.alert('复制失败：' + errText(error))
+        }
       })
 
-      // ---- saved requests + collections (localStorage)
-      const COL_KEY = 'dsh-postman-collections'
-      function uid() {
-        try {
-          return crypto.randomUUID()
-        } catch {
-          return 'id' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+      // ---- 断言 / 提取编辑器
+      function checkbox(checked, title) {
+        const cb = el('input', '')
+        cb.type = 'checkbox'
+        cb.checked = checked
+        cb.title = title
+        return cb
+      }
+      function updateChecksCount() {
+        const n = collectAsserts().filter((a) => a.enabled !== false).length
+        const m = collectExtract().filter((x) => x.enabled !== false).length
+        checksCount.textContent = n + m > 0 ? `(${n}${m > 0 ? '+' + m : ''})` : ''
+      }
+      function addAssertRow(spec = {}) {
+        const row = el('div', 'pm-crow')
+        const en = checkbox(spec.enabled !== false, '启用这条断言')
+        const src = el('select', '')
+        optionList(src, ASSERT_SOURCE_OPTS)
+        src.value = OPS_BY_SOURCE[spec.source] ? spec.source : 'status'
+        const pathIn = el('input', 'pm-cpath')
+        pathIn.spellcheck = false
+        pathIn.value = spec.path || ''
+        const op = el('select', '')
+        const val = el('input', 'pm-cval')
+        val.spellcheck = false
+        val.value = spec.value ?? ''
+        const del = el('button', 'pm-hdel', '×')
+        del.title = '删除'
+        const syncVal = () => {
+          val.hidden = VALUELESS_OPS.includes(op.value)
+          val.placeholder = op.value === 'type' ? 'string / number / boolean / object / array / null'
+            : op.value === 'in' ? '200,201' : op.value === 'regex' ? '正则' : src.value === 'duration' ? '毫秒，如 1000' : '期望值（可写 {{变量}}）'
+        }
+        const syncSource = (wantedOp) => {
+          const ops = OPS_BY_SOURCE[src.value]
+          optionList(op, ops.map((o) => [o, OP_LABELS[o]]))
+          op.value = ops.includes(wantedOp) ? wantedOp : ops[0]
+          pathIn.hidden = !(src.value === 'json' || src.value === 'header')
+          pathIn.placeholder = src.value === 'header' ? '响应头名，如 content-type' : 'data.code（空 = 整个响应体）'
+          syncVal()
+        }
+        syncSource(spec.op)
+        src.addEventListener('change', () => {
+          syncSource(op.value)
+          updateChecksCount()
+        })
+        op.addEventListener('change', syncVal)
+        en.addEventListener('change', updateChecksCount)
+        del.addEventListener('click', () => {
+          row.remove()
+          updateChecksCount()
+        })
+        row.append(en, src, pathIn, op, val, del)
+        row._get = () => ({ enabled: en.checked, source: src.value, path: pathIn.hidden ? '' : pathIn.value.trim(), op: op.value, value: val.hidden ? '' : val.value })
+        assertList.appendChild(row)
+      }
+      function addExtractRow(spec = {}) {
+        const row = el('div', 'pm-crow')
+        const en = checkbox(spec.enabled !== false, '启用这条提取')
+        const varIn = el('input', 'pm-cvar')
+        varIn.placeholder = '变量名'
+        varIn.spellcheck = false
+        varIn.value = spec.var || ''
+        const src = el('select', '')
+        optionList(src, EXTRACT_SOURCE_OPTS)
+        src.value = EXTRACT_SOURCE_OPTS.some(([v]) => v === spec.source) ? spec.source : 'json'
+        const pathIn = el('input', 'pm-cpath')
+        pathIn.spellcheck = false
+        pathIn.value = spec.path || ''
+        const scope = el('select', '')
+        optionList(scope, EXTRACT_SCOPE_OPTS)
+        scope.value = EXTRACT_SCOPE_OPTS.some(([v]) => v === spec.scope) ? spec.scope : 'environment'
+        const del = el('button', 'pm-hdel', '×')
+        del.title = '删除'
+        const sync = () => {
+          pathIn.hidden = src.value === 'status'
+          pathIn.placeholder = src.value === 'header' ? '响应头名' : src.value === 'body' ? '正则，如 token=(\\w+)' : 'data.token'
+        }
+        sync()
+        src.addEventListener('change', sync)
+        en.addEventListener('change', updateChecksCount)
+        del.addEventListener('click', () => {
+          row.remove()
+          updateChecksCount()
+        })
+        row.append(en, varIn, el('span', 'pm-hint', '←'), src, pathIn, scope, del)
+        row._get = () => ({ enabled: en.checked, var: varIn.value.trim(), source: src.value, path: pathIn.hidden ? '' : pathIn.value.trim(), scope: scope.value })
+        extractList.appendChild(row)
+      }
+      function collectAsserts() {
+        return Array.from(assertList.children).map((r) => r._get())
+      }
+      function collectExtract() {
+        return Array.from(extractList.children).map((r) => r._get()).filter((x) => x.var !== '')
+      }
+      function setChecks(asserts, extract) {
+        assertList.textContent = ''
+        extractList.textContent = ''
+        for (const a of asserts || []) addAssertRow(a)
+        for (const x of extract || []) addExtractRow(x)
+        updateChecksCount()
+      }
+      addAssertBtn.addEventListener('click', () => {
+        addAssertRow({ source: 'status', op: 'eq', value: '200' })
+        updateChecksCount()
+      })
+      addExtractBtn.addEventListener('click', () => {
+        addExtractRow({ source: 'json', scope: 'environment' })
+        updateChecksCount()
+      })
+      checksPane.addEventListener('input', updateChecksCount)
+
+      // ---- 断言结果（响应区第四个 tab）
+      function renderChecks(result) {
+        respChecksPane.textContent = ''
+        tabRespChecks.classList.remove('pm-ok', 'pm-bad')
+        const checks = result && result.checks
+        if (!checks) {
+          respChecksCount.textContent = ''
+          respChecksPane.appendChild(el('div', 'pm-empty', result === null ? '请求没发出去，没有断言结果' : '发送后在这里逐条看断言是否通过、提取到了什么'))
+          return
+        }
+        const asserts = checks.asserts || []
+        const extract = checks.extract || []
+        const passed = asserts.filter((a) => a.pass).length
+        respChecksCount.textContent = asserts.length > 0 ? `(${passed}/${asserts.length})` : ''
+        if (asserts.length > 0) tabRespChecks.classList.add(passed === asserts.length ? 'pm-ok' : 'pm-bad')
+        if (asserts.length === 0 && extract.length === 0) {
+          respChecksPane.appendChild(el('div', 'pm-empty', '这个请求没有设断言 —— 在上面「断言」里添加，发送后这里逐条显示通过 / 失败'))
+          return
+        }
+        for (const a of asserts) {
+          const row = el('div', 'pm-cres')
+          row.appendChild(el('span', a.pass ? 'pm-ok' : 'pm-bad', a.pass ? '✓' : '✗'))
+          row.appendChild(el('span', 'pm-cres-desc', a.desc))
+          row.appendChild(el('span', 'pm-cres-act', [a.actual !== '' ? `实际 ${a.actual}` : '', a.error || '', a.note || ''].filter((s) => s !== '').join(' · ')))
+          respChecksPane.appendChild(row)
+        }
+        const where = { environment: '当前环境', collection: '集合变量', globals: '全局变量', runtime: '只在本次' }
+        for (const x of extract) {
+          const row = el('div', 'pm-cres')
+          row.appendChild(el('span', x.ok ? 'pm-ok' : 'pm-warn', x.ok ? '→' : '!'))
+          row.appendChild(el('span', 'pm-cres-desc', `{{${x.var}}}`))
+          row.appendChild(el('span', 'pm-cres-act', x.ok ? `= ${short(x.value)}（${where[x.savedTo || x.scope] || x.scope}）` : x.error || '没取到'))
+          respChecksPane.appendChild(row)
+        }
+        if (asserts.length > 0) {
+          const allOk = passed === asserts.length
+          const badge = el('span', allOk ? 'pm-ok' : 'pm-bad', allOk ? `断言 ${passed}/${asserts.length} 通过` : `断言 ${asserts.length - passed}/${asserts.length} 失败`)
+          badge.style.cursor = 'pointer'
+          badge.title = '看断言结果'
+          badge.addEventListener('click', () => selectRespTab('checks'))
+          statusLine.appendChild(badge)
         }
       }
-      function loadCollections() {
-        try {
-          const raw = window.localStorage.getItem(COL_KEY)
-          const parsed = raw ? JSON.parse(raw) : null
-          state.collections = parsed && Array.isArray(parsed.collections) ? parsed.collections : []
-        } catch {
-          state.collections = []
-        }
-      }
-      function saveCollections() {
-        try {
-          window.localStorage.setItem(COL_KEY, JSON.stringify({ collections: state.collections }))
-        } catch {
-          /* ignore */
-        }
-      }
+
+      // ---- 编辑器 ⇄ 已保存的请求
       function currentComposer() {
         return {
           mode: state.mode,
@@ -2182,60 +2661,186 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         updateAuthUI()
         if (state.mode === 'http') selectReqTab(tabHeaders)
       }
+      /** 编辑器换成了一个「不是已保存请求」的东西（历史 / 抓包预填）：不再指向集合里的条目，断言清空。 */
+      function detachComposer() {
+        state.current = null
+        setChecks([], [])
+        updateCurLabel()
+        recomputeEnv()
+        renderCollections()
+      }
+      function loadSaved(col, item) {
+        loadComposer(item.request)
+        setChecks(item.asserts, item.extract)
+        state.current = { collectionId: col.id, itemId: item.id }
+        updateCurLabel()
+        recomputeEnv()
+        renderCollections()
+        renderChecks(undefined)
+      }
       function reqBadge(r) {
         if (r.mode === 'ws') return el('span', 'pm-badge pm-m-other', 'WS')
         if (r.mode === 'tcp') return el('span', 'pm-badge pm-m-other', 'TCP')
         if (r.mode === 'grpc') return el('span', 'pm-badge pm-m-other', 'gRPC')
         return methodBadge((r.method || 'GET').toUpperCase())
       }
+
+      // ---- 集合树
+      function treeBtn(label, title, fn) {
+        const b = el('button', 'pm-tree-btn', label)
+        b.title = title
+        b.addEventListener('click', (e) => {
+          e.stopPropagation()
+          fn()
+        })
+        return b
+      }
       function renderCollections() {
         colTree.textContent = ''
-        if (state.collections.length === 0) {
-          colTree.appendChild(el('div', 'pm-empty', '暂无集合 — 点「保存当前请求」新建'))
+        const ws = state.workspace
+        if (!ws) {
+          colTree.appendChild(el('div', 'pm-empty', state.workspaceError ? '读取集合失败：' + state.workspaceError : '加载中…'))
           return
         }
-        for (const col of state.collections) {
-          const colRow = el('div', 'pm-col-row')
-          colRow.appendChild(el('span', 'pm-col-caret', col._open ? '▾' : '▸'))
-          colRow.appendChild(el('span', 'pm-col-name', `${col.name} (${col.requests.length})`))
-          const cdel = el('button', 'pm-hdel', '×')
-          cdel.title = '删除集合'
-          colRow.appendChild(cdel)
-          colRow.addEventListener('click', () => {
-            col._open = !col._open
+        if (ws.collections.length === 0) {
+          colTree.appendChild(el('div', 'pm-empty', '暂无集合 — 点「保存当前请求」或「新建集合」'))
+          return
+        }
+        for (const col of ws.collections) renderNode(col, col, 0, true)
+      }
+      function renderNode(col, node, depth, isCollection) {
+        if (isCollection || node.type === 'folder') {
+          const isFolder = !isCollection
+          const open = state.openIds.has(node.id)
+          const row = el('div', 'pm-col-row' + (isFolder ? ' pm-folder' : ''))
+          row.style.paddingLeft = 12 + depth * 18 + 'px'
+          row.appendChild(el('span', 'pm-col-caret', open ? '▾' : '▸'))
+          row.appendChild(el('span', 'pm-col-name', `${isFolder ? '📁 ' : ''}${node.name} (${countRequests(node.items)})`))
+          const act = el('span', 'pm-tree-act')
+          act.appendChild(treeBtn('▶ 运行', isCollection ? '按顺序运行整个集合' : '按顺序运行这个文件夹', () => openRunDialog(col, isFolder ? node : null, null)))
+          act.appendChild(treeBtn('＋文件夹', '在这里新建文件夹', () => newFolder(col, isFolder ? node : null)))
+          if (isCollection) {
+            act.appendChild(treeBtn('变量', '集合变量：只对这个集合里的请求生效，优先级低于环境', () => editCollectionVars(col)))
+            act.appendChild(treeBtn('导出', '导出成 .dsh-collection.json（可以发给别人导入）', () => exportCollection(col)))
+          }
+          act.appendChild(treeBtn('改名', '重命名', () => renameNode(col, isCollection ? null : node)))
+          act.appendChild(treeBtn('×', isCollection ? '删除集合' : '删除文件夹', () => deleteNode(col, isCollection ? null : node)))
+          row.appendChild(act)
+          row.addEventListener('click', () => {
+            if (open) state.openIds.delete(node.id)
+            else state.openIds.add(node.id)
             renderCollections()
           })
-          cdel.addEventListener('click', (e) => {
-            e.stopPropagation()
-            if (window.confirm(`删除集合「${col.name}」及其 ${col.requests.length} 个请求？`)) {
-              state.collections = state.collections.filter((c) => c !== col)
-              saveCollections()
-              renderCollections()
-            }
-          })
-          colTree.appendChild(colRow)
-          if (col._open) {
-            for (const r of col.requests) {
-              const rr = el('div', 'pm-req-row')
-              rr.appendChild(reqBadge(r))
-              const rn = el('span', 'pm-req-name', r.name)
-              rn.title = `${r.method || ''} ${r.url || ''}`
-              rr.appendChild(rn)
-              const rdel = el('button', 'pm-hdel', '×')
-              rdel.title = '删除请求'
-              rr.appendChild(rdel)
-              rr.addEventListener('click', () => loadComposer(r))
-              rdel.addEventListener('click', (e) => {
-                e.stopPropagation()
-                col.requests = col.requests.filter((x) => x !== r)
-                saveCollections()
-                renderCollections()
-              })
-              colTree.appendChild(rr)
+          colTree.appendChild(row)
+          if (open) {
+            for (const child of node.items) renderNode(col, child, depth + 1, false)
+            if (node.items.length === 0) {
+              const empty = el('div', 'pm-req-row pm-hint', '（空）')
+              empty.style.paddingLeft = 32 + (depth + 1) * 18 + 'px'
+              colTree.appendChild(empty)
             }
           }
+          return
+        }
+        const rr = el('div', 'pm-req-row')
+        rr.style.paddingLeft = 32 + depth * 18 + 'px'
+        if (state.current && state.current.itemId === node.id) rr.dataset.current = ''
+        rr.appendChild(reqBadge(node.request))
+        const rn = el('span', 'pm-req-name', node.name)
+        rn.title = `${node.request.method || ''} ${node.request.url || ''}`
+        rr.appendChild(rn)
+        const n = (node.asserts || []).filter((a) => a.enabled !== false).length
+        if (n > 0) {
+          const tag = el('span', 'pm-count', `✓${n}`)
+          tag.title = `${n} 条断言`
+          rr.appendChild(tag)
+        }
+        const act = el('span', 'pm-tree-act')
+        act.appendChild(treeBtn('▶', '单独运行这个请求（带断言和提取）', () => openRunDialog(col, null, node)))
+        act.appendChild(treeBtn('改名', '重命名', () => renameNode(col, node)))
+        act.appendChild(treeBtn('×', '删除请求', () => deleteNode(col, node)))
+        rr.appendChild(act)
+        rr.addEventListener('click', () => loadSaved(col, node))
+        colTree.appendChild(rr)
+      }
+      async function newCollection() {
+        const name = window.prompt('新集合名', '新集合')
+        if (name === null) return
+        const r = await wsMutate('/collections', 'POST', { name })
+        if (r && r.result) {
+          state.openIds.add(r.result.id)
+          renderCollections()
         }
       }
+      async function newFolder(col, parent) {
+        const name = window.prompt('文件夹名', '新文件夹')
+        if (name === null) return
+        const r = await wsMutate(`/collections/${enc(col.id)}/items`, 'POST', { type: 'folder', name, parentId: parent ? parent.id : null })
+        if (r && r.result) {
+          state.openIds.add(parent ? parent.id : col.id)
+          renderCollections()
+        }
+      }
+      async function renameNode(col, node) {
+        const old = node ? node.name : col.name
+        const name = window.prompt('新名称', old)
+        if (name === null || name.trim() === '' || name === old) return
+        if (node) await wsMutate(`/collections/${enc(col.id)}/items/${enc(node.id)}`, 'PATCH', { name })
+        else await wsMutate(`/collections/${enc(col.id)}`, 'PATCH', { name })
+      }
+      async function deleteNode(col, node) {
+        const what = !node ? `集合「${col.name}」及其中 ${countRequests(col.items)} 个请求`
+          : node.type === 'folder' ? `文件夹「${node.name}」及其中 ${countRequests(node.items)} 个请求` : `请求「${node.name}」`
+        if (!window.confirm(`删除${what}？`)) return
+        if (node) await wsMutate(`/collections/${enc(col.id)}/items/${enc(node.id)}`, 'DELETE')
+        else await wsMutate(`/collections/${enc(col.id)}`, 'DELETE')
+      }
+      function editCollectionVars(col) {
+        openModal(
+          `集合「${col.name}」的变量（每行 KEY=VALUE，# KEY=VALUE 表示停用；只对这个集合里的请求生效，优先级低于环境）`,
+          variablesToText(col.variables),
+          'base=https://api.example.com',
+          (text) => {
+            wsMutate(`/collections/${enc(col.id)}`, 'PATCH', { variablesText: text })
+          },
+        )
+      }
+      async function exportCollection(col) {
+        try {
+          const data = await apiFetch(`/collections/${enc(col.id)}/export`)
+          const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+          const a = document.createElement('a')
+          a.href = URL.createObjectURL(blob)
+          a.download = `${col.name.replace(/[\\/:*?"<>|]+/g, '_')}.dsh-collection.json`
+          document.body.appendChild(a)
+          a.click()
+          a.remove()
+          setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+        } catch (error) {
+          window.alert('导出失败：' + errText(error))
+        }
+      }
+      newColBtn.addEventListener('click', newCollection)
+      importColBtn.addEventListener('click', () => importColFile.click())
+      importColFile.addEventListener('change', async () => {
+        const file = importColFile.files && importColFile.files[0]
+        importColFile.value = ''
+        if (!file) return
+        let text
+        try {
+          text = await file.text()
+        } catch (error) {
+          window.alert('读文件失败：' + errText(error))
+          return
+        }
+        const r = await wsMutate('/collections/import', 'POST', { data: text })
+        if (r && r.result) {
+          state.openIds.add(r.result.id)
+          renderCollections()
+        }
+      })
+
+      // ---- 保存
       function defaultReqName(c) {
         try {
           const u = new URL(substVars(c.url, state.env))
@@ -2244,56 +2849,306 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
           return `${c.method || 'GET'} ${c.url || '请求'}`
         }
       }
-      function openSaveDialog() {
-        saveColSel.textContent = ''
-        for (const col of state.collections) {
-          const o = el('option', '', col.name)
-          o.value = col.id
-          saveColSel.appendChild(o)
+      function folderOptions(col) {
+        const out = [['', '（集合根目录）']]
+        const walk = (items, path) => {
+          for (const it of items) {
+            if (it.type !== 'folder') continue
+            const p = [...path, it.name]
+            out.push([it.id, p.join(' / ')])
+            walk(it.items, p)
+          }
         }
-        const newOpt = el('option', '', '＋ 新建集合')
-        newOpt.value = '__new__'
-        saveColSel.appendChild(newOpt)
-        saveColSel.value = state.collections.length > 0 ? state.collections[0].id : '__new__'
-        saveNameIn.value = defaultReqName(currentComposer())
+        if (col) walk(col.items, [])
+        return out
+      }
+      function fillSaveFolders() {
+        const ws = state.workspace
+        const col = ws && saveColSel.value !== '__new__' ? ws.collections.find((c) => c.id === saveColSel.value) : null
+        optionList(saveFolderSel, folderOptions(col))
+        saveFolderRow.hidden = !col
+      }
+      function openSaveDialog() {
+        const ws = state.workspace
+        if (!ws) {
+          window.alert('集合还没加载出来：' + (state.workspaceError || '请稍后再试'))
+          return
+        }
+        optionList(saveColSel, [...ws.collections.map((c) => [c.id, c.name]), ['__new__', '＋ 新建集合']])
+        const cur = currentCollection()
+        const entry = cur ? findEntry(cur, state.current.itemId) : null
+        saveColSel.value = cur ? cur.id : ws.collections.length > 0 ? ws.collections[0].id : '__new__'
+        fillSaveFolders()
+        if (entry && entry.parentId) saveFolderSel.value = entry.parentId
+        saveNameIn.value = entry ? `${entry.item.name} 副本` : defaultReqName(currentComposer())
         saveNewColIn.value = ''
         saveNewColRow.hidden = saveColSel.value !== '__new__'
         saveDlg.hidden = false
         saveNameIn.focus()
       }
-      function doSave() {
+      async function doSave() {
         const name = saveNameIn.value.trim() || '未命名请求'
-        let col
-        if (saveColSel.value === '__new__') {
-          const cn = saveNewColIn.value.trim() || '默认集合'
-          col = state.collections.find((c) => c.name === cn)
-          if (!col) {
-            col = { id: uid(), name: cn, requests: [], _open: true }
-            state.collections.push(col)
-          }
-        } else {
-          col = state.collections.find((c) => c.id === saveColSel.value)
+        let colId = saveColSel.value
+        if (colId === '__new__') {
+          const created = await wsMutate('/collections', 'POST', { name: saveNewColIn.value.trim() || '默认集合' })
+          if (!created || !created.result) return
+          colId = created.result.id
         }
-        if (!col) {
-          col = { id: uid(), name: '默认集合', requests: [], _open: true }
-          state.collections.push(col)
-        }
-        col.requests.push({ id: uid(), name, ...currentComposer() })
-        col._open = true
-        saveCollections()
+        const parentId = saveColSel.value === '__new__' ? null : saveFolderSel.value || null
+        const r = await wsMutate(`/collections/${enc(colId)}/items`, 'POST', {
+          type: 'request',
+          parentId,
+          name,
+          request: currentComposer(),
+          asserts: collectAsserts(),
+          extract: collectExtract(),
+        })
+        if (!r || !r.result) return
+        state.current = { collectionId: colId, itemId: r.result.id }
+        state.openIds.add(colId)
+        if (parentId) state.openIds.add(parentId)
+        updateCurLabel()
+        recomputeEnv()
         renderCollections()
         saveDlg.hidden = true
       }
-      loadCollections()
-      renderCollections()
+      /** 顶栏「保存」/ Ctrl+S：编辑的是已保存的请求就覆盖它，否则走「另存为」对话框。 */
+      async function saveCurrent() {
+        const col = currentCollection()
+        if (!col || !findEntry(col, state.current.itemId)) {
+          openSaveDialog()
+          return
+        }
+        const r = await wsMutate(`/collections/${enc(col.id)}/items/${enc(state.current.itemId)}`, 'PATCH', {
+          request: currentComposer(),
+          asserts: collectAsserts(),
+          extract: collectExtract(),
+        })
+        if (r) {
+          saveTopBtn.textContent = '已保存 ✓'
+          setTimeout(() => {
+            saveTopBtn.textContent = '保存'
+          }, 1200)
+        }
+      }
+      saveTopBtn.addEventListener('click', saveCurrent)
       saveReqBtn.addEventListener('click', openSaveDialog)
       saveColSel.addEventListener('change', () => {
         saveNewColRow.hidden = saveColSel.value !== '__new__'
+        fillSaveFolders()
       })
       saveCancel.addEventListener('click', () => {
         saveDlg.hidden = true
       })
       saveOk.addEventListener('click', doSave)
+
+      // ---- 环境与全局变量
+      let envEditing = '__globals__'
+      function fillEnvEditSel() {
+        const ws = state.workspace
+        optionList(envEditSel, [['__globals__', '全局变量'], ...(ws ? ws.environments.map((e) => [e.id, (e.id === ws.activeEnvironmentId ? '● ' : '') + e.name]) : [])])
+        if (!Array.from(envEditSel.options).some((o) => o.value === envEditing)) envEditing = '__globals__'
+        envEditSel.value = envEditing
+      }
+      function loadEnvEditor() {
+        const ws = state.workspace
+        const isGlobals = envEditing === '__globals__'
+        const env = !isGlobals && ws ? ws.environments.find((e) => e.id === envEditing) : null
+        envNameIn.value = env ? env.name : ''
+        envNameIn.disabled = isGlobals
+        envDelBtn.disabled = isGlobals
+        envUseBtn.disabled = isGlobals || (ws !== null && ws.activeEnvironmentId === envEditing)
+        envUseBtn.textContent = !isGlobals && ws !== null && ws.activeEnvironmentId === envEditing ? '已是当前环境' : '设为当前'
+        envTa.value = variablesToText(isGlobals ? (ws ? ws.globals : []) : env ? env.variables : [])
+        envMsg.textContent = state.storePath ? '保存在宿主侧：' + state.storePath + '（agent 的 http_request / http_collection 用同一份）' : ''
+      }
+      function openEnvDialog() {
+        const ws = state.workspace
+        if (!ws) {
+          window.alert('环境还没加载出来：' + (state.workspaceError || '请稍后再试'))
+          return
+        }
+        envEditing = ws.activeEnvironmentId || (ws.environments[0] ? ws.environments[0].id : '__globals__')
+        fillEnvEditSel()
+        loadEnvEditor()
+        envDlg.hidden = false
+        envTa.focus()
+      }
+      envEditSel.addEventListener('change', () => {
+        envEditing = envEditSel.value
+        loadEnvEditor()
+      })
+      envNewBtn.addEventListener('click', async () => {
+        const name = window.prompt('新环境名（如 测试 / 预发 / 生产）', '新环境')
+        if (name === null) return
+        const r = await wsMutate('/environments', 'POST', { name })
+        if (r && r.result) {
+          envEditing = r.result.id
+          fillEnvEditSel()
+          loadEnvEditor()
+        }
+      })
+      envDelBtn.addEventListener('click', async () => {
+        const ws = state.workspace
+        const env = ws ? ws.environments.find((e) => e.id === envEditing) : null
+        if (!env || !window.confirm(`删除环境「${env.name}」？`)) return
+        const r = await wsMutate(`/environments/${enc(env.id)}`, 'DELETE')
+        if (r) {
+          envEditing = '__globals__'
+          fillEnvEditSel()
+          loadEnvEditor()
+        }
+      })
+      envUseBtn.addEventListener('click', async () => {
+        const r = await wsMutate('/environments/active', 'POST', { id: envEditing })
+        if (r) {
+          fillEnvEditSel()
+          loadEnvEditor()
+        }
+      })
+      envSaveBtn.addEventListener('click', async () => {
+        const r = envEditing === '__globals__'
+          ? await wsMutate('/globals', 'PUT', { variablesText: envTa.value })
+          : await wsMutate(`/environments/${enc(envEditing)}`, 'PATCH', { name: envNameIn.value, variablesText: envTa.value })
+        if (r) {
+          fillEnvEditSel()
+          loadEnvEditor()
+          envMsg.textContent = '已保存 ✓　' + envMsg.textContent
+        }
+      })
+      envCloseBtn.addEventListener('click', () => {
+        envDlg.hidden = true
+      })
+      envBtn.addEventListener('click', openEnvDialog)
+
+      // ---- 集合运行器
+      function openRunDialog(col, folder, request) {
+        if (state.run && state.run.polling) {
+          runDlg.hidden = false
+          return
+        }
+        state.run = { col, folder, request, id: null, since: 0, polling: false, timer: null }
+        runTitle.textContent = '运行：' + [col.name, folder ? folder.name : null, request ? request.name : null].filter(Boolean).join(' / ')
+        const ws = state.workspace
+        const act = activeEnv()
+        optionList(runEnvSel, [['__active__', '当前环境' + (act ? `（${act.name}）` : '（无）')], ['', '无环境'], ...(ws ? ws.environments.map((e) => [e.id, e.name]) : [])])
+        runEnvSel.value = '__active__'
+        const n = request ? 1 : countRequests(folder ? folder.items : col.items)
+        runSummary.textContent = `共 ${n} 个请求，按集合里的顺序依次发送。只跑 HTTP(S)，WebSocket / TCP / gRPC 请求会跳过。`
+        runList.textContent = ''
+        runStartBtn.disabled = n === 0
+        runStartBtn.textContent = '开始运行'
+        runStopBtn.hidden = true
+        runDlg.hidden = false
+      }
+      function runSummaryText(s) {
+        const m = s.summary || {}
+        const label = { pass: '✓ 全部通过', fail: '✗ 有失败', incomplete: '… 没跑完', unchecked: '— 没有断言' }[s.outcome] || s.state
+        return `${label} · 通过 ${m.passed} / 失败 ${m.failed} / 出错 ${m.errored} / 未设断言 ${m.unchecked}` +
+          (m.skipped ? ` / 跳过 ${m.skipped}` : '') + (m.notRun ? ` / 未执行 ${m.notRun}` : '') +
+          ` · 断言 ${m.asserts ? m.asserts.passed : 0}✓ ${m.asserts ? m.asserts.failed : 0}✗ · ${fmtDur(s.durationMs)}` +
+          (s.environment ? ` · 环境 ${s.environment.name}` : ' · 无环境') +
+          (Array.isArray(s.notes) && s.notes.length > 0 ? '\n' + s.notes.join('；') : '') +
+          (s.reportPath ? '\n报告：' + s.reportPath : '')
+      }
+      function appendRunRow(r) {
+        const row = el('div', 'pm-run-row')
+        const icon = { pass: ['✓', 'pm-ok'], fail: ['✗', 'pm-bad'], error: ['!', 'pm-bad'], unchecked: ['—', 'pm-warn'], skipped: ['↷', 'pm-status-meta'] }[r.verdict] || ['?', '']
+        row.appendChild(el('span', icon[1], icon[0]))
+        row.appendChild(el('span', 'pm-run-meta', '#' + r.iteration))
+        row.appendChild(methodBadge(r.method || 'GET'))
+        const nm = el('span', 'pm-run-name', (r.path ? r.path + ' / ' : '') + r.name)
+        nm.title = r.url || ''
+        row.appendChild(nm)
+        if (Number.isInteger(r.status)) row.appendChild(statusBadge(r.status))
+        row.appendChild(el('span', 'pm-run-meta', Number.isFinite(r.durationMs) ? fmtDur(r.durationMs) : ''))
+        const passed = r.asserts.filter((a) => a.pass).length
+        row.appendChild(el('span', 'pm-run-meta', r.asserts.length > 0 ? `断言 ${passed}/${r.asserts.length}` : r.skipped ? '跳过' : '无断言'))
+        const detail = el('div', 'pm-run-detail')
+        const lines = [`${r.method} ${r.url}`]
+        for (const a of r.asserts) lines.push(`${a.pass ? '✓' : '✗'} ${a.desc}　实际 ${a.actual}${a.error ? '　' + a.error : ''}`)
+        for (const x of r.extract) lines.push(x.ok ? `→ {{${x.var}}} = ${x.value}${x.savedTo ? `（写到 ${x.savedTo}）` : x.scope === 'runtime' ? '（只在本次运行）' : ''}` : `! {{${x.var}}}：${x.error}`)
+        if (r.unresolved) lines.push('⚠ 没找到变量：' + r.unresolved.join(', '))
+        if (r.error) lines.push('出错：' + r.error)
+        if (r.skipped) lines.push(r.skipped)
+        if (r.redirected) lines.push('↪ 跳转后的响应：' + r.finalUrl)
+        if (r.bodyPreview) lines.push('响应体：' + r.bodyPreview)
+        detail.textContent = lines.join('\n')
+        // 失败 / 出错的默认展开，其余点一下看
+        detail.hidden = !(r.verdict === 'fail' || r.verdict === 'error')
+        row.addEventListener('click', () => {
+          detail.hidden = !detail.hidden
+        })
+        runList.appendChild(row)
+        runList.appendChild(detail)
+      }
+      async function startRun() {
+        const run = state.run
+        if (!run || run.polling) return
+        runList.textContent = ''
+        runSummary.textContent = '启动中…'
+        runStartBtn.disabled = true
+        const envVal = runEnvSel.value
+        try {
+          const res = await apiFetch('/runs', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              collectionId: run.col.id,
+              folderId: run.folder ? run.folder.id : undefined,
+              requestId: run.request ? run.request.id : undefined,
+              environmentId: envVal === '__active__' ? undefined : envVal === '' ? null : envVal,
+              iterations: runIterIn.value ? Number(runIterIn.value) : undefined,
+              delayMs: runDelayIn.value ? Number(runDelayIn.value) : undefined,
+              stopOnFailure: runStopCb.checked,
+              persistVariables: runPersistCb.checked,
+              data: runData.value.trim() || undefined,
+            }),
+          })
+          run.id = res.id
+          run.since = 0
+          run.polling = true
+          runStopBtn.hidden = false
+          runSummary.textContent = `运行中… 0/${res.total}`
+          pollRun()
+        } catch (error) {
+          runSummary.textContent = '启动失败：' + errText(error)
+          runStartBtn.disabled = false
+        }
+      }
+      async function pollRun() {
+        const run = state.run
+        if (!run || !run.polling) return
+        try {
+          const s = await apiFetch(`/runs/${enc(run.id)}?since=${run.since}`)
+          for (const entry of s.results) appendRunRow(entry)
+          run.since = s.from + s.results.length
+          if (s.state === 'running') {
+            runSummary.textContent = `运行中… ${s.done}/${s.total}`
+            run.timer = setTimeout(pollRun, 400)
+            return
+          }
+          run.polling = false
+          runStopBtn.hidden = true
+          runStartBtn.disabled = false
+          runStartBtn.textContent = '再跑一次'
+          runSummary.textContent = s.state === 'error' ? '运行出错：' + (s.error || '未知错误') : runSummaryText(s)
+          loadWorkspace() // 提取的变量可能写回了环境
+        } catch (error) {
+          run.polling = false
+          runStopBtn.hidden = true
+          runStartBtn.disabled = false
+          runSummary.textContent = '取运行进度失败：' + errText(error)
+        }
+      }
+      runStartBtn.addEventListener('click', startRun)
+      runStopBtn.addEventListener('click', () => {
+        if (state.run && state.run.id) apiFetch(`/runs/${enc(state.run.id)}/stop`, { method: 'POST' }).catch(() => {})
+      })
+      runCloseBtn.addEventListener('click', () => {
+        runDlg.hidden = true
+      })
+      runSummary.style.whiteSpace = 'pre-wrap'
 
       // ---- open / close
       const setOpen = (open) => {
@@ -2302,19 +3157,30 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
           clearSiblings()
           document.documentElement.dataset.dshPostmanActive = 'true'
           urlInput.focus()
+          // agent 可能刚用 http_collection 改过集合 / 环境：每次打开都拿最新的
+          loadWorkspace()
         } else {
           document.documentElement.removeAttribute('data-dsh-postman-active')
         }
       }
       const toggle = () => setOpen(!state.open)
       closeBtn.addEventListener('click', () => setOpen(false))
-      document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && state.open) {
+      const onKeydown = (event) => {
+        if (!state.open) return
+        if (event.key === 'Escape') {
           if (!saveDlg.hidden) saveDlg.hidden = true
           else if (!modal.hidden) closeModal()
+          else if (!envDlg.hidden) envDlg.hidden = true
+          else if (!runDlg.hidden) runDlg.hidden = true
           else setOpen(false)
+          return
         }
-      })
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === 's' || event.key === 'S')) {
+          event.preventDefault()
+          if (saveDlg.hidden && modal.hidden && envDlg.hidden && runDlg.hidden) saveCurrent()
+        }
+      }
+      document.addEventListener('keydown', onKeydown)
 
       // ---- cross-plugin prefill: 接口捕获「在接口调试打开」派发 window 事件 dsh-postman:prefill
       // detail = { method, url, headers(对象), body(字符串) }
@@ -2333,6 +3199,8 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         state.auth = { type: 'none', token: '', user: '', pass: '' }
         authSel.value = 'none'
         updateAuthUI()
+        // 抓来的请求不是集合里的某一条：断开与已保存请求的关联、清掉上一条的断言
+        detachComposer()
         // 有查询参数就落在「查询参数」页（用户可直接改 packType/version… 上方 URL 实时联动）；否则回请求头
         selectReqTab(parseUrlParts(d.url).query !== '' ? tabParams : tabHeaders)
         setOpen(true)
@@ -2341,6 +3209,10 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
 
       // tab 是常驻的：初次进来就得把那一栏的空态写出来，不能开着一栏空白
       renderTablePane()
+      renderChecks(undefined)
+      renderCollections()
+      // 集合 / 环境在宿主侧：先拿工作区，再把旧版浏览器里的数据（如果有）搬过去
+      loadWorkspace().then(migrateLegacy)
 
       return {
         view,
@@ -2348,6 +3220,9 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         dispose: () => {
           wsDisconnect()
           window.removeEventListener('dsh-postman:prefill', onPrefill)
+          document.removeEventListener('keydown', onKeydown)
+          if (state.run && state.run.timer) clearTimeout(state.run.timer)
+          if (state.run) state.run.polling = false
         },
       }
     }

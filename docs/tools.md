@@ -105,7 +105,8 @@ capture — and therefore carries the gate described in
 | `capture_stop` | Write | Stops capture (and says that subsequent queries return history, not live traffic). |
 | `capture_query` | Read | Queries the capture store: method, host, status, duration, size, body, caller attribution, errors, time range. |
 | `capture_append` | Write | Appends records to the store (used when importing traffic from an external tool). |
-| `http_request` | Write | Sends an HTTP request from the host (no browser CORS) and returns status, headers, body and duration. |
+| `http_request` | Write | Sends an HTTP request from the host (no browser CORS) and returns status, headers, body and duration. `{{variables}}` in the URL, headers and body are filled from the API-debug panel's active environment (or `environment`); unknown names are sent unchanged and listed. |
+| `http_collection` | Write | The API-debug panel's collections, environments and collection runner: `list` / `get` saved requests, `save` a request with declarative assertions and variable extraction, read or write an environment (`env`), and `run` a collection, folder or request with iterations and data rows. Per-request assertion results come back; only `outcome=pass` means everything passed. |
 
 ## Memory (cross-session)
 
@@ -155,7 +156,7 @@ graph looked exactly as dangerous as deleting every evidence pack.
   (`ui_act`, `ui_drive`, `ui_flow`, `ui_replay`, `ui_jev`: real clicks/typing; also open-world),
   `perf_clean`, `hang_delete`, `memory_forget`, `dev_edit`, `toolchain_job` (cancellation),
   `harness_experience` (validate/retire), `harness_trial` (runs an executor; also open-world), and
-  `http_request` (any method; also open-world).
+  `http_request` (any method; also open-world), and `http_collection` (`run` sends saved requests; also open-world).
 - **Approval** — open-world only: `memory_index` (chunks leave the machine when a remote embedding backend
   is configured), `jev_decide` (remote data when `allowRemoteData=true`), and `dev_docs_search` /
   `dev_docs_read` / `dev_plugin_check` (the query or package lookup leaves the machine).

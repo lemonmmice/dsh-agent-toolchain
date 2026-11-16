@@ -89,7 +89,8 @@ reconnect before newly registered tools appear.
 | `build_run` | dsh-build/lib/builder.mjs | Incremental/Rebuild MSBuild with structured errors |
 | `ui_status` / `ui_drive` / `ui_flow` / `ui_replay` | dsh-ui-drive/lib/driver.mjs | Signed app identity, scoped approvals, desktop-state gates, action/observation records, identity-bound replay and opt-in visual fallback; guarded flows validate each action |
 | `perf_probe` / `perf_report` | dsh-perf/lib/perf.mjs | Window-message latency sampling: P50/P95/P99 + stall events |
-| `http_request` | dsh-postman/lib/http.mjs | Host-side HTTP (no CORS), non-2xx is a normal result |
+| `http_request` | dsh-postman/lib/http.mjs | Host-side HTTP (no CORS), non-2xx is a normal result; `{{variables}}` filled from the panel's active environment |
+| `http_collection` | dsh-postman/lib/collection-tool.mjs | Collections / environments / collection runner shared with the API-debug panel (`workspace.json`) |
 | `memory_index` / `memory_search` / `memory_save` / `memory_recall` / `memory_status` | dsh-memory/lib/memory.mjs | Vector search + cross-session KV |
 | `capture_query` / `capture_append` | lib/capture-store.mjs | Query/append the API-capture store — caller attribution (ViewModel→API→call-chain) + runId spine |
 | `jev_decide` | lib/jev-client.mjs | Optional remote typed decisions; advisory only, explicit remote-data opt-in |
