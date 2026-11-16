@@ -37,6 +37,7 @@ html[data-dsh-apiviz-active] [data-dsh-apiviz-view]{display:flex}
 body[data-ds-dark-theme] .apv-statchip-on{background:#1e2a44;color:#93c5fd}
 .apv-q{flex:1 1 180px;min-width:120px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:inherit;border-radius:6px;padding:4px 8px;font:inherit}
 .apv-select{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:inherit;border-radius:6px;padding:4px 6px;font:inherit}
+.apv-client-sel{max-width:240px;font-weight:600}
 .apv-btn{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:inherit;border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit}
 .apv-btn:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .apv-btn-danger:hover{border-color:#c0392b;color:#e74c3c}
@@ -210,6 +211,123 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
 .apv-rules-form{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 0}
 .apv-rules-form .apv-fin{flex:none}
 .apv-rule-body{width:220px;height:44px;resize:vertical}
+.apv-ic-btns{display:flex;flex-direction:column;gap:4px;align-self:flex-start}
+.apv-ic-suggest{display:flex;flex-wrap:wrap;gap:4px 10px;padding:2px 0 6px}
+.apv-ic-suggest label{font-size:12px;white-space:nowrap;cursor:pointer}
+.apv-ic-suggest .apv-ic-client{font-weight:600}
+.apv-ic-status{font-size:12px}
+.apv-ic-status table{border-collapse:collapse;margin:4px 0}
+.apv-ic-status td,.apv-ic-status th{padding:2px 8px;border-bottom:1px solid var(--dsw-alias-border-l2);text-align:left;font:12px Consolas,Menlo,monospace}
+.apv-ic-action{font-size:12px;padding:0 0 4px;white-space:pre-wrap}
+.apv-ic-action:empty{display:none}
+.apv-bp-err{font-size:12px;margin-top:6px;white-space:pre-wrap}
+.apv-bp-err:empty{display:none}
+.apv-warn{color:#d97706}
+body[data-ds-dark-theme] .apv-warn{color:#fbbf24}
+.apv-ok{color:#16a34a}
+body[data-ds-dark-theme] .apv-ok{color:#4ade80}
+.apv-mock-hint{font-size:12px;margin-left:4px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 过滤器（Fiddler 式自定义过滤器）：工具栏按钮 + 提示条 + 对话框 */
+.apv-fgroup{display:inline-flex;align-items:stretch}
+.apv-fbtn{display:inline-flex;align-items:center;gap:5px;max-width:280px}
+.apv-fbtn svg{flex:none}
+.apv-fbtn-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.apv-fgroup-on .apv-btn{border-color:#3b82f6;color:#1d4ed8;background:var(--dsw-static-deepseek-100,#dbeafe)}
+body[data-ds-dark-theme] .apv-fgroup-on .apv-btn{color:#93c5fd;background:#1e2a44;border-color:#3b82f6}
+.apv-fgroup-on .apv-fbtn{border-top-right-radius:0;border-bottom-right-radius:0}
+.apv-fbtn-x{border-top-left-radius:0;border-bottom-left-radius:0;border-left-width:0;padding:4px 8px}
+.apv-fbtn-x[hidden]{display:none}
+.apv-statfilter{color:#2563eb}
+body[data-ds-dark-theme] .apv-statfilter{color:#93c5fd}
+.apv-statfilter.apv-warn{color:#d97706}
+body[data-ds-dark-theme] .apv-statfilter.apv-warn{color:#fbbf24}
+.apv-notice{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:12px;flex-wrap:wrap}
+.apv-notice[hidden]{display:none}
+.apv-notice-text{flex:1 1 320px;min-width:180px;white-space:pre-wrap;overflow-wrap:anywhere}
+.apv-notice .apv-btn{padding:2px 8px;font-size:12px}
+.apv-aiopt[hidden]{display:none}
+.apv-ailimit{width:72px}
+.apv-dproc{padding:8px 0 0;font-size:12px}
+.apv-dproc .apv-t{font-weight:600;color:var(--dsw-alias-label-tertiary);margin-right:2px}
+.apv-rules-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 0 6px}
+.apv-rules-head .apv-t{font-weight:600}
+.apv-rules-choice{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}
+.apv-rules-choice[hidden]{display:none}
+.apv-rules-help{white-space:pre-wrap}
+.apv-fd-overlay{position:absolute;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);container-type:inline-size;container-name:apvfd}
+.apv-fd-overlay[hidden]{display:none}
+.apv-fd{display:flex;flex-direction:column;width:min(900px,100%);height:min(560px,100%);background:var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base,#1d212b));color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.4);overflow:hidden;outline:none}
+.apv-fd-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.apv-fd-title{font-weight:600;font-size:14px;white-space:nowrap}
+.apv-fd-hostnote{flex:1;min-width:0;font-size:12px}
+.apv-fd-x{margin-left:auto;padding:2px 8px;font-size:16px;line-height:1}
+.apv-fd-main{flex:1;min-height:0;display:flex}
+.apv-fd-side{flex:0 0 220px;min-width:0;display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2)}
+.apv-fd-list{flex:1;min-height:0;overflow:auto;padding:6px}
+.apv-fd-item{display:flex;align-items:center;gap:6px;width:100%;padding:6px 8px;border:none;border-radius:6px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.apv-fd-item:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.apv-fd-item[aria-selected="true"]{background:var(--dsw-static-deepseek-100,#dbeafe)}
+body[data-ds-dark-theme] .apv-fd-item[aria-selected="true"]{background:#1e2a44}
+.apv-fd-item-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.apv-fd-item-default .apv-fd-item-name{color:var(--dsw-alias-label-tertiary)}
+.apv-fd-mark{flex:none;width:14px;text-align:center;font-size:12px;font-weight:700}
+.apv-fd-check{color:#16a34a}
+body[data-ds-dark-theme] .apv-fd-check{color:#4ade80}
+.apv-fd-dirty{color:#d97706}
+body[data-ds-dark-theme] .apv-fd-dirty{color:#fbbf24}
+.apv-fd-side-btns{display:flex;gap:6px;padding:8px;border-top:1px solid var(--dsw-alias-border-l2)}
+.apv-fd-side-btns .apv-btn{flex:1 1 0;padding:4px 6px;min-width:0}
+.apv-fd-import{display:flex;flex-direction:column;gap:6px;padding:0 8px 8px;font-size:12px}
+.apv-fd-import[hidden]{display:none}
+.apv-fd-import .apv-btn{padding:3px 8px;font-size:12px;text-align:left}
+.apv-fd-edit{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column}
+.apv-fd-namerow{display:flex;align-items:center;gap:6px;padding:10px 14px 6px;flex-wrap:wrap}
+.apv-fd-namerow label{font-size:12px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+.apv-fd-name{flex:1 1 200px;min-width:120px}
+.apv-fd-name.apv-fd-bad{border-color:#dc2626}
+.apv-fd-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:28px;padding:0}
+.apv-fd .apv-btn:disabled{opacity:.42;cursor:default}
+.apv-fd-msg{padding:0 14px 4px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}
+.apv-fd-msg:empty{display:none}
+.apv-fd-confirm{display:flex;align-items:center;gap:8px;margin:2px 14px 6px;padding:6px 10px;border:1px solid #dc2626;border-radius:6px;font-size:12px;flex-wrap:wrap}
+.apv-fd-confirm[hidden]{display:none}
+.apv-fd-moderow{display:flex;align-items:center;gap:6px;padding:4px 14px 6px;flex-wrap:wrap}
+.apv-fd-spacer{flex:1}
+.apv-fd-conds{flex:1;min-height:0;overflow:auto;padding:2px 14px 10px;display:flex;flex-direction:column;gap:6px}
+.apv-fd-cond{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px;background:var(--dsw-alias-bg-layer-2)}
+.apv-fd-cond-off .apv-fd-cond-main>:not(.apv-fd-cond-on):not(.apv-fd-cdel){opacity:.5}
+.apv-fd-cond-bad{border-color:#dc2626;background:rgba(220,38,38,.08)}
+body[data-ds-dark-theme] .apv-fd-cond-bad{border-color:#f87171;background:rgba(248,113,113,.1)}
+.apv-fd-cond-todo .apv-fd-value{border-style:dashed;border-color:#d97706}
+body[data-ds-dark-theme] .apv-fd-cond-todo .apv-fd-value{border-color:#fbbf24}
+.apv-fd-cond-main{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.apv-fd-field{width:118px}
+.apv-fd-op{width:110px}
+.apv-fd-header{width:120px}
+.apv-fd-header[hidden]{display:none}
+.apv-fd-valwrap{flex:1 1 160px;min-width:110px;display:flex;align-items:center;position:relative}
+.apv-fd-valwrap[hidden]{display:none}
+.apv-fd-value{flex:1;min-width:0;padding-right:24px}
+.apv-fd-valclear{position:absolute;right:4px;top:50%;transform:translateY(-50%);border:none;background:none;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:14px;line-height:1;padding:2px 4px}
+.apv-fd-valclear:hover{color:var(--dsw-alias-label-primary)}
+.apv-fd-valclear[hidden]{display:none}
+.apv-fd-case{font:600 12px/1 system-ui,sans-serif;padding:6px 7px}
+.apv-fd-case[hidden]{display:none}
+.apv-fd-case[aria-pressed="true"]{border-color:#3b82f6;color:#1d4ed8;background:var(--dsw-static-deepseek-100,#dbeafe)}
+body[data-ds-dark-theme] .apv-fd-case[aria-pressed="true"]{color:#93c5fd;background:#1e2a44}
+.apv-fd-cond-err{font-size:12px;color:#dc2626;padding:4px 2px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
+.apv-fd-cond-err:empty{display:none}
+.apv-fd-empty{padding:24px 0;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:12px}
+.apv-fd-default-note{padding:16px 14px;font-size:13px;color:var(--dsw-alias-label-tertiary);line-height:1.7}
+.apv-fd-default-note[hidden],.apv-fd-namerow[hidden],.apv-fd-moderow[hidden],.apv-fd-conds[hidden]{display:none}
+.apv-fd-foot{display:flex;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid var(--dsw-alias-border-l2);flex-wrap:wrap}
+.apv-fd-count{flex:1 1 240px;min-width:0;font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.apv-fd-count b{color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}
+.apv-fd-counting{opacity:.55}
+.apv-btn-primary{background:#2563eb;border-color:#2563eb;color:#fff}
+.apv-btn-primary:hover{background:#1d4ed8}
+@container apvfd (max-width:720px){.apv-fd-main{flex-direction:column}.apv-fd-side{flex:0 0 auto;max-height:150px;border-right:none;border-bottom:1px solid var(--dsw-alias-border-l2)}.apv-fd-list{display:flex;flex-wrap:wrap;gap:2px}.apv-fd-item{width:auto;max-width:200px}.apv-fd-side-btns{padding:4px 8px}}
 `
 
     // ---------------------------------------------------------------- helpers
@@ -237,8 +355,61 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       } catch {
         body = null
       }
-      if (!response.ok) throw new Error((body && body.error) || `HTTP ${response.status}`)
+      if (!response.ok) {
+        // 带上状态码 / 错误码 / 原始错误体：调用方要区分 409 冲突、400 校验失败、404 不存在
+        const error = new Error((body && body.error) || `HTTP ${response.status}`)
+        error.status = response.status
+        error.code = body && typeof body.code === 'string' ? body.code : undefined
+        error.body = body
+        throw error
+      }
       return body
+    }
+
+    const errText = (error) => (error instanceof Error ? error.message : String(error))
+
+    /**
+     * 取响应原文（导出文件用）：不经 JSON.parse / JSON.stringify，大整数、1.50 这类数字原样保留。
+     * 失败时和 apiFetch 一样抛带 status / code / body 的错误。
+     */
+    async function apiFetchText(path, init) {
+      const response = await fetch(API + path, init)
+      const text = await response.text()
+      if (!response.ok) {
+        let body = null
+        try {
+          body = JSON.parse(text)
+        } catch {
+          body = null
+        }
+        const error = new Error((body && body.error) || `HTTP ${response.status}`)
+        error.status = response.status
+        error.code = body && typeof body.code === 'string' ? body.code : undefined
+        error.body = body
+        throw error
+      }
+      return text
+    }
+
+    /** 下载文件名里的时间戳：本机时间 YYYYMMDD-HHmmss，和宿主给导出文件起名的格式相同（R5-06：以前用 UTC，和宿主存的文件名、本机日期对不上）。 */
+    const fileStamp = () => {
+      const d = new Date()
+      const p = (n) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+    }
+
+    /** 同一类读取只认最后发出的那次：轮询和操作并发时，先发后到的旧响应不覆盖新数据。 */
+    function latestGate() {
+      let issued = 0
+      let applied = 0
+      return {
+        next: () => ++issued,
+        accept: (seq) => {
+          if (seq < applied) return false
+          applied = seq
+          return true
+        },
+      }
     }
 
     function el(tag, className, text) {
@@ -407,6 +578,208 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
         }
       }
       return out
+    }
+
+    /**
+     * 标准 JSON 的词法扫描：返回 token 列表 [{ k, c, s, e }]（k：'p' 标点 / 'str' / 'num' / 'lit'；c：标点的字符码；
+     * s/e：在原文里的起止下标）；词法不合法返回 null。下面两个「保留原文」的工具共用它。
+     */
+    function scanJsonTokens(src) {
+      const n = src.length
+      const out = []
+      const isDigit = (d) => d >= 48 && d <= 57
+      const isHex = (d) => isDigit(d) || (d >= 65 && d <= 70) || (d >= 97 && d <= 102)
+      let i = 0
+      while (i < n) {
+        const c = src.charCodeAt(i)
+        if (c === 0x20 || c === 0x0a || c === 0x0d || c === 0x09) { i++; continue }
+        if (c === 0x7b || c === 0x7d || c === 0x5b || c === 0x5d || c === 0x3a || c === 0x2c) {
+          out.push({ k: 'p', c, s: i, e: i + 1 })
+          i++
+          continue
+        }
+        if (c === 0x22) {
+          let j = i + 1
+          for (;;) {
+            if (j >= n) return null
+            const d = src.charCodeAt(j)
+            if (d === 0x22) break
+            if (d < 0x20) return null
+            if (d !== 0x5c) { j++; continue }
+            const x = src.charCodeAt(j + 1)
+            if (x === 0x75) {
+              if (!(isHex(src.charCodeAt(j + 2)) && isHex(src.charCodeAt(j + 3)) && isHex(src.charCodeAt(j + 4)) && isHex(src.charCodeAt(j + 5)))) return null
+              j += 6
+            } else if (x === 0x22 || x === 0x5c || x === 0x2f || x === 0x62 || x === 0x66 || x === 0x6e || x === 0x72 || x === 0x74) {
+              j += 2
+            } else {
+              return null
+            }
+          }
+          out.push({ k: 'str', c: 0, s: i, e: j + 1 })
+          i = j + 1
+          continue
+        }
+        if (c === 0x2d || isDigit(c)) {
+          // -?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?
+          let j = c === 0x2d ? i + 1 : i
+          if (src.charCodeAt(j) === 0x30) j++
+          else if (isDigit(src.charCodeAt(j))) { while (isDigit(src.charCodeAt(j))) j++ }
+          else return null
+          if (src.charCodeAt(j) === 0x2e) {
+            j++
+            if (!isDigit(src.charCodeAt(j))) return null
+            while (isDigit(src.charCodeAt(j))) j++
+          }
+          if (src.charCodeAt(j) === 0x65 || src.charCodeAt(j) === 0x45) {
+            j++
+            if (src.charCodeAt(j) === 0x2b || src.charCodeAt(j) === 0x2d) j++
+            if (!isDigit(src.charCodeAt(j))) return null
+            while (isDigit(src.charCodeAt(j))) j++
+          }
+          out.push({ k: 'num', c: 0, s: i, e: j })
+          i = j
+          continue
+        }
+        const len = src.startsWith('true', i) || src.startsWith('null', i) ? 4 : src.startsWith('false', i) ? 5 : 0
+        if (len === 0) return null
+        out.push({ k: 'lit', c: 0, s: i, e: i + len })
+        i += len
+      }
+      return out
+    }
+
+    /**
+     * 保留原文的 JSON 缩进（2 空格，版式同 JSON.stringify(v, null, 2)）：字符串（连同原来的转义写法）、数字、
+     * true/false/null 逐字拷贝，只重排 token 之间的空白；不是合法 JSON 原样返回。
+     * 不用 JSON.parse/JSON.stringify：那会把超过 2^53 的整数（订单号、账户号）四舍五入、把 1.50 写成 1.5、
+     * 把 \u 转义改写成字面字符、合并重复键 —— 而这里的文本会被用户编辑后原样发回给客户端。
+     * 迭代实现（不递归）；嵌套超过 PRETTY_JSON_MAX_DEPTH 层（缩进本身就会让文本膨胀成几百 MB）也原样返回。
+     */
+    const PRETTY_JSON_MAX_DEPTH = 512
+    function prettyJsonText(text) {
+      const src = String(text ?? '')
+      const toks = scanJsonTokens(src)
+      if (toks === null || toks.length === 0) return src
+      const parts = []
+      const pads = ['']
+      const pad = (d) => {
+        while (pads.length <= d) pads.push(pads[pads.length - 1] + '  ')
+        return pads[d]
+      }
+      const stack = [] // 0x7b {  /  0x5b [
+      let want = 'value' // value | key | colon | next（逗号或收尾）| done
+      for (let i = 0; i < toks.length; i++) {
+        const t = toks[i]
+        const c = t.k === 'p' ? t.c : 0
+        if (want === 'done') return src
+        if (want === 'colon') {
+          if (c !== 0x3a) return src
+          parts.push(': ')
+          want = 'value'
+          continue
+        }
+        if (want === 'next') {
+          const top = stack[stack.length - 1]
+          if (c === 0x2c) {
+            parts.push(',\n', pad(stack.length))
+            want = top === 0x7b ? 'key' : 'value'
+            continue
+          }
+          if ((c === 0x7d && top === 0x7b) || (c === 0x5d && top === 0x5b)) {
+            stack.pop()
+            parts.push('\n', pad(stack.length), c === 0x7d ? '}' : ']')
+            want = stack.length === 0 ? 'done' : 'next'
+            continue
+          }
+          return src
+        }
+        if (want === 'key') {
+          if (t.k !== 'str') return src
+          parts.push(src.slice(t.s, t.e))
+          want = 'colon'
+          continue
+        }
+        // want === 'value'
+        if (c === 0x7b || c === 0x5b) {
+          const close = c === 0x7b ? 0x7d : 0x5d
+          const nextTok = toks[i + 1]
+          if (nextTok !== undefined && nextTok.k === 'p' && nextTok.c === close) {
+            parts.push(c === 0x7b ? '{}' : '[]')
+            i++
+            want = stack.length === 0 ? 'done' : 'next'
+            continue
+          }
+          stack.push(c)
+          if (stack.length > PRETTY_JSON_MAX_DEPTH) return src
+          parts.push(c === 0x7b ? '{' : '[', '\n', pad(stack.length))
+          want = c === 0x7b ? 'key' : 'value'
+          continue
+        }
+        if (t.k === 'p') return src
+        parts.push(src.slice(t.s, t.e))
+        want = stack.length === 0 ? 'done' : 'next'
+      }
+      if (want !== 'done') return src
+      try {
+        return parts.join('')
+      } catch {
+        return src // 结果超过字符串长度上限（RangeError）：宁可不排版
+      }
+    }
+
+    /**
+     * 解析 JSON，但数字不转成 JS number，一律保留原文字符串（"1.50"、"12345678901234567891" 原样）。
+     * 用在用户能编辑、再发回宿主的 JSON 上（断点里的请求头 / 响应头）：头的值本来就是字符串，
+     * 用 JSON.parse 会把没加引号的大整数四舍五入。返回 { ok: true, value } / { ok: false }。
+     */
+    function parseJsonKeepNumbers(text) {
+      const src = String(text ?? '')
+      const toks = scanJsonTokens(src)
+      if (toks === null || toks.length === 0) return { ok: false }
+      let p = 0
+      const isP = (t, code) => t !== undefined && t.k === 'p' && t.c === code
+      const fail = () => { throw new SyntaxError('invalid JSON') }
+      const readValue = () => {
+        const t = toks[p++]
+        if (t === undefined) fail()
+        if (t.k === 'str') return JSON.parse(src.slice(t.s, t.e)) // 单个字符串 token：JSON.parse 无损
+        if (t.k === 'num') return src.slice(t.s, t.e)
+        if (t.k === 'lit') {
+          const w = src.slice(t.s, t.e)
+          return w === 'true' ? true : w === 'false' ? false : null
+        }
+        if (t.c === 0x7b) {
+          const obj = {}
+          if (isP(toks[p], 0x7d)) { p++; return obj }
+          for (;;) {
+            const k = toks[p++]
+            if (k === undefined || k.k !== 'str' || !isP(toks[p++], 0x3a)) fail()
+            // defineProperty：键名是 "__proto__" 时也当普通字段（与 JSON.parse 一致），不改原型
+            Object.defineProperty(obj, JSON.parse(src.slice(k.s, k.e)), { value: readValue(), enumerable: true, writable: true, configurable: true })
+            const sep = toks[p++]
+            if (isP(sep, 0x7d)) return obj
+            if (!isP(sep, 0x2c)) fail()
+          }
+        }
+        if (t.c === 0x5b) {
+          const arr = []
+          if (isP(toks[p], 0x5d)) { p++; return arr }
+          for (;;) {
+            arr.push(readValue())
+            const sep = toks[p++]
+            if (isP(sep, 0x5d)) return arr
+            if (!isP(sep, 0x2c)) fail()
+          }
+        }
+        return fail()
+      }
+      try {
+        const value = readValue()
+        return p === toks.length ? { ok: true, value } : { ok: false }
+      } catch {
+        return { ok: false }
+      }
     }
 
     /** Render one body: pretty JSON when parseable, readable fragment when truncated, raw text otherwise. */
@@ -670,6 +1043,254 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
         if (original.resBody !== response.body) changes.push({ path: '$.body', before: original.resBody ?? '', after: response.body })
         return changes
       }
+    }
+
+    // ------------------------------------------- 过滤器（Fiddler 式自定义过滤器）：纯函数
+    // 过滤器存在宿主上（GET/POST/DELETE /filters），面板、智能体（capture_query 的 filter / conditions）和同事共用。
+    // 匹配在宿主做（lib/capture-filters.mjs）；面板只负责编辑、即时校验，以及把「当前启用的过滤器」带进每次查询。
+
+    const FILTER_COND_LIMIT = 50
+    const FILTER_NAME_MAX = 80
+    const FILTER_VALUE_MAX = 2000
+    const FILTER_REGEX_MAX = 1000
+    const FILTER_HEADER_MAX = 200
+    /** 过滤条件放进查询串的上限（编码后字符数）：更长的已存过滤器改用 filterId，由宿主按 id 取（URL 太长会被拒）。 */
+    const FILTER_QUERY_MAX = 6000
+    /** 当前启用的过滤器多久和宿主对一次（被别处删除 / 修改时跟上）。 */
+    const FILTER_SYNC_MS = 5000
+    const HEADER_TOKEN_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
+
+    /** 宿主是旧版本（没有 GET /filters）时用的字段 / 运算符表：与 lib/capture-filters.mjs 的 FILTER_FIELDS / FILTER_OPS 同一份契约。 */
+    const BUILTIN_FILTER_FIELDS = [
+      { id: 'url', label: 'URL', kind: 'text', hint: '完整 URL' },
+      { id: 'host', label: '域名', kind: 'text', hint: '小写主机名' },
+      { id: 'path', label: '路径', kind: 'text', hint: '不含查询参数' },
+      { id: 'query', label: '查询参数', kind: 'text', hint: '? 后面的原文' },
+      { id: 'method', label: '方法', kind: 'text' },
+      { id: 'status', label: '状态码', kind: 'number' },
+      { id: 'process', label: '进程', kind: 'text', hint: '发起请求的进程名（不含 .exe）' },
+      { id: 'channel', label: '捕获渠道', kind: 'text', hint: 'realtime / intercept / local-proxy / import / agent' },
+      { id: 'contentType', label: 'Content-Type', kind: 'text', hint: '响应的 Content-Type' },
+      { id: 'durationMs', label: '耗时 ms', kind: 'number' },
+      { id: 'bytesRes', label: '响应大小', kind: 'number', hint: '字节' },
+      { id: 'bytesReq', label: '请求大小', kind: 'number', hint: '字节' },
+      { id: 'pid', label: '进程 PID', kind: 'number' },
+      { id: 'reqHeader', label: '请求头', kind: 'text', header: true },
+      { id: 'resHeader', label: '响应头', kind: 'text', header: true },
+      { id: 'reqBody', label: '请求体', kind: 'text' },
+      { id: 'resBody', label: '响应体', kind: 'text' },
+      { id: 'note', label: '备注', kind: 'text' },
+      { id: 'caller', label: '调用方', kind: 'text', hint: 'ViewModel / Api 方法 / 调用栈' },
+      { id: 'tag', label: '标签', kind: 'text' },
+    ]
+    // 文本比较也能用在数字字段上（比较 String(值)），所以 kinds 是 ['text', 'number']；数字比较只有 ['number']
+    const BUILTIN_FILTER_OPS = [
+      { id: 'contains', label: '包含', kinds: ['text', 'number'], needsValue: true },
+      { id: 'notContains', label: '不包含', kinds: ['text', 'number'], needsValue: true },
+      { id: 'equals', label: '等于', kinds: ['text', 'number'], needsValue: true },
+      { id: 'notEquals', label: '不等于', kinds: ['text', 'number'], needsValue: true },
+      { id: 'startsWith', label: '开头是', kinds: ['text', 'number'], needsValue: true },
+      { id: 'endsWith', label: '结尾是', kinds: ['text', 'number'], needsValue: true },
+      { id: 'regex', label: '匹配正则', kinds: ['text', 'number'], needsValue: true },
+      { id: 'notRegex', label: '不匹配正则', kinds: ['text', 'number'], needsValue: true },
+      { id: 'eq', label: '=', kinds: ['number'], needsValue: true },
+      { id: 'ne', label: '≠', kinds: ['number'], needsValue: true },
+      { id: 'gt', label: '>', kinds: ['number'], needsValue: true },
+      { id: 'gte', label: '≥', kinds: ['number'], needsValue: true },
+      { id: 'lt', label: '<', kinds: ['number'], needsValue: true },
+      { id: 'lte', label: '≤', kinds: ['number'], needsValue: true },
+      { id: 'exists', label: '有值', kinds: ['text', 'number'], needsValue: false },
+      { id: 'notExists', label: '为空', kinds: ['text', 'number'], needsValue: false },
+    ]
+
+    const fieldKind = (field) => (field !== undefined && field !== null && field.kind === 'number' ? 'number' : 'text')
+    const opKinds = (op) => (op !== undefined && op !== null && Array.isArray(op.kinds) && op.kinds.length > 0 ? op.kinds : ['text', 'number'])
+    /** 只用于数字的运算符（= ≠ > …）：值必须是数字，没有 Aa。 */
+    const isNumberOp = (op) => opKinds(op).includes('number') && !opKinds(op).includes('text')
+    /** 文本比较（包含 / 等于 / 正则 …）：有 Aa（区分大小写）开关。 */
+    const isTextOp = (op) => op !== undefined && op !== null && op.needsValue !== false && !isNumberOp(op)
+    const isRegexOp = (opId) => opId === 'regex' || opId === 'notRegex'
+
+    /** 某字段能用的运算符：文本字段只给文本比较；数字字段先给 = ≠ > …，再给文本比较（按 String(值) 比），最后 有值 / 为空。 */
+    function opsForField(field, ops) {
+      const kind = fieldKind(field)
+      const usable = ops.filter((op) => opKinds(op).includes(kind) || (kind === 'number' && opKinds(op).includes('text')))
+      if (kind !== 'number') return usable
+      const rank = (op) => (isNumberOp(op) ? 0 : op.needsValue === false ? 2 : 1)
+      return usable.map((op, i) => [op, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([op]) => op)
+    }
+
+    const BUILTIN_OPS_BY_ID = new Map(BUILTIN_FILTER_OPS.map((op) => [op.id, op]))
+    /** 名称的比较形式（与宿主一致：连续空白算一个空格、去首尾空白、不区分大小写）。 */
+    const cleanFilterName = (name) => String(name ?? '').replace(/\s+/g, ' ').trim()
+    const codePoints = (s) => [...String(s)].length
+
+    /**
+     * 条件的规范形式（判断改没改、发给宿主）：不带 id；头名只在非空时带；不用值的比较（有值 / 为空）值记为空，
+     * 只有文本比较带 Aa。编辑中的副本照样留着原来的值（换回「包含」时还在）。值不去空白（包含空格也算条件）。
+     */
+    function canonCond(c, opsById = BUILTIN_OPS_BY_ID) {
+      const op = opsById.get(String(c.op ?? ''))
+      const out = {
+        enabled: c.enabled !== false,
+        field: String(c.field ?? ''),
+        op: String(c.op ?? ''),
+        value: op !== undefined && op.needsValue === false ? '' : String(c.value ?? ''),
+        caseSensitive: c.caseSensitive === true && (op === undefined || isTextOp(op)),
+      }
+      const header = typeof c.header === 'string' ? c.header.trim() : ''
+      if (header !== '') out.header = header
+      return out
+    }
+    const condSig = (c, opsById) => JSON.stringify(canonCond(c, opsById))
+    /** 发给宿主的过滤条件（查询串 conditions= / POST 体）：{ mode, conditions }。 */
+    const filterPayload = (f, opsById) => ({ mode: f.mode === 'any' ? 'any' : 'all', conditions: (Array.isArray(f.conditions) ? f.conditions : []).map((c) => canonCond(c, opsById)) })
+    const filterSignature = (f, opsById) => JSON.stringify({ name: cleanFilterName(f.name), ...filterPayload(f, opsById) })
+    const enabledCondCount = (f) => (Array.isArray(f.conditions) ? f.conditions : []).filter((c) => c && c.enabled !== false).length
+
+    /** 宿主报错里「第 N 个条件」→ 下标（0 起）；不是某个条件的错误返回 -1。 */
+    function conditionIndexOf(message) {
+      const m = /第\s*(\d+)\s*个条件/.exec(String(message ?? ''))
+      return m === null ? -1 : Number(m[1]) - 1
+    }
+
+    /** 宿主 FILTER_INVALID 错误点名的条件下标（0 起）：优先用错误体里的 conditionIndex，没有就从文字里认。 */
+    function filterErrorIndex(error) {
+      const raw = error?.body?.conditionIndex
+      return Number.isInteger(raw) && raw >= 0 ? raw : conditionIndexOf(errText(error))
+    }
+
+    /**
+     * 值还没填（要填值的比较方式，值是空的）：不标红（刚加的条件本来就是空的），但还不能统计、保存、应用。
+     * 与宿主同一口径：文本比较的值不能是空串；数字比较去掉空白后不能为空。
+     */
+    function condIncomplete(c, opsById) {
+      const op = opsById.get(c.op)
+      if (op === undefined || op.needsValue === false) return false
+      const value = String(c.value ?? '')
+      return isNumberOp(op) ? value.trim() === '' : value === ''
+    }
+
+    /** 本地先查一遍明显的错误（正则写错、数字写错…），即时标红；宿主的校验结果到了以宿主的为准。 */
+    function condProblem(c, fieldsById, opsById, ops) {
+      const field = fieldsById.get(c.field)
+      const op = opsById.get(c.op)
+      if (field === undefined) return `未知字段「${c.field}」`
+      if (op === undefined) return `未知比较方式「${c.op}」`
+      if (!opsForField(field, ops).some((o) => o.id === op.id)) return `「${field.label ?? field.id}」不能用「${op.label ?? op.id}」`
+      const header = typeof c.header === 'string' ? c.header.trim() : ''
+      if (field.header === true && header !== '') {
+        if (codePoints(header) > FILTER_HEADER_MAX) return `头名称太长（最多 ${FILTER_HEADER_MAX} 个字符）`
+        if (!HEADER_TOKEN_RE.test(header)) return '头名称不合法：只能有字母、数字和 - _ . 等符号，不能有空格或冒号'
+      }
+      if (op.needsValue === false || condIncomplete(c, opsById)) return null
+      const value = String(c.value ?? '')
+      if (codePoints(value) > FILTER_VALUE_MAX) return `值太长（最多 ${FILTER_VALUE_MAX} 个字符）`
+      if (isNumberOp(op)) {
+        if (!Number.isFinite(Number(value.trim()))) return `「${op.label ?? op.id}」要填数字，「${value.trim()}」不是数字`
+        return null
+      }
+      if (isRegexOp(op.id)) {
+        if (codePoints(value) > FILTER_REGEX_MAX) return `正则太长（最多 ${FILTER_REGEX_MAX} 个字符）`
+        try {
+          filterRegex(value, c.caseSensitive === true)
+        } catch (error) {
+          return `正则无效：${errText(error)}`
+        }
+      }
+      return null
+    }
+
+    /**
+     * 与宿主同一套正则规则：不加 u 标志（.NET / Fiddler 风格的写法照样能用），不区分大小写时加 i；
+     * 开头的 .NET 内联选项（(?i) / (?ms) …）翻译成标志。本地只用来即时提示，宿主的校验结果到了以宿主为准。
+     */
+    const INLINE_REGEX_OPTIONS = /^\(\?([imnsx]+)\)/
+    function filterRegex(pattern, caseSensitive) {
+      let source = pattern
+      const flags = new Set(caseSensitive ? [] : ['i'])
+      const inline = INLINE_REGEX_OPTIONS.exec(source)
+      if (inline !== null) {
+        source = source.slice(inline[0].length)
+        if (inline[1].includes('x') && /[\s#]/.test(source)) throw new Error('不支持 (?x) 选项下的空白和 # 注释')
+        for (const option of inline[1]) if (option === 'i' || option === 'm' || option === 's') flags.add(option)
+      }
+      return new RegExp(source, [...flags].join(''))
+    }
+
+    /** 一行中文描述（按钮提示、统计行用；与宿主 describeFilter 同一口径）。 */
+    function describeFilterText(f, fieldsById, opsById) {
+      const parts = []
+      for (const c of Array.isArray(f.conditions) ? f.conditions : []) {
+        if (c === null || typeof c !== 'object' || c.enabled === false) continue
+        const field = fieldsById.get(c.field)
+        const op = opsById.get(c.op)
+        const header = typeof c.header === 'string' ? c.header.trim() : ''
+        let text = `${field?.label ?? c.field}${field?.header === true && header !== '' ? ' ' + header : ''} ${op?.label ?? c.op}`
+        if (op === undefined || op.needsValue !== false) {
+          const value = String(c.value ?? '')
+          if (isRegexOp(c.op)) text += ` /${value}/${c.caseSensitive === true ? '' : 'i'}`
+          else if (op !== undefined && isNumberOp(op)) text += ` ${value}`
+          else text += ` "${value}"${c.caseSensitive === true ? '（区分大小写）' : ''}`
+        }
+        parts.push(text)
+      }
+      if (parts.length === 0) return '（无条件，匹配全部）'
+      return `${f.mode === 'any' ? '满足任一' : '全部满足'}：${parts.join('；')}`
+    }
+
+    /** 条件列表的可编辑副本（字段都补齐，头名缺省为空串）。 */
+    function cloneConditions(list) {
+      return (Array.isArray(list) ? list : []).filter((c) => c !== null && typeof c === 'object').map((c) => ({
+        ...(typeof c.id === 'string' && c.id !== '' ? { id: c.id } : {}),
+        enabled: c.enabled !== false,
+        field: String(c.field ?? 'url'),
+        op: String(c.op ?? 'contains'),
+        value: String(c.value ?? ''),
+        caseSensitive: c.caseSensitive === true,
+        header: typeof c.header === 'string' ? c.header : '',
+      }))
+    }
+
+    /** prefs 里存的「当前启用的过滤器」快照（宿主还没回话时先用它查，宿主的列表回来后以宿主为准）。 */
+    function activeFilterSnapshot(f) {
+      if (f === null || typeof f !== 'object' || typeof f.id !== 'string' || f.id === '' || !Array.isArray(f.conditions)) return null
+      return {
+        id: f.id,
+        name: String(f.name ?? ''),
+        mode: f.mode === 'any' ? 'any' : 'all',
+        conditions: cloneConditions(f.conditions),
+        updatedAt: Number.isFinite(Number(f.updatedAt)) ? Number(f.updatedAt) : 0,
+      }
+    }
+
+    /** 记录的捕获渠道（与过滤字段 channel 同一口径）。 */
+    const channelOf = (r) => (r?.source === 'proxy' ? (r.process === 'intercept' ? 'intercept' : 'local-proxy') : String(r?.source ?? ''))
+
+    /** 发起请求的进程：`进程名:PID`（实时捕获只有进程名；都没有返回空串）。 */
+    function clientProcText(r) {
+      const name = typeof r?.clientProcess === 'string' ? r.clientProcess : ''
+      const pid = Number.isInteger(r?.clientPid) ? r.clientPid : null
+      if (name === '' && pid === null) return ''
+      if (name === '') return `PID ${pid}`
+      return pid === null ? name : `${name}:${pid}`
+    }
+
+    const SVG_ATTRS = 'viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"'
+    const ICON_FUNNEL = `<svg ${SVG_ATTRS}><path d="M2.5 3h11l-4.3 5.3v4.4l-2.4 1.2V8.3z"/></svg>`
+    const ICON_SAVE = `<svg ${SVG_ATTRS}><path d="M3 2.5h8.2l2.3 2.3v8.7h-11z"/><path d="M5.2 2.5v3.3h5V2.5"/><path d="M5.2 13.5V9.2h5.6v4.3"/></svg>`
+    const ICON_COPY = `<svg ${SVG_ATTRS}><rect x="5.5" y="5.5" width="8" height="8" rx="1.2"/><path d="M10.5 5.5V3.2a.7.7 0 0 0-.7-.7H3.2a.7.7 0 0 0-.7.7v6.6c0 .4.3.7.7.7h2.3"/></svg>`
+    const ICON_REVERT = `<svg ${SVG_ATTRS}><path d="M3.5 6.5h6.2a3.3 3.3 0 0 1 0 6.6H6"/><path d="M6 3.8 3.3 6.5 6 9.2"/></svg>`
+    const ICON_TRASH = `<svg ${SVG_ATTRS}><path d="M2.8 4.2h10.4"/><path d="M6.2 4.2V2.8h3.6v1.4"/><path d="M4.2 4.2l.6 9h6.4l.6-9"/><path d="M6.8 6.6v4.4M9.2 6.6v4.4"/></svg>`
+
+    /** 图标按钮：图标是常量 SVG，文字说明放 title / aria-label（不往 innerHTML 里放任何数据）。 */
+    function iconButton(icon, title, extraClass) {
+      const b = el('button', 'apv-btn apv-fd-icon' + (extraClass ? ' ' + extraClass : ''))
+      b.type = 'button'
+      b.innerHTML = icon
+      b.title = title
+      b.setAttribute('aria-label', title)
+      return b
     }
 
     // ------------------------------------------------------- P0-3 json tree
@@ -953,6 +1574,11 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       // toolbar
       const toolbar = el('div', 'apv-toolbar')
       toolbar.appendChild(el('span', 'apv-title', '接口捕获'))
+      // 多客户端捕获库：显示的是哪个客户端的记录（宿主没配 capture-clients.json 或宿主太旧时整个隐藏）
+      const clientSel = el('select', 'apv-select apv-client-sel')
+      clientSel.hidden = true
+      clientSel.title = '记录按客户端分库：「自动」跟随最近启动的客户端；选某个客户端 = 锁定只看它的记录（规则 / 证书 / 过滤器所有客户端共用）'
+      toolbar.appendChild(clientSel)
       const stats = el('span', 'apv-stats', '…')
       toolbar.appendChild(stats)
       const q = el('input', 'apv-q')
@@ -977,6 +1603,24 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       const flaggedBtn = el('button', 'apv-btn', '只看标记')
       flaggedBtn.title = '只显示打了星标的记录'
       toolbar.appendChild(flaggedBtn)
+      // 过滤器（Fiddler 式）：条件构造器 + 存在宿主上的过滤器；启用后和这一排的筛选同时生效（AND）
+      const filterGroup = el('span', 'apv-fgroup')
+      const filterBtn = el('button', 'apv-btn apv-fbtn')
+      filterBtn.type = 'button'
+      const filterIconEl = el('span')
+      filterIconEl.style.display = 'inline-flex'
+      filterIconEl.innerHTML = ICON_FUNNEL
+      const filterLabel = el('span', 'apv-fbtn-label', '过滤器')
+      filterBtn.appendChild(filterIconEl)
+      filterBtn.appendChild(filterLabel)
+      const filterClearBtn = el('button', 'apv-btn apv-fbtn-x', '×')
+      filterClearBtn.type = 'button'
+      filterClearBtn.title = '取消当前过滤器（恢复为不过滤）'
+      filterClearBtn.setAttribute('aria-label', '取消当前过滤器')
+      filterClearBtn.hidden = true
+      filterGroup.appendChild(filterBtn)
+      filterGroup.appendChild(filterClearBtn)
+      toolbar.appendChild(filterGroup)
       const captureBtn = el('button', 'apv-btn', '开始实时捕获')
       captureBtn.id = 'apv-capture-toggle'
       captureBtn.title = '像 Fiddler 一样实时抓取客户端 HTTP 流量（自动解析入库）'
@@ -1019,21 +1663,58 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       sysProxyBtn.title = '把 Windows 系统代理指向本代理（浏览器等程序即走它）；再次点击恢复原设置'
       toolbar.appendChild(sysProxyBtn)
       const rulesBtn = el('button', 'apv-btn', '代理规则')
-      rulesBtn.title = 'AutoResponder 规则引擎：按 URL/方法 mock 响应、伪造状态码、注入延迟、阻断请求（仅对本地代理流量生效）'
+      rulesBtn.title = 'AutoResponder 规则引擎：按 URL/方法 mock 响应、伪造状态码、注入延迟、阻断请求（对本地代理与透明拦截的流量生效）'
       toolbar.appendChild(rulesBtn)
       const bpBtn = el('button', 'apv-btn', '断点')
-      bpBtn.title = '请求断点：命中的本地代理请求在转发前挂起，可改 方法/请求头/请求体 后放行或丢弃（Fiddler 式，仅请求阶段）'
+      bpBtn.title = '断点（Fiddler 式）：请求阶段=转发前挂起改 方法/请求头/请求体；响应阶段=拿到真实响应后挂起改 状态码/响应头/响应体，再放行或丢弃'
       toolbar.appendChild(bpBtn)
+      const interceptBtn = el('button', 'apv-btn', '透明拦截')
+      interceptBtn.title = '客户端强制直连、不走任何代理时用：把它的接口域名经 hosts 指向本机做反向代理（Fiddler 反向代理模式），mock / 断点 / 延时随即对它生效；不改客户端代码'
+      toolbar.appendChild(interceptBtn)
+      const interceptChip = el('span', 'apv-stats', '')
+      toolbar.appendChild(interceptChip)
+      const netsimBtn = el('button', 'apv-btn', '延时/弱网')
+      const NETSIM_BTN_TITLE = '全局接口延时 / 弱网（Fiddler「Simulate Modem Speeds」）：不写规则，统一加 请求延迟 / 回包延迟 / 抖动 / 上下行限速；单个接口的延时在「代理规则」或详情里的「Mock」里设'
+      netsimBtn.title = NETSIM_BTN_TITLE
+      toolbar.appendChild(netsimBtn)
+      /**
+       * 工具栏按钮跟着真实开关走（智能体用 capture_netsim 打开的全局减速也要看得见，C43）。
+       * summary 只在拿到宿主状态里的摘要时给（undefined = 不动提示文字），免得两处算法不同的摘要在提示里来回跳。
+       */
+      const setNetsimBtn = (enabled, summary) => {
+        netsimBtn.textContent = enabled ? '延时/弱网 ●' : '延时/弱网'
+        if (summary !== undefined) netsimBtn.title = enabled ? `${NETSIM_BTN_TITLE}\n当前已启用：${summary || '（未设数值）'}` : NETSIM_BTN_TITLE
+      }
       // 导出（P0-4）
       const exportSep = el('span', 'apv-sep', '|')
       toolbar.appendChild(exportSep)
       const exportSel = el('select', 'apv-select')
-      ;['HAR', 'JSON', 'CSV', 'OpenAPI'].forEach((f) => {
-        const opt = el('option', '', f)
+      ;[['HAR', 'HAR'], ['JSON', 'JSON'], ['CSV', 'CSV'], ['OpenAPI', 'OpenAPI'], ['AI', 'AI 分析包 (Markdown)']].forEach(([f, label]) => {
+        const opt = el('option', '', label)
         opt.value = f
         exportSel.appendChild(opt)
       })
       toolbar.appendChild(exportSel)
+      // AI 分析包：正文截断长度 + 最多导出多少条（只在选了「AI 分析包」时显示）
+      const aiBodySel = el('select', 'apv-select apv-aiopt')
+      aiBodySel.title = 'AI 分析包里每个请求 / 响应正文最多保留多少（超出部分截掉并注明原长）'
+      ;[['1024', '正文 1KB'], ['4096', '正文 4KB（默认）'], ['16384', '正文 16KB'], ['65536', '正文 64KB'], ['0', '不含正文']].forEach(([v, label]) => {
+        const opt = el('option', '', label)
+        opt.value = v
+        aiBodySel.appendChild(opt)
+      })
+      aiBodySel.value = '4096'
+      aiBodySel.hidden = true
+      toolbar.appendChild(aiBodySel)
+      const aiLimitIn = el('input', 'apv-port apv-ailimit apv-aiopt')
+      aiLimitIn.type = 'number'
+      aiLimitIn.min = '1'
+      aiLimitIn.max = '5000'
+      aiLimitIn.value = '500'
+      aiLimitIn.title = '最多导出多少条（取最新的，默认 500，最多 5000）'
+      aiLimitIn.setAttribute('aria-label', 'AI 分析包最多导出的条数')
+      aiLimitIn.hidden = true
+      toolbar.appendChild(aiLimitIn)
       const exportRedactWrap = el('label', 'apv-autoscroll')
       const exportRedactCb = el('input', '')
       exportRedactCb.type = 'checkbox'
@@ -1063,6 +1744,11 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       moreBtn.title = '高级筛选 / 聚合视图 / 删除筛选集 / 自动捕获 / 日志路径'
       toolbar.appendChild(moreBtn)
       view.appendChild(toolbar)
+      // 提示条：AI 分析包的结果（保存路径 + 复制按钮）、当前过滤器被别处删除等，留到用户关掉或下一条提示
+      const noticeBar = el('div', 'apv-notice')
+      noticeBar.hidden = true
+      noticeBar.setAttribute('role', 'status')
+      view.appendChild(noticeBar)
 
       // ---- P1 advanced filter bar + observability controls
       const filterBar = el('div', 'apv-filterbar')
@@ -1148,7 +1834,7 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       delSavedBtn.title = '删除选中的已保存筛选'
       fRow2.appendChild(delSavedBtn)
       const clearFilterBtn = el('button', 'apv-btn', '清空条件')
-      clearFilterBtn.title = '清空当前筛选条件，不删除记录或已保存筛选'
+      clearFilterBtn.title = '清空上方的筛选条件，不删除记录或已保存筛选；工具栏「过滤器」不受影响（用它旁边的 × 取消）'
       fRow2.appendChild(clearFilterBtn)
       filterBar.appendChild(fRow2)
       const fRow3 = el('div', 'apv-frow')
@@ -1186,7 +1872,28 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       // ---- AutoResponder rules panel
       const rulesWrap = el('div', 'apv-agg')
       rulesWrap.hidden = true
-      const rulesHelp = el('div', 'apv-note', '规则按顺序匹配第一条生效，仅对「本地代理」捕获的 HTTP(S) 流量起作用（含 HTTPS 解密流量，不含 WebSocket）。mock=直接回包不上行；延迟=转发前等待；阻断=断开连接；重写状态=正常转发但改响应状态码。')
+      const RULES_HELP_TEXT = '规则按顺序匹配第一条生效，对「本地代理」和「透明拦截」进来的 HTTP(S) 流量起作用（不含 WebSocket 帧）。' +
+        'mock=直接回包；Map Local=用本地文件回包（改文件即生效）；Map Remote=转发到另一个地址（换测试环境）；改写=在真实响应上改字段；' +
+        '延迟=请求延迟（转发前等）+ 回包延迟（拿到真实响应后再等）± 抖动，可叠加限速；挂起=一直不回包让客户端自己超时；阻断=立即断开；重写状态=只改状态码。'
+      // 规则集导出 / 导入（交给同事、留作备份）
+      const rulesTopBar = el('div', 'apv-rules-head')
+      rulesTopBar.appendChild(el('span', 'apv-t', '规则集'))
+      const rulesExportBtn = el('button', 'apv-btn', '导出规则')
+      rulesExportBtn.title = '把全部规则（含停用的）导出成 JSON 文件，交给同事导入或留作备份；不含命中次数'
+      rulesTopBar.appendChild(rulesExportBtn)
+      const rulesImportBtn = el('button', 'apv-btn', '导入规则')
+      rulesImportBtn.title = '从导出的 JSON 文件导入规则：选「合并」加在最前面（跳过完全相同的），或「替换」现有规则'
+      rulesTopBar.appendChild(rulesImportBtn)
+      const rulesImportFile = el('input', '')
+      rulesImportFile.type = 'file'
+      rulesImportFile.accept = '.json,application/json'
+      rulesImportFile.style.display = 'none'
+      rulesTopBar.appendChild(rulesImportFile)
+      const rulesImportChoice = el('span', 'apv-rules-choice')
+      rulesImportChoice.hidden = true
+      rulesTopBar.appendChild(rulesImportChoice)
+      rulesWrap.appendChild(rulesTopBar)
+      const rulesHelp = el('div', 'apv-note apv-rules-help', RULES_HELP_TEXT)
       rulesHelp.style.padding = '0 0 8px'
       rulesWrap.appendChild(rulesHelp)
       const rulesForm = el('div', 'apv-rules-form')
@@ -1202,19 +1909,25 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       })
       rulesForm.appendChild(ruleMethodSel)
       const ruleUrlIn = el('input', 'apv-fin')
-      ruleUrlIn.placeholder = 'URL 匹配（子串/通配*/正则）'
+      ruleUrlIn.placeholder = 'URL 匹配（子串 / 接口路径：完整 URL 或 /api/x / 通配* / 正则）'
+      ruleUrlIn.title = '接口路径：写完整 URL（https://host/api/x，只匹配这个域名）或只写 /api/x（任何域名上的这个路径），都忽略查询参数；' +
+        '包含 = URL 子串；通配用 *；正则不区分大小写。除「延迟」外，规则必须填 URL（留空会接管所有请求）。'
       ruleUrlIn.style.width = '200px'
       rulesForm.appendChild(ruleUrlIn)
       const ruleTypeSel = el('select', 'apv-select')
-      ;['contains', 'glob', 'regex'].forEach((t) => {
-        const opt = el('option', '', t === 'contains' ? '包含' : t === 'glob' ? '通配' : '正则')
+      ;[['contains', '包含'], ['path', '接口路径(完整URL或/路径，忽略参数)'], ['glob', '通配'], ['regex', '正则']].forEach(([t, label]) => {
+        const opt = el('option', '', label)
         opt.value = t
         ruleTypeSel.appendChild(opt)
       })
       rulesForm.appendChild(ruleTypeSel)
+      const RULE_ACTIONS = [
+        ['mock', 'mock 回包'], ['map-local', 'Map Local 本地文件'], ['map-remote', 'Map Remote 转发'], ['rewrite', '改写真实响应'],
+        ['delay', '延迟'], ['hang', '挂起(模拟超时)'], ['block', '阻断'], ['rewrite-status', '重写状态码'],
+      ]
       const ruleActionSel = el('select', 'apv-select')
-      ;['mock', 'delay', 'block', 'rewrite-status'].forEach((a) => {
-        const opt = el('option', '', a === 'mock' ? 'mock 回包' : a === 'delay' ? '注入延迟' : a === 'block' ? '阻断' : '重写状态码')
+      RULE_ACTIONS.forEach(([a, label]) => {
+        const opt = el('option', '', label)
         opt.value = a
         ruleActionSel.appendChild(opt)
       })
@@ -1222,25 +1935,78 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       const ruleDelayIn = el('input', 'apv-fin apv-fin-dur')
       ruleDelayIn.type = 'number'
       ruleDelayIn.min = '0'
-      ruleDelayIn.placeholder = '延迟ms'
+      ruleDelayIn.placeholder = '请求延迟ms'
+      ruleDelayIn.title = '请求延迟：转发前（或本地回包前）等待的毫秒数；「挂起」时 = 挂起多久（默认 60000）'
       rulesForm.appendChild(ruleDelayIn)
+      const ruleRespDelayIn = el('input', 'apv-fin apv-fin-dur')
+      ruleRespDelayIn.type = 'number'
+      ruleRespDelayIn.min = '0'
+      ruleRespDelayIn.placeholder = '回包延迟ms'
+      ruleRespDelayIn.title = '回包延迟：拿到真实响应（或生成 mock）后，再等这么久才发给客户端（Fiddler AutoResponder 的 Latency）'
+      rulesForm.appendChild(ruleRespDelayIn)
+      const ruleJitterIn = el('input', 'apv-fin apv-fin-dur')
+      ruleJitterIn.type = 'number'
+      ruleJitterIn.min = '0'
+      ruleJitterIn.placeholder = '抖动±ms'
+      ruleJitterIn.title = '抖动：请求延迟在 ± 这个范围内随机，模拟不稳定的网络'
+      rulesForm.appendChild(ruleJitterIn)
       const ruleThrottleIn = el('input', 'apv-fin apv-fin-dur')
       ruleThrottleIn.type = 'number'
       ruleThrottleIn.min = '0'
       ruleThrottleIn.placeholder = '限速KB/s'
-      ruleThrottleIn.title = '带宽限速（KB/s，0=不限）：对「延迟」类规则命中的响应按此速率下发，模拟弱网'
+      ruleThrottleIn.title = '下行限速（KB/s，0=不限）：命中的响应按此速率下发，模拟弱网'
       rulesForm.appendChild(ruleThrottleIn)
       const ruleStatusIn = el('input', 'apv-fin apv-fin-dur')
       ruleStatusIn.type = 'number'
       ruleStatusIn.placeholder = '状态码'
       rulesForm.appendChild(ruleStatusIn)
+      const ruleArgIn = el('input', 'apv-fin')
+      ruleArgIn.style.width = '220px'
+      ruleArgIn.spellcheck = false
+      rulesForm.appendChild(ruleArgIn)
       const ruleBodyIn = el('textarea', 'apv-fin apv-rule-body')
-      ruleBodyIn.placeholder = 'mock 响应体（JSON/文本）'
+      ruleBodyIn.spellcheck = false
       rulesForm.appendChild(ruleBodyIn)
       const ruleAddBtn = el('button', 'apv-btn', '添加规则')
-      ruleAddBtn.title = '写入规则集（对正在运行的代理即时生效）'
       rulesForm.appendChild(ruleAddBtn)
+      const ruleCancelBtn = el('button', 'apv-btn', '取消编辑')
+      ruleCancelBtn.hidden = true
+      rulesForm.appendChild(ruleCancelBtn)
       rulesWrap.appendChild(rulesForm)
+      // 表单的提交方式：'add' 新增 / 'edit' 改一条（以原规则为底，C39）/
+      // 'quick-original'（详情「Mock ▾ → 原响应」带进来的，提交时写成这个接口的一键规则并替换旧的，C38）。
+      // ruleAddTemplate：要改的规则已被删掉时，表单转成「添加」，原规则里表单管不到的字段（限定域名、响应头…）作为模板带上。
+      let ruleFormMode = 'add'
+      let ruleAddTemplate = null
+      /** 按动作切换"参数框/正文框"的含义与可见性，免得用户猜哪个框管什么。 */
+      const REWRITE_PLACEHOLDER = '改写脚本（每行一条）：\nset data.list = []\ndel data.banner\nreplace 涨停 => 跌停\nstatus 500\nheader X-Mock: 1\nreq.header Authorization: xxx\nreq.query token = abc'
+      const syncRuleForm = () => {
+        const a = ruleActionSel.value
+        const quick = ruleFormMode === 'quick-original'
+        ruleArgIn.hidden = !(a === 'map-local' || a === 'map-remote')
+        ruleArgIn.placeholder = a === 'map-local' ? '本地文件的完整路径（每次请求都重新读，改文件即生效）' : '目标地址（https://test-host 只换主机；带路径=整条替换）'
+        ruleBodyIn.hidden = !(a === 'mock' || a === 'rewrite')
+        ruleBodyIn.placeholder = a === 'rewrite' ? REWRITE_PLACEHOLDER : 'mock 响应体（JSON/文本）'
+        ruleBodyIn.style.height = a === 'rewrite' ? '96px' : quick ? '160px' : ''
+        ruleBodyIn.style.width = a === 'rewrite' ? '300px' : quick ? '420px' : ''
+        ruleStatusIn.hidden = !(a === 'mock' || a === 'map-local' || a === 'rewrite-status')
+        // 一键规则固定「接口路径 + mock」，一键接口只收 方法 / URL / 状态码 / 请求延迟 / 正文 / 名称，其余框不显示
+        ruleRespDelayIn.hidden = quick || a === 'hang' || a === 'block'
+        ruleThrottleIn.hidden = quick || a === 'hang' || a === 'block'
+        ruleJitterIn.hidden = quick
+        ruleTypeSel.disabled = quick
+        ruleActionSel.disabled = quick
+        ruleDelayIn.placeholder = a === 'hang' ? '挂起ms(默认60000)' : a === 'block' ? '多久后断开ms' : '请求延迟ms'
+        ruleAddBtn.textContent = ruleFormMode === 'edit' ? '保存修改' : quick ? '生效（替换一键规则）' : '添加规则'
+        ruleAddBtn.title = ruleFormMode === 'edit'
+          ? '只改这一条规则；表单里看不到的字段（限定域名、响应头等）原样保留'
+          : quick
+            ? '按「方法 + 接口路径」写成这个接口的一键规则，放到最前面；这个接口原来的一键规则会被替换'
+            : '写入规则集：插到最前面（规则按顺序匹配，先到先得），对正在运行的代理 / 透明拦截即时生效'
+        ruleCancelBtn.hidden = ruleFormMode === 'add' && ruleAddTemplate === null
+      }
+      ruleActionSel.addEventListener('change', syncRuleForm)
+      syncRuleForm()
       const rulesTable = el('table', 'apv-table apv-rules-table')
       const rulesHead = el('thead')
       const rulesHeadRow = el('tr')
@@ -1255,7 +2021,7 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       // ---- 请求断点面板
       const bpWrap = el('div', 'apv-agg')
       bpWrap.hidden = true
-      bpWrap.appendChild(el('div', 'apv-note', '请求断点：启用后，命中（方法 / URL 子串 过滤）的「本地代理」请求会在转发前挂起，等你在下方改 方法/请求头/请求体 后「放行」，或「丢弃」。仅请求阶段；120s 未处理自动放行。'))
+      bpWrap.appendChild(el('div', 'apv-note', '断点：启用后，命中（阶段 / 方法 / URL 子串 过滤）的「本地代理」与「透明拦截」请求会挂起等你处理。请求阶段=转发前改 方法/请求头/请求体；响应阶段=拿到真实响应后改 状态码/响应头/响应体（压缩自动解开）再发给客户端。120s 未处理自动放行。'))
       const bpForm = el('div', 'apv-rules-form')
       const bpEnableWrap = el('label', 'apv-autoscroll')
       const bpEnableCb = el('input', '')
@@ -1270,6 +2036,14 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
         bpMethodSel.appendChild(o)
       })
       bpForm.appendChild(bpMethodSel)
+      const bpPhaseSel = el('select', 'apv-select')
+      ;[['request', '请求阶段'], ['response', '响应阶段'], ['both', '请求+响应']].forEach(([v, l]) => {
+        const o = el('option', '', l)
+        o.value = v
+        bpPhaseSel.appendChild(o)
+      })
+      bpPhaseSel.title = '在哪个阶段挂起：请求（转发前）/ 响应（拿到真实响应后、发给客户端前）/ 两者'
+      bpForm.appendChild(bpPhaseSel)
       const bpUrlIn = el('input', 'apv-fin')
       bpUrlIn.placeholder = 'URL 包含…（空=全部）'
       bpForm.appendChild(bpUrlIn)
@@ -1279,6 +2053,95 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       const bpPausedEl = el('div', 'apv-bp-paused')
       bpWrap.appendChild(bpPausedEl)
       view.appendChild(bpWrap)
+
+      // ---- 透明拦截面板（hosts 重定向 + 反向代理）
+      const icWrap = el('div', 'apv-agg')
+      icWrap.hidden = true
+      icWrap.appendChild(el('div', 'apv-note',
+        '适用于在代码里强制直连、不认系统代理的客户端。启用后，把下面这些域名在系统 hosts 里指向本机回环地址，由本插件解密并转发到真实服务器（Fiddler 的「反向代理 + HOSTS」做法），' +
+        '不改客户端代码、不装驱动；之后「代理规则 / 断点 / 延时」对这些域名全部生效。启用后**重启客户端**立即生效（否则等它的连接池自然轮换，约 2 分钟）。' +
+        '安全措施：只改 hosts 里本插件自己那一段；重启电脑、或宿主退出后监听不在时，计划任务自动删掉这段；停用后排空约 150 秒再关监听，客户端不会断。' +
+        '注意：hosts 对一个域名的**所有端口**生效 —— 这个域名上还有非 HTTP 的端口（如行情推送 TCP 长连接）时，要加一行 tcp://域名:端口 原样透传，否则会连不上。'))
+      const icForm = el('div', 'apv-rules-form')
+      const icHostsIn = el('textarea', 'apv-fin apv-rule-body')
+      icHostsIn.placeholder = '要拦截的域名，每行一个：\napi.example.com（= 443 + 80）\nhttps://host:8443（非默认端口写全）\ntcp://host:9000（非 HTTP 端口原样透传）'
+      icHostsIn.spellcheck = false
+      icHostsIn.style.width = '320px'
+      icHostsIn.style.height = '96px'
+      icForm.appendChild(icHostsIn)
+      const icBtnCol = el('div', 'apv-ic-btns')
+      const icSuggestBtn = el('button', 'apv-btn', '从捕获记录填充')
+      icSuggestBtn.title = '列出捕获库里出现过的域名：客户端自己的流量（实时捕获来源）排在前面并默认勾上；其它进程的域名标「非客户端流量」，不默认勾'
+      const icStartBtn = el('button', 'apv-btn', '启用拦截')
+      icStartBtn.title = '解析真实地址 → 起监听 → 最后改 hosts（顺序保证客户端不会被指向一个还没人应答的地址）'
+      const icStopBtn = el('button', 'apv-btn apv-btn-danger', '停用拦截')
+      icStopBtn.title = '先还原 hosts，再排空约 150 秒后关监听'
+      const icCaBtn = el('button', 'apv-btn', '安装根证书')
+      icCaBtn.title = '严格校验证书的请求（如量化接口）需要根证书被 Windows 信任；导入当前用户的受信任根（会弹系统确认框）'
+      const icRefreshBtn = el('button', 'apv-btn', '刷新状态')
+      for (const b of [icSuggestBtn, icStartBtn, icStopBtn, icCaBtn, icRefreshBtn]) icBtnCol.appendChild(b)
+      icForm.appendChild(icBtnCol)
+      icWrap.appendChild(icForm)
+      const icSuggestEl = el('div', 'apv-ic-suggest')
+      icWrap.appendChild(icSuggestEl)
+      // 操作结果（启用 / 停用 / 装证书 的进度、成功、失败原因）单独一块：状态轮询只重画下面的 icStatusEl，
+      // 不碰这里，结果一直留到下一次操作开始（C11）
+      const icActionEl = el('div', 'apv-ic-action')
+      icWrap.appendChild(icActionEl)
+      const icStatusEl = el('div', 'apv-ic-status')
+      icWrap.appendChild(icStatusEl)
+      view.appendChild(icWrap)
+
+      // ---- 全局延时 / 弱网面板
+      const nsWrap = el('div', 'apv-agg')
+      nsWrap.hidden = true
+      nsWrap.appendChild(el('div', 'apv-note',
+        '对经过本插件（本地代理 + 透明拦截）的请求统一加延时和限速，不用写规则（Fiddler「Rules → Performance → Simulate Modem Speeds」）。' +
+        '请求延迟=转发前等；回包延迟=拿到响应后再等；抖动=请求延迟 ± 随机；限速单位 KB/s。参数会保存，但宿主重启后开关自动回到「关」。单个接口的延时在「代理规则」或详情里的「Mock ▾」设。'))
+      const nsForm = el('div', 'apv-rules-form')
+      const nsEnableWrap = el('label', 'apv-autoscroll')
+      const nsEnableCb = el('input', '')
+      nsEnableCb.type = 'checkbox'
+      nsEnableWrap.appendChild(nsEnableCb)
+      nsEnableWrap.appendChild(document.createTextNode(' 启用'))
+      nsForm.appendChild(nsEnableWrap)
+      const nsPresetSel = el('select', 'apv-select')
+      nsPresetSel.title = '套用预设（会覆盖下面的数值）'
+      nsForm.appendChild(nsPresetSel)
+      const mkNum = (ph, title) => {
+        const i = el('input', 'apv-fin apv-fin-dur')
+        i.type = 'number'
+        i.min = '0'
+        i.placeholder = ph
+        i.title = title
+        nsForm.appendChild(i)
+        return i
+      }
+      const nsReqIn = mkNum('请求延迟ms', '转发前等待')
+      const nsResIn = mkNum('回包延迟ms', '拿到响应后再等')
+      const nsJitIn = mkNum('抖动±ms', '请求延迟随机 ± 这么多')
+      const nsDownIn = mkNum('下行KB/s', '下行限速（0=不限）')
+      const nsUpIn = mkNum('上行KB/s', '上行限速（0=不限）')
+      const nsScopeSel = el('select', 'apv-select')
+      ;[['all', '全部流量'], ['intercept', '只透明拦截'], ['proxy', '只本地代理']].forEach(([v, l]) => {
+        const o = el('option', '', l)
+        o.value = v
+        nsScopeSel.appendChild(o)
+      })
+      nsForm.appendChild(nsScopeSel)
+      const nsHostsIn = el('input', 'apv-fin')
+      nsHostsIn.placeholder = '只对这些域名（空=全部，支持 *.example.com）'
+      nsHostsIn.style.width = '220px'
+      nsForm.appendChild(nsHostsIn)
+      const nsUrlIn = el('input', 'apv-fin')
+      nsUrlIn.placeholder = 'URL 包含…（空=全部）'
+      nsForm.appendChild(nsUrlIn)
+      const nsApplyBtn = el('button', 'apv-btn', '应用')
+      nsForm.appendChild(nsApplyBtn)
+      nsWrap.appendChild(nsForm)
+      const nsStatusEl = el('div', 'apv-note', '')
+      nsWrap.appendChild(nsStatusEl)
+      view.appendChild(nsWrap)
 
       // table
       const body = el('div', 'apv-body')
@@ -1428,6 +2291,30 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       copyAsBtn.title = '按所选语言复制等价请求（cURL / PowerShell / fetch）'
       const replayBtn = el('button', 'apv-btn', '重放')
       replayBtn.title = '通过接口调试的服务端发送能力重新发送该请求，响应显示在下方对比'
+      // 一键 Mock / 延时：按「方法 + 接口路径（忽略查询串）」插一条规则到最前面，同一接口再选会替换上一条
+      const mockSel = el('select', 'apv-select')
+      mockSel.title = '一键 Mock / 延时：作用于这个接口（方法 + 路径，忽略查询参数）；对本地代理与透明拦截的流量立即生效'
+      ;[
+        ['', 'Mock ▾'],
+        ['empty-object', '返回空对象 {}'],
+        ['empty-array', '返回空数组 []'],
+        ['empty-lists', '保留外壳·清空所有数组'],
+        ['original', '原响应 → 编辑后生效'],
+        ['error-500', '返回 HTTP 500'],
+        ['not-found', '返回 HTTP 404'],
+        ['slow:1000', '延迟 1 秒后正常返回'],
+        ['slow:3000', '延迟 3 秒后正常返回'],
+        ['slow:5000', '延迟 5 秒后正常返回'],
+        ['slow:10000', '延迟 10 秒后正常返回'],
+        ['timeout:120000', '挂起不回包（客户端自己超时，最长 2 分钟）'],
+        ['reset', '立即断开连接'],
+        ['remove', '取消这个接口的一键规则'],
+      ].forEach(([v, label]) => {
+        const o = el('option', '', label)
+        o.value = v
+        mockSel.appendChild(o)
+      })
+      const mockHint = el('span', 'apv-mock-hint apv-note', '')
       const openPmBtn = el('button', 'apv-btn', '在接口调试打开')
       openPmBtn.title = '把该请求预填进「接口调试」面板'
       const setDiffABtn = el('button', 'apv-btn', '设为对比A')
@@ -1444,6 +2331,8 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       detailHead.appendChild(copyAsSel)
       detailHead.appendChild(copyAsBtn)
       detailHead.appendChild(replayBtn)
+      detailHead.appendChild(mockSel)
+      detailHead.appendChild(mockHint)
       detailHead.appendChild(openPmBtn)
       detailHead.appendChild(setDiffABtn)
       detailHead.appendChild(diffWithABtn)
@@ -1496,7 +2385,18 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       }
       function savePrefs() {
         try {
-          localStorage.setItem(PREFS_KEY, JSON.stringify({ autoScroll: state.autoScroll, autoCapture: autoCapCb.checked, logPath: logPathIn.value.trim(), savedFilters: state.savedFilters, detailHeight: state.detailHeight }))
+          localStorage.setItem(PREFS_KEY, JSON.stringify({
+            autoScroll: state.autoScroll,
+            autoCapture: autoCapCb.checked,
+            logPath: logPathIn.value.trim(),
+            savedFilters: state.savedFilters,
+            detailHeight: state.detailHeight,
+            // 当前启用的过滤器：id 为准，快照用来在宿主的列表回来之前先按它查
+            activeFilterId: state.activeFilter !== null ? state.activeFilter.id : null,
+            activeFilter: state.activeFilter,
+            aiBodyLimit: aiBodySel.value,
+            aiLimit: aiLimitIn.value,
+          }))
         } catch {
           // storage unavailable
         }
@@ -1532,6 +2432,10 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
         baselineName: '',
         baselineReport: null,
         savedFilters: Array.isArray(initialPrefs.savedFilters) ? initialPrefs.savedFilters : [],
+        // 当前启用的过滤器（Fiddler 式自定义过滤器）：和上面所有筛选 AND
+        activeFilter: initialPrefs.activeFilter !== null && typeof initialPrefs.activeFilter === 'object' && initialPrefs.activeFilter.id === initialPrefs.activeFilterId
+          ? activeFilterSnapshot(initialPrefs.activeFilter)
+          : null,
         timer: null,
         lastRenderKey: '',
         capture: { running: false, status: null, staleCount: 0, prevLogSize: null },
@@ -2174,8 +3078,11 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
           status: full.status,
           time: Number.isFinite(full.ts) ? new Date(full.ts).toLocaleString() : undefined,
           source: full.source,
+          channel: channelOf(full) || undefined,
           durationMs: full.durationMs,
           process: full.process,
+          clientProcess: full.clientProcess,
+          clientPid: full.clientPid,
           id: full.id,
         }
         detailBody.appendChild(makePreSection('基本信息', JSON.stringify(meta, null, 2), true))
@@ -2229,7 +3136,28 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
           }
           detailBody.insertBefore(makePreSection('WebSocket 帧记录', JSON.stringify(ws, null, 2), true), detailBody.firstChild)
         }
+        detailBody.insertBefore(buildProcLine(full), detailBody.firstChild)
         renderSortPane(full)
+      }
+
+      /** 详情里的「进程」一行（始终可见，基本信息默认收起）：本地代理 / 透明拦截的连接按端口查出进程名和 PID，实时捕获只有进程名。 */
+      function buildProcLine(full) {
+        const procName = typeof full.clientProcess === 'string' ? full.clientProcess : ''
+        const procPid = Number.isInteger(full.clientPid) ? full.clientPid : null
+        const procLine = el('div', 'apv-dproc')
+        procLine.appendChild(el('span', 'apv-t', '进程'))
+        procLine.appendChild(document.createTextNode(procName !== '' || procPid !== null
+          ? ` ${procName !== '' ? procName : '-'}${procPid !== null ? `（PID ${procPid}）` : ''}`
+          : ' 未知'))
+        const channel = channelOf(full)
+        if (channel !== '') procLine.appendChild(el('span', 'apv-note', ` · 渠道 ${channel}`))
+        procLine.title = procName !== '' || procPid !== null
+          ? '发起这个请求的进程（本地代理 / 透明拦截按连接端口查到；实时捕获来自客户端进程名配置）'
+          : channel === 'intercept' || channel === 'local-proxy'
+            // R5-05：这两种记录先落库，进程按连接端口查到后再补上（详情跟着轮询刷新）
+            ? '还没有进程信息：本地代理 / 透明拦截按连接端口查进程，可能还在查，查到后这里会自动补上；一直没有 = 查进程时连接已经断开'
+            : '没有进程信息：旧记录、导入的记录，或查进程时连接已经断开'
+        return procLine
       }
 
       function renderReplayResult(response, original) {
@@ -2476,11 +3404,20 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
         const sysActive = cap !== null && cap.systemProxyActive === true
         sysProxyBtn.textContent = sysActive ? '取消系统代理' : '设为系统代理'
         sysProxyBtn.classList.toggle('apv-capture-on', sysActive)
+        state.proxy.interceptListening = cap !== null && cap.intercept !== undefined && cap.intercept.listening === true
+        renderInterceptChip(cap !== null ? cap.intercept ?? null : null)
+        if (cap !== null && cap.breakpoints !== undefined && bpWrap.hidden) {
+          bpBtn.textContent = cap.breakpoints.enabled ? `断点 ●${cap.breakpoints.paused > 0 ? ` ${cap.breakpoints.paused} 挂起` : ''}` : '断点'
+        }
+        if (cap !== null && cap.netsim !== null && typeof cap.netsim === 'object') {
+          setNetsimBtn(cap.netsim.enabled === true, typeof cap.netsim.summary === 'string' ? cap.netsim.summary : '')
+        }
       }
 
       // 行内容签名：涵盖该行展示的全部字段；两次渲染签名一致 = 行可原样复用（无需重建）。
+      // 进程是连接建立后才查到的（宿主用同一 id 再发一次记录），签名里要有它，行才会跟着更新。
       const rowSig = (r) => [
-        r.id, r.ts, r.method, r.status, r.durationMs, r.source, r.note, isFlagged(r) ? 1 : 0, r.url,
+        r.id, r.ts, r.method, r.status, r.durationMs, r.source, r.process, r.clientProcess, r.clientPid, r.note, isFlagged(r) ? 1 : 0, r.url,
         r.caller ? `${formatCallChain(r.caller.stack)}|${r.caller.viewModel ?? ''}|${r.caller.apiMethod ?? ''}` : '',
       ].join('')
       let renderedSig = [] // 与 tbody 中数据行一一对应的签名（供增量对齐）
@@ -2577,7 +3514,13 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
         statusTd.appendChild(statusBadge(r.status))
         tr.appendChild(statusTd)
         tr.appendChild(el('td', '', fmtDur(r.durationMs)))
-        tr.appendChild(el('td', 'apv-note', r.source ?? '-'))
+        // 来源：捕获渠道（realtime / intercept / local-proxy …）+ 发起请求的进程（进程名:PID，查到了才有）
+        const channel = channelOf(r)
+        const proc = clientProcText(r)
+        const sourceTd = el('td', 'apv-note apv-src', (channel || '-') + (proc !== '' ? ` · ${proc}` : ''))
+        sourceTd.title = `来源 ${r.source ?? '-'}${channel !== '' && channel !== r.source ? ` · 渠道 ${channel}` : ''}` +
+          (proc !== '' ? `\n进程 ${typeof r.clientProcess === 'string' && r.clientProcess !== '' ? r.clientProcess : '-'}${Number.isInteger(r.clientPid) ? `（PID ${r.clientPid}）` : ''}` : '')
+        tr.appendChild(sourceTd)
         tr.appendChild(el('td', 'apv-note', r.note ?? ''))
         tr.addEventListener('click', () => {
           selectedId = r.id
@@ -3042,31 +3985,121 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       }
 
       /** AutoResponder rules panel. */
+      const URL_TYPE_LABEL = { contains: '包含', path: '接口路径', glob: '通配', regex: '正则' }
+      const actionText = (r) => {
+        const a = r.action ?? {}
+        const lat = [
+          a.latencyMs > 0 && a.type !== 'hang' ? `请求延迟 ${a.latencyMs}ms` : '',
+          a.responseDelayMs > 0 ? `回包延迟 ${a.responseDelayMs}ms` : '',
+          a.jitterMs > 0 ? `±${a.jitterMs}ms` : '',
+          a.throttleKbps > 0 ? `限速 ${a.throttleKbps}KB/s` : '',
+        ].filter(Boolean).join(' · ')
+        const base = a.type === 'mock' ? `mock ${a.status ?? 200}`
+          : a.type === 'map-local' ? 'Map Local'
+            : a.type === 'map-remote' ? 'Map Remote'
+              : a.type === 'rewrite' ? `改写 ${(a.ops ?? []).length} 条`
+                : a.type === 'hang' ? `挂起 ${Math.round((a.latencyMs || 60000) / 1000)}s`
+                  : a.type === 'block' ? (a.latencyMs > 0 ? `${a.latencyMs}ms 后阻断` : '阻断')
+                    : a.type === 'rewrite-status' ? `重写状态 ${a.status ?? '-'}`
+                      : '延迟'
+        return lat !== '' && a.type !== 'block' ? `${base} · ${lat}` : base
+      }
+      const ruleDetailText = (r) => {
+        const a = r.action ?? {}
+        if (a.type === 'map-local') return a.file ?? ''
+        if (a.type === 'map-remote') return a.target ?? ''
+        if (a.type === 'rewrite') return a.script ?? ''
+        return a.body ?? ''
+      }
+      let rulesList = []
+      let rulesRevision = null // 面板当前显示的规则集版本；/proxy/status 报的 rules.revision 变了就重拉（C12）
+      let rulesLoading = 0
+      let editingRule = null // 「编辑」模式：开始编辑时的那条规则（提交时以列表里最新的同 id 规则为底）
+      let quickPrefill = null // 「原响应」模式：带进正文框的原文（用户没改就原样提交）
+      let quickRecordId = null // 「原响应」模式：原记录 id（宿主据此沿用原响应的 Content-Type / 编码）
+      const rulesGate = latestGate()
+      const RULE_ACTION_LABEL = Object.fromEntries(RULE_ACTIONS)
+      /** 规则面板的提示行；text 为 null = 恢复帮助文字。 */
+      const setRulesNote = (text, kind) => {
+        rulesHelp.textContent = text === null ? RULES_HELP_TEXT : text
+        rulesHelp.classList.toggle('apv-warn', kind === 'warn')
+        rulesHelp.classList.toggle('apv-ok', kind === 'ok')
+      }
+      /** 下拉里没有的方法（HEAD / OPTIONS …）临时加一项，免得 select 把它悄悄变成「任意」（C39）。 */
+      const setRuleMethod = (method) => {
+        const m = String(method ?? '').toUpperCase()
+        for (const o of [...ruleMethodSel.options]) {
+          if (o.dataset.apvTemp === '1' && o.value !== m) o.remove()
+        }
+        if (m !== '' && ![...ruleMethodSel.options].some((o) => o.value === m)) {
+          const o = el('option', '', m)
+          o.value = m
+          o.dataset.apvTemp = '1'
+          ruleMethodSel.appendChild(o)
+        }
+        ruleMethodSel.value = m
+      }
+      /** 回到「添加」：清空输入框（方法 / 匹配方式 / 动作 三个下拉保留，方便连着加同类规则），退出编辑 / 原响应模式。 */
+      const resetRuleForm = () => {
+        ruleFormMode = 'add'
+        ruleAddTemplate = null
+        editingRule = null
+        quickPrefill = null
+        quickRecordId = null
+        const curMethod = ruleMethodSel.options[ruleMethodSel.selectedIndex]
+        setRuleMethod(curMethod !== undefined && curMethod.dataset.apvTemp === '1' ? '' : ruleMethodSel.value)
+        ruleNameIn.value = ''
+        ruleUrlIn.value = ''
+        ruleDelayIn.value = ''
+        ruleRespDelayIn.value = ''
+        ruleJitterIn.value = ''
+        ruleThrottleIn.value = ''
+        ruleStatusIn.value = ''
+        ruleArgIn.value = ''
+        ruleBodyIn.value = ''
+        syncRuleForm()
+      }
+      const fillRuleForm = (r) => {
+        const a = r.action ?? {}
+        const m = r.match ?? {}
+        ruleFormMode = 'edit'
+        ruleAddTemplate = null
+        editingRule = r
+        quickPrefill = null
+        quickRecordId = null
+        ruleNameIn.value = r.name ?? ''
+        setRuleMethod(m.method ?? '')
+        ruleUrlIn.value = m.url ?? ''
+        ruleTypeSel.value = m.urlType ?? 'contains'
+        ruleActionSel.value = a.type ?? 'mock'
+        ruleDelayIn.value = a.latencyMs > 0 ? String(a.latencyMs) : ''
+        ruleRespDelayIn.value = a.responseDelayMs > 0 ? String(a.responseDelayMs) : ''
+        ruleJitterIn.value = a.jitterMs > 0 ? String(a.jitterMs) : ''
+        ruleThrottleIn.value = a.throttleKbps > 0 ? String(a.throttleKbps) : ''
+        ruleStatusIn.value = Number.isInteger(a.status) ? String(a.status) : ''
+        ruleArgIn.value = a.type === 'map-local' ? (a.file ?? '') : a.type === 'map-remote' ? (a.target ?? '') : ''
+        ruleBodyIn.value = a.type === 'rewrite' ? (a.script ?? '') : (a.body ?? '')
+        syncRuleForm()
+        setRulesNote(null)
+      }
       const renderRules = (data) => {
         rulesBodyEl.textContent = ''
         const rules = data?.rules ?? []
         if (rules.length === 0) {
           const row = el('tr')
-          const cell = el('td', 'apv-empty', '还没有规则 — 在上方填写后点「添加规则」（对正在运行的代理即时生效）')
+          const cell = el('td', 'apv-empty', '还没有规则 — 在上方填写后点「添加规则」，或在请求详情里用「Mock ▾」一键生成')
           cell.colSpan = 8
           row.appendChild(cell)
           rulesBodyEl.appendChild(row)
           return
         }
         const matchText = (r) => {
-          const m = r.match
+          const m = r.match ?? {}
           const parts = []
           if (m.method) parts.push(m.method)
-          if (m.url) parts.push(`${m.url} (${m.urlType === 'glob' ? '通配' : m.urlType === 'regex' ? '正则' : '包含'})`)
+          if (m.url) parts.push(`${m.url} (${URL_TYPE_LABEL[m.urlType] ?? '包含'})`)
           if (m.host) parts.push(`host=${m.host}`)
           return parts.join(' ') || '全部'
-        }
-        const actionText = (r) => {
-          const a = r.action
-          if (a.type === 'mock') return `mock ${a.status ?? 200}`
-          if (a.type === 'delay') return `延迟 ${a.latencyMs ?? 0}ms${a.throttleKbps ? ` · 限速 ${a.throttleKbps}KB/s` : ''}`
-          if (a.type === 'block') return '阻断'
-          return `重写状态 ${a.status ?? '-'}`
         }
         for (const r of rules) {
           const tr = el('tr')
@@ -3076,113 +4109,1598 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
           onCb.checked = r.enabled !== false
           onCb.title = '启用/停用'
           onCb.addEventListener('change', () => {
-            r.enabled = onCb.checked
-            saveRules()
+            onCb.disabled = true
+            ruleOp({ op: onCb.checked ? 'enable' : 'disable', id: r.id }).then((res) => {
+              if (!res.ok) onCb.checked = !onCb.checked
+              onCb.disabled = false
+            })
           })
           onTd.appendChild(onCb)
           tr.appendChild(onTd)
-          tr.appendChild(el('td', '', r.name))
+          tr.appendChild(el('td', '', (r.quick ? '⚡ ' : '') + r.name))
           tr.appendChild(el('td', '', matchText(r)))
           tr.appendChild(el('td', '', actionText(r)))
-          tr.appendChild(el('td', '', r.action.latencyMs > 0 ? `${r.action.latencyMs}ms` : '-'))
-          const bodyTd = el('td', 'apv-note', r.action.body ? r.action.body.slice(0, 60) + (r.action.body.length > 60 ? '…' : '') : '-')
-          bodyTd.title = r.action.body ?? ''
+          const lat = r.action.type === 'hang' ? `${r.action.latencyMs || 60000}ms` : (r.action.latencyMs > 0 || r.action.responseDelayMs > 0 ? `${r.action.latencyMs || 0}+${r.action.responseDelayMs || 0}ms` : '-')
+          tr.appendChild(el('td', '', lat))
+          const dt = ruleDetailText(r)
+          const bodyTd = el('td', 'apv-note', dt ? dt.slice(0, 60) + (dt.length > 60 ? '…' : '') : '-')
+          bodyTd.title = dt
           tr.appendChild(bodyTd)
           tr.appendChild(el('td', '', String(r.hits ?? 0)))
           const opTd = el('td')
+          const editBtn = el('button', 'apv-btn', '编辑')
+          editBtn.style.padding = '2px 8px'
+          editBtn.style.fontSize = '11px'
+          editBtn.addEventListener('click', () => fillRuleForm(r))
+          opTd.appendChild(editBtn)
           const delBtn = el('button', 'apv-btn apv-btn-danger', '删除')
           delBtn.style.padding = '2px 8px'
           delBtn.style.fontSize = '11px'
           delBtn.addEventListener('click', () => {
-            rulesList = rulesList.filter((x) => x.id !== r.id)
-            saveRules()
+            delBtn.disabled = true
+            if (editingRule !== null && editingRule.id === r.id) resetRuleForm()
+            ruleOp({ op: 'remove', id: r.id }, `已删除：${r.name}`).then(() => { delBtn.disabled = false })
           })
           opTd.appendChild(delBtn)
           tr.appendChild(opTd)
           rulesBodyEl.appendChild(tr)
         }
       }
-      let rulesList = []
+      const applyRulesData = (data) => {
+        rulesList = Array.isArray(data?.rules) ? data.rules : []
+        rulesRevision = typeof data?.revision === 'string' ? data.revision : null
+        renderRules(data)
+        // 导入选择开着（R5-01 / R3-03）：按钮上的条数跟着最新列表重画；提交用的 baseRevision 仍是用户选文件时看到的那一版，
+        // 只有还没拿到版本号、或冲突后重新展示时才换成这一版。期间规则被改过 ⇒ 宿主回 409，提示后按新列表重新展示，再点一次才导入
+        if (pendingRulesImport !== null) {
+          if (pendingRulesImport.revision === null || pendingRulesImport.reshow === true) {
+            pendingRulesImport.revision = rulesRevision
+            pendingRulesImport.reshow = false
+          }
+          renderRulesImportChoice()
+        }
+      }
       const loadRules = () => {
-        apiFetch('/proxy/rules').then((data) => {
-          rulesList = data?.rules ?? []
-          renderRules(data)
+        const seq = rulesGate.next()
+        rulesLoading++
+        return apiFetch('/proxy/rules').then((data) => {
+          if (rulesGate.accept(seq)) applyRulesData(data)
         }).catch((error) => {
           console.error('[dsh-api-visualizer] load rules failed:', error)
-          rulesList = []
-          renderRules({ rules: [] })
-        })
+          if (!rulesGate.accept(seq)) return
+          rulesBodyEl.textContent = ''
+          const row = el('tr')
+          const cell = el('td', 'apv-empty', `读取规则失败：${errText(error)}（宿主没在跑，或是旧版本需要重启 DSH？）`)
+          cell.colSpan = 8
+          row.appendChild(cell)
+          rulesBodyEl.appendChild(row)
+        }).finally(() => { rulesLoading-- })
       }
-      const saveRules = () => {
-        apiFetch('/proxy/rules', {
+      /** 规则操作失败时给用户看的话：区分「这条规则已经不在了」「内容太大」「宿主还是旧版本」。 */
+      const ruleErrorText = (error) => {
+        if (error?.code === 'RULE_NOT_FOUND') return `这条规则已经不在了（可能刚被智能体删除）：${errText(error)}`
+        if (error?.code === 'BODY_TOO_LARGE' || error?.status === 413) return `保存失败：内容太大，宿主拒收（${errText(error)}）`
+        if (error?.status === 404) return `保存失败：${errText(error)}（宿主是旧版本？需要重启 DSH 加载新插件）`
+        return `保存失败：${errText(error)}`
+      }
+      /**
+       * 单条规则操作（POST /proxy/rules/op：add / update / remove / enable / disable）：只动这一条，不再把面板手里
+       * 可能已过期的整张列表写回去 —— 那会悄悄删掉智能体刚加的规则（C12），整表还可能超过请求体上限（C3）。
+       * 返回 { ok:true, data } / { ok:false, error }，不抛错；失败时重新拉一次真实列表。
+       */
+      const ruleOp = (payload, okText) => {
+        const seq = rulesGate.next()
+        return apiFetch('/proxy/rules/op', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ rules: rulesList }),
+          body: JSON.stringify(payload),
         }).then((data) => {
-          rulesList = data?.rules ?? []
-          renderRules(data)
+          if (rulesGate.accept(seq)) applyRulesData(data)
+          setRulesNote(okText ?? null, okText ? 'ok' : undefined)
+          return { ok: true, data }
         }).catch((error) => {
-          console.error('[dsh-api-visualizer] save rules failed:', error)
+          setRulesNote(ruleErrorText(error), 'warn')
+          loadRules()
+          return { ok: false, error }
         })
       }
-      ruleAddBtn.addEventListener('click', () => {
-        if (ruleNameIn.value.trim() === '' && ruleUrlIn.value.trim() === '') {
-          rulesHelp.textContent = '请至少填写规则名称或 URL 匹配'
+      /** 一键规则返回的 reach（宿主按规则 URL 判断现在能不能命中、为什么，C9）；旧宿主没有 reach 就退回 takesEffect。 */
+      const reachOf = (r) => {
+        const reach = r !== null && typeof r === 'object' && r.reach !== null && typeof r.reach === 'object' ? r.reach : null
+        return {
+          takesEffect: reach !== null ? reach.takesEffect === true : r?.takesEffect === true,
+          note: reach !== null && typeof reach.note === 'string' ? reach.note : '',
+        }
+      }
+      /** textarea 会把 \r\n 规范成 \n：用户没动过的正文原样提交，不让「改一下延迟」顺手改掉正文里的换行。 */
+      const textareaValue = (ta, original) => (typeof original === 'string' && ta.value === original.replace(/\r\n?/g, '\n') ? original : ta.value)
+      /**
+       * 由表单生成规则。base = 正在改的那条（或它被删后留下的模板）：以它为底，只覆盖表单管的字段；
+       * quick / matchAll / match.host / action.headers / action.charset 以及不认识的字段原样保留（C39）。
+       */
+      const buildRuleFromForm = (base) => {
+        const type = ruleActionSel.value
+        const prevAction = base?.action ?? {}
+        const action = { ...prevAction, type }
+        action.latencyMs = Number(ruleDelayIn.value) || 0
+        action.responseDelayMs = Number(ruleRespDelayIn.value) || 0
+        action.jitterMs = Number(ruleJitterIn.value) || 0
+        action.throttleKbps = Number(ruleThrottleIn.value) || 0
+        // 隐藏的框（例如「延迟」规则的状态码框）里残留的值不提交
+        if (ruleStatusIn.hidden || ruleStatusIn.value === '') delete action.status
+        else action.status = Number(ruleStatusIn.value)
+        // 参数框 / 正文框管的字段：换了动作类型就不再带旧类型的；ops 由宿主按 script 重新编译
+        delete action.file
+        delete action.target
+        delete action.script
+        delete action.ops
+        if (type === 'map-local') action.file = ruleArgIn.value.trim()
+        if (type === 'map-remote') action.target = ruleArgIn.value.trim()
+        if (type === 'rewrite') action.script = textareaValue(ruleBodyIn, prevAction.type === 'rewrite' ? prevAction.script : undefined)
+        action.body = type === 'mock' ? textareaValue(ruleBodyIn, prevAction.type === 'mock' ? prevAction.body : undefined) : ''
+        return {
+          ...(base ?? {}),
+          name: ruleNameIn.value.trim() || '未命名规则',
+          match: { ...(base?.match ?? {}), method: ruleMethodSel.value, url: ruleUrlIn.value.trim(), urlType: ruleTypeSel.value },
+          action,
+        }
+      }
+      const submitRuleForm = () => {
+        const type = ruleActionSel.value
+        const url = ruleUrlIn.value.trim()
+        const prev = ruleFormMode === 'edit' && editingRule !== null
+          ? (rulesList.find((x) => x.id === editingRule.id) ?? editingRule)
+          : null
+        const base = prev ?? ruleAddTemplate
+        const host = String(base?.match?.host ?? '').trim()
+        // 除「延迟」外都要限定 URL（或原规则带的域名）：空匹配会接管所有请求，登录、行情也会被它回包 / 挂起 / 断开（C13）
+        if (type !== 'delay' && url === '' && host === '' && base?.matchAll !== true) {
+          setRulesNote(`「${RULE_ACTION_LABEL[type] ?? type}」规则要填 URL 匹配：留空会接管经过本地代理 / 透明拦截的所有请求（登录、行情接口也会被它接管）。只有「延迟」规则可以留空、作用于全部请求。`, 'warn')
+          ruleUrlIn.focus()
           return
         }
-        rulesList.push({
-          name: ruleNameIn.value.trim() || '未命名规则',
-          match: { method: ruleMethodSel.value, host: '', url: ruleUrlIn.value.trim(), urlType: ruleTypeSel.value },
-          action: {
-            type: ruleActionSel.value,
-            latencyMs: Number(ruleDelayIn.value) || 0,
-            throttleKbps: Number(ruleThrottleIn.value) || 0,
-            status: ruleStatusIn.value === '' ? undefined : Number(ruleStatusIn.value),
-            body: ruleBodyIn.value,
-          },
-          hits: 0,
-        })
-        ruleNameIn.value = ''
-        ruleUrlIn.value = ''
-        ruleDelayIn.value = ''
-        ruleThrottleIn.value = ''
-        ruleStatusIn.value = ''
-        ruleBodyIn.value = ''
-        saveRules()
+        if (ruleNameIn.value.trim() === '' && url === '') {
+          setRulesNote('请至少填写规则名称或 URL 匹配', 'warn')
+          return
+        }
+        const rule = buildRuleFromForm(base)
+        const payload = prev !== null ? { op: 'update', id: prev.id, rule } : { op: 'add', rule }
+        ruleAddBtn.disabled = true
+        ruleOp(payload, prev !== null ? `已保存修改：${rule.name}` : `已添加：${rule.name}（排在最前面，先匹配先生效）`).then((res) => {
+          if (res.ok) {
+            resetRuleForm()
+            return
+          }
+          if (prev !== null && res.error?.code === 'RULE_NOT_FOUND') {
+            // 原规则被删了：表单内容保留、改成「添加」；原规则里表单管不到的字段作为模板带上（不带 id / 命中数 / 一键标记）
+            const template = { ...prev }
+            delete template.id
+            delete template.hits
+            delete template.quick
+            ruleFormMode = 'add'
+            ruleAddTemplate = template
+            editingRule = null
+            syncRuleForm()
+            setRulesNote('要修改的这条规则已经不在了（可能刚被智能体删除）：表单内容还在，再点「添加规则」会把它作为新规则加入；不要了就点「取消编辑」。', 'warn')
+          }
+        }).finally(() => { ruleAddBtn.disabled = false })
+      }
+      /** 「原响应 → 编辑后生效」：写成这个接口的一键规则（替换旧的、排最前），和详情里其它 Mock 选项同一条路（C38）。 */
+      const submitQuickOriginal = () => {
+        const url = ruleUrlIn.value.trim()
+        if (!/^https?:\/\/[^/?#]+/i.test(url)) {
+          setRulesNote('一键规则的 URL 要写完整地址（https://host/path）：按「方法 + 接口路径」匹配，忽略查询参数。', 'warn')
+          ruleUrlIn.focus()
+          return
+        }
+        const status = Number(ruleStatusIn.value)
+        const latency = Number(ruleDelayIn.value)
+        const name = ruleNameIn.value.trim()
+        const payload = {
+          url,
+          method: ruleMethodSel.value,
+          // preset=original + 显式正文：正文用编辑后的，Content-Type / 编码沿用原响应（GBK 接口照样按 GBK 回）
+          preset: 'original',
+          ...(typeof quickRecordId === 'string' && quickRecordId !== '' ? { recordId: quickRecordId } : {}),
+          body: textareaValue(ruleBodyIn, quickPrefill ?? undefined),
+          ...(ruleStatusIn.value !== '' && Number.isInteger(status) ? { status } : {}),
+          ...(latency > 0 ? { latencyMs: latency } : {}),
+          ...(name !== '' ? { name } : {}),
+        }
+        const seq = rulesGate.next()
+        ruleAddBtn.disabled = true
+        apiFetch('/proxy/rules/quick', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+          .then((r) => {
+            if (rulesGate.accept(seq)) applyRulesData(r)
+            resetRuleForm()
+            const reach = reachOf(r)
+            setRulesNote(`${r.replaced ? '已替换这个接口原来的一键规则' : '已写成这个接口的一键规则'}（排在最前面）：${r.rule?.name ?? ''}${reach.note !== '' ? ' · ' + reach.note : ''}`, reach.takesEffect ? 'ok' : 'warn')
+          })
+          .catch((error) => setRulesNote(`保存失败：${errText(error)}`, 'warn'))
+          .finally(() => { ruleAddBtn.disabled = false })
+      }
+      ruleCancelBtn.addEventListener('click', () => {
+        resetRuleForm()
+        setRulesNote(null)
+      })
+      ruleAddBtn.addEventListener('click', () => {
+        if (ruleFormMode === 'quick-original') submitQuickOriginal()
+        else submitRuleForm()
       })
 
+      // ---- 规则集导出 / 导入
+      // 导出：宿主给的原文只重排缩进就下载（数字、字符串一个字不改）。
+      // 导入：先在面板里认一遍文件（有没有规则列表、几条），再让用户选 合并 / 替换；提交带 baseRevision，
+      // 规则集在这期间被智能体改过就 409，刷新列表后让用户再点一次（C12 的同一套版本号）。
+      let pendingRulesImport = null // { text, count, fileName, revision（用户选文件时看到的规则集版本，提交时作 baseRevision）, reshow }
+      let rulesImportBusy = false
+      const rulesImportErrText = (error) => {
+        if (error?.status === 413 || error?.code === 'BODY_TOO_LARGE') return `导入失败：文件太大，宿主拒收（${errText(error)}）`
+        if (error?.status === 404 && error?.code === undefined) return '导入失败：宿主是旧版本，没有导入接口（需要重启 DSH 加载新插件）'
+        return `导入失败：${errText(error)}`
+      }
+      const renderRulesImportChoice = () => {
+        rulesImportChoice.textContent = ''
+        const pending = pendingRulesImport
+        rulesImportChoice.hidden = pending === null
+        if (pending === null) return
+        rulesImportChoice.appendChild(el('span', '', `「${pending.fileName}」里有 ${pending.count} 条规则：`))
+        const mergeBtn = el('button', 'apv-btn', '合并（加在最前，跳过完全相同的）')
+        mergeBtn.title = '导入的规则放到最前面（规则按顺序匹配，先到先得，导入的 mock 立即生效）；和现有规则完全相同的跳过'
+        const replaceBtn = el('button', 'apv-btn apv-btn-danger', `替换（清空现有 ${rulesList.length} 条）`)
+        replaceBtn.title = '规则集变成文件里的这些规则，现有规则全部删除'
+        const cancelBtn = el('button', 'apv-btn', '取消')
+        for (const b of [mergeBtn, replaceBtn, cancelBtn]) {
+          b.disabled = rulesImportBusy
+          rulesImportChoice.appendChild(b)
+        }
+        mergeBtn.addEventListener('click', () => submitRulesImport('merge'))
+        replaceBtn.addEventListener('click', () => submitRulesImport('replace'))
+        cancelBtn.addEventListener('click', () => {
+          pendingRulesImport = null
+          renderRulesImportChoice()
+          setRulesNote(null)
+        })
+      }
+      const submitRulesImport = (mode) => {
+        const pending = pendingRulesImport
+        if (pending === null || rulesImportBusy) return
+        rulesImportBusy = true
+        renderRulesImportChoice()
+        const before = rulesList.length
+        const seq = rulesGate.next()
+        apiFetch('/proxy/rules/import', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          // data 用文件原文（宿主自己解析）：不经浏览器 JSON.parse 再 stringify
+          // baseRevision 用选文件（或冲突后重新展示）时那一版，不用轮询刚拉到的最新版：期间被改过就该 409（R5-01 / R3-03）
+          body: JSON.stringify({ data: pending.text, mode, ...(pending.revision !== null ? { baseRevision: pending.revision } : {}) }),
+        })
+          .then((data) => {
+            if (rulesGate.accept(seq)) applyRulesData(data)
+            pendingRulesImport = null
+            const imported = Number(data?.imported) || 0
+            const skipped = Number(data?.skipped) || 0
+            const warnings = Array.isArray(data?.warnings) ? data.warnings.filter((w) => typeof w === 'string' && w !== '') : []
+            const head = mode === 'replace'
+              ? `已导入 ${imported} 条，原来的 ${before} 条已替换掉`
+              : `已导入 ${imported} 条，跳过 ${skipped} 条相同的${imported > 0 ? '（导入的排在最前面，先匹配先生效）' : ''}`
+            setRulesNote([head, ...warnings.map((w) => '⚠ ' + w)].join('\n'), warnings.length > 0 ? 'warn' : 'ok')
+          })
+          .catch((error) => {
+            if (error?.code === 'RULES_CONFLICT') {
+              // 规则集在用户选文件之后被别处改过：重新拉列表，按新列表（「替换」按钮上的新条数、新版本号）重新展示选择，
+              // 文件还留着，看过新条数后再点一次；列表拉回来之前按钮保持禁用（finally 等这次重拉完）
+              setRulesNote('规则集刚被改过（你选文件之后，可能是智能体加 / 删了规则），列表和「替换」按钮上的条数已按最新的刷新；看一眼没问题再点一次「合并」或「替换」。', 'warn')
+              pending.reshow = true
+              return loadRules()
+            }
+            setRulesNote(rulesImportErrText(error), 'warn')
+          })
+          .finally(() => {
+            rulesImportBusy = false
+            renderRulesImportChoice()
+          })
+      }
+      rulesExportBtn.addEventListener('click', () => {
+        rulesExportBtn.disabled = true
+        apiFetchText('/proxy/rules/export')
+          .then((text) => {
+            let count = null
+            try {
+              const env = JSON.parse(text)
+              count = Array.isArray(env?.rules) ? env.rules.length : Array.isArray(env) ? env.length : null
+            } catch {
+              count = null
+            }
+            const name = `api-rules-${fileStamp()}.json`
+            downloadBlob(name, prettyJsonText(text) + '\n', 'application/json')
+            setRulesNote(`已导出${count !== null ? ` ${count} 条规则` : ''} → ${name}（浏览器下载）`, 'ok')
+          })
+          .catch((error) => setRulesNote(error?.status === 404 && error?.code === undefined
+            ? '导出失败：宿主是旧版本，没有导出接口（需要重启 DSH 加载新插件）'
+            : `导出失败：${errText(error)}`, 'warn'))
+          .finally(() => { rulesExportBtn.disabled = false })
+      })
+      rulesImportBtn.addEventListener('click', () => rulesImportFile.click())
+      rulesImportFile.addEventListener('change', () => {
+        const file = rulesImportFile.files && rulesImportFile.files[0]
+        rulesImportFile.value = ''
+        if (!file) return
+        const reader = new FileReader()
+        reader.onerror = () => setRulesNote('读取文件失败', 'warn')
+        reader.onload = () => {
+          const text = String(reader.result ?? '').replace(/^\uFEFF/, '')
+          let parsed
+          try {
+            parsed = JSON.parse(text)
+          } catch {
+            setRulesNote(`「${file.name}」不是有效的 JSON 文件`, 'warn')
+            return
+          }
+          const list = Array.isArray(parsed) ? parsed : parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.rules) ? parsed.rules : null
+          if (list === null) {
+            setRulesNote(`「${file.name}」里没有规则列表：要用「导出规则」导出的文件（或规则数组）`, 'warn')
+            return
+          }
+          pendingRulesImport = { text, count: list.length, fileName: file.name, revision: rulesRevision, reshow: false }
+          setRulesNote(null)
+          if (rulesRevision === null && rulesLoading === 0) loadRules() // 还没拿到版本号（面板刚打开）：先拉一次，「替换」按钮的条数也准
+          renderRulesImportChoice()
+        }
+        reader.readAsText(file)
+      })
       sessionBtn.addEventListener('click', () => setView(state.sessionView ? 'table' : 'session'))
       timelineBtn.addEventListener('click', () => setView(state.timelineView ? 'table' : 'timeline'))
       waterfallBtn.addEventListener('click', () => setView(state.waterfallView ? 'table' : 'waterfall'))
       repeatsBtn.addEventListener('click', () => setView(state.repeatsView ? 'table' : 'repeats'))
       baselineBtn.addEventListener('click', () => setView(state.baselineView ? 'table' : 'baseline'))
 
-      const refresh = async () => {
+      /** 上方筛选栏（工具栏 + 「更多 ▾」）的查询参数：列表、导出、删除筛选集、AI 分析包共用这一份。 */
+      const setQuickParams = (params) => {
+        if (state.q !== '') params.set('q', state.q)
+        if (state.method !== '') params.set('method', state.method)
+        if (state.status !== '') params.set('status', state.status)
+        if (state.source !== '') params.set('source', state.source)
+        if (state.flagged) params.set('flag', '1')
+        if (state.host !== '') params.set('host', state.host)
+        if (state.ct !== '') params.set('contentType', state.ct)
+        if (state.minDur !== '') params.set('minDurationMs', state.minDur)
+        if (state.minBytes !== '') params.set('minBytes', state.minBytes)
+        if (state.maxBytes !== '') params.set('maxBytes', state.maxBytes)
+        if (state.fromTs !== '') params.set('fromTs', state.fromTs)
+        if (state.toTs !== '') params.set('toTs', state.toTs)
+        if (state.sessionId !== '') params.set('sessionId', state.sessionId)
+        if (state.errorsOnly) params.set('errors', '1')
+        if (state.noNoise) params.set('noNoise', '1')
+        if (state.regex) params.set('regex', '1')
+        if (state.bodyQ !== '') params.set('bodyQ', state.bodyQ)
+        return params
+      }
+      /**
+       * 把当前启用的过滤器加进查询参数（和上面的筛选 AND）：一般带条件本身（conditions=），
+       * 条件长到放不进查询串时改带 filterId（宿主按 id 取已存的过滤器）；POST 体里总是带条件。
+       * 返回 { filter, key } 或 null（没有启用过滤器）。
+       */
+      const setFilterParam = (params, { forPost = false } = {}) => {
+        const f = state.activeFilter
+        if (f === null) return null
+        const json = JSON.stringify(filterPayload(f, fd.opsById))
+        if (forPost || encodeURIComponent(json).length <= FILTER_QUERY_MAX) {
+          params.set('conditions', json)
+          return { filter: f, key: 'conditions' }
+        }
+        params.set('filterId', f.id)
+        return { filter: f, key: 'filterId' }
+      }
+
+      // ---- 提示条（AI 分析包的保存路径 + 复制按钮、过滤器被别处删除…）：一直留着，直到用户关掉或下一条提示
+      const hideNotice = () => {
+        noticeBar.hidden = true
+        noticeBar.textContent = ''
+      }
+      const showNotice = (kind, text, actions = []) => {
+        noticeBar.textContent = ''
+        noticeBar.appendChild(el('span', 'apv-notice-text ' + (kind === 'ok' ? 'apv-ok' : kind === 'warn' ? 'apv-warn' : 'apv-note'), text))
+        for (const action of actions) {
+          const b = el('button', 'apv-btn', action.label)
+          b.type = 'button'
+          if (action.title) b.title = action.title
+          b.addEventListener('click', () => action.onClick(b))
+          noticeBar.appendChild(b)
+        }
+        const x = el('button', 'apv-btn', '×')
+        x.type = 'button'
+        x.title = '关闭这条提示'
+        x.setAttribute('aria-label', '关闭这条提示')
+        x.addEventListener('click', hideNotice)
+        noticeBar.appendChild(x)
+        noticeBar.hidden = false
+      }
+
+      // ---- 过滤器对话框（Fiddler 式）：左边是已存的过滤器，右边是条件构造器，底部实时显示匹配条数
+      const fd = {
+        fields: BUILTIN_FILTER_FIELDS,
+        ops: BUILTIN_FILTER_OPS,
+        fieldsById: new Map(BUILTIN_FILTER_FIELDS.map((f) => [f.id, f])),
+        opsById: new Map(BUILTIN_FILTER_OPS.map((o) => [o.id, o])),
+        hostSupport: null, // null = 还不知道；false = 旧宿主（没有 /filters 接口）
+        loaded: false,
+        syncing: false,
+        lastSync: 0,
+        saved: [], // 宿主上的过滤器（GET /filters 的 filters，宿主的顺序）
+        drafts: new Map(), // key → 编辑中的副本：已存过滤器的副本以 id 为 key，新建的以 'new:N' 为 key
+        selected: '', // '' = 默认（不过滤）
+        newSeq: 0,
+        serverError: null, // 宿主对某个草稿的校验错误 { key, index, sig, message }（index -1 = 不是某一个条件的错）
+        serverOk: null, // 宿主最近一次接受了的条件 { key, sigs:Set }（实时统计成功时记下）
+        busy: false,
+        pendingImport: null, // { data, count, fileName }
+        confirmDelete: false,
+      }
+      const fdOverlay = el('div', 'apv-fd-overlay')
+      fdOverlay.hidden = true
+      const fdBox = el('div', 'apv-fd')
+      fdBox.setAttribute('role', 'dialog')
+      fdBox.setAttribute('aria-modal', 'true')
+      fdBox.setAttribute('aria-label', '过滤器')
+      fdBox.tabIndex = -1
+      fdOverlay.appendChild(fdBox)
+      const fdHead = el('div', 'apv-fd-head')
+      fdHead.appendChild(el('span', 'apv-fd-title', '过滤器'))
+      const fdHostNote = el('span', 'apv-fd-hostnote apv-note', '')
+      fdHead.appendChild(fdHostNote)
+      const fdX = el('button', 'apv-btn apv-fd-x', '×')
+      fdX.type = 'button'
+      fdX.title = '关闭（Esc）'
+      fdX.setAttribute('aria-label', '关闭')
+      fdHead.appendChild(fdX)
+      fdBox.appendChild(fdHead)
+      const fdMain = el('div', 'apv-fd-main')
+      const fdSide = el('div', 'apv-fd-side')
+      const fdList = el('div', 'apv-fd-list')
+      fdList.setAttribute('role', 'listbox')
+      fdList.setAttribute('aria-label', '过滤器列表')
+      fdSide.appendChild(fdList)
+      const fdSideBtns = el('div', 'apv-fd-side-btns')
+      const fdNewBtn = el('button', 'apv-btn', '新建')
+      fdNewBtn.title = '新建一个过滤器（保存或应用后才存到宿主上）'
+      const fdImportBtn = el('button', 'apv-btn', '导入')
+      fdImportBtn.title = '从「导出」得到的过滤器文件（.json）导入'
+      const fdExportBtn = el('button', 'apv-btn', '导出')
+      fdExportBtn.title = '把全部已保存的过滤器导出成 .json 文件（交给同事导入）'
+      for (const b of [fdNewBtn, fdImportBtn, fdExportBtn]) {
+        b.type = 'button'
+        fdSideBtns.appendChild(b)
+      }
+      fdSide.appendChild(fdSideBtns)
+      const fdImportFile = el('input', '')
+      fdImportFile.type = 'file'
+      fdImportFile.accept = '.json,application/json'
+      fdImportFile.style.display = 'none'
+      fdSide.appendChild(fdImportFile)
+      const fdImportBox = el('div', 'apv-fd-import')
+      fdImportBox.hidden = true
+      fdSide.appendChild(fdImportBox)
+      fdMain.appendChild(fdSide)
+      const fdEdit = el('div', 'apv-fd-edit')
+      const fdNameRow = el('div', 'apv-fd-namerow')
+      const fdNameLabel = el('label', '', '名称 *')
+      const fdNameIn = el('input', 'apv-fin apv-fd-name')
+      fdNameIn.id = 'apv-fd-name'
+      fdNameLabel.htmlFor = 'apv-fd-name'
+      fdNameIn.spellcheck = false
+      fdNameIn.placeholder = '给过滤器起个名字，例如「客户端全部接口」'
+      const fdSaveBtn = iconButton(ICON_SAVE, '保存')
+      const fdDupBtn = iconButton(ICON_COPY, '复制为新过滤器')
+      const fdRevertBtn = iconButton(ICON_REVERT, '还原未保存的修改')
+      const fdDeleteBtn = iconButton(ICON_TRASH, '删除', 'apv-btn-danger')
+      for (const node of [fdNameLabel, fdNameIn, fdSaveBtn, fdDupBtn, fdRevertBtn, fdDeleteBtn]) fdNameRow.appendChild(node)
+      fdEdit.appendChild(fdNameRow)
+      const fdNameErr = el('div', 'apv-fd-msg apv-warn', '')
+      fdEdit.appendChild(fdNameErr)
+      const fdMsg = el('div', 'apv-fd-msg', '')
+      fdEdit.appendChild(fdMsg)
+      const fdConfirm = el('div', 'apv-fd-confirm')
+      fdConfirm.hidden = true
+      fdEdit.appendChild(fdConfirm)
+      const fdModeRow = el('div', 'apv-fd-moderow')
+      fdModeRow.appendChild(el('span', '', '当'))
+      const fdModeSel = el('select', 'apv-select apv-fd-mode')
+      fdModeSel.setAttribute('aria-label', '条件怎么组合')
+      ;[['all', '满足全部条件'], ['any', '满足任一条件']].forEach(([v, label]) => {
+        const o = el('option', '', label)
+        o.value = v
+        fdModeSel.appendChild(o)
+      })
+      fdModeRow.appendChild(fdModeSel)
+      fdModeRow.appendChild(el('span', '', '时显示'))
+      fdModeRow.appendChild(el('span', 'apv-fd-spacer'))
+      const fdClearCondsBtn = el('button', 'apv-btn', '清空全部条件')
+      fdClearCondsBtn.type = 'button'
+      const fdAddCondBtn = el('button', 'apv-btn', '+ 添加条件')
+      fdAddCondBtn.type = 'button'
+      fdModeRow.appendChild(fdClearCondsBtn)
+      fdModeRow.appendChild(fdAddCondBtn)
+      fdEdit.appendChild(fdModeRow)
+      const fdConds = el('div', 'apv-fd-conds')
+      fdEdit.appendChild(fdConds)
+      const fdDefaultNote = el('div', 'apv-fd-default-note',
+        '不使用自定义过滤器：列表只按上方工具栏和「更多 ▾」里的筛选显示。选它再点「应用」，就取消当前启用的过滤器。' +
+        '过滤器存在宿主上，智能体查询（capture_query 的 filter 参数）和同事导入的都是同一份。')
+      fdDefaultNote.hidden = true
+      fdEdit.appendChild(fdDefaultNote)
+      fdMain.appendChild(fdEdit)
+      fdBox.appendChild(fdMain)
+      const fdFoot = el('div', 'apv-fd-foot')
+      const fdCount = el('span', 'apv-fd-count', '')
+      fdCount.setAttribute('aria-live', 'polite')
+      const fdCloseBtn = el('button', 'apv-btn', '关闭')
+      fdCloseBtn.type = 'button'
+      const fdApplyBtn = el('button', 'apv-btn apv-btn-primary', '应用')
+      fdApplyBtn.type = 'button'
+      fdFoot.appendChild(fdCount)
+      fdFoot.appendChild(fdCloseBtn)
+      fdFoot.appendChild(fdApplyBtn)
+      fdBox.appendChild(fdFoot)
+      view.appendChild(fdOverlay)
+      // 模态：Tab 只在对话框里转；点遮罩不把焦点交给后面的面板（遮罩不关对话框，关用 Esc / 关闭）
+      fdOverlay.addEventListener('keydown', (event) => {
+        if (event.key !== 'Tab') return
+        const focusable = [...fdBox.querySelectorAll('button, input, select, textarea')].filter((n) => !n.disabled && n.offsetParent !== null)
+        if (focusable.length === 0) return
+        const first = focusable[0]
+        const last = focusable[focusable.length - 1]
+        const at = document.activeElement
+        if (event.shiftKey ? at === first || at === fdBox || !fdBox.contains(at) : at === last) {
+          event.preventDefault()
+          ;(event.shiftKey ? last : first).focus()
+        }
+      })
+      fdOverlay.addEventListener('mousedown', (event) => {
+        if (event.target !== fdOverlay) return
+        event.preventDefault()
+        fdBox.focus()
+      })
+
+      const fdIsOpen = () => !fdOverlay.hidden
+      const savedById = (id) => fd.saved.find((f) => f.id === id)
+      const draftFromSaved = (f) => ({
+        key: f.id,
+        savedId: f.id,
+        name: String(f.name ?? ''),
+        mode: f.mode === 'any' ? 'any' : 'all',
+        conditions: cloneConditions(f.conditions),
+        baseSig: filterSignature(f, fd.opsById),
+      })
+      const isDirty = (d) => d.savedId === null || filterSignature(d, fd.opsById) !== d.baseSig
+      /** 选中项的编辑副本（按需从已存版本建一份）；'' = 默认，返回 null。 */
+      const draftFor = (key) => {
+        if (key === '') return null
+        const existing = fd.drafts.get(key)
+        if (existing !== undefined) return existing
+        const s = savedById(key) ?? (state.activeFilter !== null && state.activeFilter.id === key ? state.activeFilter : undefined)
+        if (s === undefined) return null
+        const d = draftFromSaved(s)
+        fd.drafts.set(key, d)
+        return d
+      }
+      const currentDraft = () => draftFor(fd.selected)
+      const newCondition = () => {
+        const field = fd.fieldsById.get('url') ?? fd.fields[0]
+        const usable = opsForField(field, fd.ops)
+        const op = usable.find((o) => o.id === 'contains') ?? usable[0]
+        return { enabled: true, field: field?.id ?? 'url', op: op?.id ?? 'contains', value: '', caseSensitive: false, header: '' }
+      }
+      const uniqueFilterName = (base) => {
+        const stem = [...cleanFilterName(base)].slice(0, FILTER_NAME_MAX - 8).join('').trim() || '过滤器'
+        const taken = new Set([
+          ...fd.saved.map((f) => cleanFilterName(f.name).toLowerCase()),
+          ...[...fd.drafts.values()].filter((d) => d.savedId === null).map((d) => cleanFilterName(d.name).toLowerCase()),
+        ])
+        if (!taken.has(stem.toLowerCase())) return stem
+        for (let i = 2; i < 1000; i++) {
+          const name = `${stem} (${i})`
+          if (!taken.has(name.toLowerCase())) return name
+        }
+        return `${stem} ${Date.now()}`
+      }
+      const nameProblem = (d) => {
+        const name = cleanFilterName(d.name)
+        if (name === '') return '名称必填'
+        if (codePoints(name) > FILTER_NAME_MAX) return `名称最多 ${FILTER_NAME_MAX} 个字符`
+        const lower = name.toLowerCase()
+        if (fd.saved.some((f) => f.id !== d.savedId && cleanFilterName(f.name).toLowerCase() === lower)) return '已有同名的过滤器（名称不区分大小写），换一个名字'
+        return null
+      }
+      /**
+       * 每个条件的问题（null = 没问题）：本地检查 + 宿主报的那一条（条件内容没变时才算数）。
+       * 宿主刚接受过的条件（实时统计成功）不再用本地检查标红：两边对正则的理解不一致时以宿主为准。
+       */
+      const condProblems = (d) => {
+        const accepted = fd.serverOk !== null && fd.serverOk.key === d.key ? fd.serverOk.sigs : null
+        const out = d.conditions.map((c) => {
+          const p = condProblem(c, fd.fieldsById, fd.opsById, fd.ops)
+          return p !== null && accepted !== null && accepted.has(condSig(c, fd.opsById)) ? null : p
+        })
+        const se = fd.serverError
+        if (se !== null && se.key === d.key && se.index >= 0 && se.index < d.conditions.length && condSig(d.conditions[se.index], fd.opsById) === se.sig) out[se.index] = se.message
+        return out
+      }
+      /** 还没填值的条件（下标）：不标红，但不能统计、保存、应用。 */
+      const incompleteConds = (d) => d.conditions.map((c, i) => (condIncomplete(c, fd.opsById) ? i : -1)).filter((i) => i >= 0)
+      const generalProblem = (d) => {
+        const se = fd.serverError
+        return se !== null && se.key === d.key && se.index < 0 && se.sig === filterSignature(d, fd.opsById) ? se.message : null
+      }
+      const draftValid = (d) => nameProblem(d) === null && generalProblem(d) === null && incompleteConds(d).length === 0 && condProblems(d).every((p) => p === null)
+      const setFdMsg = (kind, text) => {
+        fdMsg.textContent = text ?? ''
+        fdMsg.className = 'apv-fd-msg ' + (kind === 'ok' ? 'apv-ok' : kind === 'warn' ? 'apv-warn' : 'apv-note')
+      }
+      const hostMissingText = '宿主是旧版本，没有过滤器接口：需要重启 DSH 加载新插件。'
+
+      // 当前启用的过滤器：存 prefs（id + 快照），列表 / 统计 / 导出 / AI 分析包都带上它
+      const renderFilterButton = () => {
+        const f = state.activeFilter
+        filterLabel.textContent = f === null ? '过滤器' : `过滤器：${f.name}`
+        filterGroup.classList.toggle('apv-fgroup-on', f !== null)
+        filterClearBtn.hidden = f === null
+        filterBtn.setAttribute('aria-pressed', f !== null ? 'true' : 'false')
+        filterBtn.title = f === null
+          ? '自定义过滤器（Fiddler 式）：按 进程 / URL / 状态码 / 请求头 … 组合条件，存成过滤器反复用；和这一排的筛选同时生效'
+          : `当前过滤器「${f.name}」：${describeFilterText(f, fd.fieldsById, fd.opsById)}\n列表、统计、导出、AI 分析包都按它过滤。点击编辑，点 × 取消`
+      }
+      const setActiveFilter = (f) => {
+        state.activeFilter = f === null ? null : activeFilterSnapshot(f)
+        savePrefs()
+        renderFilterButton()
+        if (fdIsOpen()) renderFdList()
+        refresh()
+      }
+      const dropActiveFilter = (note) => {
+        setActiveFilter(null)
+        if (note) showNotice('warn', note)
+      }
+
+      /** 宿主给的字段 / 比较方式表（GET /filters）；旧宿主没有就一直用内置的那份。 */
+      const adoptFilterLists = (data) => {
+        const fields = Array.isArray(data?.fields) ? data.fields.filter((f) => f !== null && typeof f === 'object' && typeof f.id === 'string' && f.id !== '') : []
+        const ops = Array.isArray(data?.ops) ? data.ops.filter((o) => o !== null && typeof o === 'object' && typeof o.id === 'string' && o.id !== '') : []
+        if (fields.length > 0) {
+          fd.fields = fields
+          fd.fieldsById = new Map(fields.map((f) => [f.id, f]))
+        }
+        if (ops.length > 0) {
+          fd.ops = ops
+          fd.opsById = new Map(ops.map((o) => [o.id, o]))
+        }
+      }
+      /**
+       * 宿主上的过滤器列表变了（读到新列表 / 保存 / 删除 / 导入后）：对齐编辑副本和当前启用的过滤器。
+       * 别处删掉的：改过的副本留下（变成没保存的新过滤器），没改过的去掉；启用中的被删 → 恢复为不过滤并提示。
+       * 返回选中项的编辑内容是否被换掉了（要不要重画右边）。
+       */
+      const syncSaved = (list) => {
+        fd.saved = list.filter((f) => f !== null && typeof f === 'object' && typeof f.id === 'string' && f.id !== '')
+        const byId = new Map(fd.saved.map((f) => [f.id, f]))
+        let selectedChanged = false
+        for (const [key, d] of [...fd.drafts]) {
+          if (d.savedId === null) continue
+          const s = byId.get(d.savedId)
+          if (s === undefined) {
+            fd.drafts.delete(key)
+            if (isDirty(d)) {
+              const nk = `new:${++fd.newSeq}`
+              fd.drafts.set(nk, { ...d, key: nk, savedId: null, baseSig: '' })
+              if (fd.selected === key) {
+                fd.selected = nk
+                selectedChanged = true
+              }
+            } else if (fd.selected === key) {
+              fd.selected = ''
+              selectedChanged = true
+            }
+            continue
+          }
+          const sig = filterSignature(s, fd.opsById)
+          if (sig !== d.baseSig && (!isDirty(d) || filterSignature(d, fd.opsById) === sig)) {
+            fd.drafts.set(key, draftFromSaved(s))
+            if (fd.selected === key) selectedChanged = true
+          }
+        }
+        if (fd.selected !== '' && !fd.drafts.has(fd.selected) && !byId.has(fd.selected)) {
+          fd.selected = ''
+          selectedChanged = true
+        }
+        const act = state.activeFilter
+        if (act !== null) {
+          const s = byId.get(act.id)
+          if (s === undefined) dropActiveFilter(`过滤器「${act.name}」在宿主上已经没有了（可能在别的窗口里删除了，或被导入替换掉），列表已恢复为不过滤。`)
+          else if (filterSignature(s, fd.opsById) !== filterSignature(act, fd.opsById) || (Number(s.updatedAt) || 0) !== act.updatedAt) setActiveFilter(s)
+        }
+        return selectedChanged
+      }
+      const filtersGate = latestGate()
+      const loadFilters = ({ renderEditor = false } = {}) => {
+        const seq = filtersGate.next()
+        fd.syncing = true
+        let selectedChanged = false
+        return apiFetch('/filters')
+          .then((data) => {
+            if (!filtersGate.accept(seq)) return
+            if (!Array.isArray(data?.filters)) {
+              fd.hostSupport = false
+              return
+            }
+            fd.hostSupport = true
+            adoptFilterLists(data)
+            selectedChanged = syncSaved(data.filters)
+          })
+          .catch((error) => {
+            if (!filtersGate.accept(seq)) return
+            if (error?.status === 404 && error?.code === undefined) fd.hostSupport = false
+            else if (fdIsOpen()) setFdMsg('warn', `读取过滤器列表失败：${errText(error)}`)
+          })
+          .finally(() => {
+            fd.syncing = false
+            fd.loaded = true
+            fd.lastSync = Date.now()
+            renderFilterButton()
+            if (fdIsOpen()) renderFd({ editor: renderEditor || selectedChanged })
+          })
+      }
+
+      // ---- 对话框渲染
+      let condRows = [] // [{ row, cond, errEl, valIn }]
+      const renderFdList = () => {
+        fdList.textContent = ''
+        const activeId = state.activeFilter !== null ? state.activeFilter.id : null
+        const addItem = (key, name, { check = false, dirty = false, note = '', title = '' } = {}) => {
+          const item = el('button', 'apv-fd-item' + (key === '' ? ' apv-fd-item-default' : ''))
+          item.type = 'button'
+          item.setAttribute('role', 'option')
+          item.setAttribute('aria-selected', fd.selected === key ? 'true' : 'false')
+          item.dataset.key = key
+          const checkEl = el('span', 'apv-fd-mark apv-fd-check', check ? '✓' : '')
+          if (check) checkEl.title = '正在使用'
+          item.appendChild(checkEl)
+          item.appendChild(el('span', 'apv-fd-item-name', name))
+          if (note !== '') item.appendChild(el('span', 'apv-note', note))
+          const dirtyEl = el('span', 'apv-fd-mark apv-fd-dirty', dirty ? '●' : '')
+          if (dirty) dirtyEl.title = '有没保存的修改'
+          item.appendChild(dirtyEl)
+          item.title = title !== '' ? title : name
+          item.addEventListener('click', () => selectFd(key))
+          fdList.appendChild(item)
+        }
+        addItem('', '默认（不过滤）', { check: activeId === null, title: '不使用自定义过滤器' })
+        for (const f of fd.saved) {
+          const d = fd.drafts.get(f.id)
+          const dirty = d !== undefined && isDirty(d)
+          addItem(f.id, String(f.name ?? ''), {
+            check: activeId === f.id,
+            dirty,
+            title: `${f.name}\n${describeFilterText(f, fd.fieldsById, fd.opsById)}${dirty ? '\n● 有没保存的修改' : ''}`,
+          })
+        }
+        if (activeId !== null && !fd.saved.some((f) => f.id === activeId)) {
+          // 宿主的列表还没回来（或宿主是旧版本）：先按 prefs 里的快照显示当前启用的过滤器
+          const d = fd.drafts.get(activeId)
+          addItem(activeId, state.activeFilter.name, {
+            check: true,
+            dirty: d !== undefined && isDirty(d),
+            note: fd.hostSupport === false ? '（宿主读不到）' : fd.loaded ? '' : '…',
+            title: describeFilterText(state.activeFilter, fd.fieldsById, fd.opsById),
+          })
+        }
+        for (const d of fd.drafts.values()) {
+          if (d.savedId !== null) continue
+          addItem(d.key, d.name.trim() || '（未命名）', { dirty: true, note: '未保存', title: `${d.name.trim() || '（未命名）'}\n还没保存：点「保存」或「应用」才存到宿主上` })
+        }
+      }
+      const updateFdState = () => {
+        const d = currentDraft()
+        const hostOk = fd.hostSupport !== false
+        fdHostNote.textContent = !hostOk ? `${hostMissingText}字段 / 比较方式先用内置的一份，现在不能保存。` : fd.loaded ? '' : '读取中…'
+        fdHostNote.className = 'apv-fd-hostnote ' + (hostOk ? 'apv-note' : 'apv-warn')
+        fdNewBtn.disabled = fd.busy
+        fdImportBtn.disabled = fd.busy || !hostOk
+        fdExportBtn.disabled = fd.busy || !hostOk
+        if (d === null) {
+          fdNameErr.textContent = ''
+          fdApplyBtn.disabled = fd.busy
+          fdApplyBtn.title = state.activeFilter === null ? '现在就是不过滤' : '取消当前过滤器，恢复为不过滤'
+          return
+        }
+        const problems = condProblems(d)
+        const incomplete = new Set(incompleteConds(d))
+        condRows.forEach((r, i) => {
+          const p = problems[i] ?? null
+          r.errEl.textContent = p ?? ''
+          r.row.classList.toggle('apv-fd-cond-bad', p !== null)
+          r.row.classList.toggle('apv-fd-cond-todo', p === null && incomplete.has(i))
+        })
+        const dirty = isDirty(d)
+        const np = nameProblem(d)
+        const gp = generalProblem(d)
+        fdNameErr.textContent = (dirty && np !== null ? np : '') + (gp !== null ? (dirty && np !== null ? '\n' : '') + gp : '')
+        fdNameIn.classList.toggle('apv-fd-bad', dirty && np !== null)
+        const red = np !== null || gp !== null || problems.some((p) => p !== null)
+        const valid = !red && incomplete.size === 0
+        const why = red ? '有标红的问题' : incomplete.size > 0 ? `第 ${[...incomplete].map((i) => i + 1).join('、')} 个条件还没填值` : ''
+        fdSaveBtn.disabled = fd.busy || !hostOk || !dirty || !valid
+        const saveTitle = !hostOk ? '保存（宿主是旧版本，现在不能保存）' : !dirty ? '保存（没有要保存的修改）' : !valid ? `保存（${why}，改好才能保存）` : '保存（不改变当前启用的过滤器）'
+        fdSaveBtn.title = saveTitle
+        fdSaveBtn.setAttribute('aria-label', saveTitle)
+        fdDupBtn.disabled = fd.busy
+        fdRevertBtn.disabled = fd.busy || !dirty
+        fdDeleteBtn.disabled = fd.busy || (!hostOk && d.savedId !== null)
+        fdAddCondBtn.disabled = d.conditions.length >= FILTER_COND_LIMIT
+        fdAddCondBtn.title = d.conditions.length >= FILTER_COND_LIMIT ? `一个过滤器最多 ${FILTER_COND_LIMIT} 个条件` : '加一个条件'
+        fdClearCondsBtn.disabled = d.conditions.length === 0
+        fdApplyBtn.disabled = fd.busy || !valid || (!hostOk && (dirty || d.savedId === null))
+        fdApplyBtn.title = !valid ? `${why}，改好才能应用` : dirty ? '保存修改并启用这个过滤器' : '启用这个过滤器（和上面的筛选同时生效）'
+      }
+      const renderFdConfirm = () => {
+        fdConfirm.textContent = ''
+        const d = currentDraft()
+        const show = fd.confirmDelete && d !== null && d.savedId !== null
+        fdConfirm.hidden = !show
+        if (!show) return
+        const name = savedById(d.savedId)?.name ?? d.name
+        const inUse = state.activeFilter !== null && state.activeFilter.id === d.savedId
+        fdConfirm.appendChild(el('span', '', `删除过滤器「${name}」？删除后不能恢复${inUse ? '；它正在使用，删除后列表恢复为不过滤' : ''}。`))
+        const yes = el('button', 'apv-btn apv-btn-danger', '确认删除')
+        yes.type = 'button'
+        const no = el('button', 'apv-btn', '取消')
+        no.type = 'button'
+        yes.disabled = fd.busy
+        yes.addEventListener('click', () => { fdDeleteNow(d) })
+        no.addEventListener('click', () => {
+          fd.confirmDelete = false
+          renderFdConfirm()
+        })
+        fdConfirm.appendChild(yes)
+        fdConfirm.appendChild(no)
+      }
+      const renderFdImport = () => {
+        fdImportBox.textContent = ''
+        const p = fd.pendingImport
+        fdImportBox.hidden = p === null
+        if (p === null) return
+        fdImportBox.appendChild(el('div', '', `「${p.fileName}」里有 ${p.count} 个过滤器：`))
+        const mergeBtn = el('button', 'apv-btn', '合并（同名不同内容的自动改名）')
+        mergeBtn.title = '加到现有过滤器里：完全相同的跳过，同名但条件不同的改名为「名称 (2)」'
+        const replaceBtn = el('button', 'apv-btn apv-btn-danger', `替换（清空现有 ${fd.saved.length} 个）`)
+        replaceBtn.title = '过滤器列表变成文件里的这些，现有的全部删除'
+        const cancelBtn = el('button', 'apv-btn', '取消')
+        for (const b of [mergeBtn, replaceBtn, cancelBtn]) {
+          b.type = 'button'
+          b.disabled = fd.busy
+          fdImportBox.appendChild(b)
+        }
+        mergeBtn.addEventListener('click', () => { fdSubmitImport('merge') })
+        replaceBtn.addEventListener('click', () => { fdSubmitImport('replace') })
+        cancelBtn.addEventListener('click', () => {
+          fd.pendingImport = null
+          renderFdImport()
+        })
+      }
+      const buildCondRow = (d, cond) => {
+        const row = el('div', 'apv-fd-cond')
+        const main = el('div', 'apv-fd-cond-main')
+        const onCb = el('input', 'apv-fd-cond-on')
+        onCb.type = 'checkbox'
+        onCb.checked = cond.enabled
+        onCb.title = '启用这个条件（不勾 = 先不用，留在过滤器里）'
+        onCb.setAttribute('aria-label', '启用这个条件')
+        const fieldSel = el('select', 'apv-select apv-fd-field')
+        fieldSel.setAttribute('aria-label', '字段')
+        for (const f of fd.fields) {
+          const o = el('option', '', f.label ?? f.id)
+          o.value = f.id
+          if (f.hint) o.title = f.hint
+          fieldSel.appendChild(o)
+        }
+        if (!fd.fieldsById.has(cond.field)) {
+          const o = el('option', '', `${cond.field}（未知字段）`)
+          o.value = cond.field
+          fieldSel.appendChild(o)
+        }
+        fieldSel.value = cond.field
+        const headerIn = el('input', 'apv-fin apv-fd-header')
+        headerIn.placeholder = '头名称（空 = 所有头）'
+        headerIn.spellcheck = false
+        headerIn.setAttribute('aria-label', '头名称')
+        headerIn.value = cond.header
+        const opSel = el('select', 'apv-select apv-fd-op')
+        opSel.setAttribute('aria-label', '比较方式')
+        const valWrap = el('span', 'apv-fd-valwrap')
+        const valIn = el('input', 'apv-fin apv-fd-value')
+        valIn.spellcheck = false
+        valIn.setAttribute('aria-label', '值')
+        valIn.value = cond.value
+        const valClear = el('button', 'apv-fd-valclear', '×')
+        valClear.type = 'button'
+        valClear.title = '清空这个值'
+        valClear.setAttribute('aria-label', '清空这个值')
+        valWrap.appendChild(valIn)
+        valWrap.appendChild(valClear)
+        const caseBtn = el('button', 'apv-btn apv-fd-case', 'Aa')
+        caseBtn.type = 'button'
+        caseBtn.title = '区分大小写（默认不区分）'
+        const delBtn = iconButton(ICON_TRASH, '删除这个条件', 'apv-btn-danger apv-fd-cdel')
+        for (const node of [onCb, fieldSel, headerIn, opSel, valWrap, caseBtn, delBtn]) main.appendChild(node)
+        const errEl = el('div', 'apv-fd-cond-err', '')
+        row.appendChild(main)
+        row.appendChild(errEl)
+        const fillOps = () => {
+          const usable = opsForField(fd.fieldsById.get(cond.field), fd.ops)
+          opSel.textContent = ''
+          for (const op of usable) {
+            const o = el('option', '', op.label ?? op.id)
+            o.value = op.id
+            opSel.appendChild(o)
+          }
+          if (!usable.some((op) => op.id === cond.op)) {
+            const o = el('option', '', `${fd.opsById.get(cond.op)?.label ?? cond.op}（不适用）`)
+            o.value = cond.op
+            opSel.appendChild(o)
+          }
+          opSel.value = cond.op
+        }
+        const sync = () => {
+          const field = fd.fieldsById.get(cond.field)
+          const op = fd.opsById.get(cond.op)
+          headerIn.hidden = field?.header !== true
+          valWrap.hidden = op !== undefined && op.needsValue === false
+          caseBtn.hidden = !isTextOp(op)
+          caseBtn.setAttribute('aria-pressed', cond.caseSensitive ? 'true' : 'false')
+          caseBtn.setAttribute('aria-label', cond.caseSensitive ? '区分大小写（已打开）' : '区分大小写（已关闭）')
+          valIn.placeholder = op !== undefined && isNumberOp(op) ? '数字' : isRegexOp(cond.op) ? '正则，例如 a|b（不用加 / /）' : field?.hint ? `值（${field.hint}）` : '值'
+          valIn.inputMode = op !== undefined && isNumberOp(op) ? 'decimal' : 'text'
+          valClear.hidden = cond.value === ''
+          row.classList.toggle('apv-fd-cond-off', !cond.enabled)
+          fieldSel.title = field?.hint ? `${field.label ?? field.id}：${field.hint}` : '字段'
+        }
+        fillOps()
+        sync()
+        onCb.addEventListener('change', () => {
+          cond.enabled = onCb.checked
+          sync()
+          onDraftChanged()
+        })
+        fieldSel.addEventListener('change', () => {
+          const prevKind = fieldKind(fd.fieldsById.get(cond.field))
+          cond.field = fieldSel.value
+          const field = fd.fieldsById.get(cond.field)
+          if (field?.header !== true) {
+            cond.header = ''
+            headerIn.value = ''
+          }
+          // 换了字段：文本 ↔ 数字时换成新字段的默认比较方式（数字 =、文本 包含）；原来的比较方式不适用时也换
+          const usable = opsForField(field, fd.ops)
+          if (usable.length > 0 && (fieldKind(field) !== prevKind || !usable.some((op) => op.id === cond.op))) cond.op = usable[0].id
+          if (!isTextOp(fd.opsById.get(cond.op))) cond.caseSensitive = false
+          fillOps()
+          sync()
+          onDraftChanged()
+        })
+        headerIn.addEventListener('input', () => {
+          cond.header = headerIn.value
+          onDraftChanged()
+        })
+        opSel.addEventListener('change', () => {
+          cond.op = opSel.value
+          if (!isTextOp(fd.opsById.get(cond.op))) cond.caseSensitive = false
+          sync()
+          onDraftChanged()
+        })
+        valIn.addEventListener('input', () => {
+          cond.value = valIn.value
+          valClear.hidden = cond.value === ''
+          onDraftChanged()
+        })
+        valClear.addEventListener('click', () => {
+          cond.value = ''
+          valIn.value = ''
+          valClear.hidden = true
+          valIn.focus()
+          onDraftChanged()
+        })
+        caseBtn.addEventListener('click', () => {
+          cond.caseSensitive = !cond.caseSensitive
+          sync()
+          onDraftChanged()
+        })
+        delBtn.addEventListener('click', () => {
+          const i = d.conditions.indexOf(cond)
+          if (i >= 0) d.conditions.splice(i, 1)
+          renderConds()
+          onDraftChanged()
+        })
+        return { row, cond, errEl, valIn }
+      }
+      const renderConds = () => {
+        fdConds.textContent = ''
+        condRows = []
+        const d = currentDraft()
+        if (d === null) return
+        if (d.conditions.length === 0) {
+          fdConds.appendChild(el('div', 'apv-fd-empty', '没有条件：这个过滤器匹配全部记录。点「+ 添加条件」加一条。'))
+          return
+        }
+        for (const cond of d.conditions) {
+          const r = buildCondRow(d, cond)
+          condRows.push(r)
+          fdConds.appendChild(r.row)
+        }
+      }
+      const renderFdEditor = () => {
+        const d = currentDraft()
+        const isDefault = d === null
+        fdNameRow.hidden = isDefault
+        fdModeRow.hidden = isDefault
+        fdConds.hidden = isDefault
+        fdDefaultNote.hidden = !isDefault
+        if (!isDefault) {
+          if (fdNameIn.value !== d.name) fdNameIn.value = d.name
+          fdModeSel.value = d.mode
+        }
+        renderConds()
+        updateFdState()
+      }
+      const renderFd = ({ editor = true } = {}) => {
+        renderFdList()
+        if (editor) renderFdEditor()
+        else updateFdState()
+        renderFdConfirm()
+        renderFdImport()
+      }
+
+      // ---- 实时匹配条数（GET /records?limit=1&conditions=…，防抖 300ms；只认最后一次的结果）
+      const countGate = latestGate()
+      let countTimer = null
+      const setCount = (parts) => {
+        fdCount.textContent = ''
+        for (const p of parts) fdCount.appendChild(typeof p === 'string' ? document.createTextNode(p) : p)
+      }
+      const runCount = () => {
+        if (!fdIsOpen()) return
+        const seq = countGate.next()
+        const d = currentDraft()
+        const params = new URLSearchParams({ limit: '1' })
+        let sentSigs = []
+        let sentWhole = ''
+        const settle = (parts) => {
+          countGate.accept(seq) // 让还在路上的旧统计作废
+          if (countTimer === null) fdCount.classList.remove('apv-fd-counting')
+          setCount(parts)
+        }
+        if (d !== null) {
+          const todo = incompleteConds(d)
+          if (todo.length > 0) {
+            // 空值宿主会拒（值不能为空），先不问：等填好再统计
+            settle([`第 ${todo.map((i) => i + 1).join('、')} 个条件还没填值，填好后显示匹配条数`])
+            return
+          }
+          const json = JSON.stringify(filterPayload(d, fd.opsById))
+          if (encodeURIComponent(json).length > FILTER_QUERY_MAX) {
+            settle(['条件太长，放不进查询串，没法实时统计；保存后列表照常按它过滤（宿主按 id 取）'])
+            return
+          }
+          params.set('conditions', json)
+          sentSigs = d.conditions.map((c) => condSig(c, fd.opsById))
+          sentWhole = filterSignature(d, fd.opsById)
+        }
+        const key = d === null ? '' : d.key
+        apiFetch(`/records?${params.toString()}`)
+          .then((data) => {
+            if (!countGate.accept(seq) || !fdIsOpen()) return
+            if (countTimer === null) fdCount.classList.remove('apv-fd-counting')
+            if (fd.serverError !== null && fd.serverError.key === key) fd.serverError = null
+            // 宿主接受了这一组条件：其中本地检查和宿主看法不一致的（例如宿主认的正则写法）以宿主为准
+            if (d !== null) fd.serverOk = { key, sigs: new Set(sentSigs) }
+            const total = Number(data?.total)
+            const totalEl = el('b', '', Number.isFinite(total) ? String(total) : '?')
+            if (d === null) setCount(['当前库中匹配 ', totalEl, ' 条（默认：不过滤）'])
+            else if (!Array.isArray(data?.filterApplied) && enabledCondCount(d) > 0) setCount(['当前库中匹配 ', totalEl, ' 条 · ', el('span', 'apv-warn', '宿主没有应用这些条件（旧版本？需要重启 DSH），这是全部记录数')])
+            else setCount(['当前库中匹配 ', totalEl, ' 条'])
+            updateFdState()
+          })
+          .catch((error) => {
+            if (!countGate.accept(seq) || !fdIsOpen()) return
+            if (countTimer === null) fdCount.classList.remove('apv-fd-counting')
+            if (error?.code === 'FILTER_INVALID' && d !== null) {
+              const index = filterErrorIndex(error)
+              const known = index >= 0 && index < sentSigs.length
+              fd.serverError = { key, index: known ? index : -1, sig: known ? sentSigs[index] : sentWhole, message: errText(error) }
+              setCount([el('span', 'apv-warn', known ? `第 ${index + 1} 个条件有问题，改好才能统计和应用` : `条件有问题：${errText(error)}`)])
+              updateFdState()
+              return
+            }
+            setCount([el('span', 'apv-warn', `统计失败：${errText(error)}`)])
+          })
+      }
+      const scheduleCount = (delay = 300) => {
+        if (countTimer !== null) clearTimeout(countTimer)
+        fdCount.classList.add('apv-fd-counting')
+        countTimer = setTimeout(() => {
+          countTimer = null
+          runCount()
+        }, delay)
+      }
+
+      // ---- 对话框操作
+      const onDraftChanged = ({ count = true } = {}) => {
+        if (fd.confirmDelete) {
+          fd.confirmDelete = false
+          renderFdConfirm()
+        }
+        renderFdList()
+        updateFdState()
+        if (count) scheduleCount()
+      }
+      const selectFd = (key) => {
+        if (fd.selected === key) return
+        fd.selected = key
+        fd.confirmDelete = false
+        setFdMsg(null)
+        renderFd()
+        scheduleCount(0)
+      }
+      const setFdBusy = (busy) => {
+        fd.busy = busy
+        updateFdState()
+        renderFdConfirm()
+        renderFdImport()
+      }
+      const fdSavePayload = (d) => ({
+        ...(d.savedId !== null ? { id: d.savedId } : {}),
+        name: d.name.trim(),
+        mode: d.mode === 'any' ? 'any' : 'all',
+        conditions: d.conditions.map((c) => ({ ...(typeof c.id === 'string' && c.id !== '' ? { id: c.id } : {}), ...canonCond(c, fd.opsById) })),
+      })
+      /** POST /filters：成功后换成宿主规范化过的版本（id、条件 id、去空白的名称…），返回保存后的过滤器。 */
+      const saveDraft = async (d) => {
+        const data = await apiFetch('/filters', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ filter: fdSavePayload(d) }),
+        })
+        const saved = data?.filter
+        if (saved === null || typeof saved !== 'object' || typeof saved.id !== 'string' || saved.id === '') throw new Error('宿主没有返回保存后的过滤器')
+        fd.drafts.delete(d.key)
+        if (fd.serverError !== null && fd.serverError.key === d.key) fd.serverError = null
+        if (fd.selected === d.key) fd.selected = saved.id
+        syncSaved(Array.isArray(data.filters) ? data.filters : [...fd.saved.filter((f) => f.id !== saved.id), saved])
+        return saved
+      }
+      const showSaveError = (d, error) => {
+        const msg = errText(error)
+        if (error?.code === 'FILTER_INVALID') {
+          const index = filterErrorIndex(error)
+          const known = index >= 0 && index < d.conditions.length
+          fd.serverError = { key: d.key, index: known ? index : -1, sig: known ? condSig(d.conditions[index], fd.opsById) : filterSignature(d, fd.opsById), message: msg }
+          setFdMsg('warn', `保存失败：${msg}`)
+        } else if (error?.code === 'FILTER_NAME_TAKEN') {
+          setFdMsg('warn', `保存失败：${msg}（换一个名字）`)
+        } else if (error?.status === 404 && error?.code === undefined) {
+          fd.hostSupport = false
+          setFdMsg('warn', `保存失败：${hostMissingText}`)
+        } else if (error?.status === 413 || error?.code === 'BODY_TOO_LARGE') {
+          setFdMsg('warn', `保存失败：过滤器太大，宿主拒收（${msg}）`)
+        } else {
+          setFdMsg('warn', `保存失败：${msg}`)
+        }
+        updateFdState()
+      }
+      const fdSave = async () => {
+        const d = currentDraft()
+        if (d === null || fd.busy || !draftValid(d) || !isDirty(d)) return
+        setFdBusy(true)
+        setFdMsg('note', '正在保存…')
         try {
-          const params = new URLSearchParams({ limit: String(LIMIT) })
-          if (state.q !== '') params.set('q', state.q)
-          if (state.method !== '') params.set('method', state.method)
-          if (state.status !== '') params.set('status', state.status)
-          if (state.source !== '') params.set('source', state.source)
-          if (state.flagged) params.set('flag', '1')
-          if (state.host !== '') params.set('host', state.host)
-          if (state.ct !== '') params.set('contentType', state.ct)
-          if (state.minDur !== '') params.set('minDurationMs', state.minDur)
-          if (state.minBytes !== '') params.set('minBytes', state.minBytes)
-          if (state.maxBytes !== '') params.set('maxBytes', state.maxBytes)
-          if (state.fromTs !== '') params.set('fromTs', state.fromTs)
-          if (state.toTs !== '') params.set('toTs', state.toTs)
-          if (state.sessionId !== '') params.set('sessionId', state.sessionId)
-          if (state.errorsOnly) params.set('errors', '1')
-          if (state.noNoise) params.set('noNoise', '1')
-          if (state.regex) params.set('regex', '1')
-          if (state.bodyQ !== '') params.set('bodyQ', state.bodyQ)
-          const [list, stat, cap, prox] = await Promise.all([
-            apiFetch(`/records?${params.toString()}`),
+          const saved = await saveDraft(d)
+          const inUse = state.activeFilter !== null && state.activeFilter.id === saved.id
+          setFdMsg('ok', `已保存「${saved.name}」${inUse ? '（正在使用，列表已按新条件刷新）' : '（还没启用：点「应用」才用它过滤列表）'}`)
+          renderFd()
+          scheduleCount(0)
+        } catch (error) {
+          showSaveError(d, error)
+        } finally {
+          setFdBusy(false)
+        }
+      }
+      const closeFilterDialog = () => {
+        if (fdOverlay.hidden) return
+        fdOverlay.hidden = true
+        fd.confirmDelete = false
+        fd.pendingImport = null
+        if (countTimer !== null) {
+          clearTimeout(countTimer)
+          countTimer = null
+        }
+        // 没改过的副本不留（下次打开按宿主的最新版本显示）；改过没保存的留着，列表里带 ●
+        for (const [key, d] of [...fd.drafts]) {
+          if (!isDirty(d)) fd.drafts.delete(key)
+        }
+        if (fdBox.contains(document.activeElement)) filterBtn.focus()
+      }
+      const fdApply = async () => {
+        if (fd.busy) return
+        const d = currentDraft()
+        if (d === null) {
+          closeFilterDialog()
+          if (state.activeFilter !== null) setActiveFilter(null)
+          return
+        }
+        if (!draftValid(d)) {
+          updateFdState()
+          return
+        }
+        let target = d.savedId !== null ? savedById(d.savedId) : undefined
+        // 旧宿主读不到列表时，没改过的「当前过滤器」就用快照
+        if (target === undefined && !isDirty(d) && state.activeFilter !== null && state.activeFilter.id === d.savedId) target = state.activeFilter
+        if (isDirty(d) || target === undefined) {
+          setFdBusy(true)
+          setFdMsg('note', '正在保存…')
+          try {
+            target = await saveDraft(d)
+          } catch (error) {
+            showSaveError(d, error)
+            return
+          } finally {
+            setFdBusy(false)
+          }
+        }
+        setFdMsg(null)
+        closeFilterDialog()
+        setActiveFilter(target)
+      }
+      const fdDeleteNow = async (d) => {
+        if (fd.busy || d.savedId === null) return
+        const id = d.savedId
+        const name = savedById(id)?.name ?? d.name
+        setFdBusy(true)
+        try {
+          const data = await apiFetch(`/filters?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+          fd.confirmDelete = false
+          fd.drafts.delete(d.key)
+          if (fd.selected === d.key) fd.selected = ''
+          // 删的是正在用的：这里删的，提示说清楚（不走「被别处删除」那句）
+          if (state.activeFilter !== null && state.activeFilter.id === id) dropActiveFilter(`已删除过滤器「${name}」，列表恢复为不过滤。`)
+          syncSaved(Array.isArray(data?.filters) ? data.filters : fd.saved.filter((f) => f.id !== id))
+          setFdMsg('ok', `已删除「${name}」`)
+        } catch (error) {
+          if (error?.code === 'FILTER_NOT_FOUND') {
+            fd.confirmDelete = false
+            setFdMsg('warn', `「${name}」在宿主上已经没有了（可能在别处删除了），列表已刷新`)
+            loadFilters({ renderEditor: true })
+          } else {
+            setFdMsg('warn', `删除失败：${errText(error)}`)
+          }
+        } finally {
+          setFdBusy(false)
+          renderFd()
+          scheduleCount(0)
+        }
+      }
+      const renamedText = (x) => {
+        if (typeof x === 'string') return x
+        if (x !== null && typeof x === 'object') return `${x.from ?? x.name ?? x.original ?? '?'} → ${x.to ?? x.renamed ?? x.newName ?? '?'}`
+        return String(x)
+      }
+      const fdSubmitImport = async (mode) => {
+        const p = fd.pendingImport
+        if (p === null || fd.busy) return
+        setFdBusy(true)
+        try {
+          const r = await apiFetch('/filters/import', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: p.data, mode }) })
+          fd.pendingImport = null
+          // renamed 是个数、renames 是 [{ from, to }]（旧写法 renamed 直接是列表也认）
+          const renameList = Array.isArray(r?.renames) ? r.renames : Array.isArray(r?.renamed) ? r.renamed : []
+          const renamed = renameList.map(renamedText)
+          const renamedCount = Number.isFinite(Number(r?.renamed)) && !Array.isArray(r?.renamed) ? Number(r.renamed) : renameList.length
+          syncSaved(Array.isArray(r?.filters) ? r.filters : fd.saved)
+          setFdMsg('ok', `已导入 ${Number(r?.imported) || 0} 个，跳过 ${Number(r?.skipped) || 0} 个相同的` +
+            (renamedCount > 0 ? `，${renamedCount} 个重名的改了名${renamed.length > 0 ? '：' + renamed.join('、') : ''}` : '') +
+            (mode === 'replace' ? '（原来的过滤器已替换掉）' : ''))
+        } catch (error) {
+          setFdMsg('warn', error?.status === 404 && error?.code === undefined
+            ? `导入失败：${hostMissingText}`
+            : error?.status === 413 || error?.code === 'BODY_TOO_LARGE' ? `导入失败：文件太大，宿主拒收（${errText(error)}）` : `导入失败：${errText(error)}`)
+        } finally {
+          setFdBusy(false)
+          renderFd()
+          scheduleCount(0)
+        }
+      }
+      const openFilterDialog = () => {
+        if (state.activeFilter !== null) fd.selected = state.activeFilter.id
+        else if (fd.selected !== '' && draftFor(fd.selected) === null) fd.selected = ''
+        fd.confirmDelete = false
+        fd.pendingImport = null
+        setFdMsg(null)
+        fdOverlay.hidden = false
+        renderFd()
+        loadFilters({ renderEditor: true })
+        scheduleCount(0)
+        fdBox.focus()
+      }
+
+      filterBtn.addEventListener('click', openFilterDialog)
+      filterClearBtn.addEventListener('click', () => {
+        if (state.activeFilter !== null) setActiveFilter(null)
+      })
+      fdX.addEventListener('click', closeFilterDialog)
+      fdCloseBtn.addEventListener('click', closeFilterDialog)
+      fdApplyBtn.addEventListener('click', () => { fdApply() })
+      fdSaveBtn.addEventListener('click', () => { fdSave() })
+      fdNameIn.addEventListener('input', () => {
+        const d = currentDraft()
+        if (d === null) return
+        d.name = fdNameIn.value
+        onDraftChanged({ count: false })
+      })
+      fdModeSel.addEventListener('change', () => {
+        const d = currentDraft()
+        if (d === null) return
+        d.mode = fdModeSel.value === 'any' ? 'any' : 'all'
+        onDraftChanged()
+      })
+      fdAddCondBtn.addEventListener('click', () => {
+        const d = currentDraft()
+        if (d === null || d.conditions.length >= FILTER_COND_LIMIT) return
+        d.conditions.push(newCondition())
+        renderConds()
+        onDraftChanged()
+        const last = condRows[condRows.length - 1]
+        if (last !== undefined) {
+          last.row.scrollIntoView({ block: 'nearest' })
+          last.valIn.focus()
+        }
+      })
+      fdClearCondsBtn.addEventListener('click', () => {
+        const d = currentDraft()
+        if (d === null || d.conditions.length === 0) return
+        d.conditions = []
+        renderConds()
+        onDraftChanged()
+      })
+      fdNewBtn.addEventListener('click', () => {
+        const key = `new:${++fd.newSeq}`
+        fd.drafts.set(key, { key, savedId: null, name: uniqueFilterName('新过滤器'), mode: 'all', conditions: [newCondition()], baseSig: '' })
+        fd.selected = key
+        fd.confirmDelete = false
+        setFdMsg('note', '新过滤器（还没保存）：填好名称和条件，点「保存」或「应用」')
+        renderFd()
+        scheduleCount(0)
+        fdNameIn.focus()
+        fdNameIn.select()
+      })
+      fdDupBtn.addEventListener('click', () => {
+        const d = currentDraft()
+        if (d === null || fd.busy) return
+        const key = `new:${++fd.newSeq}`
+        const conditions = cloneConditions(d.conditions).map((c) => {
+          const copy = { ...c }
+          delete copy.id
+          return copy
+        })
+        fd.drafts.set(key, { key, savedId: null, name: uniqueFilterName(`${d.name.trim() || '过滤器'} 副本`), mode: d.mode, conditions, baseSig: '' })
+        fd.selected = key
+        fd.confirmDelete = false
+        setFdMsg('note', '已复制为新过滤器（还没保存）：改好名称点「保存」或「应用」')
+        renderFd()
+        scheduleCount(0)
+        fdNameIn.focus()
+        fdNameIn.select()
+      })
+      fdRevertBtn.addEventListener('click', () => {
+        const d = currentDraft()
+        if (d === null || !isDirty(d)) return
+        fd.drafts.delete(d.key)
+        if (fd.serverError !== null && fd.serverError.key === d.key) fd.serverError = null
+        if (d.savedId === null || draftFor(d.key) === null) fd.selected = state.activeFilter !== null ? state.activeFilter.id : ''
+        fd.confirmDelete = false
+        setFdMsg('note', d.savedId === null ? '已丢弃这个没保存的新过滤器' : '已还原为保存的版本')
+        renderFd()
+        scheduleCount(0)
+      })
+      fdDeleteBtn.addEventListener('click', () => {
+        const d = currentDraft()
+        if (d === null || fd.busy) return
+        if (d.savedId === null) {
+          // 没保存过的新过滤器：直接丢掉，不用确认
+          fd.drafts.delete(d.key)
+          fd.selected = state.activeFilter !== null ? state.activeFilter.id : ''
+          setFdMsg('note', '已丢弃这个没保存的新过滤器')
+          renderFd()
+          scheduleCount(0)
+          return
+        }
+        fd.confirmDelete = true
+        renderFdConfirm()
+      })
+      fdImportBtn.addEventListener('click', () => fdImportFile.click())
+      fdImportFile.addEventListener('change', () => {
+        const file = fdImportFile.files && fdImportFile.files[0]
+        fdImportFile.value = ''
+        if (!file) return
+        const reader = new FileReader()
+        reader.onerror = () => setFdMsg('warn', '读取文件失败')
+        reader.onload = () => {
+          let text = String(reader.result ?? '')
+          if (text.charCodeAt(0) === 0xfeff) text = text.slice(1)
+          let parsed
+          try {
+            parsed = JSON.parse(text)
+          } catch {
+            setFdMsg('warn', `「${file.name}」不是有效的 JSON 文件`)
+            return
+          }
+          const list = Array.isArray(parsed) ? parsed : parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.filters) ? parsed.filters : null
+          if (list === null) {
+            setFdMsg('warn', `「${file.name}」里没有过滤器列表：要用「导出」得到的文件（或过滤器数组）`)
+            return
+          }
+          fd.pendingImport = { data: parsed, count: list.length, fileName: file.name }
+          setFdMsg(null)
+          renderFdImport()
+        }
+        reader.readAsText(file)
+      })
+      fdExportBtn.addEventListener('click', () => {
+        if (fd.busy) return
+        fdExportBtn.disabled = true
+        apiFetchText('/filters/export')
+          .then((text) => {
+            let count = null
+            try {
+              const env = JSON.parse(text)
+              count = Array.isArray(env?.filters) ? env.filters.length : Array.isArray(env) ? env.length : null
+            } catch {
+              count = null
+            }
+            const name = `api-filters-${fileStamp()}.json`
+            downloadBlob(name, prettyJsonText(text) + '\n', 'application/json')
+            const unsaved = [...fd.drafts.values()].filter(isDirty).length
+            setFdMsg('ok', `已导出${count !== null ? ` ${count} 个过滤器` : ''} → ${name}${unsaved > 0 ? `（${unsaved} 个没保存的修改不在文件里）` : ''}`)
+          })
+          .catch((error) => setFdMsg('warn', error?.status === 404 && error?.code === undefined ? `导出失败：${hostMissingText}` : `导出失败：${errText(error)}`))
+          .finally(() => updateFdState())
+      })
+
+      // ---- 统计行里的过滤器说明 + 统计类视图的提醒
+      const renderFilterStat = (sent, list) => {
+        if (sent === null) return
+        const appliedList = Array.isArray(list?.filterApplied) ? list.filterApplied : null
+        const applied = appliedList !== null || enabledCondCount(sent.filter) === 0
+        stats.appendChild(document.createTextNode(' · '))
+        const chip = el('span', 'apv-statchip apv-statfilter' + (applied ? '' : ' apv-warn'), applied
+          ? `过滤器「${sent.filter.name}」· 匹配 ${Number.isFinite(Number(list?.total)) ? Number(list.total) : '?'} 条`
+          : `⚠ 过滤器「${sent.filter.name}」没生效（宿主旧版本？需要重启 DSH）`)
+        const desc = appliedList !== null
+          ? appliedList.map((a) => (a !== null && typeof a === 'object' ? `${a.name ?? ''}：${a.description ?? ''}` : '')).filter((s) => s !== '').join('\n')
+          : ''
+        chip.title = `${desc !== '' ? desc : describeFilterText(sent.filter, fd.fieldsById, fd.opsById)}\n点击编辑过滤器`
+        chip.addEventListener('click', openFilterDialog)
+        stats.appendChild(chip)
+      }
+      const listGate = latestGate()
+      // ---- 多客户端捕获库：工具栏「客户端」下拉
+      // 宿主的 /capture/status 带 captureClient（当前客户端 / 模式 / 记录目录）；客户端列表与「是否在跑」来自 GET /capture-clients。
+      const clientsUi = { key: '', info: null, view: null, loadedAt: 0, loading: false, posting: false }
+      const CLIENTS_RELOAD_MS = 15000
+      const renderClientSel = () => {
+        const info = clientsUi.info
+        const view = clientsUi.view
+        if (info === null || info.configured !== true) {
+          clientSel.hidden = true
+          return
+        }
+        clientSel.hidden = false
+        // 正在操作这个下拉时不重建选项（会把展开的列表收起来）
+        if (document.activeElement === clientSel) return
+        const list = view !== null && Array.isArray(view.clients) ? view.clients : []
+        const manual = info.mode === 'manual'
+        clientSel.textContent = ''
+        const auto = el('option', '', `客户端：自动（${info.client ?? '无'}）`)
+        auto.value = '__auto__'
+        auto.title = '跟随最近启动的客户端（关掉客户端后仍显示它的记录）'
+        clientSel.appendChild(auto)
+        const names = list.length > 0 ? list.map((c) => c.name) : (info.client !== null ? [info.client] : [])
+        for (const name of names) {
+          const c = list.find((x) => x.name === name)
+          const running = c !== undefined && c.running === true
+          const locked = manual && name === info.client
+          const opt = el('option', '', `客户端：${name}${locked ? '（锁定）' : ''}${running ? ' ●' : ''}`)
+          opt.value = name
+          opt.title = `${c !== undefined ? `进程 ${c.processes.join(' / ')} · 记录目录 ${c.dir}` : name}${running ? ' · 正在运行' : ''}`
+          clientSel.appendChild(opt)
+        }
+        clientSel.value = manual && info.client !== null ? info.client : '__auto__'
+      }
+      const loadClientsView = () => {
+        if (clientsUi.loading) return
+        clientsUi.loading = true
+        apiFetch('/capture-clients')
+          .then((view) => {
+            clientsUi.view = view
+            clientsUi.loadedAt = Date.now()
+            renderClientSel()
+          })
+          .catch(() => { clientsUi.loadedAt = Date.now() }) // 宿主太旧没有这个路由：下拉只显示当前客户端
+          .finally(() => { clientsUi.loading = false })
+      }
+      /** 轮询拿到的 captureClient；当前客户端变了（自动跟随切换，或在别的窗口锁定）⇒ 关详情、整表重画、马上再拉一次列表。返回是否切换了。 */
+      const applyClientInfo = (info) => {
+        const next = info !== null && typeof info === 'object' ? info : null
+        const key = next === null || next.configured !== true ? '' : `${next.client}|${next.mode}|${next.recordsDir}`
+        const switched = clientsUi.key !== '' && key !== '' && key !== clientsUi.key && clientsUi.key.split('|')[2] !== key.split('|')[2]
+        clientsUi.key = key
+        clientsUi.info = next
+        if (key !== '' && (clientsUi.view === null || switched || Date.now() - clientsUi.loadedAt > CLIENTS_RELOAD_MS)) loadClientsView()
+        renderClientSel()
+        if (switched) {
+          closeDetail()
+          state.lastRenderKey = ''
+        }
+        return switched
+      }
+      clientSel.addEventListener('mousedown', () => {
+        if (Date.now() - clientsUi.loadedAt > 3000) loadClientsView()
+      })
+      clientSel.addEventListener('change', () => {
+        if (clientsUi.posting) return
+        const value = clientSel.value
+        const body = value === '__auto__' ? { mode: 'auto' } : { active: value, mode: 'manual' }
+        clientsUi.posting = true
+        clientSel.disabled = true
+        apiFetch('/capture-clients', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+          .then((view) => {
+            clientsUi.view = view
+            clientsUi.loadedAt = Date.now()
+            const switched = applyClientInfo(view)
+            if (!switched) state.lastRenderKey = ''
+            clientSel.blur()
+            renderClientSel()
+            refresh()
+          })
+          .catch((error) => {
+            stats.textContent = `切换客户端失败: ${error instanceof Error ? error.message : String(error)}`
+            renderClientSel()
+          })
+          .finally(() => {
+            clientsUi.posting = false
+            clientSel.disabled = false
+          })
+      })
+
+      const refresh = async () => {
+        const seq = listGate.next()
+        let filterSent = null
+        try {
+          const params = setQuickParams(new URLSearchParams({ limit: String(LIMIT) }))
+          filterSent = setFilterParam(params)
+          // 启用着过滤器：隔一阵和宿主对一次（在别的窗口里删了 / 改了要跟上）
+          if (state.activeFilter !== null && !fd.syncing && Date.now() - fd.lastSync > FILTER_SYNC_MS) loadFilters()
+          const [listRes, stat, cap, prox] = await Promise.all([
+            apiFetch(`/records?${params.toString()}`).then((value) => ({ value }), (error) => ({ error })),
             apiFetch('/stats'),
             apiFetch('/capture/status').catch(() => null),
             apiFetch('/proxy/status').catch(() => null),
           ])
+          if (listRes.error !== undefined) {
+            if (filterSent !== null && listRes.error?.code === 'FILTER_NOT_FOUND' && listGate.accept(seq)) {
+              dropActiveFilter(`过滤器「${filterSent.filter.name}」在宿主上已经没有了（可能在别处删除了），列表已恢复为不过滤。`)
+              return
+            }
+            throw listRes.error
+          }
+          const list = listRes.value
           const active = activeView()
           let viewData = null
           if (active === 'session') {
@@ -3201,12 +5719,41 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
           } else if (active === 'baseline') {
             viewData = await apiFetch('/baseline/list').catch(() => null)
           }
+          // 并发的几次刷新只认最后发出的那次：晚到的旧响应（例如切换过滤器之前发出的轮询）不覆盖新列表
+          if (!listGate.accept(seq)) return
+          // 当前客户端刚切换：这一轮的列表可能还是旧库的 —— 不画它，马上按新库再拉一次
+          if (applyClientInfo(cap !== null && cap !== undefined ? cap.captureClient : null)) {
+            renderCapture(cap)
+            renderProxy(prox)
+            setTimeout(() => { refresh() }, 0)
+            return
+          }
           renderStats(stat)
+          renderFilterStat(filterSent, list)
           renderCapture(cap)
           renderProxy(prox)
           if (!bpWrap.hidden) loadBreakpoints() // 断点面板打开时随轮询刷新挂起列表
+          if (!icWrap.hidden) loadIntercept({ poll: true }) // 透明拦截面板打开时刷新计数/告警（证书/计划任务部分宿主缓存 30 秒）
+          // 规则面板打开时：规则集版本变了（智能体加/删了规则）就重拉列表；只重画表格，不动正在填的表单（C12）
+          const rulesRev = prox !== null && prox !== undefined && prox.rules !== undefined && prox.rules !== null ? prox.rules.revision : undefined
+          if (!rulesWrap.hidden && typeof rulesRev === 'string' && rulesRev !== rulesRevision && rulesLoading === 0) loadRules()
+          if (!nsWrap.hidden) loadNetsim() // 弱网面板打开时跟着刷新（正在改的输入框不覆盖，C43）
           if (active === 'baseline') renderBaselineSel(viewData?.items ?? [])
-          const key = `${stat.total}|${stat.lastTs}|${state.q}|${state.method}|${state.status}|${state.source}|${state.flagged}|${state.host}|${state.ct}|${state.minDur}|${state.minBytes}|${state.maxBytes}|${state.fromTs}|${state.toTs}|${state.sessionId}|${state.errorsOnly}|${state.noNoise}|${state.regex}|${state.bodyQ}|${active}`
+          // 渲染键用这次请求真正带出去的参数（含过滤条件），不用此刻的 state：否则切换筛选前发出的旧响应会顶着新键渲染，
+          // 新响应回来时键相同反而不渲染。表格视图再带上行内容签名：同一 id 的记录后来补上了进程 / 耗时也会重画（增量，不整表重建）。
+          const items = Array.isArray(list?.items) ? list.items : []
+          // R5-05：打开着的详情：列表里同一条记录后来补上了进程（本地代理 / 透明拦截按端口查进程是异步的）⇒ 只重画「进程」一行
+          if (currentFull !== null) {
+            const fresh = items.find((r) => r !== null && typeof r === 'object' && r.id === currentFull.id)
+            const hasProc = fresh !== undefined && ((typeof fresh.clientProcess === 'string' && fresh.clientProcess !== '') || Number.isInteger(fresh.clientPid))
+            if (hasProc && (fresh.clientProcess !== currentFull.clientProcess || fresh.clientPid !== currentFull.clientPid)) {
+              currentFull.clientProcess = fresh.clientProcess
+              currentFull.clientPid = fresh.clientPid
+              const oldLine = detailBody.querySelector('.apv-dproc')
+              if (oldLine !== null) oldLine.replaceWith(buildProcLine(currentFull))
+            }
+          }
+          const key = `${stat.total}|${stat.lastTs}|${list?.total}|${params.toString()}|${active}|${active === null ? items.map(rowSig).join('\n') : ''}`
           if (key !== state.lastRenderKey) {
             state.lastRenderKey = key
             if (active === 'session') {
@@ -3225,10 +5772,15 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
               pendingTreeRecords = viewData?.items ?? []
               renderTree()
             } else {
-              renderRows(list.items)
+              renderRows(items)
             }
           }
         } catch (error) {
+          if (!listGate.accept(seq)) return
+          if (filterSent !== null && error?.code === 'FILTER_INVALID') {
+            stats.textContent = `过滤器「${filterSent.filter.name}」用不了：${errText(error)}（点「过滤器」修改，或点 × 取消）`
+            return
+          }
           stats.textContent = `加载失败: ${error instanceof Error ? error.message : String(error)}`
         }
       }
@@ -3241,7 +5793,7 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
           if (!state.open) return
           if (state.frozen) { scheduleNext(); return } // 冻结：跳过刷新但保持轮询循环
           refresh().finally(scheduleNext)
-        }, state.capture.running || state.proxy.running ? POLL_LIVE_MS : POLL_MS)
+        }, state.capture.running || state.proxy.running || state.proxy.interceptListening ? POLL_LIVE_MS : POLL_MS)
       }
 
       const setOpen = (open) => {
@@ -3275,6 +5827,7 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
             clearTimeout(state.timer)
             state.timer = null
           }
+          closeFilterDialog()
           closeDetail()
         }
       }
@@ -3354,32 +5907,48 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       })
       treeBtn.addEventListener('click', () => setView(state.treeView ? 'table' : 'tree'))
       aggBtn.addEventListener('click', () => setView(state.aggView ? 'table' : 'agg'))
-      delFilteredBtn.addEventListener('click', () => {
-        if (!window.confirm('删除当前筛选条件命中的全部记录？此操作不可恢复。')) return
-        const params = new URLSearchParams({ filtered: '1' })
-        if (state.q !== '') params.set('q', state.q)
-        if (state.method !== '') params.set('method', state.method)
-        if (state.status !== '') params.set('status', state.status)
-        if (state.source !== '') params.set('source', state.source)
-        if (state.flagged) params.set('flag', '1')
-        if (state.host !== '') params.set('host', state.host)
-        if (state.ct !== '') params.set('contentType', state.ct)
-        if (state.minDur !== '') params.set('minDurationMs', state.minDur)
-        if (state.minBytes !== '') params.set('minBytes', state.minBytes)
-        if (state.maxBytes !== '') params.set('maxBytes', state.maxBytes)
-        if (state.fromTs !== '') params.set('fromTs', state.fromTs)
-        if (state.toTs !== '') params.set('toTs', state.toTs)
-        if (state.sessionId !== '') params.set('sessionId', state.sessionId)
-        if (state.errorsOnly) params.set('errors', '1')
-        if (state.noNoise) params.set('noNoise', '1')
-        if (state.regex) params.set('regex', '1')
-        if (state.bodyQ !== '') params.set('bodyQ', state.bodyQ)
+      delFilteredBtn.addEventListener('click', async () => {
+        // 删的必须正好是列表里看到的那一批：上方的筛选 + 当前启用的过滤器。启用着过滤器时先确认宿主真的按它算
+        // （旧宿主不认过滤条件，会按更宽的条件删掉更多记录），并把会删的条数写进确认框。
+        // R5-02：条数按点按钮这一刻数（toTs = 这一刻，用户自己设了更早的截止时间就用用户的），DELETE 带同一组参数和
+        // 同一个 toTs 上界：确认框开着时新抓到的记录不会被一起删掉；删完把实际删除条数留在提示条里（不会被刷新盖掉）。
+        const userTo = state.toTs !== '' && Number.isFinite(Number(state.toTs)) ? Number(state.toTs) : Infinity
+        const bound = String(Math.min(Date.now(), userTo))
+        const params = setQuickParams(new URLSearchParams({ filtered: '1' }))
+        const sent = setFilterParam(params)
+        params.set('toTs', bound)
+        const probe = setQuickParams(new URLSearchParams({ limit: '1' }))
+        setFilterParam(probe)
+        probe.set('toTs', bound)
+        let check
+        try {
+          check = await apiFetch(`/records?${probe.toString()}`)
+        } catch (error) {
+          stats.textContent = `删除筛选集：先核对${sent !== null ? `过滤器「${sent.filter.name}」` : '要删的条数'}失败（${errText(error)}），没有删除任何记录`
+          return
+        }
+        if (sent !== null && !Array.isArray(check?.filterApplied) && enabledCondCount(sent.filter) > 0) {
+          window.alert(`宿主没有应用过滤器「${sent.filter.name}」（旧版本？需要重启 DSH），按上方筛选删除会删掉比列表里更多的记录，已取消。`)
+          return
+        }
+        const total = Number(check?.total)
+        const counted = Number.isFinite(total) ? total : null
+        const countText = counted !== null ? ` ${counted} 条` : '全部'
+        const message = sent !== null
+          ? `删除当前筛选（含过滤器「${sent.filter.name}」）命中的${countText}记录？此操作不可恢复。`
+          : `删除当前筛选条件命中的${countText}记录？此操作不可恢复。`
+        if (!window.confirm(message)) return
         apiFetch(`/records?${params.toString()}`, { method: 'DELETE' })
           .then((r) => {
-            stats.textContent = `已删除 ${r.deleted} 条`
+            const deleted = Number(r?.deleted) || 0
+            if (counted !== null && deleted !== counted) showNotice('warn', `已删除 ${deleted} 条（确认时数到的是 ${counted} 条：确认期间库里的记录有变化）`)
+            else showNotice('ok', `已删除 ${deleted} 条`)
             refresh()
           })
-          .catch((error) => console.error('[dsh-api-visualizer] delete filtered failed:', error))
+          .catch((error) => {
+            console.error('[dsh-api-visualizer] delete filtered failed:', error)
+            showNotice('warn', `删除筛选集失败：${errText(error)}`)
+          })
       })
       // 保存/载入筛选
       const currentFilter = () => ({
@@ -3527,31 +6096,102 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
             rotateBtn.disabled = false
           })
       })
-      rulesBtn.addEventListener('click', () => {
-        rulesWrap.hidden = !rulesWrap.hidden
-        rulesBtn.classList.toggle('apv-btn-on', !rulesWrap.hidden)
-        if (!rulesWrap.hidden) { bpWrap.hidden = true; bpBtn.classList.remove('apv-btn-on'); loadRules() }
-      })
+      // ---- 四个工具面板（规则 / 断点 / 透明拦截 / 弱网）互斥：同一时间只开一个
+      const toolPanels = [
+        { wrap: rulesWrap, btn: rulesBtn, onOpen: () => loadRules() },
+        { wrap: bpWrap, btn: bpBtn, onOpen: () => loadBreakpoints() },
+        { wrap: icWrap, btn: interceptBtn, onOpen: () => loadIntercept() },
+        { wrap: nsWrap, btn: netsimBtn, onOpen: () => { nsDiscardEdits(); loadNetsim() } },
+      ]
+      const toggleToolPanel = (wrap) => {
+        const opening = wrap.hidden
+        for (const p of toolPanels) {
+          p.wrap.hidden = !(opening && p.wrap === wrap)
+          p.btn.classList.toggle('apv-btn-on', !p.wrap.hidden)
+        }
+        if (opening) toolPanels.find((p) => p.wrap === wrap).onOpen()
+      }
+      rulesBtn.addEventListener('click', () => toggleToolPanel(rulesWrap))
+      bpBtn.addEventListener('click', () => toggleToolPanel(bpWrap))
+      interceptBtn.addEventListener('click', () => toggleToolPanel(icWrap))
+      netsimBtn.addEventListener('click', () => toggleToolPanel(nsWrap))
 
-      // ---- 请求断点面板逻辑
-      let bpConfig = { enabled: false, urlFilter: '', methodFilter: '' }
-      let bpPausedSig = '' // 挂起集合签名：未变则不重建卡片，保留正在编辑的内容
-      const renderBreakpoints = (data) => {
-        bpConfig = data?.config ?? bpConfig
-        bpEnableCb.checked = bpConfig.enabled === true
-        bpBtn.textContent = bpConfig.enabled ? '断点 ●' : '断点'
-        if (document.activeElement !== bpUrlIn) bpUrlIn.value = bpConfig.urlFilter ?? ''
-        if (document.activeElement !== bpMethodSel) bpMethodSel.value = bpConfig.methodFilter ?? ''
-        const paused = data?.paused ?? []
-        const sig = (bpConfig.enabled ? '1' : '0') + '|' + paused.map((p) => p.id).join(',')
-        if (sig === bpPausedSig) return
-        bpPausedSig = sig
-        bpPausedEl.textContent = ''
-        if (!bpConfig.enabled) { bpPausedEl.appendChild(el('div', 'apv-note', '断点未启用')); return }
-        if (paused.length === 0) { bpPausedEl.appendChild(el('div', 'apv-note', '（无挂起请求）启用后命中的请求会在此等待处理')); return }
-        for (const item of paused) {
-          const card = el('div', 'apv-bp-card')
-          card.appendChild(el('div', 'apv-sec-title', `${item.method} ${item.url}`))
+      // ---- 断点面板逻辑（请求 / 响应两个阶段）
+      let bpConfig = { enabled: false, urlFilter: '', methodFilter: '', phase: 'request' }
+      const PHASE_LABEL = { request: '请求', response: '响应', both: '请求+响应' }
+      // 挂起卡片按 id 复用：轮询只增删变化了的卡片，别的请求挂起 / 放行时，正在改的内容和放行失败的提示都留在原卡片上
+      const bpCards = new Map() // id -> { card }
+      const bpNoteEl = el('div', 'apv-note', '')
+      const bpGate = latestGate()
+      /** 头部编辑框（JSON 对象）→ 对象；数字按原文当字符串（头的值本来就是字符串），不经 JSON.parse 四舍五入。 */
+      const parseHeaderBox = (text) => {
+        const r = parseJsonKeepNumbers(text)
+        if (!r.ok) return { ok: false, reason: 'invalid' }
+        if (r.value === null || typeof r.value !== 'object' || Array.isArray(r.value)) return { ok: false, reason: 'not-object' }
+        return { ok: true, value: r.value }
+      }
+      const headerBoxAlert = (label, reason) => window.alert(reason === 'not-object' ? `${label}要是 JSON 对象，例如 {"名称": "值"}` : `${label}不是有效 JSON`)
+      const buildBpCard = (item) => {
+        const card = el('div', 'apv-bp-card')
+        const isRes = item.phase === 'response'
+        card.appendChild(el('div', 'apv-sec-title', `${isRes ? '【响应】' : '【请求】'}${item.method} ${item.url}`))
+        if (typeof item.note === 'string' && item.note !== '') card.appendChild(el('div', 'apv-note', item.note))
+        const btns = el('div', 'apv-bp-btns')
+        const goBtn = el('button', 'apv-btn', '放行')
+        const passBtn = el('button', 'apv-btn', '原样放行')
+        const dropBtn = el('button', 'apv-btn apv-btn-danger', '丢弃')
+        const errEl = el('div', 'apv-bp-err apv-warn', '')
+        const release = (action, edits) => {
+          errEl.textContent = ''
+          for (const b of [goBtn, passBtn, dropBtn]) b.disabled = true
+          const seq = bpGate.next()
+          apiFetch('/proxy/breakpoints/release', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: item.id, action, edits }),
+          })
+            .then((data) => { if (bpGate.accept(seq)) renderBreakpoints(data) })
+            .catch((error) => {
+              // 400 = 改动不合法（状态码、头名 / 头的值…）：原因写在这张卡片上，卡片和已改的内容都留着，改对了再放行
+              errEl.textContent = error?.status === 404
+                ? `这个请求已经不在挂起列表里（120 秒没处理会自动放行，或已被别处处理）：${errText(error)}`
+                : `放行失败：${errText(error)}`
+            })
+            .finally(() => { for (const b of [goBtn, passBtn, dropBtn]) b.disabled = false })
+        }
+        if (isRes) {
+          card.appendChild(el('div', 'apv-note', '状态码'))
+          const sIn = el('input', 'apv-fin apv-fin-dur')
+          sIn.type = 'number'
+          sIn.value = String(item.status ?? 200)
+          card.appendChild(sIn)
+          card.appendChild(el('div', 'apv-note', '响应头（JSON）'))
+          const hIn = el('textarea', 'apv-fin apv-rule-body')
+          hIn.value = JSON.stringify(item.resHeaders ?? {}, null, 2)
+          card.appendChild(hIn)
+          card.appendChild(el('div', 'apv-note', item.editable === false ? '响应体（非文本，不能改）' : '响应体（改完点放行；压缩已解开，发出时自动按原编码重算长度；JSON 只重排了缩进，数字与字符串保持原文）'))
+          const bIn = el('textarea', 'apv-fin apv-rule-body')
+          bIn.style.width = '100%'
+          bIn.style.height = '160px'
+          // 保留原文的缩进：不经 JSON.parse/stringify，大整数 ID、1.50 这类数字不会被改掉（C7）
+          bIn.value = prettyJsonText(item.resBody ?? '')
+          bIn.disabled = item.editable === false
+          card.appendChild(bIn)
+          // 初值按 textarea 读回来的为准（它会把 \r\n 规范成 \n），只把用户真改了的字段发回去
+          const status0 = sIn.value
+          const headers0 = hIn.value
+          const body0 = bIn.value
+          goBtn.addEventListener('click', () => {
+            const edits = {}
+            if (hIn.value !== headers0) {
+              const h = parseHeaderBox(hIn.value)
+              if (!h.ok) { headerBoxAlert('响应头', h.reason); return }
+              edits.resHeaders = h.value
+            }
+            if (sIn.value !== status0 && sIn.value.trim() !== '') edits.status = Number(sIn.value)
+            if (item.editable !== false && bIn.value !== body0) edits.resBody = bIn.value
+            release('continue', Object.keys(edits).length > 0 ? edits : null)
+          })
+        } else {
           card.appendChild(el('div', 'apv-note', '方法'))
           const mIn = el('input', 'apv-fin')
           mIn.value = item.method
@@ -3560,40 +6200,457 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
           const hIn = el('textarea', 'apv-fin apv-rule-body')
           hIn.value = JSON.stringify(item.reqHeaders ?? {}, null, 2)
           card.appendChild(hIn)
-          card.appendChild(el('div', 'apv-note', '请求体'))
+          // 捕获库里的请求体可能是十六进制 / base64 存法或已截断：这种不能当文本改，原样放行
+          const reqRaw = typeof item.reqBody === 'string' ? item.reqBody : ''
+          const reqKind = detectBodyKind(reqRaw, '').kind
+          const reqEditable = reqKind !== 'hex' && reqKind !== 'base64' && !reqRaw.endsWith('…(截断)')
+          card.appendChild(el('div', 'apv-note', reqEditable ? '请求体' : '请求体（非文本或已截断，不能改）'))
           const bIn = el('textarea', 'apv-fin apv-rule-body')
-          bIn.value = item.reqBody ?? ''
+          bIn.value = reqRaw
+          bIn.disabled = !reqEditable
           card.appendChild(bIn)
-          const btns = el('div', 'apv-bp-btns')
-          const goBtn = el('button', 'apv-btn', '放行')
+          const method0 = mIn.value
+          const headers0 = hIn.value
+          const body0 = bIn.value
           goBtn.addEventListener('click', () => {
-            let headers = null
-            try { headers = JSON.parse(hIn.value) } catch { window.alert('请求头不是有效 JSON'); return }
-            releaseBp(item.id, 'continue', { method: mIn.value.trim(), reqHeaders: headers, reqBody: bIn.value })
+            const edits = {}
+            if (hIn.value !== headers0) {
+              const h = parseHeaderBox(hIn.value)
+              if (!h.ok) { headerBoxAlert('请求头', h.reason); return }
+              edits.reqHeaders = h.value
+            }
+            const method = mIn.value.trim()
+            if (method !== '' && method !== method0.trim()) edits.method = method
+            // 没改过的请求体不回传：回传的是文本，会把原始字节（GBK、二进制、截断前的全文）换掉
+            if (reqEditable && bIn.value !== body0) edits.reqBody = bIn.value
+            release('continue', Object.keys(edits).length > 0 ? edits : null)
           })
-          const dropBtn = el('button', 'apv-btn apv-btn-danger', '丢弃')
-          dropBtn.addEventListener('click', () => releaseBp(item.id, 'drop', null))
-          btns.appendChild(goBtn)
-          btns.appendChild(dropBtn)
-          card.appendChild(btns)
-          bpPausedEl.appendChild(card)
+        }
+        passBtn.addEventListener('click', () => release('continue', null))
+        dropBtn.addEventListener('click', () => release('drop', null))
+        btns.appendChild(goBtn)
+        btns.appendChild(passBtn)
+        btns.appendChild(dropBtn)
+        card.appendChild(btns)
+        card.appendChild(errEl)
+        return { card }
+      }
+      const renderBreakpoints = (data) => {
+        bpConfig = data?.config ?? bpConfig
+        bpEnableCb.checked = bpConfig.enabled === true
+        bpBtn.textContent = bpConfig.enabled ? `断点 ● ${PHASE_LABEL[bpConfig.phase] ?? '请求'}` : '断点'
+        if (document.activeElement !== bpUrlIn) bpUrlIn.value = bpConfig.urlFilter ?? ''
+        if (document.activeElement !== bpMethodSel) bpMethodSel.value = bpConfig.methodFilter ?? ''
+        if (document.activeElement !== bpPhaseSel) bpPhaseSel.value = bpConfig.phase ?? 'request'
+        const paused = bpConfig.enabled ? (data?.paused ?? []) : []
+        const live = new Set(paused.map((p) => p.id))
+        for (const [id, c] of bpCards) {
+          if (live.has(id)) continue
+          c.card.remove()
+          bpCards.delete(id)
+        }
+        if (paused.length === 0) {
+          bpNoteEl.textContent = bpConfig.enabled ? '（无挂起请求）启用后命中的请求会在此等待处理' : '断点未启用'
+          if (bpNoteEl.parentNode !== bpPausedEl) bpPausedEl.appendChild(bpNoteEl)
+          return
+        }
+        bpNoteEl.remove()
+        let prevCard = null
+        for (const item of paused) {
+          let c = bpCards.get(item.id)
+          if (c === undefined) {
+            c = buildBpCard(item)
+            bpCards.set(item.id, c)
+          }
+          const want = prevCard === null ? bpPausedEl.firstChild : prevCard.nextSibling
+          if (want !== c.card) bpPausedEl.insertBefore(c.card, want)
+          prevCard = c.card
         }
       }
-      const loadBreakpoints = () => apiFetch('/proxy/breakpoints').then(renderBreakpoints).catch((error) => { console.error('[dsh-api-visualizer] load breakpoints failed:', error) })
-      const saveBreakpoints = () => apiFetch('/proxy/breakpoints', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ enabled: bpEnableCb.checked, urlFilter: bpUrlIn.value.trim(), methodFilter: bpMethodSel.value }),
-      }).then((data) => { bpPausedSig = ''; renderBreakpoints(data) }).catch((error) => { console.error('[dsh-api-visualizer] save breakpoints failed:', error) })
-      const releaseBp = (id, action, edits) => apiFetch('/proxy/breakpoints/release', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id, action, edits }),
-      }).then((data) => { bpPausedSig = ''; renderBreakpoints(data) }).catch((error) => { console.error('[dsh-api-visualizer] release breakpoint failed:', error) })
+      const loadBreakpoints = () => {
+        const seq = bpGate.next()
+        return apiFetch('/proxy/breakpoints')
+          .then((data) => { if (bpGate.accept(seq)) renderBreakpoints(data) })
+          .catch((error) => { console.error('[dsh-api-visualizer] load breakpoints failed:', error) })
+      }
+      const saveBreakpoints = () => {
+        const seq = bpGate.next()
+        return apiFetch('/proxy/breakpoints', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enabled: bpEnableCb.checked, urlFilter: bpUrlIn.value.trim(), methodFilter: bpMethodSel.value, phase: bpPhaseSel.value }),
+        })
+          .then((data) => { if (bpGate.accept(seq)) renderBreakpoints(data) })
+          .catch((error) => { console.error('[dsh-api-visualizer] save breakpoints failed:', error) })
+      }
       bpEnableCb.addEventListener('change', saveBreakpoints)
+      bpPhaseSel.addEventListener('change', saveBreakpoints)
       bpSaveBtn.addEventListener('click', saveBreakpoints)
-      bpBtn.addEventListener('click', () => {
-        bpWrap.hidden = !bpWrap.hidden
-        bpBtn.classList.toggle('apv-btn-on', !bpWrap.hidden)
-        if (!bpWrap.hidden) { rulesWrap.hidden = true; rulesBtn.classList.remove('apv-btn-on'); loadBreakpoints() }
+
+      // ---- 透明拦截面板逻辑
+      let icBusy = false
+      let icLastStatus = null
+      let icInFlight = 0
+      const icGate = latestGate()
+      const icHostsFromBox = () => icHostsIn.value.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean)
+      /**
+       * 操作结果写进单独那一块：状态轮询（renderIntercept）不碰它；操作开始时换成进度，结束时换成结果或失败原因（C11）。
+       * warnings = 这次操作自己的告警（部分域名解析失败、安全网异常…）：之后的状态轮询不会再报，只能在这里留住。
+       */
+      const setIcAction = (kind, text, warnings = []) => {
+        icActionEl.textContent = ''
+        icActionEl.appendChild(el('div', kind === 'ok' ? 'apv-ok' : kind === 'warn' ? 'apv-warn' : 'apv-note', text))
+        for (const w of warnings) icActionEl.appendChild(el('div', 'apv-warn', '⚠ ' + w))
+      }
+      const textList = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x !== '') : [])
+      const renderIntercept = (s, error) => {
+        icStatusEl.textContent = ''
+        if (s === null || typeof s !== 'object') {
+          icStatusEl.appendChild(el('div', 'apv-warn', `拿不到透明拦截状态${error !== undefined ? '：' + errText(error) : ''}（宿主是旧版本？需要重启 DSH 加载新插件）`))
+          return
+        }
+        icLastStatus = s
+        const head = el('div', s.active ? 'apv-ok' : (s.listening ? 'apv-warn' : 'apv-note'))
+        head.textContent = s.listening !== true
+          ? `○ 未开启（监听地址 ${s.ip ?? '-'}）`
+          : s.draining
+            ? `◐ 排空中：hosts 已还原，${s.drainUntil ? Math.max(0, Math.round((s.drainUntil - Date.now()) / 1000)) + ' 秒后' : '稍后'}关监听（期间已有连接照常透传、不套规则）`
+            : `● 生效中 · ${s.ip} · 端口 ${(s.ports ?? []).map((p) => `${p.port}${p.mode === 'tcp' ? '(TCP透传)' : p.secure ? '(TLS)' : ''}`).join(' ')} · 已拦 ${s.counters?.requests ?? 0} 次 · 去重实时记录 ${s.counters?.dedupedRealtime ?? 0} 条`
+        icStatusEl.appendChild(head)
+        const ca = el('div', s.caTrusted === false ? 'apv-warn' : 'apv-note')
+        ca.textContent = s.caTrusted === true ? '根证书：已被 Windows 信任' : s.caTrusted === false ? '根证书：未被信任 —— 严格校验证书的请求（如量化接口）会握手失败，点「安装根证书」后重启客户端' : '根证书：信任状态未知'
+        icStatusEl.appendChild(ca)
+        if (Array.isArray(s.hosts) && s.hosts.length > 0) {
+          const t = el('table')
+          const hr = el('tr')
+          ;['域名', '端口', '真实地址', '来源', '次数', '告警'].forEach((h) => hr.appendChild(el('th', '', h)))
+          t.appendChild(hr)
+          for (const h of s.hosts) {
+            const tr = el('tr')
+            tr.appendChild(el('td', '', h.host))
+            tr.appendChild(el('td', '', (h.ports ?? []).join(' ')))
+            tr.appendChild(el('td', '', (h.upstream ?? []).join(', ')))
+            tr.appendChild(el('td', '', h.via ?? ''))
+            tr.appendChild(el('td', '', String(h.requests ?? 0)))
+            tr.appendChild(el('td', h.error ? 'apv-warn' : '', h.error ?? ''))
+            t.appendChild(tr)
+          }
+          icStatusEl.appendChild(t)
+        }
+        const hf = s.hostsFile ?? {}
+        const showTask = s.listening === true || hf.blockPresent === true
+        icStatusEl.appendChild(el('div', 'apv-note', `hosts：${hf.blockPresent ? `本插件段落在（${hf.entries} 条）` : '没有本插件段落'} · ${hf.path ?? ''}` +
+          (showTask && s.safetyTaskPresent === true ? ' · 安全网计划任务：在' : showTask && s.safetyTaskPresent === false ? ' · 安全网计划任务：不在' : '')))
+        if (s.event && s.event.message) icStatusEl.appendChild(el('div', s.event.level === 'error' ? 'apv-warn' : 'apv-note', '事件：' + s.event.message))
+        // 根证书未信任已经单独一行显示过，告警列表里同义的那条不再重复
+        for (const w of s.warnings ?? []) {
+          if (s.caTrusted === false && w.startsWith('根证书没有被')) continue
+          icStatusEl.appendChild(el('div', 'apv-warn', '⚠ ' + w))
+        }
+        if (document.activeElement !== icHostsIn && icHostsIn.value.trim() === '' && Array.isArray(s.entries) && s.entries.length > 0) {
+          icHostsIn.value = s.entries.join('\n')
+        }
+        icStartBtn.textContent = s.listening && !s.draining ? '更新名单' : '启用拦截'
+        icStopBtn.disabled = !(s.listening || hf.blockPresent)
+      }
+      const renderInterceptChip = (sum) => {
+        if (sum && sum.listening) {
+          interceptChip.textContent = sum.draining ? '拦截 ◐ 排空中' : `拦截 ● ${sum.hosts} 域名 · ${sum.requests ?? 0} 次${sum.tlsErrors > 0 ? ` · TLS 拒绝 ${sum.tlsErrors}` : ''}`
+          interceptChip.className = sum.draining ? 'apv-stats apv-warn' : 'apv-stats apv-live-on'
+          interceptBtn.textContent = sum.draining ? '透明拦截 ◐' : '透明拦截 ●'
+        } else {
+          interceptChip.textContent = ''
+          interceptChip.className = 'apv-stats'
+          interceptBtn.textContent = '透明拦截'
+        }
+      }
+      /**
+       * 状态一律取 deep（根证书信任 / 安全网计划任务）：宿主把这部分缓存 30 秒，启用 / 停用 / 装证书时宿主自己作废缓存；
+       * 原来轮询在 deep / 非 deep 之间交替，「根证书」一行会在实际状态和「未知」之间来回跳。
+       * 操作结束后带 fresh=1 强制重查（C37）。轮询（poll）在上一次还没回来时跳过，不叠请求。
+       */
+      const loadIntercept = ({ fresh = false, poll = false } = {}) => {
+        if (poll && icInFlight > 0) return Promise.resolve()
+        const seq = icGate.next()
+        icInFlight++
+        return apiFetch(`/proxy/intercept/status?deep=1${fresh ? '&fresh=1' : ''}`)
+          .then((s) => { if (icGate.accept(seq)) renderIntercept(s) })
+          .catch((error) => { if (icGate.accept(seq)) renderIntercept(null, error) })
+          .finally(() => { icInFlight-- })
+      }
+      icSuggestBtn.addEventListener('click', () => {
+        icSuggestEl.textContent = '读取中…'
+        apiFetch('/proxy/intercept/suggest').then((data) => {
+          icSuggestEl.textContent = ''
+          const items = (data?.items ?? []).filter((it) => it !== null && typeof it === 'object' && typeof it.host === 'string')
+          if (items.length === 0) { icSuggestEl.appendChild(el('span', 'apv-note', '捕获库里还没有域名记录：先「开始实时捕获」让客户端跑一会儿，或直接手填。')); return }
+          const entriesOf = (it) => (Array.isArray(it.entries) && it.entries.length > 0 ? it.entries.map(String) : [it.host])
+          const current = new Set(icHostsFromBox())
+          const anyClient = items.some((it) => it.fromClient === true)
+          if (!anyClient) {
+            // 没有客户端自己的流量：一个都不预勾（这些域名来自浏览器等其它进程，透明拦截会改整台机器的 hosts，C41）
+            const why = el('div', 'apv-warn', '捕获库里还没有客户端自己的流量（实时捕获来源），下面的域名都来自其它进程（浏览器等经本地 / 系统代理的流量），所以一个都没默认勾选。' +
+              '透明拦截会改整台机器的 hosts：只勾确认是客户端要访问的域名；更稳妥的是先「开始实时捕获」，让客户端跑一会儿再来填充。')
+            why.style.flexBasis = '100%'
+            icSuggestEl.appendChild(why)
+          }
+          const sync = () => {
+            const picked = []
+            for (const cb of icSuggestEl.querySelectorAll('input[type=checkbox]')) if (cb.checked) picked.push(...JSON.parse(cb.dataset.entries))
+            const keep = icHostsFromBox().filter((h) => !items.some((it) => entriesOf(it).includes(h)))
+            icHostsIn.value = [...new Set([...keep, ...picked])].join('\n')
+          }
+          for (const it of items) {
+            const fromClient = it.fromClient === true
+            const entries = entriesOf(it)
+            const lab = el('label', fromClient ? 'apv-ic-client' : '')
+            const cb = el('input', '')
+            cb.type = 'checkbox'
+            cb.dataset.entries = JSON.stringify(entries)
+            // 只预勾客户端自己的流量（实时捕获里出现过的）；框里本来就有的保持勾选
+            cb.checked = entries.some((e) => current.has(e)) || (current.size === 0 && fromClient)
+            cb.addEventListener('change', sync)
+            lab.appendChild(cb)
+            lab.appendChild(document.createTextNode(` ${it.host} (${it.count ?? 0})${fromClient ? '' : '（非客户端流量）'}`))
+            const src = it.sources !== null && typeof it.sources === 'object' ? it.sources : null
+            lab.title = [
+              fromClient ? '客户端实时捕获里出现过' : '只在其它来源出现过（不是客户端进程自己的流量）',
+              src !== null ? `实时捕获 ${src.realtime ?? 0} · 代理 ${src.proxy ?? 0} · 其它 ${src.other ?? 0}` : '',
+              (Array.isArray(it.ports) ? it.ports : []).join(', '),
+            ].filter(Boolean).join(' · ')
+            icSuggestEl.appendChild(lab)
+          }
+          sync()
+        }).catch((error) => {
+          icSuggestEl.textContent = `读取候选失败：${errText(error)}`
+        })
+      })
+      icStartBtn.addEventListener('click', () => {
+        const hosts = icHostsFromBox()
+        if (hosts.length === 0) { setIcAction('warn', '先填要拦截的域名（或点「从捕获记录填充」）'); return }
+        if (icBusy) return
+        const updating = icLastStatus !== null && icLastStatus.listening === true && icLastStatus.draining !== true
+        icBusy = true
+        icStartBtn.disabled = true
+        setIcAction('note', `${updating ? '正在更新名单' : '正在解析真实地址、起监听、改 hosts'}…（宿主未提权时会弹 UAC，请在系统对话框里确认）`)
+        apiFetch('/proxy/intercept/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ hosts }) })
+          .then((s) => setIcAction('ok', updating
+            ? '名单已更新：新加的域名重启客户端即可立即生效；移出名单的域名在排空期过后不再拦截。'
+            : '已启用。重启客户端即可立即生效（否则约 2 分钟内连接自然切换过来）。', textList(s?.warnings)))
+          .catch((error) => setIcAction('warn', `${updating ? '更新名单失败' : '启用失败'}：${errText(error)}`, textList(error?.body?.warnings)))
+          .finally(() => {
+            icBusy = false
+            icStartBtn.disabled = false
+            loadIntercept({ fresh: true })
+            refresh()
+          })
+      })
+      icStopBtn.addEventListener('click', () => {
+        if (icBusy) return
+        icBusy = true
+        icStopBtn.disabled = true
+        setIcAction('note', '正在还原 hosts…（宿主未提权时会弹 UAC，请在系统对话框里确认）')
+        apiFetch('/proxy/intercept/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+          .then((s) => setIcAction('ok', 'hosts 已还原；排空期结束后自动关闭监听。', textList(s?.removal?.warnings)))
+          .catch((error) => setIcAction('warn', `停用失败：${errText(error)}`, textList(error?.body?.removal?.warnings)))
+          .finally(() => {
+            icBusy = false
+            icStopBtn.disabled = false
+            loadIntercept({ fresh: true })
+            refresh()
+          })
+      })
+      icCaBtn.addEventListener('click', () => {
+        icCaBtn.disabled = true
+        setIcAction('note', '正在导入根证书…（会弹系统确认框，请选「是」）')
+        apiFetch('/proxy/install-ca', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+          .then((r) => setIcAction(r.ok === true ? 'ok' : 'warn', r.ok === true ? '根证书已导入（当前用户）。重启客户端后严格校验证书的请求也能通过。' : `导入结果：${r.output ?? r.hint ?? '未知'}`))
+          .catch((error) => setIcAction('warn', `导入失败：${errText(error)}`))
+          .finally(() => {
+            icCaBtn.disabled = false
+            loadIntercept({ fresh: true })
+          })
+      })
+      icRefreshBtn.addEventListener('click', () => loadIntercept({ fresh: true }))
+
+      // ---- 全局延时 / 弱网面板逻辑
+      let nsPresetsRendered = false
+      let nsSaving = 0
+      const nsGate = latestGate()
+      // 用户改过、还没「应用」的输入框，以及正在输入的框：轮询刷新时都不覆盖；应用 / 套预设成功后才清掉标记（C43）
+      const nsFormInputs = [nsReqIn, nsResIn, nsJitIn, nsDownIn, nsUpIn, nsHostsIn, nsUrlIn, nsScopeSel]
+      let nsDirtySeq = 0
+      for (const input of nsFormInputs) {
+        input.addEventListener(input === nsScopeSel ? 'change' : 'input', () => { input.dataset.apvDirty = String(++nsDirtySeq) })
+      }
+      const nsDirtySnapshot = () => new Map(nsFormInputs.map((input) => [input, input.dataset.apvDirty]))
+      const nsClearDirty = (snap) => {
+        for (const [input, mark] of snap) {
+          if (mark !== undefined && input.dataset.apvDirty === mark) delete input.dataset.apvDirty
+        }
+      }
+      const nsKeep = (input) => document.activeElement === input || input.dataset.apvDirty !== undefined
+      /** 重新打开面板 = 看宿主现在的设置：上次没「应用」就关掉的改动不再保留。 */
+      const nsDiscardEdits = () => {
+        for (const input of nsFormInputs) delete input.dataset.apvDirty
+      }
+      const netsimSummary = (n) => [
+        n.requestDelayMs > 0 ? `请求延迟 ${n.requestDelayMs}ms${n.jitterMs > 0 ? `±${n.jitterMs}` : ''}` : '',
+        n.responseDelayMs > 0 ? `回包延迟 ${n.responseDelayMs}ms` : '',
+        n.downKbps > 0 ? `下行 ${n.downKbps}KB/s` : '',
+        n.upKbps > 0 ? `上行 ${n.upKbps}KB/s` : '',
+      ].filter(Boolean).join('，')
+      const renderNetsim = (n) => {
+        if (n === null || typeof n !== 'object') return
+        if (!nsPresetsRendered && n.presets) {
+          nsPresetSel.textContent = ''
+          const o0 = el('option', '', '预设…')
+          o0.value = ''
+          nsPresetSel.appendChild(o0)
+          for (const [k, v] of Object.entries(n.presets)) {
+            const o = el('option', '', v.label)
+            o.value = k
+            nsPresetSel.appendChild(o)
+          }
+          nsPresetsRendered = true
+        }
+        // 开关点了就立即保存，不算「正在编辑」：只在它自己的保存还没回来时不覆盖
+        if (nsSaving === 0) nsEnableCb.checked = n.enabled === true
+        const setNum = (input, v) => { if (!nsKeep(input)) input.value = Number(v) > 0 ? String(v) : '' }
+        setNum(nsReqIn, n.requestDelayMs)
+        setNum(nsResIn, n.responseDelayMs)
+        setNum(nsJitIn, n.jitterMs)
+        setNum(nsDownIn, n.downKbps)
+        setNum(nsUpIn, n.upKbps)
+        if (!nsKeep(nsHostsIn)) nsHostsIn.value = n.hosts ?? ''
+        if (!nsKeep(nsUrlIn)) nsUrlIn.value = n.urlFilter ?? ''
+        if (!nsKeep(nsScopeSel)) nsScopeSel.value = n.scope ?? 'all'
+        const parts = netsimSummary(n)
+        nsStatusEl.textContent = n.enabled ? `● 已启用：${parts || '（未设数值）'}` : `○ 未启用${parts ? '（已保存：' + parts + '）' : ''}`
+        nsStatusEl.className = n.enabled ? 'apv-ok' : 'apv-note'
+        setNetsimBtn(n.enabled === true)
+      }
+      const loadNetsim = () => {
+        const seq = nsGate.next()
+        return apiFetch('/proxy/netsim')
+          .then((n) => { if (nsGate.accept(seq)) renderNetsim(n) })
+          .catch((error) => {
+            if (!nsGate.accept(seq)) return
+            nsStatusEl.textContent = `读取失败：${errText(error)}（宿主是旧版本？需要重启 DSH）`
+            nsStatusEl.className = 'apv-warn'
+          })
+      }
+      /** 把面板上的值写回宿主；成功后清掉「改过未应用」标记（只清提交那一刻的，之后又改的保留）。 */
+      const postNetsim = (payload, failText) => {
+        const snap = nsDirtySnapshot()
+        const seq = nsGate.next()
+        nsSaving++
+        return apiFetch('/proxy/netsim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+          .then((n) => {
+            nsClearDirty(snap)
+            if (nsGate.accept(seq)) renderNetsim(n)
+          })
+          .catch((error) => {
+            nsStatusEl.textContent = `${failText}：${errText(error)}`
+            nsStatusEl.className = 'apv-warn'
+          })
+          .finally(() => { nsSaving-- })
+      }
+      const saveNetsim = () => postNetsim({
+        enabled: nsEnableCb.checked,
+        requestDelayMs: Number(nsReqIn.value) || 0,
+        responseDelayMs: Number(nsResIn.value) || 0,
+        jitterMs: Number(nsJitIn.value) || 0,
+        downKbps: Number(nsDownIn.value) || 0,
+        upKbps: Number(nsUpIn.value) || 0,
+        hosts: nsHostsIn.value.trim(),
+        urlFilter: nsUrlIn.value.trim(),
+        scope: nsScopeSel.value,
+      }, '保存失败')
+      nsApplyBtn.addEventListener('click', () => saveNetsim())
+      nsEnableCb.addEventListener('change', () => saveNetsim())
+      nsPresetSel.addEventListener('change', () => {
+        const p = nsPresetSel.value
+        if (p === '') return
+        // 预设只覆盖数值；开关跟随预设（off 关，其它开），过滤条件保持用户填的
+        postNetsim({ preset: p, hosts: nsHostsIn.value.trim(), urlFilter: nsUrlIn.value.trim(), scope: nsScopeSel.value }, '套用预设失败')
+          .finally(() => { nsPresetSel.value = '' })
+      })
+
+      // ---- 详情里的「Mock ▾」：一键 mock / 延时 / 超时（作用于当前记录的 方法 + 接口路径）
+      const pathKeyOf = (u) => String(u ?? '').split('#')[0].split('?')[0].replace(/\/+$/, '').toLowerCase()
+      const setMockHint = (kind, text) => {
+        mockHint.textContent = text
+        mockHint.className = `apv-mock-hint ${kind === 'ok' ? 'apv-ok' : kind === 'warn' ? 'apv-warn' : 'apv-note'}`
+        mockHint.title = text
+      }
+      mockSel.addEventListener('change', () => {
+        const choice = mockSel.value
+        mockSel.value = ''
+        if (choice === '' || currentFull === null) return
+        const rec = currentFull
+        if (choice === 'original') {
+          // 原响应 → 带进规则表单编辑；点「生效」时写成这个接口的一键规则（替换旧的、排最前，C38）
+          const raw = typeof rec.resBody === 'string' ? rec.resBody : ''
+          const rawKind = detectBodyKind(raw, '').kind
+          if (raw.endsWith('…(截断)')) {
+            setMockHint('warn', '原响应超过 2MB 被截断了，不能当 mock 正文；可以在「代理规则」里手填正文')
+            return
+          }
+          if (rawKind === 'hex' || rawKind === 'base64') {
+            setMockHint('warn', '原响应不是文本（存的是十六进制 / base64），不能带进表单编辑')
+            return
+          }
+          if (rulesWrap.hidden) toggleToolPanel(rulesWrap)
+          resetRuleForm()
+          // 保留原文的缩进：数字、字符串一个字都不改（大整数 ID 不会被四舍五入，C7）
+          const prefill = prettyJsonText(raw)
+          ruleFormMode = 'quick-original'
+          quickPrefill = prefill
+          quickRecordId = typeof rec.id === 'string' ? rec.id : null
+          ruleNameIn.value = `Mock ${pathKeyOf(rec.url).split('/').slice(-2).join('/')}`
+          setRuleMethod(rec.method ?? '')
+          ruleUrlIn.value = String(rec.url ?? '').split('#')[0].split('?')[0]
+          ruleTypeSel.value = 'path'
+          ruleActionSel.value = 'mock'
+          ruleStatusIn.value = String(Number.isInteger(rec.status) && rec.status >= 100 && rec.status <= 599 ? rec.status : 200)
+          ruleBodyIn.value = prefill
+          syncRuleForm()
+          setRulesNote('已把原响应带进表单（JSON 只重排了缩进，数字和字符串保持原文）：改完正文点「生效」——按「方法 + 接口路径」写成这个接口的一键规则、放到最前面，替换它原来的一键规则（忽略查询参数）。', null)
+          ruleBodyIn.focus()
+          return
+        }
+        if (choice === 'remove') {
+          // 宿主一次删掉这个接口的一键规则：方法相同的，加上不限方法的（智能体不带 method 加的那种，C27）
+          const seq = rulesGate.next()
+          apiFetch('/proxy/rules/op', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ op: 'removeQuick', url: rec.url, method: rec.method ?? '' }),
+          })
+            .then((r) => {
+              if (rulesGate.accept(seq)) applyRulesData(r)
+              const n = typeof r?.changed === 'number' ? r.changed : null
+              const removed = n !== null ? n > 0 : r?.changed === true
+              setMockHint('note', !removed ? '这个接口没有一键规则' : n !== null ? `已取消这个接口的 ${n} 条一键规则` : '已取消这个接口的一键规则')
+            })
+            .catch((error) => setMockHint('warn', `取消失败：${errText(error)}`))
+          return
+        }
+        const [preset, ms] = choice.split(':')
+        const seq = rulesGate.next()
+        apiFetch('/proxy/rules/quick', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ url: rec.url, method: rec.method, preset, recordId: rec.id, ...(ms ? { latencyMs: Number(ms) } : {}) }),
+        })
+          .then((r) => {
+            if (rulesGate.accept(seq)) applyRulesData(r)
+            // 生不生效、为什么：用宿主按这条规则的 URL 算出来的 reach（这个域名在不在拦截名单、是否在排空…，C9）
+            const reach = reachOf(r)
+            setMockHint(reach.takesEffect ? 'ok' : 'warn', `${r.replaced ? '已替换' : '已添加'}：${r.rule?.name ?? ''}` +
+              (reach.note !== '' ? ` · ${reach.note}` : reach.takesEffect ? '' : ' · ⚠ 暂不生效'))
+          })
+          .catch((error) => setMockHint('warn', `失败：${errText(error)}`))
       })
       saveBaselineBtn.addEventListener('click', () => {
         const name = window.prompt('给基线起个名字（保存当前筛选命中的接口契约）：', '基线 ' + new Date().toISOString().slice(0, 10))
@@ -3602,7 +6659,8 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
         apiFetch('/baseline/save', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name: name.trim(), filter: currentFilter() }),
+          // 和列表同一套筛选：上方的筛选 + 当前启用的过滤器（R5-03：以前只带上方的筛选，过滤器排除掉的接口也进了基线）
+          body: JSON.stringify({ name: name.trim(), filter: { ...currentFilter(), ...(state.activeFilter !== null ? { conditions: filterPayload(state.activeFilter, fd.opsById) } : {}) } }),
         })
           .then((r) => {
             healthHint.textContent = `基线已保存: ${r.name} · ${r.records} 条 · ${r.endpoints} 端点`
@@ -3704,6 +6762,7 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
           .finally(() => {
             caBtn.disabled = false
             refresh()
+            if (!icWrap.hidden) loadIntercept({ fresh: true }) // 透明拦截面板里的「根证书」一行马上按新状态重查（C37）
           })
       })
       sysProxyBtn.addEventListener('click', () => {
@@ -3726,49 +6785,106 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       })
       // 导出用：游标翻页把匹配记录全部取回（服务端单页 limit 上限 2000，store
       // 上限 20000）。原来导出固定 limit=2000 会静默丢掉更早的记录（丢数据）。
+      /** 按筛选翻页取全部记录；filterApplied = 第一页里宿主报的「实际生效的过滤条件」（旧宿主不认过滤条件 ⇒ null）。 */
       const fetchAllRecords = async (baseParams) => {
         const all = []
+        let filterApplied = null
         let cursor = ''
         for (let guard = 0; guard < 40; guard++) { // 40×2000 远超 store 上限，靠 hasMore 收敛
           const p = new URLSearchParams(baseParams)
           p.set('limit', '2000')
           if (cursor !== '') p.set('cursor', cursor)
           const data = await apiFetch(`/records?${p.toString()}`)
+          if (guard === 0) filterApplied = Array.isArray(data?.filterApplied) ? data.filterApplied : null
           const items = data.items ?? []
           all.push(...items)
           if (data.hasMore !== true || typeof data.nextCursor !== 'string' || data.nextCursor === '' || items.length === 0) break
           cursor = data.nextCursor
         }
-        return all
+        return { items: all, filterApplied }
+      }
+      // -------- AI 分析包（Markdown）：宿主按当前列表的筛选（含过滤器）查出记录，生成摘要 + 明细，存一份并返回
+      const EXPORT_TITLE = exportBtn.title
+      const AI_EXPORT_TITLE = '生成给 AI 看的 Markdown 分析包：概况、接口汇总、最慢 / 出错的请求、按时间排的请求明细（正文按选的长度截断）；宿主同时存一份到捕获目录的 exports 下。勾「脱敏」会把 token / cookie 之类写成 ***'
+      const syncExportControls = () => {
+        const ai = exportSel.value === 'AI'
+        aiBodySel.hidden = !ai
+        aiLimitIn.hidden = !ai
+        if (!exportBtn.disabled) exportBtn.textContent = '导出'
+        exportBtn.title = ai ? AI_EXPORT_TITLE : EXPORT_TITLE
+        exportRedactWrap.title = ai ? '勾选后，敏感请求头（Authorization、Cookie…）和查询参数（token、password…）在分析包里写成 ***' : ''
+      }
+      exportSel.addEventListener('change', syncExportControls)
+      aiBodySel.addEventListener('change', savePrefs)
+      aiLimitIn.addEventListener('change', savePrefs)
+      const aiExportErrText = (error) => {
+        if (error?.status === 404 && error?.code === undefined) return 'AI 分析包生成失败：宿主是旧版本，没有这个接口（需要重启 DSH 加载新插件）'
+        if (error?.code === 'FILTER_INVALID') return `AI 分析包生成失败：过滤器有问题：${errText(error)}`
+        return `AI 分析包生成失败：${errText(error)}`
+      }
+      const runAiExport = () => {
+        const params = setQuickParams(new URLSearchParams())
+        const sent = setFilterParam(params, { forPost: true })
+        let limit = Math.floor(Number(aiLimitIn.value))
+        if (!Number.isFinite(limit) || limit < 1) limit = 500
+        limit = Math.min(limit, 5000)
+        aiLimitIn.value = String(limit)
+        const bodyLimit = Number(aiBodySel.value)
+        const payload = {
+          params: Object.fromEntries(params),
+          limit,
+          bodyLimit: Number.isFinite(bodyLimit) && bodyLimit >= 0 ? bodyLimit : 4096,
+          redact: exportRedactCb.checked,
+        }
+        exportBtn.disabled = true
+        exportBtn.textContent = '生成中…'
+        apiFetch('/records/export-ai', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+          .then((r) => {
+            const markdown = typeof r?.markdown === 'string' ? r.markdown : null
+            const path = typeof r?.path === 'string' ? r.path : ''
+            const count = Number(r?.count) || 0
+            const total = Number(r?.totalMatched)
+            const fileName = `api-capture-ai-${fileStamp()}.md`
+            if (markdown !== null) downloadBlob(fileName, markdown, 'text/markdown;charset=utf-8')
+            const parts = [`AI 分析包已生成：${count} 条记录`]
+            if (Number.isFinite(total) && total > count) parts.push(`只导出了最新 ${count} 条，共匹配 ${total} 条`)
+            if (sent !== null) parts.push(`过滤器「${sent.filter.name}」`)
+            if (Number(r?.truncatedBodies) > 0) parts.push(`${Number(r.truncatedBodies)} 段正文按 ${fmtBytes(payload.bodyLimit)} 截断`)
+            if (Number.isFinite(Number(r?.bytes))) parts.push(fmtBytes(Number(r.bytes)))
+            parts.push(markdown !== null ? `已下载 ${fileName}` : '内容超过 4 MB，没有随响应返回：请直接打开下面保存的文件')
+            const actions = []
+            if (path !== '') actions.push({ label: '复制路径', title: '复制保存路径（把这个文件交给 AI 读）', onClick: (b) => copyText(path, b, '复制路径') })
+            if (markdown !== null) actions.push({ label: '复制全文', title: '复制整份 Markdown，直接粘贴给 AI', onClick: (b) => copyText(markdown, b, '复制全文') })
+            showNotice('ok', parts.join(' · ') + (path !== '' ? `\n保存在：${path}` : ''), actions)
+          })
+          .catch((error) => showNotice('warn', aiExportErrText(error)))
+          .finally(() => {
+            exportBtn.disabled = false
+            exportBtn.textContent = '导出'
+          })
       }
       exportBtn.addEventListener('click', () => {
         const format = exportSel.value
+        if (format === 'AI') {
+          runAiExport()
+          return
+        }
         const redact = exportRedactCb.checked
         exportBtn.disabled = true
         exportBtn.textContent = '导出中…'
-        const params = new URLSearchParams({ includeBody: '1' })
-        if (state.q !== '') params.set('q', state.q)
-        if (state.method !== '') params.set('method', state.method)
-        if (state.status !== '') params.set('status', state.status)
-        if (state.source !== '') params.set('source', state.source)
-        if (state.flagged) params.set('flag', '1')
-        if (state.host !== '') params.set('host', state.host)
-        if (state.ct !== '') params.set('contentType', state.ct)
-        if (state.minDur !== '') params.set('minDurationMs', state.minDur)
-        if (state.minBytes !== '') params.set('minBytes', state.minBytes)
-        if (state.maxBytes !== '') params.set('maxBytes', state.maxBytes)
-        if (state.fromTs !== '') params.set('fromTs', state.fromTs)
-        if (state.toTs !== '') params.set('toTs', state.toTs)
-        if (state.sessionId !== '') params.set('sessionId', state.sessionId)
-        if (state.errorsOnly) params.set('errors', '1')
-        if (state.noNoise) params.set('noNoise', '1')
-        if (state.regex) params.set('regex', '1')
-        if (state.bodyQ !== '') params.set('bodyQ', state.bodyQ)
+        // 和列表同一套筛选：上方的筛选 + 当前启用的过滤器
+        const params = setQuickParams(new URLSearchParams({ includeBody: '1' }))
+        const sent = setFilterParam(params)
         fetchAllRecords(params)
-          .then((all) => {
+          .then(({ items: all, filterApplied }) => {
+            // R5-04：宿主没按过滤器筛（旧版本不认过滤条件）⇒ 拿到的是更宽的一批，不能当成列表里看到的那些导出去
+            if (sent !== null && enabledCondCount(sent.filter) > 0 && filterApplied === null) {
+              showNotice('warn', `宿主没有应用过滤器「${sent.filter.name}」（旧版本？需要重启 DSH），按上方筛选导出会带上列表里被过滤掉的记录，已取消导出。`)
+              return
+            }
             const items = all.map((r) => (redact ? redactRecord(r) : r))
             exportBtn.title = `上次导出 ${items.length} 条`
-            const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+            const stamp = fileStamp()
             if (format === 'HAR') {
               downloadBlob(`api-capture-${stamp}.har`, JSON.stringify(buildHar(items), null, 2), 'application/json')
             } else if (format === 'JSON') {
@@ -3901,7 +7017,14 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
         refresh()
       })
       document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && state.open) setOpen(false)
+        if (event.key !== 'Escape' || !state.open) return
+        // 过滤器对话框开着：Esc 只关对话框（没保存的修改留着，列表里带 ●）
+        if (fdIsOpen()) {
+          event.preventDefault()
+          closeFilterDialog()
+          return
+        }
+        setOpen(false)
       })
       // 上下方向键在表格行间移动选中并打开详情（仅表格视图、焦点不在输入控件时）
       const moveSelection = (delta) => {
@@ -3920,7 +7043,7 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
         apiFetch(`/records/${encodeURIComponent(rec.id)}`).then((full) => { renderDetail(full); detail.hidden = false }).catch((error) => { console.error('[dsh-api-visualizer] detail failed:', error) })
       }
       document.addEventListener('keydown', (event) => {
-        if (!state.open) return
+        if (!state.open || fdIsOpen()) return
         if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
         const tag = (event.target && event.target.tagName) || ''
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
@@ -3934,6 +7057,11 @@ body[data-ds-dark-theme] .apv-tree-leaf.apv-selected{background:#1e2a44}
       autoCapCb.checked = initialPrefs.autoCapture === true
       logPathIn.value = typeof initialPrefs.logPath === 'string' ? initialPrefs.logPath : ''
       renderSavedSel()
+      if ([...aiBodySel.options].some((o) => o.value === String(initialPrefs.aiBodyLimit))) aiBodySel.value = String(initialPrefs.aiBodyLimit)
+      const savedAiLimit = Math.floor(Number(initialPrefs.aiLimit))
+      if (Number.isFinite(savedAiLimit) && savedAiLimit >= 1 && savedAiLimit <= 5000) aiLimitIn.value = String(savedAiLimit)
+      syncExportControls()
+      renderFilterButton()
 
       return { view, toggle, setOpen }
     }

@@ -40,12 +40,15 @@ import { isExpectedRefusal } from '../plugins/dsh-ui-drive/lib/refusal.mjs'
 // 之所以要在这里算而不是只信路由返回：**运行中的宿主不会热加载**，旧宿主的路由里没有 summary 字段，
 // 于是"新工具 + 旧宿主"这个组合下 MCP 面会拿不到那句关键提示（实测过：summary=undefined）。
 import { captureStatusSummary as summarizeCapture, doubleWriteVerdict, sampleDeltaVerdict } from '../plugins/dsh-api-visualizer/lib/capture-control.mjs'
+import { runInterceptTool } from '../plugins/dsh-api-visualizer/lib/intercept-control.mjs'
 // E3 / F-042：环境自检（toolchain_status）—— **与 DSH 面共用同一条实现**（lib/），
 // 不在这里再写一份（第 24 类缺陷：同一件事不许有第二份实现）。
 import { toolchainStatusAsync } from '../lib/toolchain-status.mjs'
 import { createCaptureStatusCache } from './capture-status-cache.mjs'
-import { appendRecords, readAll } from '../lib/capture-store.mjs'
+import { appendRecords, readAll, stateDir, captureClientInfo, sameDir } from '../lib/capture-store.mjs'
 import { queryCaptureAsync } from '../lib/capture-query-service.mjs'
+// 自定义过滤器（面板「过滤器」的预设 + 条件 JSON）：解析 / 校验 / 进程名只有一份实现，宿主路由与 DSH 工具共用。
+import { resolveQueryConditions, realtimeProcessName } from '../lib/capture-filters.mjs'
 import { buildQueryView, freshnessNote, callerAttributionNote, retentionNote } from '../plugins/dsh-api-visualizer/lib/query-view.mjs'
 import { attachInlineImage } from './inline-image.mjs'
 import { makeToolTrace, wrapToolArgs } from '../lib/tool-trace.mjs'
@@ -1308,6 +1311,47 @@ const captureStatusCache = createCaptureStatusCache({ fetchStatus: async () => {
   return response.json()
 } })
 
+/** 配置的客户端进程名（实时日志记录的 process）；查不到 = ''（只影响 process 条件对实时记录的匹配）。 */
+async function captureRealtimeProcess() {
+  try {
+    const name = await realtimeProcessName()
+    return typeof name === 'string' ? name : ''
+  } catch {
+    return ''
+  }
+}
+
+const optionalText = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined)
+
+/** filter / conditions 用不了：回一条能照着改的工具结果（isError），不抛栈；其它错误原样抛给外层。 */
+function captureFilterRefusal(error, args) {
+  const code = error !== null && typeof error === 'object' ? error.code : undefined
+  if (code === 'FILTER_NOT_FOUND') {
+    const available = Array.isArray(error.available) ? error.available.map((n) => String(n)) : []
+    const shown = available.slice(0, 50)
+    const name = optionalText(args.filter) ?? ''
+    return {
+      ok: false,
+      errorCode: 'FILTER_NOT_FOUND',
+      error: `没有名为「${name}」的已保存过滤器（filter 要写面板「过滤器」里保存的名称或 id），这次没有查询。` +
+        (available.length > 0
+          ? `现有 ${available.length} 个：${shown.map((n) => '「' + n + '」').join('、')}${available.length > shown.length ? ' …' : ''}`
+          : '现在一个已保存的过滤器都没有：改用 conditions 直接写条件，或先在面板「过滤器」里保存一个。'),
+      filter: name,
+      available,
+    }
+  }
+  if (code === 'FILTER_INVALID') {
+    return {
+      ok: false,
+      errorCode: 'FILTER_INVALID',
+      error: '过滤条件不合法，这次没有查询：' + String(error.message ?? error),
+      hint: '条件格式：{"mode":"all","conditions":[{"field":"process","op":"regex","value":"<客户端进程名>|CefSharp"}]}；字段 / 运算符 / 上限见本工具 conditions 参数的说明。',
+    }
+  }
+  return null
+}
+
 server.tool(
   'capture_query',
   mcpDescription('capture_query'),
@@ -1318,20 +1362,52 @@ server.tool(
     //   只回 total/returned/items —— 于是"引擎没在跑 = 你看到的是历史数据"和
     //   "调用方归因根本没有生产者（F-004）"这两件事，在 MCP 面上完全不可见。
     //   现在三个面（插件工具 / 面板路由 / MCP）共用同一个 lib/query-view.mjs。
-    const snapshot = await queryCaptureAsync(args)
+    //
+    // 自定义过滤器：filter=面板「过滤器」里保存的预设（名称或 id），conditions=条件 JSON；两者 AND，再与其它参数 AND。
+    // 空白的 filter / conditions 当没给（MCP 客户端常把没填的可选参数发成 ""）。
+    const filter = optionalText(args.filter)
+    const conditionsText = optionalText(args.conditions)
+    // 进程名只有带了自定义过滤器才用得上（首次取值可能要读一次注册表）：不带过滤器的查询不为它付这次代价
+    const realtimeProcess = filter !== undefined || conditionsText !== undefined ? await captureRealtimeProcess() : ''
+    let resolved
+    let snapshot
+    try {
+      // 过滤器是所有客户端共用的状态：在捕获根目录（stateDir），不在当前客户端的记录目录
+      resolved = await resolveQueryConditions({ filter, conditions: conditionsText }, { dir: stateDir(), realtimeProcess })
+      // 游标（nextCursor）绑定条件的规范签名（capture-store 的 queryKey 用 filterSignature，忽略每次新补的随机 id）⇒ 内联条件也能翻页。
+      // 没有条件时两项都不传：查询键与不带过滤器的旧查询完全一样。
+      const conditions = resolved && Array.isArray(resolved.conditions) && resolved.conditions.length > 0 ? resolved.conditions : undefined
+      snapshot = await queryCaptureAsync({ ...args, conditions, realtimeProcess: conditions === undefined ? undefined : realtimeProcess })
+    } catch (error) {
+      const refused = captureFilterRefusal(error, args)
+      if (refused !== null) return jtext(refused)
+      throw error
+    }
+    const filterApplied = resolved && Array.isArray(resolved.applied) ? resolved.applied : []
     const page = snapshot.page
     // 捕获引擎跑在**宿主进程**里，MCP 进程看不到它 —— 但宿主开了回环路由，可以直接问。
     // 问不到就保持 null（"未知"），绝不猜成"没在跑"或"在跑"。
     const hostStatus = await captureStatusCache.get({ fresh: args.fresh === true })
     const view = buildQueryView({ records: page && page.items, summary: snapshot.summary, status: hostStatus.value, callerFilter: String(args.caller ?? ''), retention: snapshot.retention })
     view.freshness.hostStatus = { ...hostStatus, value: undefined }
+    // 多客户端捕获库：说清查的是哪个客户端的记录；宿主（面板）用的捕获根目录和本进程不一致时明说 —— 那样查到的就不是面板上那份
+    const localClient = captureClientInfo()
+    const hostClient = hostStatus.value !== null && typeof hostStatus.value === 'object' && hostStatus.value.captureClient !== null && typeof hostStatus.value.captureClient === 'object'
+      ? hostStatus.value.captureClient : null
+    const storeMismatch = hostClient !== null && typeof hostClient.stateDir === 'string' && !sameDir(hostClient.stateDir, localClient.stateDir)
+      ? `⚠ 宿主（面板）用的捕获根目录是 ${hostClient.stateDir}，本进程读的是 ${localClient.stateDir}：两处配置不一致（宿主取启动脚本里的 DSH_API_CAPTURE_STORE，本进程取 ~/.dsh-agent-toolchain/env.json），这里查到的不是面板上那份记录。把两处改成同一个目录后重开会话。`
+      : null
     return jtext({
+      // 实际生效的自定义过滤器排在最前：结果被按长度截断时丢的是末尾，"这批记录是按什么筛出来的"不能丢
+      ...(filterApplied.length > 0 ? { filterApplied } : {}),
+      ...(storeMismatch !== null ? { storeMismatch } : {}),
+      ...(localClient.configured ? { captureClient: { client: localClient.client, mode: localClient.mode, recordsDir: localClient.recordsDir } } : {}),
       ...page,
       ...view,
       timing: snapshot.timing,
       revision: snapshot.summary.revision,
       complete: snapshot.complete,
-      freshnessNote: freshnessNote(view.freshness),
+      freshnessNote: storeMismatch !== null ? `${storeMismatch}\n${freshnessNote(view.freshness)}` : freshnessNote(view.freshness),
       callerAttributionNote: callerAttributionNote(view.callerAttribution),
       // 「没读到」≠「没有」：库被裁剪过时必须说清，否则 0 条会被读成"这段时间没这种调用"。
       retentionNote: retentionNote(view.retention),
@@ -1346,14 +1422,15 @@ server.tool(
  * 而面板上的"重复请求/调用次数"会整体翻倍（这正是 r38 里我差点误判成"客户端重复发请求"的形态）。
  * 所以这里只做**转发**，并如实区分"宿主没应答"与"宿主动手失败"。
  */
-async function hostCapture(method, path, body) {
+async function hostCapture(method, path, body, timeoutMs = null) {
   const url = 'http://127.0.0.1:3080/api/dsh-api-visualizer' + path
   try {
     const res = await fetch(url, {
       method,
       headers: body === null ? undefined : { 'content-type': 'application/json' },
       body: body === null ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(method === 'GET' ? 5000 : 20000),
+      // 透明拦截的启停要跑 PowerShell 改 hosts（未提权时还要等用户点 UAC），给足时间
+      signal: AbortSignal.timeout(timeoutMs ?? (method === 'GET' ? 5000 : 20000)),
     })
     const data = await res.json().catch(() => null)
     if (data === null) {
@@ -1372,6 +1449,56 @@ async function hostCapture(method, path, body) {
     }
   }
 }
+
+/**
+ * mock 规则 / 透明拦截 / 全局弱网：动作语义在 plugins/dsh-api-visualizer/lib/intercept-control.mjs（与 DSH 面同一份），
+ * 这里只是"走宿主回环路由"的传输层 —— 规则与拦截都活在宿主进程里，MCP 进程绝不自己起第二个引擎。
+ * 单条规则的增删改 / 启停走 POST /proxy/rules/op，只传这一条：不再把整张表连同每条 mock 正文来回搬
+ * （大正文曾让整表写入撑爆路由上限、被误报成"连不上宿主"）。
+ * 透明拦截的启停要跑 PowerShell 改 hosts（未提权时还要等用户点 UAC），给足 180 s；
+ * 状态带 deep（根证书信任 / 安全网任务各起一次 PowerShell），给 30 s。
+ * 规则导出 / 导入读写的是宿主机器上的 .json 文件（与本进程同机，路径照传），导入要逐条校验整份文件：给 30 s。
+ */
+const hostInterceptApi = {
+  getRules: () => hostCapture('GET', '/proxy/rules', null),
+  setRules: (rules, opts) => hostCapture('POST', '/proxy/rules', {
+    rules,
+    ...(opts && opts.baseRevision !== undefined ? { baseRevision: opts.baseRevision } : {}),
+  }),
+  ruleOp: (a) => hostCapture('POST', '/proxy/rules/op', a ?? {}),
+  getRule: (id) => hostCapture('GET', '/proxy/rules/item?id=' + encodeURIComponent(String(id ?? '')), null),
+  quickRule: (a) => hostCapture('POST', '/proxy/rules/quick', a ?? {}),
+  exportRules: (a) => hostCapture('POST', '/proxy/rules/export-file', a ?? {}, 30000),
+  importRules: (a) => hostCapture('POST', '/proxy/rules/import', a ?? {}, 30000),
+  interceptStatus: (opts) => hostCapture('GET', '/proxy/intercept/status?deep=1' + (opts && opts.fresh === true ? '&fresh=1' : ''), null, 30000),
+  interceptStart: (a) => hostCapture('POST', '/proxy/intercept/start', a ?? {}, 180000),
+  interceptStop: (a) => hostCapture('POST', '/proxy/intercept/stop', a ?? {}, 180000),
+  suggest: () => hostCapture('GET', '/proxy/intercept/suggest', null, 30000),
+  getNetsim: () => hostCapture('GET', '/proxy/netsim', null),
+  setNetsim: (c) => hostCapture('POST', '/proxy/netsim', c ?? {}),
+}
+
+// face:'mcp' —— 返回里提示的后续调用写 MCP 面的名字（capture_*）；DSH 面（index.js）传 'dsh'，写 api_capture_*。
+server.tool(
+  'capture_rules',
+  mcpDescription('capture_rules'),
+  mcpShape('capture_rules'),
+  async (args) => jtext(await runInterceptTool('capture_rules', args, hostInterceptApi, { face: 'mcp' }))
+)
+
+server.tool(
+  'capture_intercept',
+  mcpDescription('capture_intercept'),
+  mcpShape('capture_intercept'),
+  async (args) => jtext(await runInterceptTool('capture_intercept', args, hostInterceptApi, { face: 'mcp' }))
+)
+
+server.tool(
+  'capture_netsim',
+  mcpDescription('capture_netsim'),
+  mcpShape('capture_netsim'),
+  async (args) => jtext(await runInterceptTool('capture_netsim', args, hostInterceptApi, { face: 'mcp' }))
+)
 
 server.tool(
   'capture_start',

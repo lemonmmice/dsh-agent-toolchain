@@ -2869,7 +2869,7 @@
   },
   {
     "name": "capture_query",
-    "description": "Query the local API-capture store (the same day-shard JSONL the dsh-api-visualizer capture panel writes): method/url/status/duration plus caller attribution (which view-model/API fired each request). Use to analyze captured client traffic: slow calls, errors, one host, or requests fired by one view-model. ALWAYS read the accompanying honesty fields: `freshness` (captureRunning / newestAgeMs / engineNote) tells you whether the capture engine is live or you are looking at HISTORICAL data, and `callerAttribution` tells you whether caller data exists AT ALL - when it is unavailable the reason is stated there (today the client-side producer does not exist, so \"no caller\" must NOT be read as \"no caller happened\"). Both are also summarized in `freshnessNote` / `callerAttributionNote`.",
+    "description": "Query the local API-capture store (the same day-shard JSONL the dsh-api-visualizer capture panel writes): method/url/status/duration plus caller attribution (which view-model/API fired each request). Use to analyze captured client traffic: slow calls, errors, one host, or requests fired by one view-model. ALWAYS read the accompanying honesty fields: `freshness` (captureRunning / newestAgeMs / engineNote) tells you whether the capture engine is live or you are looking at HISTORICAL data, and `callerAttribution` tells you whether caller data exists AT ALL - when it is unavailable the reason is stated there (today the client-side producer does not exist, so \"no caller\" must NOT be read as \"no caller happened\"). Both are also summarized in `freshnessNote` / `callerAttributionNote`. CUSTOM FILTERS (Fiddler-style): filter = a preset saved in the panel's 过滤器 (Filters) dialog, by name or id; conditions = an inline condition JSON (fields / ops documented on that parameter, e.g. keep only requests sent by the client process); both are AND-ed with every other parameter. The result's filterApplied lists every filter actually applied (name + one plain-language line); an unknown filter name is an error that lists the saved names.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2894,6 +2894,14 @@
         },
         "q": {
           "description": "Substring match against url/note",
+          "type": "string"
+        },
+        "filter": {
+          "description": "Name or id of a saved filter (a preset saved in the capture panel's 过滤器 / Filters dialog); looked up by id, then exact name, then case-insensitive name. AND-ed with conditions and with every other filter parameter (q / host / status ...). An unknown name fails with FILTER_NOT_FOUND and lists the saved filter names.",
+          "type": "string"
+        },
+        "conditions": {
+          "description": "Custom conditions (a Fiddler-style filter) as a JSON string: {\"mode\":\"all\",\"conditions\":[{\"field\":\"process\",\"op\":\"regex\",\"value\":\"<client process>|CefSharp\"}]} (= the process matches the regex <client process>|CefSharp; process names carry no .exe), or an array of such objects (every one must match). AND-ed with filter and with every other parameter. mode: all = every condition (default), any = at least one. Each condition: field, op, value; optional enabled (false = ignored), caseSensitive (default false), header (reqHeader / resHeader only: the header name; omitted = all headers as \"Name: value\" lines). Text fields: url, host, path, query (without ?), method, process, channel (realtime | intercept | local-proxy | import | agent), contentType, reqHeader, resHeader, reqBody, resBody, note, caller, tag. Number fields: status, durationMs, bytesRes, bytesReq, pid. process = the process that sent the request: attributed per connection for local-proxy / intercept records, the configured client process (DSH_UI_PROC_NAME) for realtime records. Text ops: contains, notContains, equals, notEquals, startsWith, endsWith, regex, notRegex (no u flag, .NET / Fiddler patterns work). Number ops: eq, ne, gt, gte, lt, lte (false when the record lacks the value; text ops also work on number fields, compared as text). exists / notExists need no value. A missing text field counts as empty (notContains / notEquals / notRegex are true). Limits: 50 conditions, value ≤ 2000 chars, regex ≤ 1000 chars.",
           "type": "string"
         },
         "method": {
@@ -2964,6 +2972,240 @@
     },
     "annotations": {
       "readOnlyHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "capture_rules",
+    "description": "Manage the capture panel's AutoResponder rules (Fiddler-style mock / latency / timeout / rewrite); they apply immediately to traffic entering through the local proxy or transparent interception. Most common: action=mock with an API url (query ignored) + preset: empty-object `{}`, empty-array `[]`, empty-lists (keep the wrapper, empty every array, based on the latest real response), original (the latest real response), error-500, not-found, slow (delay N ms then return the real response), timeout (hold without responding until the client's own timeout fires; 120 s by default), reset (drop the connection), body (custom). Mocking the same API again REPLACES the previous quick rule. Complex rules (Map Local file, Map Remote to another environment, rewrite the real response with `set data.list = []`) via action=add + ruleJson in the NESTED shape (see ruleJson: top-level url/type/body keys, or a rule with no url/host/method and no explicit matchAll, are rejected). list returns compact rule summaries (body size + a 160-char preview); action=get id=... returns one full rule. MOVING RULES BETWEEN MACHINES: action=export writes the whole rule set as one .json file (default: exports/ under the capture store), action=import reads such a file (or ruleJson holding its content) - mode=merge inserts the imported rules at the TOP and skips ones identical to an existing rule, mode=replace makes the imported list the whole rule set; import is all-or-nothing and returns counts, warnings and the imported rule ids, never the rule bodies. Rules only apply to traffic that passes through this plugin: the mock result's `reach` says whether the URL can be hit right now (is its host in the interception list, is interception draining); a client that forces direct connections needs capture_intercept start first. Typical loop: mock → refresh that page in the client → screenshot (ui_observe shot) → capture_rules remove.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "get",
+            "export",
+            "import",
+            "mock",
+            "add",
+            "remove",
+            "enable",
+            "disable",
+            "clear"
+          ],
+          "description": "list (compact summaries) | get (one full rule by id; body capped at 20000 chars) | export (whole rule set to one .json; path / overwrite) | import (from that file via path, or from ruleJson; mode=merge inserts first and skips identical rules, replace swaps the whole set) | mock (url+preset) | add (ruleJson; inserted first) | remove/enable/disable (id) | clear (all rules)."
+        },
+        "path": {
+          "description": "action=export / import: absolute path of the rules file (.json, on the HOST machine). export without path writes exports/rules-<timestamp>.json under the capture store; import with path reads that file (or omit path and put the file content in ruleJson; give only one of the two).",
+          "type": "string"
+        },
+        "mode": {
+          "description": "action=import: merge (default) = insert the imported rules at the top (first match wins) and skip ones identical to an existing rule; replace = the imported list becomes the whole rule set (everything else is cleared).",
+          "type": "string",
+          "enum": [
+            "merge",
+            "replace"
+          ]
+        },
+        "overwrite": {
+          "description": "action=export: overwrite an existing target file. Default false - an existing file is refused, nothing is overwritten.",
+          "type": "boolean"
+        },
+        "url": {
+          "description": "action=mock: full API URL (https://host/path); query string ignored, matched by path.",
+          "type": "string"
+        },
+        "method": {
+          "description": "action=mock: only match this HTTP method (omit = any).",
+          "type": "string"
+        },
+        "preset": {
+          "description": "Preset for action=mock (see description).",
+          "type": "string",
+          "enum": [
+            "empty-object",
+            "empty-array",
+            "empty-lists",
+            "original",
+            "error-500",
+            "not-found",
+            "slow",
+            "timeout",
+            "reset",
+            "body"
+          ]
+        },
+        "body": {
+          "description": "Response body for preset=body (also overrides preset=original).",
+          "type": "string"
+        },
+        "status": {
+          "description": "Mock status code (default from preset).",
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "latencyMs": {
+          "description": "Duration for slow/timeout in ms (defaults 3000 / 120000); for mock presets it delays the mocked response.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "ruleJson": {
+          "description": "action=add: one rule as JSON in the NESTED shape {\"name\":\"empty list\",\"match\":{\"url\":\"/api/list\",\"urlType\":\"path\",\"method\":\"GET\",\"host\":\"api.example.com\"},\"action\":{\"type\":\"mock\",\"status\":200,\"body\":\"[]\"}} (url/method/host/type/body/status/file/target/script at the top level are rejected). action.type is required: mock (status / body / headers / charset), map-local (file = absolute local path), map-remote (target), rewrite (script), delay, hang (hold for latencyMs), block (drop the connection), rewrite-status (status). Except for delay, match needs at least one of url / host / method; to match EVERY request set \"matchAll\":true explicitly. urlType: path = API path ignoring the query (a full URL compares origin + path, a bare /path matches on any host), contains = substring (default), glob = * wildcards, regex. Latency fields go inside action: latencyMs = request delay (before forwarding / before a local response; the hold time for hang), responseDelayMs = delay after the upstream answered, jitterMs = ± jitter, throttleKbps = download limit in KB/s. rewrite script, one command per line (# = comment): set data.list = [] (value parsed as JSON) | del data.banner | replace old => new (always LITERAL; slashes are not a regex) | regex /\\d+/g => 0 (regex replace) | status 500 | header X-Mock: 1 (header -Name removes) | req.header Name: v | req.query k = v (req.query -k removes) | req.set / req.del / req.replace / req.regex (same on the request body). For action=import this parameter carries the WHOLE rules-file content ({\"format\":\"dsh-api-visualizer/rules\",…,\"rules\":[…]}, or an array of rules) instead of path.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Rule id for get/remove/enable/disable (from list; an import result also lists the imported rule ids).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "capture_intercept",
+    "description": "Transparent interception (Fiddler's reverse-proxy + HOSTS mode) for clients that force direct connections and ignore every proxy setting. start points the given domains at a loopback address (default 127.77.0.1) in the system hosts file; this plugin terminates TLS there and forwards to the real IPs (resolved before the change, so no loop) — no client code changes, no driver. capture_rules / breakpoints / latency / netsim then apply to those domains (records: source=proxy, process=intercept). Modifies the system hosts file (directly if the host is elevated, otherwise via a UAC prompt) and registers a SYSTEM safety-net task that removes the hosts block on reboot or when this plugin's listener is gone. The liveness probe checks IDENTITY (TLS ports: the certificate must be issued by this plugin's root CA; HTTP ports: this plugin's marker response header), so another program on the same port does not keep the block alive; if the safety net cannot be registered (or verified afterwards), start fails and the hosts change is rolled back. A domain that already has another hosts entry is refused (Windows uses the first match, so our block would not take effect). The hosts entry affects EVERY port of a domain: list non-HTTP ports (raw TCP feeds) as tcp://host:port for byte-for-byte passthrough (no decryption, no rules; one tcp port maps to one domain), or they fail to connect; the list needs at least one http/https port. stop restores hosts first, then drains ~150 s before closing the listener (existing connections pass through without rules). Restart the client after start for an immediate switch. Requests that validate certificates strictly need the root CA trusted (status reports caTrusted). The real server's certificate is verified: by default a failure only adds a per-host upstreamTls warning to status and traffic is still forwarded; strictUpstreamTls=true refuses to forward instead (the client gets a 502). status always re-checks CA trust and the safety-net task. suggest builds a ready-to-run start command only from domains the client itself was captured calling (realtime log); domains seen from other processes are listed separately without a command.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "status",
+            "suggest",
+            "start",
+            "stop"
+          ],
+          "description": "status (always re-checked) | suggest | start (the FULL list; replaces the previous one) | stop."
+        },
+        "hosts": {
+          "description": "action=start: domains to intercept, space/comma separated. Bare domain = 443(https)+80(http); other ports as https://host:8443 or http://host:8090 (a bare host:port is treated as https unless the port is 80). The hosts entry affects EVERY port of the domain: add tcp://host:port for non-HTTP ports (raw passthrough) or they will fail to connect.",
+          "type": "string"
+        },
+        "strictUpstreamTls": {
+          "description": "action=start: what to do when the real server's certificate fails verification (chain or hostname): true = refuse to forward (the client gets a 502); default false = forward anyway and record a per-host upstreamTls warning in status (keep the default for self-signed test servers).",
+          "type": "boolean"
+        },
+        "graceSeconds": {
+          "description": "action=stop: drain period in seconds (default 150; 0 closes the listener immediately).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 600
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "capture_netsim",
+    "description": "Global API latency / weak-network simulation (Fiddler's Simulate Modem Speeds): no rules needed — adds request delay + response delay + jitter + up/down bandwidth limits to all (or host/URL-filtered) traffic passing through this plugin. Presets: modem (Fiddler: up 300 ms/KB, down 150 ms/KB), 2g, 3g, weak-4g, high-latency (2 s ± 0.5 s), slow-api (3 s before responding), off. action may be omitted: it is set when any setting field (enabled / preset / delays / limits / hosts / urlFilter / scope) is given, otherwise get; an explicit get together with setting fields is an error, never silently ignored. Values persist, but the switch always resets to off when the host restarts. For one API use capture_rules (preset slow / timeout, or latencyMs / responseDelayMs in a rule).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "get | set. Optional: inferred as set when any setting field is given, otherwise get.",
+          "type": "string",
+          "enum": [
+            "get",
+            "set"
+          ]
+        },
+        "enabled": {
+          "description": "Turn the global simulation on/off.",
+          "type": "boolean"
+        },
+        "preset": {
+          "description": "Apply a preset (turns the simulation on unless preset=off or enabled is given).",
+          "type": "string",
+          "enum": [
+            "off",
+            "modem",
+            "2g",
+            "3g",
+            "weak-4g",
+            "high-latency",
+            "slow-api"
+          ]
+        },
+        "requestDelayMs": {
+          "description": "Request delay before forwarding (ms).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "responseDelayMs": {
+          "description": "Response delay after the upstream answered (ms).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "jitterMs": {
+          "description": "Jitter applied to the request delay (± ms).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "downKbps": {
+          "description": "Download limit KB/s (0 = unlimited).",
+          "type": "number",
+          "minimum": 0
+        },
+        "upKbps": {
+          "description": "Upload limit KB/s (0 = unlimited).",
+          "type": "number",
+          "minimum": 0
+        },
+        "hosts": {
+          "description": "Only these hosts (space/comma separated, *.example.com allowed; empty = all).",
+          "type": "string"
+        },
+        "urlFilter": {
+          "description": "Only URLs containing this substring (empty = all).",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Scope: all | intercept only | proxy only.",
+          "type": "string",
+          "enum": [
+            "all",
+            "intercept",
+            "proxy"
+          ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
     },
     "execution": {
       "taskSupport": "forbidden"

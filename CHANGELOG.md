@@ -8,6 +8,28 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Transparent interception in `dsh-api-visualizer`** — for desktop clients that ignore every proxy
+  setting. `capture_intercept` points chosen domains at a loopback address through a marked block in
+  the system hosts file, terminates TLS there with the plugin's local CA and forwards to the addresses
+  resolved before the change, so mock rules, breakpoints and latency apply to that client. A SYSTEM
+  scheduled task removes the block on reboot or when the listener is gone; stopping restores hosts
+  first and drains open connections before closing the listener.
+- **AutoResponder upgrades** — `capture_rules` one-step mocks (`{}`, `[]`, emptied lists, the last real
+  response, 500, 404, delay, hang, connection reset), Map Local / Map Remote, scripted rewrites of real
+  responses (`set data.list = []`), per-rule latency and bandwidth, rule export/import, and request /
+  response breakpoints. `capture_netsim` adds global latency and weak-network presets.
+- **Custom filters** — a condition builder over URL, host, status, process, headers, bodies, timing and
+  more, with saved, importable presets; `capture_query` accepts `filter` / `conditions`. Proxy and
+  intercept records carry the originating process (`clientProcess` / `clientPid`) looked up from the
+  local TCP connection.
+- **AI export** — `POST /records/export-ai` writes a Markdown digest of the matching records (summary,
+  per-endpoint stats, slowest and failed requests, a timeline with bounded bodies).
+- **Per-client capture stores** — with a `capture-clients.json` in the capture root, records are kept
+  per desktop client and the active store follows the client the user starts (or one locked in the
+  panel); rules, certificates, interception state and filters stay shared.
+
 ## [0.3.0] — 2026-11-11
 
 Breaking for MCP clients: `verify_report` and the four `failure_*` tools are gone, and the Stop
