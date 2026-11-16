@@ -68,13 +68,19 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
 .pm-tbl-head .pm-t{font-weight:600;color:var(--dsw-alias-fg-base,#e6e6e6);font-size:13px}
 .pm-tbl-scroll{flex:1;min-height:0;overflow:auto}
 .pm-tbl-table{min-width:100%;border-collapse:collapse;white-space:nowrap;font-variant-numeric:tabular-nums}
-.pm-tbl-table th{position:sticky;top:0;background:var(--dsw-alias-bg-elevated,#20242c);text-align:right;padding:5px 10px;font-size:12px;color:var(--dsw-alias-fg-muted,#9aa0aa);border-bottom:1px solid var(--dsw-alias-border-subtle,#2a2e37)}
+.pm-tbl-table th{position:sticky;top:0;z-index:2;background:var(--dsw-alias-bg-elevated,#20242c);text-align:right;padding:5px 10px;font-size:12px;color:var(--dsw-alias-fg-muted,#9aa0aa);border-bottom:1px solid var(--dsw-alias-border-subtle,#2a2e37)}
 .pm-tbl-table th[data-key]{font-weight:600;color:var(--dsw-alias-fg-base,#e6e6e6)}
 .pm-tbl-table td{padding:4px 10px;border-bottom:1px solid var(--dsw-alias-border-subtle,#23262e);font-size:12px;text-align:right}
-.pm-tbl-table th.pm-tbl-name,.pm-tbl-table td.pm-tbl-name{text-align:left}
+.pm-tbl-table th.pm-tbl-name,.pm-tbl-table td.pm-tbl-name,.pm-tbl-table th.pm-tbl-txt,.pm-tbl-table td.pm-tbl-txt{text-align:left}
 .pm-tbl-table tbody tr:hover{background:var(--dsw-alias-bg-hover,#20242c)}
 .pm-tbl-table td.pm-tbl-rank{color:var(--dsw-alias-fg-muted,#9aa0aa)}
 .pm-tbl-table td.pm-tbl-key{font-weight:600;color:var(--dsw-alias-fg-base,#e6e6e6)}
+.pm-tbl-table td.pm-tbl-dim{color:var(--dsw-alias-fg-muted,#9aa0aa)}
+.pm-tbl-table .pm-tbl-pin{position:sticky;left:0;z-index:1;background:var(--dsw-alias-bg-base,#171a21)}
+.pm-tbl-table th.pm-tbl-pin{z-index:3;background:var(--dsw-alias-bg-elevated,#20242c)}
+.pm-tbl-table .pm-tbl-name.pm-tbl-pin{left:var(--pm-tbl-pin-left,0px)}
+.pm-tbl-table .pm-tbl-pin-last{box-shadow:inset -1px 0 0 var(--dsw-alias-border-subtle,#2a2e37)}
+.pm-tbl-table tbody tr:hover td.pm-tbl-pin{background:linear-gradient(var(--dsw-alias-bg-hover,#20242c),var(--dsw-alias-bg-hover,#20242c)),var(--dsw-alias-bg-base,#171a21)}
 .pm-tbl-tag{margin-left:6px;padding:0 5px;border-radius:4px;background:#4a3b14;color:#fbbf24;font-size:11px}
 .pm-fold{cursor:pointer;color:#fbbf24;border-bottom:1px dashed currentColor}
 .pm-fold:hover{background:#4a3b14}
@@ -1490,8 +1496,9 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
 
       // ---- 表格视图（响应体右侧栏）
       // 列表型 JSON 响应（如榜单接口的 data.list）只看原始 JSON 看不出顺序，这一栏用表格给出
-      // 「第几条、叫什么、值多少」。顺序恒为**接口返回顺序**：不重排（客户端榜单的既定口径就是
+      // 「第几条、叫什么、各字段多少」。顺序恒为**接口返回顺序**：不重排（客户端榜单的既定口径就是
       // 「排序由后端定、客户端不排序」），后端置顶的行会被标记出来，免得看起来像排错了。
+      // 列 = 行对象的**全部字段**，按接口字段顺序；「顺序」和名称两列冻结在左侧，横向滚动时不丢行。
       // ⚠ 口径与 dsh-api-visualizer 的「排序视图」一致，但**是同语义的第二份实现**：宿主把每个
       // 插件的 client bundle 按原样下发（没有跨插件的模块解析），两个插件各自独立。改这里请同步
       // plugins/dsh-api-visualizer/lib/client.js 的 renderSortPane —— 反之亦然。
@@ -1509,20 +1516,34 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
       /** 已知名称字段的列名（其余字段名原样显示）。 */
       const SORT_NAME_LABELS = { name: '名称', strategyName: '策略名称', stockName: '股票名称', title: '标题', code: '代码', symbol: '代码' }
 
-      /** 只有比率语义的字段名才按小数比率渲染，避免把普通数字（数量/价格）印成百分比。 */
-      const SORT_RATE_KEY = /(rate|yield|ratio|return|percent|pct)/i
-
       /** 表格最多渲染多少行：几千行的响应只铺前 N 行，避免把面板卡住。 */
       const SORT_ROWS_CAP = 300
 
-      /** 接口下发的收益有两种形态：文本百分比（`+53.44%`）与小数比率（0.55743）。 */
-      function percentText(value) {
-        return typeof value === 'string' && /^[+-]?\d+(\.\d+)?%$/.test(value.trim()) ? value.trim() : null
+      /** 最多铺多少个字段（列）：再多只铺前 N 个并写明，免得几百列把面板卡住。 */
+      const SORT_COLS_CAP = 150
+
+      /** 单元格 / 名称格最多显示多少字，更长的截断；完整内容（上限 SORT_TITLE_CHARS 字）放在悬停提示里。 */
+      const SORT_CELL_CHARS = 60
+      const SORT_NAME_CHARS = 24
+      const SORT_TITLE_CHARS = 2000
+
+      /**
+       * 字段名有没有比率语义：按驼峰、下划线、数字切词，某个词以 rate / yield / ratio / return /
+       * percent / pct 结尾才算（yearYieldRate、changerate5day、volratio、pct_chg 算；generatedTime
+       * 词中间的 rate 不算）。只用来挑加粗的排序值列。数字一律按接口原值显示、不换算：
+       * 同样叫 rate，有的接口给小数（0.0125），有的已经是百分数（1.25 表示 +1.25%），乘 100 只会显示错。
+       */
+      function isRateKey(key) {
+        return key
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+          .toLowerCase()
+          .split(/[^a-z]+/)
+          .some((word) => /(rate|yield|ratio|return|percent|pct)$/.test(word))
       }
 
-      /** 小数比率 → 百分比文本，位数与接口下发的文本口径一致（2 位）。 */
-      function ratioText(value) {
-        return `${value >= 0 ? '+' : '-'}${(Math.abs(value) * 100).toFixed(2)}%`
+      /** 文本百分比（`+53.44%`）：原样返回，用来认排序值列。 */
+      function percentText(value) {
+        return typeof value === 'string' && /^[+-]?\d+(\.\d+)?%$/.test(value.trim()) ? value.trim() : null
       }
 
       /** 排序入参只从 URL 里读，不做语义推断。 */
@@ -1567,23 +1588,73 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         return best === null ? null : best.rows
       }
 
-      /** 行集 → 列模型：名称列 + 最多 4 个值列（比率数字在前，百分比文本按字段出现顺序）。 */
-      function buildTableColumns(rows) {
-        const sample = rows.slice(0, 20)
-        const first = sample[0]
-        const keys = Object.keys(first)
-        const nameKey = keys.find((k) => typeof first[k] === 'string' && /^(name|strategyName|stockName|title|label|code|symbol)$/i.test(k))
-          ?? keys.find((k) => typeof first[k] === 'string' && !SORT_RATE_KEY.test(k) && first[k].length <= 40 && !/id$/i.test(k))
+      /** 行集里的一项是不是普通对象（null、数字、数组都不算一行）。 */
+      const isPlainRow = (row) => row !== null && typeof row === 'object' && !Array.isArray(row)
+
+      /**
+       * 名称列：先认名字类字段（name / title / label，或以 name 结尾，如 stockName、strategyName），
+       * 再认代码类（symbol，或以 code 结尾，如 code、stockCode）。都认不出就不放名称列，
+       * 不再拿第一个短字符串（例如某个状态字段的 "0"）冒充名称。
+       */
+      function pickNameKey(rows, keys) {
+        const sample = rows.slice(0, 20).filter(isPlainRow)
+        const hasText = (k) => sample.some((row) => typeof row[k] === 'string' && row[k] !== '')
+        const hasCode = (k) => hasText(k) || sample.some((row) => typeof row[k] === 'number' && Number.isFinite(row[k]))
+        return keys.find((k) => /^(title|label)$|name$/i.test(k) && hasText(k))
+          ?? keys.find((k) => /^symbol$|code$/i.test(k) && hasCode(k))
           ?? null
-        const numeric = []
-        const textual = []
-        for (const k of keys) {
-          if (k === nameKey || /id$/i.test(k) || (first[k] !== null && typeof first[k] === 'object')) continue
-          if (sample.some((row) => typeof row[k] === 'number' && Number.isFinite(row[k])) && SORT_RATE_KEY.test(k)) numeric.push(k)
-          else if (sample.some((row) => percentText(row[k]) !== null)) textual.push(k)
+      }
+
+      /** 加粗的「排序值」列，口径沿用旧版：第一个数值型的比率字段；没有就取第一个百分比文本字段。 */
+      function pickKeyColumn(rows, columns) {
+        const sample = rows.slice(0, 20).filter(isPlainRow)
+        const candidates = columns.filter((k) => !/id$/i.test(k))
+        return candidates.find((k) => isRateKey(k) && sample.some((row) => typeof row[k] === 'number' && Number.isFinite(row[k])))
+          ?? candidates.find((k) => sample.some((row) => percentText(row[k]) !== null))
+          ?? null
+      }
+
+      /** 这一列按文本左对齐：非空值里不像数字的多于像数字的（"+1.25%"、"12.5万"、"3天" 都算像数字）。 */
+      function isTextColumn(rows, key) {
+        let numeric = 0
+        let text = 0
+        for (const row of rows.slice(0, 50)) {
+          if (!isPlainRow(row)) continue
+          const value = row[key]
+          if (value === undefined || value === null || value === '') continue
+          if ((typeof value === 'number' && Number.isFinite(value)) || (typeof value === 'string' && /^\s*[+-]?\.?\d/.test(value))) numeric += 1
+          else text += 1
         }
-        const columns = [...numeric, ...textual].slice(0, 4)
-        return columns.length === 0 ? null : { nameKey, columns }
+        return text > numeric
+      }
+
+      /**
+       * 行集 → 列模型：行对象的**全部字段**，按接口字段顺序（取前 SORT_ROWS_CAP 行出现过的字段，
+       * 各行字段不齐也不漏）。名称列冻结在最左侧，不在后面重复。
+       */
+      function buildTableColumns(rows) {
+        const shown = rows.slice(0, SORT_ROWS_CAP)
+        const seen = new Set()
+        const keys = []
+        for (const row of shown) {
+          if (!isPlainRow(row)) continue
+          for (const k of Object.keys(row)) {
+            if (seen.has(k)) continue
+            seen.add(k)
+            keys.push(k)
+          }
+        }
+        if (keys.length === 0) return null
+        const nameKey = pickNameKey(shown, keys)
+        const columns = keys.filter((k) => k !== nameKey).slice(0, SORT_COLS_CAP)
+        return {
+          nameKey,
+          columns,
+          keyColumn: pickKeyColumn(shown, columns),
+          textColumns: new Set(columns.filter((k) => isTextColumn(shown, k))),
+          fieldCount: keys.length,
+          shownFieldCount: columns.length + (nameKey === null ? 0 : 1),
+        }
       }
 
       /** 行上的置顶标记：后端把「精选 / 已订阅」排在最前，标出来才不会看着像排序坏了。 */
@@ -1594,10 +1665,28 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         return tags
       }
 
-      function tableCellText(value) {
-        if (typeof value === 'number' && Number.isFinite(value)) return ratioText(value)
-        return percentText(value) ?? (value === null || value === undefined ? '-' : String(value))
+      /** 截断过长的文本；完整内容（上限 SORT_TITLE_CHARS 字）给悬停提示，没截断时 title 为空。 */
+      function clipCell(text, max) {
+        if (text.length <= max) return { text, title: '' }
+        return { text: `${text.slice(0, max)}…`, title: text.length > SORT_TITLE_CHARS ? `${text.slice(0, SORT_TITLE_CHARS)}…` : text }
       }
+
+      /**
+       * 单元格如实显示接口给的值：这一行没有该字段就留空，null 和空字符串用淡色写出来，
+       * 对象和数组显示紧凑 JSON，数字和文本都按原值显示（不换算百分比，见 isRateKey 的说明）。
+       */
+      function tableCell(row, key) {
+        if (!Object.prototype.hasOwnProperty.call(row, key)) return { text: '', title: `这一行没有 ${key} 字段`, dim: true }
+        const value = row[key]
+        if (value === null) return { text: 'null', title: '', dim: true }
+        if (value === '') return { text: '""', title: '空字符串', dim: true }
+        if (typeof value === 'string') return { ...clipCell(value, SORT_CELL_CHARS), dim: false }
+        if (typeof value === 'number' || typeof value === 'boolean') return { text: String(value), title: '', dim: false }
+        return { ...clipCell(JSON.stringify(value), SORT_CELL_CHARS), dim: false }
+      }
+
+      /** 名称列冻结在「顺序」列右边，left 要跟着「顺序」列的实际宽度走：表格换掉时停掉旧的观察。 */
+      let tablePinObserver = null
 
       /** tab 上的行数角标：没有表就清空（不写 0 —— 0 行与「没有这张表」不是一回事）。 */
       function setTableCount(count) {
@@ -1610,6 +1699,10 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
        * @returns 是否真的画出了表（调用方靠它决定要不要把用户从空表上挪回「响应体」）
        */
       function renderTablePane() {
+        if (tablePinObserver !== null) {
+          tablePinObserver.disconnect()
+          tablePinObserver = null
+        }
         tablePane.textContent = ''
         setTableCount(null)
         const empty = (reason) => {
@@ -1630,12 +1723,12 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         const rows = pickListRows(json)
         if (rows === null) return empty('这份响应里没有「元素为对象的数组」（例如 data.list / rows / items）')
         const model = buildTableColumns(rows)
-        if (model === null) return empty(`认出了 ${rows.length} 行，但没有可展示的列`)
+        if (model === null) return empty(`认出了 ${rows.length} 行，但这些行里一个字段都没有`)
         const params = sortParamsOf(urlInput.value.trim())
 
         const head = el('div', 'pm-tbl-head')
-        head.appendChild(el('div', 'pm-t', `表格视图 · 共 ${rows.length} 行`))
-        const basis = ['顺序 = 接口返回顺序（未重排）']
+        head.appendChild(el('div', 'pm-t', `表格视图 · 共 ${rows.length} 行 · ${model.fieldCount} 个字段`))
+        const basis = ['顺序 = 接口返回顺序（未重排）', '列 = 全部字段（接口字段顺序）']
         if (params.field !== null) basis.push(`sortField=${params.field}${params.period === null ? '' : `(${params.period})`}`)
         if (params.dir !== null) basis.push(`sortType=${params.dir}`)
         head.appendChild(el('div', '', basis.join(' · ')))
@@ -1644,33 +1737,72 @@ html[data-dsh-postman-active] [data-dsh-postman-view]{display:flex}
         const scroll = el('div', 'pm-tbl-scroll')
         const table = el('table', 'pm-tbl-table')
         const headRow = el('tr')
-        headRow.appendChild(el('th', 'pm-tbl-rank', '顺序'))
-        const nameTh = el('th', 'pm-tbl-name', model.nameKey === null ? '名称' : SORT_NAME_LABELS[model.nameKey] ?? model.nameKey)
-        nameTh.title = model.nameKey ?? '未识别到名称字段'
-        headRow.appendChild(nameTh)
+        const rankClass = model.nameKey === null ? 'pm-tbl-rank pm-tbl-pin pm-tbl-pin-last' : 'pm-tbl-rank pm-tbl-pin'
+        const rankTh = el('th', rankClass, '顺序')
+        headRow.appendChild(rankTh)
+        if (model.nameKey !== null) {
+          const nameTh = el('th', 'pm-tbl-name pm-tbl-pin pm-tbl-pin-last', SORT_NAME_LABELS[model.nameKey] ?? model.nameKey)
+          nameTh.title = `${model.nameKey}（名称列，冻结在左侧）`
+          headRow.appendChild(nameTh)
+        }
         for (const key of model.columns) {
-          const th = el('th', '', key === 'sortYieldRate' && params.period !== null ? `sort(${params.period})` : SORT_COLUMN_LABELS[key] ?? key)
+          const th = el('th', model.textColumns.has(key) ? 'pm-tbl-txt' : '', key === 'sortYieldRate' && params.period !== null ? `sort(${params.period})` : SORT_COLUMN_LABELS[key] ?? key)
           th.dataset.key = key
-          th.title = key
+          th.title = key === model.keyColumn ? `${key}（加粗：认作排序值的第一个比率 / 百分比字段）` : key
           headRow.appendChild(th)
         }
         table.appendChild(headRow)
 
+        const span = model.columns.length + (model.nameKey === null ? 0 : 1)
         const tbody = el('tbody')
         rows.slice(0, SORT_ROWS_CAP).forEach((row, index) => {
           const tr = el('tr')
-          tr.appendChild(el('td', 'pm-tbl-rank', String(index + 1)))
-          const nameTd = el('td', 'pm-tbl-name', model.nameKey === null ? '-' : String(row[model.nameKey] ?? '-'))
-          for (const tag of tableRowTags(row)) nameTd.appendChild(el('span', 'pm-tbl-tag', tag))
-          tr.appendChild(nameTd)
-          for (const key of model.columns) tr.appendChild(el('td', key === model.columns[0] ? 'pm-tbl-key' : '', tableCellText(row[key])))
+          const rankTd = el('td', rankClass, String(index + 1))
+          tr.appendChild(rankTd)
+          if (!isPlainRow(row)) {
+            // 行集里混进了非对象（null / 数字 / 数组）：整行如实写出它的 JSON，不硬拆成列
+            const td = el('td', 'pm-tbl-txt pm-tbl-dim', clipCell(JSON.stringify(row), SORT_CELL_CHARS).text)
+            td.colSpan = span
+            td.title = '这一项不是对象'
+            tr.appendChild(td)
+            tbody.appendChild(tr)
+            return
+          }
+          const tagHost = model.nameKey === null ? rankTd : el('td', 'pm-tbl-name pm-tbl-pin pm-tbl-pin-last')
+          if (model.nameKey !== null) {
+            const raw = row[model.nameKey]
+            const name = clipCell(raw === undefined || raw === null ? '' : String(raw), SORT_NAME_CHARS)
+            tagHost.textContent = name.text
+            if (name.title !== '') tagHost.title = name.title
+            tr.appendChild(tagHost)
+          }
+          for (const tag of tableRowTags(row)) tagHost.appendChild(el('span', 'pm-tbl-tag', tag))
+          for (const key of model.columns) {
+            const cell = tableCell(row, key)
+            const classes = [model.textColumns.has(key) ? 'pm-tbl-txt' : '', key === model.keyColumn ? 'pm-tbl-key' : '', cell.dim ? 'pm-tbl-dim' : '']
+            const td = el('td', classes.filter((c) => c !== '').join(' '), cell.text)
+            if (cell.title !== '') td.title = cell.title
+            tr.appendChild(td)
+          }
           tbody.appendChild(tr)
         })
         table.appendChild(tbody)
         scroll.appendChild(table)
         tablePane.appendChild(scroll)
+        if (model.shownFieldCount < model.fieldCount) tablePane.appendChild(el('div', 'pm-tbl-head', `字段太多：只显示前 ${model.shownFieldCount} 个（共 ${model.fieldCount} 个）`))
         if (rows.length > SORT_ROWS_CAP) tablePane.appendChild(el('div', 'pm-tbl-head', `只渲染前 ${SORT_ROWS_CAP} 行（共 ${rows.length} 行）`))
         setTableCount(rows.length)
+        if (model.nameKey !== null) {
+          // 名称列的 left = 「顺序」列的实际宽度（随字号、行数位数变化），量出来写进 CSS 变量；
+          // 表格 tab 没打开时宽度是 0，ResizeObserver 会在 tab 打开、真正排版后再量一次
+          const syncPinLeft = () => table.style.setProperty('--pm-tbl-pin-left', `${rankTh.getBoundingClientRect().width}px`)
+          if (typeof ResizeObserver === 'function') {
+            tablePinObserver = new ResizeObserver(syncPinLeft)
+            tablePinObserver.observe(rankTh)
+          } else {
+            syncPinLeft()
+          }
+        }
         return true
       }
 

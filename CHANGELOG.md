@@ -50,8 +50,24 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   reported as skipped. Available in the panel and as `http_collection` (`list` / `get` / `run` /
   `save` / `env`) on both the DSH and MCP surfaces.
 
+### Changed
+
+- **Sort view and table view show every field** — the `dsh-api-visualizer` sort view and the
+  `dsh-postman` table view list every field of the row objects in the API's field order, instead of a
+  name column plus at most four rate-like columns. The rank and name columns stay frozen while the
+  table scrolls sideways. The name column comes from a name-like key (`stockName`, `strategyName`,
+  `title`) or a code-like key, and is left out rather than guessed from the first short string.
+  Missing fields, `null`, empty strings and nested values are shown as such, and the 150-column /
+  300-row caps are stated.
+- **Sort view width is adjustable** — a splitter between the response body and the sort view drags
+  left and right (arrow keys, Home and End work too; double-click restores the default 42%). The
+  width is saved with the panel preferences.
+
 ### Fixed
 
+- **Sort view and table view show numbers as the API sent them.** Any number in a rate-named field
+  used to be multiplied by 100, but many APIs already send percent units (`1.25` for +1.25%), which
+  came out as `+125.00%`; timestamps in such fields turned into huge percentages too.
 - `scripts/deploy-plugins.mjs` no longer exits with `ReferenceError: stale is not defined` on a real
   deploy. The 2026-11-04 cleanup removed the test-copy list but left the loop that deleted those
   copies, so the script crashed after copying the shared `lib/` and before writing the deploy stamp.

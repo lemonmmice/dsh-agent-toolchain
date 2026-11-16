@@ -107,19 +107,30 @@ body[data-ds-dark-theme] .apv-s-5{background:#4c1d1d;color:#f87171}body[data-ds-
 .apv-detail-bar .apv-in-tag{width:110px}
 .apv-detail-main{flex:1;min-height:0;display:flex;flex-direction:row;align-items:stretch}
 .apv-detail-body{flex:1;min-width:0;min-height:0;overflow:auto;padding:0 12px 12px}
-.apv-sortpane{flex:0 0 42%;min-width:240px;max-width:64%;display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--dsw-alias-border-l2)}
+.apv-sortpane{flex:0 0 var(--apv-sort-width,42%);min-width:240px;max-width:calc(100% - 208px);display:flex;flex-direction:column;min-height:0}
 .apv-sortpane[hidden]{display:none}
+.apv-sort-resize{flex:0 0 8px;width:8px;box-sizing:border-box;cursor:ew-resize;background:var(--dsw-alias-bg-base);border-left:1px solid var(--dsw-alias-border-l2);position:relative;touch-action:none;z-index:2}
+.apv-sort-resize[hidden]{display:none}
+.apv-sort-resize::after{content:"";position:absolute;top:50%;left:2px;width:2px;height:42px;transform:translateY(-50%);border-radius:2px;background:var(--dsw-alias-label-tertiary);opacity:.75}
+.apv-sort-resize:hover,.apv-sort-resize:focus-visible{background:var(--dsw-alias-interactive-bg-hover);outline:none}
+.apv-sort-resize:hover::after,.apv-sort-resize:focus-visible::after{background:var(--dsw-static-deepseek-500);opacity:1}
 .apv-sort-head{padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:12px;color:var(--dsw-alias-label-tertiary);line-height:1.7}
 .apv-sort-head .apv-t{font-weight:600;color:var(--dsw-alias-label-primary);font-size:13px}
 .apv-sort-scroll{flex:1;min-height:0;overflow:auto}
 .apv-sort-table{min-width:100%;border-collapse:collapse;white-space:nowrap;font-variant-numeric:tabular-nums}
-.apv-sort-table th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-2);text-align:right;padding:5px 10px;font-size:12px;color:var(--dsw-alias-label-tertiary);border-bottom:1px solid var(--dsw-alias-border-l2)}
+.apv-sort-table th{position:sticky;top:0;z-index:2;background:var(--dsw-alias-bg-layer-2);text-align:right;padding:5px 10px;font-size:12px;color:var(--dsw-alias-label-tertiary);border-bottom:1px solid var(--dsw-alias-border-l2)}
 .apv-sort-table th[data-key]{font-weight:600;color:var(--dsw-alias-label-primary)}
 .apv-sort-table td{padding:4px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:12px;text-align:right}
-.apv-sort-table th.apv-sort-name,.apv-sort-table td.apv-sort-name{text-align:left}
+.apv-sort-table th.apv-sort-name,.apv-sort-table td.apv-sort-name,.apv-sort-table th.apv-sort-txt,.apv-sort-table td.apv-sort-txt{text-align:left}
 .apv-sort-table tbody tr:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .apv-sort-table td.apv-sort-rank{color:var(--dsw-alias-label-tertiary)}
 .apv-sort-table td.apv-sort-key{font-weight:600;color:var(--dsw-alias-label-primary)}
+.apv-sort-table td.apv-sort-dim{color:var(--dsw-alias-label-tertiary)}
+.apv-sort-table .apv-sort-pin{position:sticky;left:0;z-index:1;background:var(--dsw-alias-bg-base,#171a21)}
+.apv-sort-table th.apv-sort-pin{z-index:3;background:var(--dsw-alias-bg-layer-2)}
+.apv-sort-table .apv-sort-name.apv-sort-pin{left:var(--apv-sort-pin-left,0px)}
+.apv-sort-table .apv-sort-pin-last{box-shadow:inset -1px 0 0 var(--dsw-alias-border-l2)}
+.apv-sort-table tbody tr:hover td.apv-sort-pin{background:linear-gradient(var(--dsw-alias-interactive-bg-hover),var(--dsw-alias-interactive-bg-hover)),var(--dsw-alias-bg-base,#171a21)}
 .apv-sort-tag{margin-left:6px;padding:0 5px;border-radius:4px;background:var(--dsw-static-amber-100);color:var(--dsw-static-amber-900);font-size:11px}
 body[data-ds-dark-theme] .apv-sort-tag{background:#7c5c00;color:#fff}
 .apv-sec{margin-top:10px}
@@ -2362,7 +2373,16 @@ body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
       const detailBody = el('div', 'apv-detail-body')
       const sortPane = el('div', 'apv-sortpane')
       sortPane.hidden = true
+      // 响应体与排序视图之间的分隔条：左右拖动调整排序视图宽度，双击恢复默认；跟着排序视图一起显示 / 隐藏
+      const sortResize = el('div', 'apv-sort-resize')
+      sortResize.hidden = true
+      sortResize.role = 'separator'
+      sortResize.tabIndex = 0
+      sortResize.title = '拖动调整排序视图宽度（双击恢复默认）'
+      sortResize.setAttribute('aria-label', '调整排序视图宽度')
+      sortResize.setAttribute('aria-orientation', 'vertical')
       detailMain.appendChild(detailBody)
+      detailMain.appendChild(sortResize)
       detailMain.appendChild(sortPane)
       detail.appendChild(detailMain)
       body.appendChild(detail)
@@ -2391,6 +2411,7 @@ body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
             logPath: logPathIn.value.trim(),
             savedFilters: state.savedFilters,
             detailHeight: state.detailHeight,
+            sortWidth: state.sortWidth,
             // 当前启用的过滤器：id 为准，快照用来在宿主的列表回来之前先按它查
             activeFilterId: state.activeFilter !== null ? state.activeFilter.id : null,
             activeFilter: state.activeFilter,
@@ -2419,6 +2440,10 @@ body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
         toTs: '',
         sessionId: '',
         detailHeight: Number.isFinite(Number(initialPrefs.detailHeight)) ? Number(initialPrefs.detailHeight) : null,
+        // 排序视图宽度：占详情区宽度的百分比（窗口缩放时比例不变）；null = 默认 42%
+        sortWidth: initialPrefs.sortWidth !== null && Number.isFinite(Number(initialPrefs.sortWidth)) && Number(initialPrefs.sortWidth) > 0 && Number(initialPrefs.sortWidth) < 100
+          ? Number(initialPrefs.sortWidth)
+          : null,
         errorsOnly: false,
         noNoise: false,
         regex: false,
@@ -2487,6 +2512,64 @@ body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
         else if (event.key === 'ArrowDown') setDetailHeight(current - 24)
         else if (event.key === 'Home') setDetailHeight(180)
         else setDetailHeight(body.getBoundingClientRect().height - 140)
+      })
+
+      // ---------------- 排序视图宽度（分隔条左右拖动）
+      /** 排序视图至少 240px；左边的响应体至少留 200px。 */
+      const SORT_MIN_PX = 240
+      const SORT_BODY_MIN_PX = 200
+      const applySortWidth = () => {
+        if (state.sortWidth === null) detailMain.style.removeProperty('--apv-sort-width')
+        else detailMain.style.setProperty('--apv-sort-width', `${state.sortWidth}%`)
+      }
+      /** 按像素宽度设置并夹在范围内，存成百分比；详情区还没排版（宽度 0）时不动。 */
+      const setSortWidth = (px, persist = true) => {
+        const total = detailMain.getBoundingClientRect().width
+        if (!(total > 0) || Number.isNaN(Number(px))) return
+        const max = Math.max(SORT_MIN_PX, total - SORT_BODY_MIN_PX - sortResize.getBoundingClientRect().width)
+        const next = Math.max(SORT_MIN_PX, Math.min(max, Number(px)))
+        state.sortWidth = Math.round((next / total) * 1000) / 10
+        applySortWidth()
+        if (persist) savePrefs()
+      }
+      applySortWidth()
+
+      let sortDrag = null
+      sortResize.addEventListener('pointerdown', (event) => {
+        if (sortPane.hidden) return
+        event.preventDefault()
+        sortResize.setPointerCapture?.(event.pointerId)
+        sortDrag = { startX: event.clientX, startWidth: sortPane.getBoundingClientRect().width }
+        document.body.style.userSelect = 'none'
+        document.body.style.cursor = 'ew-resize'
+      })
+      sortResize.addEventListener('pointermove', (event) => {
+        if (sortDrag === null) return
+        // 分隔条往左拖 = 排序视图变宽
+        setSortWidth(sortDrag.startWidth + sortDrag.startX - event.clientX, false)
+      })
+      const finishSortResize = () => {
+        if (sortDrag === null) return
+        sortDrag = null
+        document.body.style.userSelect = ''
+        document.body.style.cursor = ''
+        savePrefs()
+      }
+      sortResize.addEventListener('pointerup', finishSortResize)
+      sortResize.addEventListener('pointercancel', finishSortResize)
+      sortResize.addEventListener('dblclick', () => {
+        state.sortWidth = null
+        applySortWidth()
+        savePrefs()
+      })
+      sortResize.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+        event.preventDefault()
+        const current = sortPane.getBoundingClientRect().width
+        if (event.key === 'ArrowLeft') setSortWidth(current + 24)
+        else if (event.key === 'ArrowRight') setSortWidth(current - 24)
+        else if (event.key === 'Home') setSortWidth(SORT_MIN_PX)
+        else setSortWidth(Infinity)
       })
 
       // ---------------- oversized-JSON folding
@@ -2895,8 +2978,9 @@ body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
 
       // ---------------- 排序视图（详情右侧面板）
       // 列表型 JSON 响应（如榜单接口的 data.list）只读原始 JSON 看不出排序，这一栏用表格给出
-      // 「第几名、叫什么、排序值多少」。顺序恒为**接口返回顺序**：不重排（客户端榜单的既定口径
+      // 「第几名、叫什么、各字段多少」。顺序恒为**接口返回顺序**：不重排（客户端榜单的既定口径
       // 就是「排序由后端定、客户端不排序」），后端置顶的行会被标记出来，免得看起来像排错了。
+      // 列 = 行对象的**全部字段**，按接口字段顺序；「顺序」和名称两列冻结在左侧，横向滚动时不丢行。
 
       /** 接口 sortField = 收益排序周期（月，1/3/6/12），标签与客户端榜单的周期选项同口径。 */
       const SORT_PERIOD_LABELS = { 1: '近1月', 3: '近3月', 6: '近6月', 12: '近1年' }
@@ -2911,20 +2995,34 @@ body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
       /** 已知名称字段的列名（其余字段名原样显示）。 */
       const SORT_NAME_LABELS = { name: '名称', strategyName: '策略名称', stockName: '股票名称', title: '标题', code: '代码', symbol: '代码' }
 
-      /** 只有比率语义的字段名才按小数比率渲染，避免把普通数字（数量/价格）印成百分比。 */
-      const SORT_RATE_KEY = /(rate|yield|ratio|return|percent|pct)/i
-
       /** 表格最多渲染多少行：几千行的响应只铺前 N 行，避免把面板卡住。 */
       const SORT_ROWS_CAP = 300
 
-      /** 接口下发的收益有两种形态：文本百分比（`+53.44%`）与小数比率（0.55743）。 */
-      function percentText(value) {
-        return typeof value === 'string' && /^[+-]?\d+(\.\d+)?%$/.test(value.trim()) ? value.trim() : null
+      /** 最多铺多少个字段（列）：再多只铺前 N 个并写明，免得几百列把面板卡住。 */
+      const SORT_COLS_CAP = 150
+
+      /** 单元格 / 名称格最多显示多少字，更长的截断；完整内容（上限 SORT_TITLE_CHARS 字）放在悬停提示里。 */
+      const SORT_CELL_CHARS = 60
+      const SORT_NAME_CHARS = 24
+      const SORT_TITLE_CHARS = 2000
+
+      /**
+       * 字段名有没有比率语义：按驼峰、下划线、数字切词，某个词以 rate / yield / ratio / return /
+       * percent / pct 结尾才算（yearYieldRate、changerate5day、volratio、pct_chg 算；generatedTime
+       * 词中间的 rate 不算）。只用来挑加粗的排序值列。数字一律按接口原值显示、不换算：
+       * 同样叫 rate，有的接口给小数（0.0125），有的已经是百分数（1.25 表示 +1.25%），乘 100 只会显示错。
+       */
+      function isRateKey(key) {
+        return key
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+          .toLowerCase()
+          .split(/[^a-z]+/)
+          .some((word) => /(rate|yield|ratio|return|percent|pct)$/.test(word))
       }
 
-      /** 小数比率 → 百分比文本，位数与接口下发的文本口径一致（2 位）。 */
-      function ratioText(value) {
-        return `${value >= 0 ? '+' : '-'}${(Math.abs(value) * 100).toFixed(2)}%`
+      /** 文本百分比（`+53.44%`）：原样返回，用来认排序值列。 */
+      function percentText(value) {
+        return typeof value === 'string' && /^[+-]?\d+(\.\d+)?%$/.test(value.trim()) ? value.trim() : null
       }
 
       /** 排序入参只从 URL 里读，不做语义推断。 */
@@ -2969,23 +3067,73 @@ body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
         return best === null ? null : best.rows
       }
 
-      /** 行集 → 列模型：名称列 + 最多 4 个值列（比率数字在前，百分比文本按字段出现顺序）。 */
-      function buildSortColumns(rows) {
-        const sample = rows.slice(0, 20)
-        const first = sample[0]
-        const keys = Object.keys(first)
-        const nameKey = keys.find((k) => typeof first[k] === 'string' && /^(name|strategyName|stockName|title|label|code|symbol)$/i.test(k))
-          ?? keys.find((k) => typeof first[k] === 'string' && !SORT_RATE_KEY.test(k) && first[k].length <= 40 && !/id$/i.test(k))
+      /** 行集里的一项是不是普通对象（null、数字、数组都不算一行）。 */
+      const isPlainRow = (row) => row !== null && typeof row === 'object' && !Array.isArray(row)
+
+      /**
+       * 名称列：先认名字类字段（name / title / label，或以 name 结尾，如 stockName、strategyName），
+       * 再认代码类（symbol，或以 code 结尾，如 code、stockCode）。都认不出就不放名称列，
+       * 不再拿第一个短字符串（例如某个状态字段的 "0"）冒充名称。
+       */
+      function pickNameKey(rows, keys) {
+        const sample = rows.slice(0, 20).filter(isPlainRow)
+        const hasText = (k) => sample.some((row) => typeof row[k] === 'string' && row[k] !== '')
+        const hasCode = (k) => hasText(k) || sample.some((row) => typeof row[k] === 'number' && Number.isFinite(row[k]))
+        return keys.find((k) => /^(title|label)$|name$/i.test(k) && hasText(k))
+          ?? keys.find((k) => /^symbol$|code$/i.test(k) && hasCode(k))
           ?? null
-        const numeric = []
-        const textual = []
-        for (const k of keys) {
-          if (k === nameKey || /id$/i.test(k) || (first[k] !== null && typeof first[k] === 'object')) continue
-          if (sample.some((row) => typeof row[k] === 'number' && Number.isFinite(row[k])) && SORT_RATE_KEY.test(k)) numeric.push(k)
-          else if (sample.some((row) => percentText(row[k]) !== null)) textual.push(k)
+      }
+
+      /** 加粗的「排序值」列，口径沿用旧版：第一个数值型的比率字段；没有就取第一个百分比文本字段。 */
+      function pickKeyColumn(rows, columns) {
+        const sample = rows.slice(0, 20).filter(isPlainRow)
+        const candidates = columns.filter((k) => !/id$/i.test(k))
+        return candidates.find((k) => isRateKey(k) && sample.some((row) => typeof row[k] === 'number' && Number.isFinite(row[k])))
+          ?? candidates.find((k) => sample.some((row) => percentText(row[k]) !== null))
+          ?? null
+      }
+
+      /** 这一列按文本左对齐：非空值里不像数字的多于像数字的（"+1.25%"、"12.5万"、"3天" 都算像数字）。 */
+      function isTextColumn(rows, key) {
+        let numeric = 0
+        let text = 0
+        for (const row of rows.slice(0, 50)) {
+          if (!isPlainRow(row)) continue
+          const value = row[key]
+          if (value === undefined || value === null || value === '') continue
+          if ((typeof value === 'number' && Number.isFinite(value)) || (typeof value === 'string' && /^\s*[+-]?\.?\d/.test(value))) numeric += 1
+          else text += 1
         }
-        const columns = [...numeric, ...textual].slice(0, 4)
-        return columns.length === 0 ? null : { nameKey, columns }
+        return text > numeric
+      }
+
+      /**
+       * 行集 → 列模型：行对象的**全部字段**，按接口字段顺序（取前 SORT_ROWS_CAP 行出现过的字段，
+       * 各行字段不齐也不漏）。名称列冻结在最左侧，不在后面重复。
+       */
+      function buildSortColumns(rows) {
+        const shown = rows.slice(0, SORT_ROWS_CAP)
+        const seen = new Set()
+        const keys = []
+        for (const row of shown) {
+          if (!isPlainRow(row)) continue
+          for (const k of Object.keys(row)) {
+            if (seen.has(k)) continue
+            seen.add(k)
+            keys.push(k)
+          }
+        }
+        if (keys.length === 0) return null
+        const nameKey = pickNameKey(shown, keys)
+        const columns = keys.filter((k) => k !== nameKey).slice(0, SORT_COLS_CAP)
+        return {
+          nameKey,
+          columns,
+          keyColumn: pickKeyColumn(shown, columns),
+          textColumns: new Set(columns.filter((k) => isTextColumn(shown, k))),
+          fieldCount: keys.length,
+          shownFieldCount: columns.length + (nameKey === null ? 0 : 1),
+        }
       }
 
       /** 行上的置顶标记：后端把「精选 / 已订阅」排在最前，标出来才不会看着像排序坏了。 */
@@ -2996,14 +3144,37 @@ body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
         return tags
       }
 
-      function sortCellText(value) {
-        if (typeof value === 'number' && Number.isFinite(value)) return ratioText(value)
-        return percentText(value) ?? (value === null || value === undefined ? '-' : String(value))
+      /** 截断过长的文本；完整内容（上限 SORT_TITLE_CHARS 字）给悬停提示，没截断时 title 为空。 */
+      function clipCell(text, max) {
+        if (text.length <= max) return { text, title: '' }
+        return { text: `${text.slice(0, max)}…`, title: text.length > SORT_TITLE_CHARS ? `${text.slice(0, SORT_TITLE_CHARS)}…` : text }
       }
 
+      /**
+       * 单元格如实显示接口给的值：这一行没有该字段就留空，null 和空字符串用淡色写出来，
+       * 对象和数组显示紧凑 JSON，数字和文本都按原值显示（不换算百分比，见 isRateKey 的说明）。
+       */
+      function sortCell(row, key) {
+        if (!Object.prototype.hasOwnProperty.call(row, key)) return { text: '', title: `这一行没有 ${key} 字段`, dim: true }
+        const value = row[key]
+        if (value === null) return { text: 'null', title: '', dim: true }
+        if (value === '') return { text: '""', title: '空字符串', dim: true }
+        if (typeof value === 'string') return { ...clipCell(value, SORT_CELL_CHARS), dim: false }
+        if (typeof value === 'number' || typeof value === 'boolean') return { text: String(value), title: '', dim: false }
+        return { ...clipCell(JSON.stringify(value), SORT_CELL_CHARS), dim: false }
+      }
+
+      /** 名称列冻结在「顺序」列右边，left 要跟着「顺序」列的实际宽度走：表格换掉时停掉旧的观察。 */
+      let sortPinObserver = null
+
       const clearSortPane = () => {
+        if (sortPinObserver !== null) {
+          sortPinObserver.disconnect()
+          sortPinObserver = null
+        }
         sortPane.textContent = ''
         sortPane.hidden = true
+        sortResize.hidden = true
       }
 
       function renderSortPane(full) {
@@ -3024,8 +3195,8 @@ body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
         const params = sortParamsOf(full.url)
 
         const head = el('div', 'apv-sort-head')
-        head.appendChild(el('div', 'apv-t', `排序视图 · 共 ${rows.length} 行`))
-        const basis = ['顺序 = 接口返回顺序（未重排）']
+        head.appendChild(el('div', 'apv-t', `排序视图 · 共 ${rows.length} 行 · ${model.fieldCount} 个字段`))
+        const basis = ['顺序 = 接口返回顺序（未重排）', '列 = 全部字段（接口字段顺序）']
         if (params.field !== null) basis.push(`sortField=${params.field}${params.period === null ? '' : `(${params.period})`}`)
         if (params.dir !== null) basis.push(`sortType=${params.dir}`)
         head.appendChild(el('div', '', basis.join(' · ')))
@@ -3034,33 +3205,72 @@ body[data-ds-dark-theme] .apv-fd-cond-err{color:#f87171}
         const scroll = el('div', 'apv-sort-scroll')
         const table = el('table', 'apv-sort-table')
         const headRow = el('tr')
-        headRow.appendChild(el('th', 'apv-sort-rank', '顺序'))
-        const nameTh = el('th', 'apv-sort-name', model.nameKey === null ? '名称' : SORT_NAME_LABELS[model.nameKey] ?? model.nameKey)
-        nameTh.title = model.nameKey ?? '未识别到名称字段'
-        headRow.appendChild(nameTh)
+        const rankClass = model.nameKey === null ? 'apv-sort-rank apv-sort-pin apv-sort-pin-last' : 'apv-sort-rank apv-sort-pin'
+        const rankTh = el('th', rankClass, '顺序')
+        headRow.appendChild(rankTh)
+        if (model.nameKey !== null) {
+          const nameTh = el('th', 'apv-sort-name apv-sort-pin apv-sort-pin-last', SORT_NAME_LABELS[model.nameKey] ?? model.nameKey)
+          nameTh.title = `${model.nameKey}（名称列，冻结在左侧）`
+          headRow.appendChild(nameTh)
+        }
         for (const key of model.columns) {
-          const th = el('th', '', key === 'sortYieldRate' && params.period !== null ? `sort(${params.period})` : SORT_COLUMN_LABELS[key] ?? key)
+          const th = el('th', model.textColumns.has(key) ? 'apv-sort-txt' : '', key === 'sortYieldRate' && params.period !== null ? `sort(${params.period})` : SORT_COLUMN_LABELS[key] ?? key)
           th.dataset.key = key
-          th.title = key
+          th.title = key === model.keyColumn ? `${key}（加粗：认作排序值的第一个比率 / 百分比字段）` : key
           headRow.appendChild(th)
         }
         table.appendChild(headRow)
 
+        const span = model.columns.length + (model.nameKey === null ? 0 : 1)
         const body = el('tbody')
         rows.slice(0, SORT_ROWS_CAP).forEach((row, index) => {
           const tr = el('tr')
-          tr.appendChild(el('td', 'apv-sort-rank', String(index + 1)))
-          const nameTd = el('td', 'apv-sort-name', model.nameKey === null ? '-' : String(row[model.nameKey] ?? '-'))
-          for (const tag of sortRowTags(row)) nameTd.appendChild(el('span', 'apv-sort-tag', tag))
-          tr.appendChild(nameTd)
-          for (const key of model.columns) tr.appendChild(el('td', key === model.columns[0] ? 'apv-sort-key' : '', sortCellText(row[key])))
+          const rankTd = el('td', rankClass, String(index + 1))
+          tr.appendChild(rankTd)
+          if (!isPlainRow(row)) {
+            // 行集里混进了非对象（null / 数字 / 数组）：整行如实写出它的 JSON，不硬拆成列
+            const td = el('td', 'apv-sort-txt apv-sort-dim', clipCell(JSON.stringify(row), SORT_CELL_CHARS).text)
+            td.colSpan = span
+            td.title = '这一项不是对象'
+            tr.appendChild(td)
+            body.appendChild(tr)
+            return
+          }
+          const tagHost = model.nameKey === null ? rankTd : el('td', 'apv-sort-name apv-sort-pin apv-sort-pin-last')
+          if (model.nameKey !== null) {
+            const raw = row[model.nameKey]
+            const name = clipCell(raw === undefined || raw === null ? '' : String(raw), SORT_NAME_CHARS)
+            tagHost.textContent = name.text
+            if (name.title !== '') tagHost.title = name.title
+            tr.appendChild(tagHost)
+          }
+          for (const tag of sortRowTags(row)) tagHost.appendChild(el('span', 'apv-sort-tag', tag))
+          for (const key of model.columns) {
+            const cell = sortCell(row, key)
+            const classes = [model.textColumns.has(key) ? 'apv-sort-txt' : '', key === model.keyColumn ? 'apv-sort-key' : '', cell.dim ? 'apv-sort-dim' : '']
+            const td = el('td', classes.filter((c) => c !== '').join(' '), cell.text)
+            if (cell.title !== '') td.title = cell.title
+            tr.appendChild(td)
+          }
           body.appendChild(tr)
         })
         table.appendChild(body)
         scroll.appendChild(table)
         sortPane.appendChild(scroll)
+        if (model.shownFieldCount < model.fieldCount) sortPane.appendChild(el('div', 'apv-sort-head', `字段太多：只显示前 ${model.shownFieldCount} 个（共 ${model.fieldCount} 个）`))
         if (rows.length > SORT_ROWS_CAP) sortPane.appendChild(el('div', 'apv-sort-head', `只渲染前 ${SORT_ROWS_CAP} 行（共 ${rows.length} 行）`))
         sortPane.hidden = false
+        sortResize.hidden = false
+        if (model.nameKey !== null) {
+          // 名称列的 left = 「顺序」列的实际宽度（随字号、行数位数变化），量出来写进 CSS 变量
+          const syncPinLeft = () => table.style.setProperty('--apv-sort-pin-left', `${rankTh.getBoundingClientRect().width}px`)
+          if (typeof ResizeObserver === 'function') {
+            sortPinObserver = new ResizeObserver(syncPinLeft)
+            sortPinObserver.observe(rankTh)
+          } else {
+            syncPinLeft()
+          }
+        }
       }
 
       function renderDetail(full) {
