@@ -50,6 +50,13 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   reported as skipped. Available in the panel and as `http_collection` (`list` / `get` / `run` /
   `save` / `env`) on both the DSH and MCP surfaces.
 
+### Fixed
+
+- `scripts/deploy-plugins.mjs` no longer exits with `ReferenceError: stale is not defined` on a real
+  deploy. The 2026-11-04 cleanup removed the test-copy list but left the loop that deleted those
+  copies, so the script crashed after copying the shared `lib/` and before writing the deploy stamp.
+  The loop is gone; deploying never deletes files from the profile.
+
 ## [0.3.0] — 2026-11-11
 
 Breaking for MCP clients: `verify_report` and the four `failure_*` tools are gone, and the Stop

@@ -15,7 +15,7 @@
 // Every repo plugin is deployed to <profile>/plugins/<name> (the same layout the
 // profile's cordis.patch.yml references). npm-installed plugin packages under
 // <profile>/node_modules are NOT touched — those are managed by `dsh plugin add`.
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, copyFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, copyFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -157,10 +157,9 @@ if (existsSync(sharedLib)) {
         copyFileSync(f, df)
       }
     }
-    for (const s of stale) {
-      try { rmSync(join(dst, s), { force: true }) } catch { /* best effort */ }
-    }
-    if (status === 'drift' || stale.length) copied++
+    // 这里曾按 `stale` 清理 profile 里残留的测试副本；d8c3111 删掉测试文件时只删了 `stale` 的定义、
+    // 留下了循环，真部署会在复制完之后、写部署戳之前抛 ReferenceError。仓库已无测试文件，循环一并删除。
+    if (status === 'drift') copied++
   }
 }
 
