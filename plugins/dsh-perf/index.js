@@ -342,7 +342,7 @@ export function apply(ctx) {
       const disposers = []
       for (const tool of tools()) disposers.push(ctx.tools.register(tool))
       const routeDisposers = makeRoutes().map((route) => ctx.webServer.register(route))
-      const disposeSection = ctx.systemPrompt.section({ name: 'plugin:dsh-perf', order: SECTION_ORDER, text: GUIDANCE })
+      const disposeSection = ctx.systemPrompt.section({ name: 'plugin:dsh-perf', order: SECTION_ORDER, text: GUIDANCE, interpolate: false })
       return () => {
         for (const d of disposers) d()
         for (const d of routeDisposers) d()

@@ -383,6 +383,8 @@ export function apply(ctx) {
     name: 'plugin:hang-inspector',
     order: SECTION_ORDER,
     text: GUIDANCE,
+    // 按字面量注入：宿主默认把双花括号当提示词变量解析，名字不合规会让整轮失败（见 scripts/check.mjs）
+    interpolate: false,
   })
   ctx.effect(
     () => () => {

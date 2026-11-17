@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { validateSchemas } from './lib/schema-dsl.mjs'
 import { createPrivateReferenceScanner } from './lib/private-references.mjs'
+import { findPromptRegistrations } from './lib/prompt-sections.mjs'
 
 const root = join(fileURLToPath(import.meta.url), '..', '..')
 
@@ -185,8 +186,36 @@ for (const f of walk(root)) {
   }
 }
 
+// 7. DSH prompt-section guard. Before every agent turn the host renders all prompt sections and
+//    contexts through its template engine: a "{{…}}" group must be a registered lowercase variable
+//    name, otherwise rendering throws and EVERY agent turn fails ("malformed prompt variable
+//    reference"), not just this plugin's tools. Observed: dsh-postman's guidance mentioned its own
+//    {{变量}} placeholder syntax and broke every turn. Our texts never use prompt variables, so each
+//    registration must be an object literal with `interpolate: false` (honoured for sections by every
+//    0.2.x host; contexts only from 0.2.1, so keep context text free of double braces as well).
+{
+  let registrations = 0
+  for (const dir of ['plugins', 'lib']) {
+    for (const f of walk(join(root, dir))) {
+      const ext = extname(f)
+      if (ext !== '.js' && ext !== '.mjs') continue
+      for (const r of findPromptRegistrations(readFileSync(f, 'utf8'))) {
+        registrations++
+        if (r.interpolateFalse) continue
+        failures++
+        const fix = r.literal ? 'add interpolate: false to the registration' : 'pass an object literal with interpolate: false (the check cannot see through a variable)'
+        console.error(`PROMPT ${r.kind.toUpperCase()} NOT LITERAL at ${relative(root, f)}:${r.line}: ${fix}`)
+      }
+    }
+  }
+  if (registrations === 0) {
+    failures++
+    console.error('PROMPT SECTION SCAN FOUND NOTHING: the plugins register sections, so the scanner pattern has drifted')
+  }
+}
+
 if (failures > 0) {
   console.error(`\nCHECK FAILED: ${failures} problem(s)`)
   process.exit(1)
 }
-console.log('CHECK PASSED: syntax OK, no private references, no nested dirs, tool schemas DSL-valid, ps1 encodings safe')
+console.log('CHECK PASSED: syntax OK, no private references, no nested dirs, tool schemas DSL-valid, ps1 encodings safe, prompt sections literal')

@@ -65,6 +65,12 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
 
 ### Fixed
 
+- **Every agent turn failed once `dsh-postman` was loaded** with `malformed prompt variable
+  reference "{{变量}}" in section "plugin:postman"`. The DSH host renders each plugin's system-prompt
+  section as a template before every turn, and the postman guidance (since the workspace release)
+  mentioned its own double-brace placeholder syntax with a Chinese name, which the host rejects. All
+  nine plugin sections are now registered with `interpolate: false`, the postman guidance describes
+  the placeholder rule in words, and `npm run check` fails on a prompt registration without the flag.
 - **Sort view and table view show numbers as the API sent them.** Any number in a rate-named field
   used to be multiplied by 100, but many APIs already send percent units (`1.25` for +1.25%), which
   came out as `+125.00%`; timestamps in such fields turned into huge percentages too.

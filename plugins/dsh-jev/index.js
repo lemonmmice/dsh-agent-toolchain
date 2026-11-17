@@ -43,7 +43,7 @@ const tools = () => [
 export function apply(ctx) {
   ctx.effect(() => {
     const disposers = tools().map(tool => ctx.tools.register(tool))
-    const disposeSection = ctx.systemPrompt.section({ name: 'plugin:dsh-jev', order: SECTION_ORDER, text: GUIDANCE })
+    const disposeSection = ctx.systemPrompt.section({ name: 'plugin:dsh-jev', order: SECTION_ORDER, text: GUIDANCE, interpolate: false })
     return () => {
       for (const dispose of disposers) dispose()
       disposeSection()

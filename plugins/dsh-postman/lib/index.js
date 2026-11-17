@@ -60,7 +60,7 @@ const GUIDANCE =
   '能力：面板里选方法 / 填 URL / 加请求头 / 写 body，点发送后由宿主进程服务端发起请求（绕过浏览器 CORS），展示状态码 / 耗时 / 大小 / 响应头 / 响应体（自动美化 JSON）；' +
   '历史存本地 JSONL 库（history.jsonl，追加写入，上限 2000 条），点击可回填复用。' +
   '集合（可分文件夹）、多套环境、全局变量存在宿主侧 workspace.json（与面板共用）；请求可挂声明式断言（状态码 / JSON 路径 / 响应头 / 响应体 / 耗时）和变量提取（从响应 JSON 路径 / 响应头取值写回环境，用来串「登录拿 token → 调后面的接口」）；集合运行器按顺序批量跑并出通过/失败报告。' +
-  'agent 可用 http_request 工具直接发请求（url 必填；method 省略时按 GET，headers/body/timeoutMs 可选；URL/头/体里的 {{变量}} 用当前环境替换，environment 可指定环境），返回状态码 / 响应头 / 响应体，并同样计入面板历史；' +
+  'agent 可用 http_request 工具直接发请求（url 必填；method 省略时按 GET，headers/body/timeoutMs 可选；URL/头/体里用双花括号包住的变量名按当前环境替换，environment 可指定环境），返回状态码 / 响应头 / 响应体，并同样计入面板历史；' +
   '用 http_collection 读写集合与环境、跑集合（action=list/get/run/save/env）：改完代码要回归一组接口时 action=run。' +
   '限制：响应体保留上限 2MB（超出截断）；目标 URL 任意（本机开发调试工具），控制接口仅限本机回环。' +
   '面板 URL 用 ws:// 或 wss:// 开头会切到 WebSocket 客户端（浏览器直连：连接/断开、实时消息日志、发消息、可选子协议）；http_request 工具本身仅 HTTP/HTTPS；集合运行器只跑 HTTP(S)。' +
@@ -752,6 +752,8 @@ export function apply(ctx) {
     name: 'plugin:postman',
     order: SECTION_ORDER,
     text: GUIDANCE,
+    // 按字面量注入：宿主默认把双花括号当提示词变量解析，名字不合规会让整轮失败（见 scripts/check.mjs）
+    interpolate: false,
   })
   ctx.effect(
     () => () => {

@@ -265,7 +265,7 @@ export function apply(ctx) {
       const disposers = []
       for (const tool of tools(development, recommended)) disposers.push(ctx.tools.register(tool))
       const routeDisposers = makeRoutes().map((route) => ctx.webServer.register(route))
-      const disposeSection = ctx.systemPrompt.section({ name: 'plugin:dsh-build', order: SECTION_ORDER, text: GUIDANCE })
+      const disposeSection = ctx.systemPrompt.section({ name: 'plugin:dsh-build', order: SECTION_ORDER, text: GUIDANCE, interpolate: false })
       return () => {
         void development.close().catch(error => ctx.logger.warn(error.message))
         void recommended.close().catch(error => ctx.logger.warn(error.message))

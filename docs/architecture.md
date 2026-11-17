@@ -18,7 +18,11 @@ plugins/<name>/
 
 - **`index.js`** registers agent tools via `defineTool`, announces itself to the
   model via the `systemPrompt` injection (GUIDANCE), and mounts loopback-only
-  Web routes (`/api/dsh-<plugin>/*`) for the GUI panel.
+  Web routes (`/api/dsh-<plugin>/*`) for the GUI panel. The section is
+  registered with `interpolate: false`: the host otherwise renders it as a
+  template before every turn, and a double-brace group that is not a
+  registered lowercase prompt variable (say, a placeholder written in
+  Chinese) makes every agent turn fail, not just this plugin's tools.
 - **`lib/*.mjs`** contain framework-free logic (driver, parser, store) that runs
   without DSH — the seam that keeps plugins thin.
 - **`scripts/*.ps1`** do the actual Windows work (UIA via PowerShell,
@@ -75,10 +79,12 @@ Evidence/tool dirs default under `~/.dsh-agent-toolchain/`.
 
 ## Repo gate
 
-`scripts/check.mjs` (`npm run check`) blocks on six things: JS syntax errors,
+`scripts/check.mjs` (`npm run check`) blocks on seven things: JS syntax errors,
 forbidden environment-specific references (company identifiers, internal paths,
 personal scopes), nested `.git`/`node_modules` that would break the repo as a
 unit, tracked files under the local-only benchmark paths, tool schemas that
-`defineTool` would reject at plugin load, and `.ps1` files without a UTF-8 BOM.
+`defineTool` would reject at plugin load, `.ps1` files without a UTF-8 BOM, and
+system-prompt registrations that are not object literals with
+`interpolate: false`.
 The unit-test suite and CI workflow were removed on 2026-11-04, so this gate is
 currently the only automated check.

@@ -234,7 +234,7 @@ export function apply(ctx) {
       for (const tool of tools()) {
         disposers.push(ctx.tools.register(tool))
       }
-      const disposeSection = ctx.systemPrompt.section({ name: 'plugin:dsh-memory', order: SECTION_ORDER, text: GUIDANCE })
+      const disposeSection = ctx.systemPrompt.section({ name: 'plugin:dsh-memory', order: SECTION_ORDER, text: GUIDANCE, interpolate: false })
       return () => {
         for (const d of disposers) d()
         disposeSection()
