@@ -13,6 +13,9 @@ DSH Web GUI 插件：一个**类 Postman** 的接口调试面板。
 HTTP 调试入口拒绝调用 UI 运维审批、撤销和急停复位的写操作，并逐跳检查重定向。
 这只是工具入口防护；同账号 shell/文件访问仍须独立身份或 broker 才能形成严格授权边界。
 
+> 独立仓库 lemonmmice/dsh-postman 和 lemonmmice/dsh-api-visualizer 已归档，下面的方式 A、B 装到的是并入
+> [dsh-agent-toolchain](../../README.md) 之前的旧版本；当前版本按根 README 的 Install (details) 从本仓库部署。
+
 **方式 A：一键脚本**（安装 dsh-postman + dsh-api-visualizer 两个插件并自动注册）：
 
 ```powershell
@@ -25,7 +28,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 dsh plugin --profile web add github:lemonmmice/dsh-postman
 ```
 
-然后在 profile 的 `cordis.patch.yml`（如 `~/.dsh/profiles/web/cordis.patch.yml`）追加注册块：
+然后在 profile 的 `cordis.patch.yml`（如 `~/.dsh/profiles/web/cordis.patch.yml`）追加注册块。下面写的是当前版本的包名；方式 B 装到的是归档仓库里的旧版本，包名不同，`name` 要改成它 `package.json` 里的 `name`（也就是 `node_modules` 下实际的目录名）：
 
 ```yaml
 - insert:
@@ -34,8 +37,9 @@ dsh plugin --profile web add github:lemonmmice/dsh-postman
 ```
 
 说明：client.js 的加载要求插件是**可通过 node_modules 解析的包名**（`dsh.client` 声明 +
-`exports["./client"]`），所以放 `node_modules/@dsh-agent-toolchain/` 而非 `plugins/`，且必须是
-**实体目录而非 junction**。
+`exports["./client"]`）。方式 A、B 装到的旧版本用的是旧包名，目录也在旧包名下。从本仓库部署的
+当前版本包名是 `@dsh-agent-toolchain/dsh-postman`，注册时用这个名字，并让 `node_modules/@dsh-agent-toolchain/dsh-postman`
+能解析到插件：放实体目录，或建一个指向 `plugins/dsh-postman` 的 junction 都可以（Node 会穿透 junction 解析）。
 
 重启 DSH、刷新页面后侧边栏出现「接口调试」入口。
 

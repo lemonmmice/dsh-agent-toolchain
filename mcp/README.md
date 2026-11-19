@@ -54,9 +54,11 @@ The MCP transport and the evidence spine are cross-platform, but the tool set is
 
 | Tools | Scope |
 | --- | --- |
-| `http_request`, memory KV save/recall/forget | cross-platform (Node stdlib / HTTP only) |
+| `http_request`, `http_collection`, memory KV save/recall/forget | cross-platform (Node stdlib / HTTP only) |
 | `memory_index`, `memory_search`, `memory_status` | require the memory-store Node-API module built for the current platform/architecture; Windows x64 validated |
-| `capture_*` (and the internal evidence/verify engine's API checks) | require the capture-store Node-API module built for the current platform/architecture; Windows x64 validated, Linux/macOS builds supported by the build script but not yet validated |
+| `capture_query` / `capture_append` (and the internal evidence/verify engine's API checks) | require the capture-store Node-API module built for the current platform/architecture; Windows x64 validated, Linux/macOS builds supported by the build script but not yet validated |
+| `capture_start` / `capture_status` / `capture_stop` / `capture_rules` / `capture_netsim` | forward to the DSH host's `dsh-api-visualizer` routes on `127.0.0.1:3080`; need that host running with the plugin loaded (`capture_status` also reads the local capture store) |
+| `capture_intercept` | **Windows only** — edits the system hosts file and registers a SYSTEM scheduled task; also needs the DSH host |
 | `build_run` | cross-platform with `engine=dotnet` (SDK-style repos); the default `engine=msbuild` is Windows/VS only |
 | `ui_status` / `ui_windows` / `ui_state` / `ui_drive` / `ui_flow` / `ui_replay` | **Windows only** — they drive a Windows desktop client via PowerShell + UIA |
 | `perf_probe` / `perf_report` | **Windows only** — window-message latency sampling of the same client |
@@ -93,6 +95,8 @@ reconnect before newly registered tools appear.
 | `http_collection` | dsh-postman/lib/collection-tool.mjs | Collections / environments / collection runner shared with the API-debug panel (`workspace.json`) |
 | `memory_index` / `memory_search` / `memory_save` / `memory_recall` / `memory_status` | dsh-memory/lib/memory.mjs | Vector search + cross-session KV |
 | `capture_query` / `capture_append` | lib/capture-store.mjs | Query/append the API-capture store — caller attribution (ViewModel→API→call-chain) + runId spine |
+| `capture_start` / `capture_status` / `capture_stop` | DSH host routes (`/api/dsh-api-visualizer/capture/*`) | Live capture control; the engine runs in the DSH host, which needs `dsh-api-visualizer` loaded. `capture_status` also reads the local capture store for its double-write check |
+| `capture_rules` / `capture_intercept` / `capture_netsim` | dsh-api-visualizer/lib/intercept-control.mjs + DSH host routes | AutoResponder mock / rewrite rules, transparent interception and weak-network simulation; need the DSH host with `dsh-api-visualizer` loaded |
 | `jev_decide` | lib/jev-client.mjs | Optional remote typed decisions; advisory only, explicit remote-data opt-in |
 
 ## Configure (Claude Code)

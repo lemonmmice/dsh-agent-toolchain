@@ -60,7 +60,7 @@ DSH 需要增加的主要是编排和候选生命周期；现有验证器、失�
 
 1. 需要可启动独立会话、注入候选 Harness、控制输出目录并返回产物的执行适配器。现有工具队列只调度工具，不等同于完整 Agent 调度。
 2. 需要按任务采集、脱敏和关联的执行证据视图。不能简单开启全量参数/输出日志来填补轨迹缺口。
-3. 需要冻结验收契约、管理候选资格和经验晋升的控制层。目前 `verify_report` 核验的是传入的 claims，不替调用方保证 claims 覆盖整个任务。
+3. 需要冻结验收契约、管理候选资格和经验晋升的控制层。目前 `verify_report` 核验的是传入的 claims，不替调用方保证 claims 覆盖整个任务。（2026-11-04 起 `verify_report` 不再是 agent 可调用的工具，这部分核验作为内部引擎 `lib/verify` 保留，Harness² 直接调用它。）
 
 现有 bench 启动器包含跳过权限的参数，超时路径还使用按进程名结束进程的方式。其评测结构可参考，启动与清理代码不能原样用于共享桌面宿主。新执行器必须绑定本次进程身份并遵守宿主授权。
 
@@ -74,7 +74,7 @@ DSH Harness 核心
   任务快照 → 候选校验 → 隔离试跑 → 验证与比较 → 经验记录
         │                    │                  │
         ▼                    ▼                  ▼
-现有任务服务           verify_report       独立经验工件
+现有任务服务           lib/verify 引擎     独立经验工件
 与执行适配器           与 evidence bundle   + memory 索引
 ```
 
@@ -146,7 +146,7 @@ proposed 可以供改进器参考，但必须连同不确定性呈现；validate
 
 这条偏好已落为可编辑面的具名预设：`editableSurface: "guidance"` 展开为 `skills/**`、`tool-guidance/**`、`guidance/**`、`AGENTS.md`、`helpers/**` 等组件路径（见 `lib/harness/core.mjs` 的 `EDITABLE_SURFACE_PRESETS`）。该面随阶段输入下发给改进器（`.harness-stage-input.json` 的 `editableSurface` 字段），并在改进器提示中声明"只改该组件面、优先小改 Skill/工具指导、常驻文本从短、绝不写交付物"。它是**可选**的：不设则维持原无限制行为；设错的预设名在试验创建前即以明确错误拒绝。越界或触碰交付物/校验目标仍由可编辑面 allowlist 与 protected-path 守卫双重拦下（候选不能靠预置产物骗过冻结裁决）。仍只写试验目录内 overlay，不动已安装 Skills 或宿主配置。
 
-触发与领域归档（soft，AI 发起，非 hook）：收尾 skill `dsh-closing-verdict` 约定——当 `failure_stats.topRecurring` 中某**行为类**失败（`agent-misjudge` 等，排除 `tool-error` 基建抖动）`occurrences ≥ 3`，由 agent 自发起一次 guidance-surface 的 `harness_trial` 去沉淀预防性 skill，不等人工开口。问题领域按发现路径推断（`hang_*`→`thread-hang`、`perf_*`→`perf`、`capture_*`→`api`、`build_*`→`build`、`ui_*`→`ui`、无诊断路径的逻辑误判→`logic`）填入 `scope.taskType`，使沉淀物按领域归档、按领域召回。失败库的固定失败-模式 taxonomy（7 类）**不**承载领域轴——领域分类落在经验层的 `scope.taskType`。`proposed → validated` 仍须 `harness_experience validate` 的独立证据，不随触发自动跨；真正硬自动点火（hook/cron）暂不做，待收益评测。
+触发与领域归档（soft，AI 发起，非 hook）：原设计由收尾 skill `dsh-closing-verdict` 约定——当 `failure_stats.topRecurring` 中某**行为类**失败（`agent-misjudge` 等，排除 `tool-error` 基建抖动）`occurrences ≥ 3`，由 agent 自发起一次 guidance-surface 的 `harness_trial` 去沉淀预防性 skill，不等人工开口。这个 skill 和 `failure_stats` 工具已于 2026-11-04（d8c3111）下线，现在没有自动发起的入口，要由调用方手动发起 `harness_trial`。问题领域按发现路径推断（`hang_*`→`thread-hang`、`perf_*`→`perf`、`capture_*`→`api`、`build_*`→`build`、`ui_*`→`ui`、无诊断路径的逻辑误判→`logic`）填入 `scope.taskType`，使沉淀物按领域归档、按领域召回。失败库的固定失败-模式 taxonomy（7 类）**不**承载领域轴——领域分类落在经验层的 `scope.taskType`。`proposed → validated` 仍须 `harness_experience validate` 的独立证据，不随触发自动跨；真正硬自动点火（hook/cron）暂不做，待收益评测。
 
 ### 两层经验模型与 learned-guardrails 只读桥
 
@@ -159,7 +159,7 @@ proposed 可以供改进器参考，但必须连同不确定性呈现；validate
 
 **只读桥**（`lib/harness/prior-art.mjs`）：`config.priorArtPath` 指向 learned-guardrails 时，`harness_trial` 按 `scope.taskType` 领域路由，把相关人确认教训当**只读先验**经 `stageInput.priorArt` 下发改进器——让候选在用户真知识上改，而非从零编。约束：
 
-- **方向只读、绝不回写。** learned-guardrails 是用户的权威 `.codex` 技能文件；§6 的"不自动改已装 Skills/宿主配置"在此照旧。机器验证出一条可复现教训后，收尾 skill **提议**一条 learned-guardrails 条目请用户手动贴，harness 不自动写入。
+- **方向只读、绝不回写。** learned-guardrails 是用户的权威 `.codex` 技能文件；§6 的"不自动改已装 Skills/宿主配置"在此照旧。机器验证出一条可复现教训后，由调用方**提议**一条 learned-guardrails 条目请用户手动贴（原由收尾 skill 提议，该 skill 已下线），harness 不自动写入。
 - **先验绝不冒充经验。** prior art 走独立 `priorArt` 字段、明标"非机器验证"，**不**经 `propose()` 进经验库——经验库结构上就拒绝无机器 trial 的记录（`candidateSnapshot` 要求 adopt、`validateSupport` 要求 ≥2 机器任务），这条防作弊脊梁保持不动。
 - **最佳努力、默认关、脱敏。** 不设 `priorArtPath` 则 `priorArt` 为空、零行为变化；文件缺失/超限不抛错；含凭证的条目整条丢弃（`findSensitive`），有大小/条数上限。
 
@@ -167,10 +167,10 @@ proposed 可以供改进器参考，但必须连同不确定性呈现；validate
 
 ### 全自动闭环与自动 apply（`lib/harness/apply.mjs`）
 
-机器验证**本身就是免人工生效的入场券**（harness² 命题）：一条教训在冻结 gate 下、≥2 个独立复现上验证通过（`validated`），即挣得无需人确认直接生效的资格。闭环全程无人：
+机器验证**本身就是免人工生效的入场券**（harness² 命题）：一条教训在冻结 gate 下、≥2 个独立复现上验证通过（`validated`），即挣得无需人确认直接生效的资格。闭环原设计为全程无人；收尾 skill 下线后，起点的检测与触发要人工完成：
 
 ```
-检测复发(failure_stats) → 触发 trial(收尾自发起) → 复现成 gate → 提候选 → 机器验证
+检测复发(人工；failure_stats 已下线) → 手动发起 trial → 复现成 gate → 提候选 → 机器验证
 → validated(≥2 独立任务) → 自动 apply 到项目按需 skill
 ```
 

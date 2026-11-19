@@ -41,7 +41,11 @@ node scripts/deploy-plugins.mjs --only dsh-api-visualizer --profile <profile目�
 构建需要 Rust 与平台链接工具（Windows 为 Visual C++ build tools）。部署时须包含
 插件的 `bin/<平台>-<架构>/capture-store.node` 与仓库共享 `lib/`；运行端无需 Rust。
 宿主和 MCP 使用同一套存储格式，升级后应重启两者。下列独立仓库安装方式适用于
-其各自发布版本，不负责构建本 monorepo 的原生模块。
+其各自发布版本，不负责构建本 monorepo 的原生模块。这两个独立仓库（lemonmmice/dsh-api-visualizer、
+lemonmmice/dsh-postman）已归档，装到的是并入本仓库之前的旧版本。要用当前版本，按上面的方式从本仓库部署，再在 profile 的
+`cordis.patch.yml` 用包名 `@dsh-agent-toolchain/dsh-api-visualizer` 注册，并让
+`node_modules/@dsh-agent-toolchain/dsh-api-visualizer` 指向 `plugins/dsh-api-visualizer`（实体目录或 junction
+都可以），详见根 README 的 Install (details)。
 
 现有 JSONL 无需转换。`DSH_CAPTURE_STORE_NATIVE` 可覆盖原生模块路径；默认按插件目录定位。
 共享锁只协调采用新存储层的写入者。验证、性能与冷加载取舍见
@@ -49,7 +53,7 @@ node scripts/deploy-plugins.mjs --only dsh-api-visualizer --profile <profile目�
 
 前提：已安装 DSH（`dsh` 命令可用），PowerShell 5+。
 
-**方式 A：一键脚本**（推荐；自动下载两个插件、解压进 profile 并写入注册，装完重启 DSH）：
+**方式 A：一键脚本**（装归档仓库里的旧版本；自动下载两个插件、解压进 profile 并写入注册，装完重启 DSH）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/lemonmmice/dsh-api-visualizer/main/scripts/install.ps1 | iex"
@@ -62,7 +66,7 @@ dsh plugin --profile web add github:lemonmmice/dsh-api-visualizer
 dsh plugin --profile web add github:lemonmmice/dsh-postman
 ```
 
-然后在 profile 的 `cordis.patch.yml`（如 `~/.dsh/profiles/web/cordis.patch.yml`）追加注册块：
+然后在 profile 的 `cordis.patch.yml`（如 `~/.dsh/profiles/web/cordis.patch.yml`）追加注册块。下面写的是当前版本的包名；方式 B 装到的是归档仓库里的旧版本，包名不同，`name` 要改成它 `package.json` 里的 `name`（也就是 `node_modules` 下实际的目录名）：
 
 ```yaml
 - insert:

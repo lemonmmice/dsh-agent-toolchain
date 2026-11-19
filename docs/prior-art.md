@@ -19,14 +19,15 @@ example of the thing it advocates.
   time: accepted and fixed, or rebutted with evidence. The reviewer may not be agreed with — several
   rounds end with two accepted findings and two rebuttals.
 - **Every accepted finding is pinned as a guard in code**, not as a paragraph. That is why dozens of
-  files name the round and the finding (`Codex r30`, `Codex r37`, `@codex r54`, `Codex 第十二轮` …):
+  files name the round and the finding (`Codex r30`, `Codex r37`, `Codex r54`, `Codex 第十二轮` …):
   a review conclusion that is not executable decays immediately.
 - **Review results are adjudicated, not asserted.** The review outcome itself was run through the
   same claims-vs-evidence machinery this repository ships (the `lib/verify` engine): see the local
   verification records `review-round-20260911`, `codex-review-20260911`, `w2-codex-claim-audit-20260911`.
 - **The failure corpus records who found what.** `docs/failure-corpus.md` defines the taxonomy that
-  stores these outcomes, including the one class a machine can catch on its own: `agent-misjudge`
-  ("the agent claimed success, the evidence disagreed").
+  stores these outcomes, including `agent-misjudge` ("the agent claimed success, the evidence
+  disagreed"). The verify engine used to record that class on its own; since `verify_report` was
+  removed on 2026-11-04, nothing records it automatically.
 
 **Where the review reports live:** the reports themselves were working documents kept **outside this
 repository** on purpose (they quote local paths and are not written for publication). The record that
@@ -50,7 +51,7 @@ code-provenance audit.
 | Codex area (upstream path) | What it does upstream | What this repository took | Where it landed here |
 | --- | --- | --- | --- |
 | `core/src/tools/call_trace.rs` | a trace milestone per direct / code-mode tool call: **identifiers and names only, never arguments or output** | the same discipline, from the same motive (a trace that cannot leak a payload) | `lib/tool-trace.mjs`, wired at `mcp/server.mjs:63` |
-| `tools/src/tool_spec.rs`, `core/src/tools/handlers/*_spec.rs`, `core-plugins/src/tool_suggest_metadata.rs` | a tool described **once, as data** — spec, schema and suggestion metadata — instead of hand-wired per surface | one shared metadata registry per tool, with both surfaces generated from it so they cannot drift | `lib/tool-registry.mjs` (64 tools) |
+| `tools/src/tool_spec.rs`, `core/src/tools/handlers/*_spec.rs`, `core-plugins/src/tool_suggest_metadata.rs` | a tool described **once, as data** — spec, schema and suggestion metadata — instead of hand-wired per surface | one shared metadata registry per tool, with both surfaces generated from it so they cannot drift | `lib/tool-registry.mjs` (68 tools) |
 | `core/src/tools/code_mode/execute_spec.rs` + `wait_spec.rs` | separate "start long work" from "wait for it", so a caller holds a handle instead of blocking | the yield-or-handle execution shape for long builds | `plugins/dsh-build/lib/builder.mjs:773`, `build_run` `background` |
 | `core/src/tools/handlers/view_image_spec.rs` (+ `features/src/lib.rs`) | an image returns as an **image content block**, not as a path the model must then go and read | the same shape: append an MCP image block on top of the existing text result | `mcp/inline-image.mjs` |
 | `core/src/guardian/*` — `approval_request`, `coverage`, `decision`, `input_budget`, `request_budget`, `prompt`, `review`, `review_session*`, `reviewer_config` | the approval layer: **policy is chosen elsewhere, core enforces permissions**; every approval keeps its issuing context and its cancellation; coverage, risk level and input/request budgets bound the reviewer | the whole write-side gate design: explicit `allowSideEffects=true` for anything that clicks or types, an operational kill switch above every action, a deny-first policy table, and a freshness gate that rejects actions aimed at a stale UI | `plugins/dsh-ui-drive/lib/evidence.mjs`, the policy/estop implementation, `docs/ui-drive-safety-boundary.md` |
@@ -129,7 +130,7 @@ than ranking them.
 Honest inventory, because a citation to a file that cannot be produced is worse than no citation.
 
 - **In this repository:** the *findings* are here — as code comments naming the round
-  (`Codex r30`, `Codex r37`, `@codex r54`, `Codex 第十二轮`), as assertions pinned in code, and as
+  (`Codex r30`, `Codex r37`, `Codex r54`, `Codex 第十二轮`), as assertions pinned in code, and as
   the numbered fix list in `plugins/dsh-ui-drive/README.md`.
 - **Not in this repository, by design:** the raw review reports. They were written as local working
   documents.
@@ -230,7 +231,7 @@ Legend: **✔ borrowed** (see the table above) · **◐ partly** · **○ read, 
 | `handlers/apply_patch_spec.rs` | The patch-application tool's definition. | ○ |
 | `handlers/plan_spec.rs` | The planning tool. | ○ |
 | `handlers/request_user_input_spec.rs` | The tool that asks the human a question. | ◐ (human handoffs exist here as a failure-corpus class rather than a tool) |
-| `handlers/tool_search_spec.rs` | Tool discovery / deferred loading — needed when a tool set is large enough that the definition itself is the context cost. | ○ — explicitly on the "do not copy" list; this tool set is 64 tools shown in full |
+| `handlers/tool_search_spec.rs` | Tool discovery / deferred loading — needed when a tool set is large enough that the definition itself is the context cost. | ○ — explicitly on the "do not copy" list; this tool set is 68 tools shown in full |
 | `handlers/mcp_resource_spec.rs` | Reads MCP resources. | ○ |
 | `handlers/multi_agents_spec.rs` | Sub-agent spawning and messaging. | ○ |
 | `handlers/get_context_remaining_spec.rs` | Reports the remaining context budget. | ○ |

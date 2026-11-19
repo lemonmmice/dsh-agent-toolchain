@@ -57,11 +57,14 @@ have to volunteer (and usually won't):
 
 | Signal | Tool | Auto-recorded class |
 | --- | --- | --- |
-| build code errors > 0 | `build_run` (MCP + DSH) | `verification-failure` |
-| ui_flow assertion failures | `ui_flow` (DSH) | `verification-failure` |
-| ui_drive step failed | `ui_drive` (MCP) | `tool-error` |
+| build code errors > 0 (MCP also: the build did not run) | `build_run` (MCP + DSH) | `verification-failure` |
+| ui_flow assertion or action-step failures | `ui_flow` (MCP + DSH) | `verification-failure` |
+| UI stalls over the threshold | `perf_probe` (MCP) | `verification-failure` |
+| ui_drive / ui_act step failed | `ui_drive`, `ui_act` (MCP) | `tool-error` |
+| ui_jev run failed | `ui_jev` (MCP) | `tool-error` |
+| hang analysis failed | `hang_analyze` (MCP) | `tool-error` |
 | request could not be made | `http_request` (MCP) | `tool-error` |
-| claim contradicted by evidence (adjudicated from build / api / file checks) | the verify engine (`lib/verify/report.mjs`, internal) | `agent-misjudge` |
+| claim contradicted by evidence (adjudicated from build / api / file checks) | the verify engine (`lib/verify/report.mjs`, internal) | `agent-misjudge`, unless the caller opts out (`recordFailures` defaults to true); both remaining callers (Harness²) pass `recordFailures: false`, so nothing writes this class automatically since `verify_report` was removed |
 
 Auto records carry the tags `auto` + the tool name. The `human-handoff` class,
 and context the tools don't know, are what manual recording was reserved for —
@@ -93,8 +96,8 @@ Host deployments record toolchain version, twelve-character commit SHA and dirty
 an unrelated profile's package version is never treated as the toolchain version.
 
 The corpus is **internal** now — there is no agent-callable record/query/stats tool on either the
-MCP or the DSH face. The runtime writes records itself (the auto-record mechanism in
-`mcp/server.mjs`, see above) and the Harness² feature reads them through the engine. Code that needs
+MCP or the DSH face. The runtime writes records itself (the auto-record calls in
+`mcp/server.mjs` and in the `dsh-build` / `dsh-ui-drive` plugins, see above). Code that needs
 to record, query or aggregate uses the module directly:
 
 ```js

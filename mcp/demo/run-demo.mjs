@@ -3,16 +3,17 @@
  *
  * This is not demo-only code: it is a plain MCP client. It spawns
  * `mcp/server.mjs` over stdio and calls the same tools any MCP client
- * (Claude Code, Cursor, Cline, ...) would call — build → launch → drive → read
- * → adjudicate. If this script works, the MCP face works.
+ * (Claude Code, Cursor, Cline, ...) would call — build → launch → drive → read.
+ * If this script works, the MCP face works.
  *
  * Usage:
- *   node mcp/demo/run-demo.mjs                # build → drive → read → verify
+ *   node mcp/demo/run-demo.mjs                # build → launch → drive → read
  *   node mcp/demo/run-demo.mjs --with-perf    # + catch the deliberate UI freeze
  *   node mcp/demo/run-demo.mjs --keep-open    # leave the sample window open
  *
- * Everything it writes lands under .dsh-agent-toolchain/demo/ (gitignored), so a
- * demo run never pollutes the repo tree or the real failure corpus.
+ * Apart from the sample's own build output (samples/DemoClient/bin/ and obj/,
+ * gitignored), everything it writes lands under .dsh-agent-toolchain/demo/
+ * (gitignored), so a demo run never touches tracked files or the real failure corpus.
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
@@ -163,20 +164,18 @@ try {
     (p) => p === null || p.ok !== false,
   )
   await sleep(300)
-  const read = await step(
+  await step(
     'read the result back out of the UI',
     'ui_observe',
     { action: 'read', match: 'Hello|Result|toolchain' },
     (_p, raw) => /Hello,\s*toolchain/i.test(raw),
   )
-  const readBackOk = /Hello,\s*toolchain/i.test(read.raw)
-  const shot = await step(
+  await step(
     'capture a screenshot as evidence',
     'ui_observe',
     { action: 'shot', label: 'after-greet' },
     (_p, raw) => /\.png/i.test(raw),
   )
-  const shotPath = shot.parsed && typeof shot.parsed.path === 'string' ? shot.parsed.path : null
 
   if (withPerf) {
     log('')
@@ -212,12 +211,10 @@ try {
     log(`  ${caught ? 'ok  ' : 'FAIL'} perf_probe catches the 1500 ms freeze (${field || 'no counter field found'}=${stutters})`)
   }
 
-  log('')
-
   const failed = results.filter((r) => !r.ok)
   log('')
   log(`steps: ${results.length - failed.length}/${results.length} ok`)
-  exitCode = failed.length === 0 && verdictValue === 'pass' ? 0 : 1
+  exitCode = failed.length === 0 ? 0 : 1
 } catch (e) {
   log('')
   log('demo aborted: ' + (e && e.message ? e.message : String(e)))

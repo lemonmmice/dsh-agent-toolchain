@@ -1,14 +1,15 @@
 # Every tool, at a glance
 
-64 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
+68 tools, all generated from [`lib/tool-registry.mjs`](../lib/tool-registry.mjs) so the DSH plugin
 face and the MCP face cannot drift apart. `Read` = the registry marks it read-only (safe to call with
 no permission); `Write` = it can change something — a file, a process, a client window, a running
 capture — and therefore carries the gate described in
 [docs/ui-drive-safety-boundary.md](./ui-drive-safety-boundary.md) (UI actions additionally require
 `allowSideEffects=true`).
 
-> Two faces, one registry: on the MCP face the `capture_*` family is named identically, and every
-> other name matches. Parity is enforced by the shared registry, not by discipline.
+> Two faces, one registry: the `capture_*` family is named `api_capture_*` on the DSH face (the eight
+> aliases in [`lib/tool-aliases.mjs`](../lib/tool-aliases.mjs)); every other name matches. Parity is
+> enforced by the shared registry, not by discipline.
 
 ## Orientation — start here
 
@@ -43,10 +44,10 @@ capture — and therefore carries the gate described in
 
 | Tool | | What it does |
 | --- | --- | --- |
-| `build_run` | Write | Runs MSBuild or `dotnet build` and returns structured errors (`file/line/col/code/message`). Incremental by default; `Rebuild` for the final verdict; can run in the background. |
+| `build_run` | Write | Runs MSBuild or `dotnet build` and returns structured errors (`file/line/col/code/message`). Incremental by default; `Rebuild` for a clean full build; can run in the background. |
 | `build_status` | Read | Last build result: target, duration, error count, log path. |
 | `build_errors` | Read | Re-parses errors/warnings out of the **last** build log — and says so, because "last" is not necessarily "yours" when several agents share a machine. |
-| `build_compile_check` | Read | Whether one source file is actually **in the compilation set**. Legacy projects do not auto-include new files, so "0 errors" can coexist with "your file was never compiled". Three states: in, provably not, or **cannot be read**. |
+| `build_compile_check` | Read | Whether one source file is actually **in the compilation set**. Legacy projects do not auto-include new files, so "0 errors" can coexist with "your file was never compiled". Three states: in, not in, or **cannot tell** (unevaluated conditions, missing or ambiguous inputs). It reads the project files statically; it is not an MSBuild evaluation. |
 
 ## UI — observe (read-only)
 
@@ -105,6 +106,9 @@ capture — and therefore carries the gate described in
 | `capture_stop` | Write | Stops capture (and says that subsequent queries return history, not live traffic). |
 | `capture_query` | Read | Queries the capture store: method, host, status, duration, size, body, caller attribution, errors, time range. |
 | `capture_append` | Write | Appends records to the store (used when importing traffic from an external tool). |
+| `capture_rules` | Write | AutoResponder rules for traffic that passes through the local proxy or transparent interception: one-step mocks (`{}`, `[]`, emptied lists, the last real response, 500, 404, slow, timeout, reset, a custom body), Map Local / Map Remote and scripted rewrites, list / get / enable / disable / remove / clear, and rule-file export / import. A mock's result says whether its URL can be reached right now. |
+| `capture_intercept` | Write | Transparent interception for clients that ignore proxy settings: `start` points the chosen domains at a loopback address in the system hosts file (directly when the host is elevated, otherwise through a UAC prompt) and forwards to the real servers, so rules and latency apply; a SYSTEM scheduled task removes the block on reboot or when the listener is gone. `stop` restores hosts first, then drains open connections. Windows only. |
+| `capture_netsim` | Write | Global latency and weak-network simulation for traffic through the plugin: request and response delay, jitter, up/down bandwidth limits, presets (`modem`, `2g`, `3g`, `weak-4g`, `high-latency`, `slow-api`), optional host or URL filter. Values persist; the switch resets to off when the host restarts. |
 | `http_request` | Write | Sends an HTTP request from the host (no browser CORS) and returns status, headers, body and duration. `{{variables}}` in the URL, headers and body are filled from the API-debug panel's active environment (or `environment`); unknown names are sent unchanged and listed. |
 | `http_collection` | Write | The API-debug panel's collections, environments and collection runner: `list` / `get` saved requests, `save` a request with declarative assertions and variable extraction, read or write an environment (`env`), and `run` a collection, folder or request with iterations and data rows. Per-request assertion results come back; only `outcome=pass` means everything passed. |
 
@@ -135,8 +139,10 @@ and embedding identity for newly indexed chunks.
 **Reading the `Write` column correctly:** it is the registry's own classification, not a severity
 scale. `perf_hotstacks` and `hang_analyze` are marked `Write` because they *produce files* (a report,
 a cached analysis), not because they touch your client. The tools that actually change the world are
-the `ui_act`-family, `perf_clean` / `hang_delete` and `dev_edit` — and those are the ones with an
-explicit gate (`allowSideEffects`, `confirm`, `allowWrite` plus the hash of the file that was read).
+the destructive ones listed under Approval hints below. Of those, the `ui_act`-family, `perf_clean` /
+`hang_delete` and `dev_edit` carry an explicit gate (`allowSideEffects`, `confirm`, `allowWrite` plus the
+hash of the file that was read). The others, `capture_rules` and `capture_intercept` among them, have no
+gate parameter; `capture_intercept` additionally needs a UAC prompt when the host is not elevated.
 
 ## Approval hints (MCP annotations)
 
@@ -151,15 +157,19 @@ graph looked exactly as dangerous as deleting every evidence pack.
 - **No approval needed** (local, additive — new evidence or append-only records): `ui_live`, `perf_probe`,
   `perf_dump`, `perf_trace`, `perf_hotstacks`, `perf_flame`, `perf_allocflame`, `perf_clrevents`,
   `perf_uifreeze`, `perf_breakdown`, `hang_run`, `hang_stop`, `hang_analyze`, `capture_start`,
-  `capture_stop`, `capture_append`, `memory_save`, `dev_csharp`, `dev_vision_diff`.
+  `capture_stop`, `capture_append`, `capture_netsim` (only slows traffic through the plugin; it resets to
+  off when the host restarts), `memory_save`, `dev_csharp`, `dev_vision_diff`.
 - **Approval** — destructive: `build_run` (`killClient`), `ui_launch` (`force`), the `ui_act` family
   (`ui_act`, `ui_drive`, `ui_flow`, `ui_replay`, `ui_jev`: real clicks/typing; also open-world),
   `perf_clean`, `hang_delete`, `memory_forget`, `dev_edit`, `toolchain_job` (cancellation),
   `harness_experience` (validate/retire), `harness_trial` (runs an executor; also open-world), and
-  `http_request` (any method; also open-world), and `http_collection` (`run` sends saved requests; also open-world).
+  `http_request` (any method; also open-world), `http_collection` (`run` sends saved requests; also
+  open-world), `capture_rules` (changes what the client receives) and `capture_intercept` (edits the
+  system hosts file and registers a SYSTEM scheduled task).
 - **Approval** — open-world only: `memory_index` (chunks leave the machine when a remote embedding backend
   is configured), `jev_decide` (remote data when `allowRemoteData=true`), and `dev_docs_search` /
   `dev_docs_read` / `dev_plugin_check` (the query or package lookup leaves the machine).
 
 These are hints, not authorisation: `allowSideEffects`, `confirm`, the kill switch and the policy table
-still gate every action exactly as before. The classification lives in `lib/tool-registry.mjs`, which encodes the upstream approval rule so a new tool is never left unclassified and a dangerous one is never auto-approved.
+still gate exactly the actions they gated before. For destructive tools without a gate parameter, such as
+`capture_rules` and `capture_intercept`, the hint is what makes an MCP client ask first. The classification lives in `lib/tool-registry.mjs`, which encodes the upstream approval rule so a new tool is never left unclassified and a dangerous one is never auto-approved.

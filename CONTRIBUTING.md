@@ -35,7 +35,9 @@ CPU/allocation CSV folding uses `npm run build:trace-fold`.
    - private-reference rules in `scripts/lib/private-references.mjs` retain lowercase SHA-256
      fingerprints and lengths, not the private terms; scanning is case-insensitive and includes
      substrings in identifiers, paths and Unicode words.
-3. **Run the repo gate** — `npm run check` (syntax, forbidden references, tool schemas, PowerShell BOM).
+3. **Run the repo gate** — `npm run check` (syntax, forbidden references, no nested `.git` / `node_modules`,
+   local-only benchmark paths untracked, tool schemas, PowerShell BOM, plugin prompt sections registered
+   with `interpolate: false`).
    There is no unit-test suite at the moment, so say in the PR how you verified a behavioral change.
 4. **Update the plugin README** — env vars table, tool description, behavioral change notes.
 

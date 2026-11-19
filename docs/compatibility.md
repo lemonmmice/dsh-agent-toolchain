@@ -53,6 +53,16 @@ Not re-verified as a whole since 0.2.0. What changed against the rows above:
 - The optional Rust MCP runtime (`npm run build:runtime`) is new since 0.2.0; its validation
   record is [native-runtime-validation.md](./native-runtime-validation.md).
 
+## Unreleased (main, after 0.3.0)
+
+Not verified as a whole. What changed against 0.3.0:
+
+- 68 tools are registered; the new ones are `capture_rules`, `capture_intercept`, `capture_netsim`
+  and `http_collection`.
+- `capture_intercept` is Windows-only. On the MCP face, `capture_intercept`, `capture_rules`,
+  `capture_netsim` and the `capture_start` / `capture_status` / `capture_stop` controls forward to
+  the DSH host at `127.0.0.1:3080`, which must be running with `dsh-api-visualizer` loaded.
+
 ## Versioning policy
 
 - Monorepo tags follow SemVer (`vX.Y.Z`); all plugins ship at the tag version.

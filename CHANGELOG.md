@@ -78,6 +78,9 @@ Compatibility: see [docs/compatibility.md](./docs/compatibility.md).
   deploy. The 2026-11-04 cleanup removed the test-copy list but left the loop that deleted those
   copies, so the script crashed after copying the shared `lib/` and before writing the deploy stamp.
   The loop is gone; deploying never deletes files from the profile.
+- `npm run demo` exited with code 1 even when every step passed (`verdictValue is not defined`): the
+  2026-11-04 removal of `verify_report` left the final exit check reading the deleted verdict. The exit
+  code now follows the steps alone.
 
 ## [0.3.0] — 2026-11-11
 

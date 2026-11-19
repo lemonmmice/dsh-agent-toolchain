@@ -53,6 +53,11 @@
   the `failure_*` tools, the Stop hook and the closing-verdict skill) and the
   test/CI scaffolding. The verify engine and the failure corpus stay as
   internal pieces.
+- Fiddler-style capture (2026-11-16, after 0.3.0) — transparent interception for
+  clients that ignore proxy settings, AutoResponder mock / rewrite rules,
+  weak-network presets, saved filters and per-client capture stores
+- API-debug workspace on the host (2026-11-16, after 0.3.0) — environments,
+  variables, assertions, extraction and a collection runner (`http_collection`)
 
 ## Now
 
@@ -86,7 +91,7 @@
    spawn processes / click / install CA / change proxy / network), audit log,
    token redaction, retention limits, proxy failure recovery. Partly in place:
    MCP approval annotations, optional control-level UI deny policies, the kill
-   switch.
+   switch, and the hosts-file safety net of `capture_intercept`.
 
 ## Year 2 — evaluation and the data flywheel
 

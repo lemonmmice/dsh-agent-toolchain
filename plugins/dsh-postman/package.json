@@ -1,6 +1,6 @@
 {
   "name": "@dsh-agent-toolchain/dsh-postman",
-  "description": "Postman-style HTTP client for the dsh web GUI: a sidebar entry plus a panel to compose method / url / headers / body and send. The request runs on the host (server-side, so no browser CORS), and status / headers / body / timing come back with pretty-printed JSON and a request history. Also exposes an http_request agent tool. No dsh source changes.",
+  "description": "Postman-style HTTP client for the dsh web GUI: a sidebar entry plus a panel to compose method / url / headers / body and send. The request runs on the host (server-side, so no browser CORS), and status / headers / body / timing come back with pretty-printed JSON and a request history. Collections, environments and variables live in a host-side workspace.json, with declarative assertions, variable extraction and a collection runner. Also exposes the http_request and http_collection agent tools. No dsh source changes.",
   "version": "0.3.0",
   "type": "module",
   "main": "lib/index.js",

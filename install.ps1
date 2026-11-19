@@ -81,9 +81,9 @@ Write-Host '  (needs Rust + MSVC build tools; skip any whose plugin you do not u
 
 # --- next steps -------------------------------------------------------------
 Write-Head 'next'
-Write-Host '  1. register the plugins in the profile cordis.patch.yml (see README "Install")'
+Write-Host '  1. register the plugins in the profile cordis.patch.yml (see README "Install (details)")'
 Write-Host '  2. restart the DSH host'
-Write-Host '  3. npm run demo        # build -> drive a real window -> read it -> verdict'
+Write-Host '  3. npm run demo        # build -> drive a real window -> read it back'
 Write-Host '  4. ask the agent for toolchain_status to see what is configured'
 
 if ($deployExit -ne 0) {
