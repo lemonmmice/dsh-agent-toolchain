@@ -48,6 +48,19 @@ lemonmmice/dsh-postman）已归档，装到的是并入本仓库之前的旧版�
 都可以），详见根 README 的 Install (details)。
 
 现有 JSONL 无需转换。`DSH_CAPTURE_STORE_NATIVE` 可覆盖原生模块路径；默认按插件目录定位。
+
+## 安装（插件市场 / 免构建）
+
+发布版已把共享 `lib/` 模块 vendor 进包内（打包期自动收集 + 路径重写，无需 junction 邻居），
+在 dsh 0.2.1-rc.2 冒烟宿主（独立 profile + tgz 安装）实测路由与工具注册正常：
+
+```
+dsh plugin --profile web add https://github.com/lemonmmice/dsh-agent-toolchain/releases/download/dsh-api-visualizer-v0.3.1/dsh-api-visualizer-0.3.1.tgz
+```
+
+重新打包：`node scripts/pack-dsh-plugins.mjs`（脚本做三件事：staging 复制、共享模块闭包
+收集与路径重写、用 node 真实 import 校验静态导入图后再 npm pack）。源码文件不被修改，
+发布的 tgz 内容始终等价于提交后的仓库代码 + 预编译原生模块。
 共享锁只协调采用新存储层的写入者。验证、性能与冷加载取舍见
 [迁移报告](../../docs/capture-store-rust.md)。
 
