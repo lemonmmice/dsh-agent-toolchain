@@ -5,6 +5,8 @@ description: 用 dsh 抓包核对桌面客户端实际发出的接口：capture_
 
 # 抓包核对接口
 
+独立安装包使用本机伴随服务（返回 `backend=standalone`），无需 DeepSeek Harness；旧部署使用 DSH 后端。两种方式都通过这些工具控制，避免另外创建日志读取器导致重复记录。
+
 1. `capture_status`：引擎在不在跑、trace 日志多大、调用方归因是否可用。
 2. 要看"正在发生的"请求：`capture_start`（不要手搓 POST）。结果里有 `warnings` 说日志不存在时，先解决日志，再谈抓包。
 3. 让用户复现，或用 UI 工具复现操作。

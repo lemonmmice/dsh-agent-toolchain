@@ -5,6 +5,10 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
+  "dependencies": {
+    "node-forge": "^1.3.1",
+    "smol-toml": "^1.4.2"
+  },
   "scripts": {
     "build:runtime": "node scripts/build-runtime.mjs",
     "build:trace-fold": "node scripts/build-trace-fold.mjs",
@@ -21,6 +25,8 @@
     "demo:build": "dotnet build samples/DemoClient/DemoClient.csproj -c Release",
     "native-stacks": "node lib/native-stacks.mjs",
     "check": "node scripts/check.mjs",
+    "check:install": "node scripts/standalone.integration.mjs",
+    "package:windows": "powershell -NoProfile -File scripts/package-windows.ps1",
     "bench": "node bench/harness/bench.mjs"
   },
   "repository": {

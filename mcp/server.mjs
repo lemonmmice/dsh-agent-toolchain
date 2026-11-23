@@ -48,6 +48,7 @@ import { runInterceptTool } from '../plugins/dsh-api-visualizer/lib/intercept-co
 // 不在这里再写一份（第 24 类缺陷：同一件事不许有第二份实现）。
 import { toolchainStatusAsync } from '../lib/toolchain-status.mjs'
 import { createCaptureStatusCache } from './capture-status-cache.mjs'
+import { captureHostRequest } from '../lib/capture-host.mjs'
 import { appendRecords, readAll, stateDir, captureClientInfo, sameDir } from '../lib/capture-store.mjs'
 import { queryCaptureAsync } from '../lib/capture-query-service.mjs'
 // 自定义过滤器（面板「过滤器」的预设 + 条件 JSON）：解析 / 校验 / 进程名只有一份实现，宿主路由与 DSH 工具共用。
@@ -1340,9 +1341,9 @@ server.tool(
 // ---------------------------------------------------------------- api capture
 
 const captureStatusCache = createCaptureStatusCache({ fetchStatus: async () => {
-  const response = await fetch('http://127.0.0.1:3080/api/dsh-api-visualizer/capture/status', { signal: AbortSignal.timeout(3000) })
-  if (!response.ok) throw new Error('capture status unavailable')
-  return response.json()
+  const response = await captureHostRequest('GET', '/capture/status')
+  if (!response.ok) throw new Error(response.error || 'capture status unavailable')
+  return response
 } })
 
 /** 配置的客户端进程名（实时日志记录的 process）；查不到 = ''（只影响 process 条件对实时记录的匹配）。 */
@@ -1450,38 +1451,16 @@ server.tool(
 )
 
 /**
- * 捕获控制面：MCP 面**跑在另一个进程**里，引擎在**宿主进程**，所以只能走宿主开在回环上的路由。
+ * 捕获控制面复用一个共享引擎：独立伴随服务或原 DSH 宿主，通过回环路由访问。
  *
  * 为什么不自己起一个引擎：那会变成**第二个引擎同时 tail 同一个日志** ⇒ 每条记录进库两次，
  * 而面板上的"重复请求/调用次数"会整体翻倍（这正是 r38 里我差点误判成"客户端重复发请求"的形态）。
  * 所以这里只做**转发**，并如实区分"宿主没应答"与"宿主动手失败"。
  */
 async function hostCapture(method, path, body, timeoutMs = null) {
-  const url = 'http://127.0.0.1:3080/api/dsh-api-visualizer' + path
-  try {
-    const res = await fetch(url, {
-      method,
-      headers: body === null ? undefined : { 'content-type': 'application/json' },
-      body: body === null ? undefined : JSON.stringify(body),
-      // 透明拦截的启停要跑 PowerShell 改 hosts（未提权时还要等用户点 UAC），给足时间
-      signal: AbortSignal.timeout(timeoutMs ?? (method === 'GET' ? 5000 : 20000)),
-    })
-    const data = await res.json().catch(() => null)
-    if (data === null) {
-      return { ok: false, error: '宿主路由 ' + path + ' 返回了非 JSON（HTTP ' + res.status + '）', httpStatus: res.status, hint: '宿主可能没加载 dsh-api-visualizer 插件。' }
-    }
-    // HTTP 状态如实带出去：409/500 是**宿主拒绝**，不是"调不通"。
-    // 成功但路由没给 ok 时补一个（2xx 就是 ok）；失败一律 ok:false —— 别让上游看到 undefined 当成功。
-    const result = { ...data, httpStatus: res.status, ...(res.ok ? (data.ok === undefined ? { ok: true } : {}) : { ok: false }) }
-    if (res.ok && (path === '/capture/start' || path === '/capture/stop')) captureStatusCache.invalidate()
-    return result
-  } catch (e) {
-    return {
-      ok: false,
-      error: '连不上宿主回环路由 ' + url + '：' + String(e && e.message ? e.message : e),
-      hint: 'DSH 宿主没在跑或不是这个端口？这只说明"问不到宿主"，**不等于**捕获没在跑。',
-    }
-  }
+  const result = await captureHostRequest(method, path, body, timeoutMs)
+  if (result.ok && (path === '/capture/start' || path === '/capture/stop')) captureStatusCache.invalidate()
+  return result
 }
 
 /**

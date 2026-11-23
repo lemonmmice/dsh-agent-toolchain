@@ -2,6 +2,10 @@
 
 The same engineering-quality tools the DSH plugins expose — now available to **any MCP client** (Claude Code, Cursor, Cline, custom agents) over stdio.
 
+For Windows colleagues, use the release ZIP and double-click `setup.cmd`.
+It configures Claude Code, Claude Desktop and Codex, includes the runtime and
+native modules, and verifies a real MCP call. See [standalone installation](../docs/standalone-install.md).
+
 ## Responsiveness and diagnostics
 
 Requests carrying `_meta.progressToken` receive `notifications/progress` at
@@ -57,8 +61,8 @@ The MCP transport and the evidence spine are cross-platform, but the tool set is
 | `http_request`, `http_collection`, memory KV save/recall/forget | cross-platform (Node stdlib / HTTP only) |
 | `memory_index`, `memory_search`, `memory_status` | require the memory-store Node-API module built for the current platform/architecture; Windows x64 validated |
 | `capture_query` / `capture_append` (and the internal evidence/verify engine's API checks) | require the capture-store Node-API module built for the current platform/architecture; Windows x64 validated, Linux/macOS builds supported by the build script but not yet validated |
-| `capture_start` / `capture_status` / `capture_stop` / `capture_rules` / `capture_netsim` | forward to the DSH host's `dsh-api-visualizer` routes on `127.0.0.1:3080`; need that host running with the plugin loaded (`capture_status` also reads the local capture store) |
-| `capture_intercept` | **Windows only** — edits the system hosts file and registers a SYSTEM scheduled task; also needs the DSH host |
+| `capture_start` / `capture_status` / `capture_stop` / `capture_rules` / `capture_netsim` | standalone installation starts a shared loopback companion on demand; legacy DSH mode forwards to `127.0.0.1:3080`. Both reuse the same engines and routes |
+| `capture_intercept` | **Windows only** — edits the system hosts file and registers a SYSTEM scheduled task; works with either the standalone companion or DSH |
 | `build_run` | cross-platform with `engine=dotnet` (SDK-style repos); the default `engine=msbuild` is Windows/VS only |
 | `ui_status` / `ui_windows` / `ui_state` / `ui_drive` / `ui_flow` / `ui_replay` | **Windows only** — they drive a Windows desktop client via PowerShell + UIA |
 | `perf_probe` / `perf_report` | **Windows only** — window-message latency sampling of the same client |
@@ -95,8 +99,8 @@ reconnect before newly registered tools appear.
 | `http_collection` | dsh-postman/lib/collection-tool.mjs | Collections / environments / collection runner shared with the API-debug panel (`workspace.json`) |
 | `memory_index` / `memory_search` / `memory_save` / `memory_recall` / `memory_status` | dsh-memory/lib/memory.mjs | Vector search + cross-session KV |
 | `capture_query` / `capture_append` | lib/capture-store.mjs | Query/append the API-capture store — caller attribution (ViewModel→API→call-chain) + runId spine |
-| `capture_start` / `capture_status` / `capture_stop` | DSH host routes (`/api/dsh-api-visualizer/capture/*`) | Live capture control; the engine runs in the DSH host, which needs `dsh-api-visualizer` loaded. `capture_status` also reads the local capture store for its double-write check |
-| `capture_rules` / `capture_intercept` / `capture_netsim` | dsh-api-visualizer/lib/intercept-control.mjs + DSH host routes | AutoResponder mock / rewrite rules, transparent interception and weak-network simulation; need the DSH host with `dsh-api-visualizer` loaded |
+| `capture_start` / `capture_status` / `capture_stop` | shared capture routes and engine | Live capture through standalone companion or DSH; `capture_status` also reads the local store for its double-write check |
+| `capture_rules` / `capture_intercept` / `capture_netsim` | dsh-api-visualizer/lib/intercept-control.mjs + shared routes | AutoResponder rules, interception and weak-network simulation through either backend |
 | `jev_decide` | lib/jev-client.mjs | Optional remote typed decisions; advisory only, explicit remote-data opt-in |
 
 ## Configure (Claude Code)
@@ -135,6 +139,9 @@ Same `DSH_*` variables as the plugins:
 | `DSH_VERIFY_DIR` | internal verify engine | report dir (default `~/.dsh-agent-toolchain/verify-reports`) |
 | `DSH_FAILURE_DEDUPE_HOURS` | internal failure corpus | window in which a repeated auto-recorded failure is counted as a recurrence instead of a new record (default `24`, `0` = off) |
 | `DSH_ENV_FILE` | `mcp/launch.mjs`, plugin hooks | machine settings file (default `~/.dsh-agent-toolchain/env.json`) |
+| `DSH_CAPTURE_BACKEND` | capture controls | `standalone` uses the companion; unset preserves the original DSH host |
+| `DSH_CAPTURE_SERVICE_PORT` / `DSH_CAPTURE_SERVICE_DIR` | standalone companion | loopback port (default 3081), private token/log directory |
+| `DSH_STANDALONE` | readiness diagnostics | installer sets `1`; DSH profile deployment checks do not apply |
 | `TYPESAFE_API_KEY` | jev_decide | TypeSafe API key; used only when `allowRemoteData=true` |
 
 ## Run standalone

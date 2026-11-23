@@ -13,7 +13,6 @@
  *     reqHeaders, reqBody, resHeaders, resBody, note }
  */
 
-import { defineTool } from '@deepseek-ai/dsh-tools'
 // W1：描述/参数结构收进单一真源 lib/tool-registry.mjs（名字仍字面量留在各 defineTool 的 name；capture 家族按 MCP 名索引）。
 import { dshParameters, dshDescription } from '../../../lib/tool-registry.mjs'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -283,6 +282,17 @@ function candidateDirsFor(ids) {
 /** 宿主里「跟随启动的客户端」的轮询器（apply 时启动；自测只加载 makeRoutes 时没有 ⇒ null）。 */
 let clientWatcher = null
 const clientWatcherOf = () => clientWatcher
+
+export function watchCaptureClients(onChange) {
+  const watcher = startClientWatcher({ stateDir: () => stateDir(), onChange })
+  clientWatcher = watcher
+  return {
+    stop() {
+      watcher.stop()
+      if (clientWatcher === watcher) clientWatcher = null
+    },
+  }
+}
 
 /**
  * GET / POST /capture-clients 的返回：captureClientInfo + 每个客户端（映像名 / 记录目录 / 是否在跑 / 是否当前）+ 轮询器状态。
@@ -2424,7 +2434,7 @@ function makeRoutes(capture, proxy) {
 }
 
 /** The api_capture_append agent tool: push captured API records into the store. */
-function apiCaptureTool() {
+function apiCaptureTool(defineTool) {
   return defineTool({
     name: 'api_capture_append',
     description: dshDescription('capture_append'),
@@ -2524,7 +2534,7 @@ function paramsFromObj(obj) {
  *     「这个 ViewModel 没发过请求」，而事实是「这个过滤维度当前没有数据」。
  * 现在两者都在返回里如实标注；带 `caller=` 且归因不可用时，额外给一句明确提示。
  */
-function apiQueryTool(capture) {
+function apiQueryTool(capture, defineTool) {
   return defineTool({
     name: 'api_capture_query',
     description: dshDescription('capture_query'),
@@ -3559,7 +3569,8 @@ function interceptSuggestions(limit = 40) {
  * Mount the routes, tool, and announcement.
  * @param ctx - host plugin context carrying webServer/tools/systemPrompt.
  */
-export function apply(ctx) {
+export async function apply(ctx) {
+  const { defineTool } = await import('@deepseek-ai/dsh-tools')
   const capture = createCapture()
   const proxy = createProxy()
   // 透明拦截开着时，实时日志里与代理重复的那条由代理认领（一对一，只认领代理确实见过的）；
@@ -3588,17 +3599,17 @@ export function apply(ctx) {
     },
     'dsh-api-visualizer: routes',
   )
-  const disposeTool = ctx.effect(() => ctx.tools.register(apiCaptureTool()), 'dsh-api-visualizer: tools')
-  const disposeQueryTool = ctx.effect(() => ctx.tools.register(apiQueryTool(capture)), 'dsh-api-visualizer: query-tool')
+  const disposeTool = ctx.effect(() => ctx.tools.register(apiCaptureTool(defineTool)), 'dsh-api-visualizer: tools')
+  const disposeQueryTool = ctx.effect(() => ctx.tools.register(apiQueryTool(capture, defineTool)), 'dsh-api-visualizer: query-tool')
   // 起/停/查状态三件套。**必须在这里注册**（见 captureControlTools 的注释：写进别的函数体里=不执行）。
-  const disposeCaptureCtl = ctx.effect(() => captureControlTools(capture).forEach((t) => ctx.tools.register(t)), 'dsh-api-visualizer: capture-control')
+  const disposeCaptureCtl = ctx.effect(() => captureControlTools(capture, defineTool).forEach((t) => ctx.tools.register(t)), 'dsh-api-visualizer: capture-control')
   // mock 规则 / 透明拦截 / 全局弱网：让 agent 能"把某接口改成空数据 → 截图看客户端怎么渲染"
   ctx.effect(() => {
     // profile 里的共享 lib/ 可能比插件旧（部署漂移是本仓的已知问题）：注册表里没有这几个工具时
     // 只跳过 agent 工具，路由与面板照常工作 —— 绝不能因为一个可选工具把整个宿主 boot 拖垮。
     let tools = []
     try {
-      tools = interceptTools(proxy)
+      tools = interceptTools(proxy, defineTool)
     } catch (e) {
       console.error('[dsh-api-visualizer] 跳过 mock/拦截/弱网工具注册（共享 tool-registry 太旧？）:', e instanceof Error ? e.message : String(e))
     }
@@ -3685,7 +3696,7 @@ function interceptApi(proxy) {
  * 这里只提供"进程内直接调代理对象"的传输层；MCP 面给的是"走回环路由"的传输层。
  * face:'dsh' ⇒ 返回里所有"下一步该调哪个工具"的提示都用本面的名字（api_capture_*），不是 MCP 面的 capture_*（C44）。
  */
-function interceptTools(proxy) {
+function interceptTools(proxy, defineTool) {
   const api = interceptApi(proxy)
   const output = {
     schema: { type: 'object', additionalProperties: true, properties: { ok: { type: 'boolean' }, summary: { type: 'string' } } },
@@ -3724,7 +3735,7 @@ function interceptTools(proxy) {
  * 而那个函数以 `return defineTool({...})` 结束 ⇒ 三段代码**永远不执行**。
  * 语法能过、check 能过、代码还在，但工具压根没注册（加载加载检查 + E4 的反向断言当场抓住）。
  */
-function captureControlTools(capture) {
+function captureControlTools(capture, defineTool) {
   const tools = []
   // ------------------------------------------------------------------ 捕获控制面（r39）
   //

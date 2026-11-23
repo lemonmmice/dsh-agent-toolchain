@@ -29,3 +29,4 @@ last.json
 /plugins/dsh-perf/bin/
 /native/toolchain/target/
 /mcp/bin/
+/tools/heaproots/publish-x86/

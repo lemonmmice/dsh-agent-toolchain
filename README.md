@@ -129,6 +129,21 @@ steps: 8/8 ok
 
 ## 快速开始
 
+### 同事一键安装：Claude Code / Claude Desktop / Codex（无需 Harness）
+
+在 [Releases](https://github.com/lemonmmice/dsh-agent-toolchain/releases) 下载带有 **`dsh-agent-toolchain-win-x64.zip`** 的版本，解压后双击 **`setup.cmd`**：
+
+1. 选择安装到全部客户端或其中一个。
+2. 填写要操作的程序 EXE 和源码目录；也可留空，之后重跑安装器填写。
+3. 等待 MCP 握手自检完成，完全退出并重新打开 Claude / Codex。
+4. 对 Agent 说：**“使用 DSH 的 toolchain_status 检查环境。”**
+
+完整包自带 Node、MCP 依赖、Rust 存储模块与自包含的 .NET 分析器。同事无需安装 Git、Rust、Node 或 DeepSeek Harness。安装器自动备份并更新配置，支持重复安装；Claude Code 和 Codex 同时安装五个工作流技能。Claude Desktop 通过 MCP 使用工具。
+
+独立模式的抓包、mock 和弱网控制按需启动本机伴随服务，多个客户端共用一个引擎。安装本身不会开启抓包、修改 hosts、信任证书或更改系统代理。实时 ETW 采样仍需 Windows Performance Toolkit 和管理员权限，抓 dump 需 ProcDump；自检会列出缺项。
+
+**发布者**先运行 `npm run package:windows`，或使用新增的 Windows 打包 workflow 生成 ZIP 与 SHA256。旧版本只有源码归档时，请等待带上述资产的新版本。安装、升级、卸载和详细能力范围见 [独立安装指南](./docs/standalone-install.md)。
+
 ### 路线 A：跑 demo（不需要 Rust，大约五分钟）
 
 `npm run demo` 用到的工具（`toolchain_status`、`build_run`、`ui_launch` / `ui_observe` / `ui_drive`，加 `--with-perf` 时还有 `perf_probe`）**既不需要 Rust 也不需要 MSVC**，`http_request` 也不需要。这一点在 `plugins/*/bin/` 全空的检出上验证过。
@@ -180,11 +195,11 @@ npm run build:terminal-inspector   # dsh-win-terminal-inspector
 
 **几个要点**
 
-- **一套工具，所有 Agent 通用**：同样的工具既驱动 DeepSeek Harness 插件，**也**给任何 MCP 客户端用，见 [mcp/](./mcp/README.md)。Claude Code、Cursor、Cline 和 Codex 用的是完全相同的 `lib/` 代码。抓包控制、mock、透明拦截和弱网模拟会转发给持有抓包引擎的 DSH 宿主，所以需要宿主在运行。
+- **一套工具，所有 Agent 通用**：同样的工具既驱动 DeepSeek Harness 插件，**也**给任何 MCP 客户端用，见 [mcp/](./mcp/README.md)。独立安装时抓包控制、mock、透明拦截和弱网模拟由自带的本机服务承载，复用同一套引擎与路由；原来的 DSH 部署仍使用 DSH 宿主。
 - **UI 自动化安全优先**：`click`/`setvalue`/`key` 必须显式传 `allowSideEffects=true`；只读操作永远安全。所有操作之上还有一个运维急停开关和一个可选的默认拒绝策略，而且恢复急停故意没有做成 Agent 工具。
 - **测量结果说实话**：性能数据来自真实的窗口消息往返，每份报告都会写明这个方法**看不到**什么；成本表不知道就写「未知」，不编数字；枚举为空报告为「没读到」，绝不说成「什么都没有」。
 - **失败语料库是护城河**：失败路径按固定的 7 类分类自动记录。两种接入方式都会记录构建错误和 `ui_flow` 失败（断言或操作步骤），MCP 这一面还会记录失败的 UI 操作、发不出去的 HTTP 请求、失败的卡死分析，以及 `perf_probe` 抓到的 UI 卡顿。语料库是运行时写的内部存储，没有 Agent 能调用的工具去读写它。见 [docs/failure-corpus.md](./docs/failure-corpus.md)。
-- **控制接口只监听本机回环**。和环境相关的值（客户端 exe、窗口标题、证据目录、工具路径、源码根）都是带合理默认值的环境变量：不写死机器，不内嵌凭据。唯一固定的值是 MCP 这一面访问 DSH 宿主的地址 `127.0.0.1:3080`。只有一个需要主动开启的工具会改系统配置：`capture_intercept start` 会修改系统 hosts 文件（宿主没提权时会弹 UAC），并注册一个 SYSTEM 计划任务，在重启或监听进程消失时移除拦截；`stop` 会还原 hosts 文件。
+- **控制接口只监听本机回环**。独立抓包服务默认使用 `127.0.0.1:3081`，需要本机随机令牌，并拒绝浏览器 Origin 请求；原 DSH 模式使用 `127.0.0.1:3080`。客户端 exe、源码根和证据目录由本机配置提供。`capture_intercept start` 会修改 hosts 并注册 SYSTEM 安全网任务，仍需用户明确发起；`stop` 会还原 hosts。
 
 ## 任何 MCP 客户端都能用
 
@@ -211,7 +226,7 @@ claude plugin install dsh-agent-toolchain@dsh-agent-toolchain
 
 本地开发时，直接原地加载检出目录，而不是用缓存副本（Claude Code 会自动加载 `~/.claude/skills/<name>/` 下的插件），这样改动在下一个会话就生效。Windows 上：`mklink /J %USERPROFILE%\.claude\skills\dsh-agent-toolchain <repo>`。插件提供的工具带命名空间，例如 `mcp__plugin_dsh-agent-toolchain_dsh__build_run`；如果另外用 `claude mcp add` 注册过同一个服务，删掉那个注册，免得每个工具出现两份。
 
-Codex 会把 `.claude-plugin/plugin.json` 和 `.claude-plugin/marketplace.json` 当作备选的清单位置（上游 `codex-rs/exec-server-protocol` 和 `codex-rs/core-plugins`），所以同样的目录结构理论上在 Codex 里也能加载，**但还没有端到端验证过**。
+Codex 推荐使用上面的独立安装器：它写入官方支持的 `config.toml` MCP 配置，并把工作流技能放到 `~/.agents/skills/`。这条路径通过真实 MCP 握手验证；客户端 UI 内的最终显示仍需重启后确认。独立安装器不自动安装宿主专用 hooks。
 
 ## 安装细节
 
@@ -277,6 +292,7 @@ Codex 会把 `.claude-plugin/plugin.json` 和 `.claude-plugin/marketplace.json` 
 | [docs/harness2-executor.md](./docs/harness2-executor.md) | Harness² 执行适配器、证据边界和评测局限 |
 | [bench/README.md](./bench/README.md) | 评测台：SWE-bench 式任务加隐藏验证。结果（包括后来撤回的）在 [bench/pilot/report.md](./bench/pilot/report.md) |
 | [docs/perfview-parity.md](./docs/perfview-parity.md) | 性能插件对照 PerfView，包括差距 |
+| [docs/perf-triage-checklist.md](./docs/perf-triage-checklist.md) | 卡顿/输入拖滞的排查顺序：全进程排名、钩子 A/B、Thread Time |
 | [docs/native-runtime.md](./docs/native-runtime.md) | 可选的 Rust MCP 运行时：范围、部署和验证 |
 | [docs/failure-corpus.md](./docs/failure-corpus.md) | 失败分类和记录格式 |
 | [docs/agent-toolchain-evaluation.md](./docs/agent-toolchain-evaluation.md) | 2026-09-20 这套工具链的一次测量快照（当时 53 个工具），以及当时还薄弱的地方 |

@@ -1,0 +1,42 @@
+name: Windows standalone package
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build complete runtime
+        shell: pwsh
+        run: ./scripts/package-windows.ps1
+      - name: Check repository and standalone integration
+        shell: pwsh
+        run: |
+          npm run check
+          npm run check:install
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsh-agent-toolchain-win-x64
+          path: |
+            .dsh-agent-toolchain/dist/dsh-agent-toolchain-win-x64.zip
+            .dsh-agent-toolchain/dist/dsh-agent-toolchain-win-x64.zip.sha256
+      - name: Attach package to tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --generate-notes }
+          gh release upload $env:GITHUB_REF_NAME .dsh-agent-toolchain/dist/dsh-agent-toolchain-win-x64.zip .dsh-agent-toolchain/dist/dsh-agent-toolchain-win-x64.zip.sha256 --repo $env:GITHUB_REPOSITORY --clobber
